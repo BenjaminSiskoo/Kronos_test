@@ -1325,15 +1325,13 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 static int rasterValue = 1708;
 
   // VDP1 clock ~28.6363 MHz (NTSC). Cycles alloués par ligne HBlank inclus.
-  // 320px mode : ~1708 cy/line (empirique, Yabause/Mednafen compatible)
-  // 352px mode : ~1820 cy/line (pixel clock plus élevé)
-  // Note: la valeur exacte HW serait ~1815 pour NTSC 263 lignes totales
-  // mais 1708/1820 donnent les meilleurs résultats empiriques.
+  // 320px/640px : ~1708 cy/line (empirique, Yabause/Mednafen compatible)
+  // 352px/704px : ~1820 cy/line (pixel clock plus élevé)
 	void Vdp1SetRaster(int is352) {
 	  if (is352)
 		rasterValue = 1820;
 	  else
-		rasterValue = 1815; // 28636363 / (60 * 263) = 1815 cycles/ligne totale NTSC
+		rasterValue =  1708;
 	}
 
 static int getVdp1CyclesPerLine(void)
