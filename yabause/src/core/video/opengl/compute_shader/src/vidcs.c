@@ -3299,8 +3299,12 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   int i, j;
   int shift = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
-  int incv = 1.0 / ctrl->info.coordincy*256.0;
-  int inch = 1.0 / ctrl->info.coordincx*256.0;
+	// utiliser float pour éviter la troncature avant multiplication
+	// puis convertir en fixed-point 8.8 uniquement pour les calculs d'index
+	float incv_f = (1.0f / ctrl->info.coordincy) * 256.0f;
+	float inch_f = (1.0f / ctrl->info.coordincx) * 256.0f;
+	int incv = (int)(incv_f + 0.5f); // arrondi au lieu de troncature
+	int inch = (int)(inch_f + 0.5f);
   for (i = 0; i < _Ygl->rheight; i ++)
   {
     int sh, sv;
