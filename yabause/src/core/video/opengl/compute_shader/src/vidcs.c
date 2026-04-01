@@ -2966,35 +2966,35 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
 }
 
 static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
-
-  const int CCMD = ((ctrl->regs->CCCTL >> 8) & 0x01);  // hard/vdp2/hon/p12_14.htm#CCMD_
+  const int CCMD = ((ctrl->regs->CCCTL >> 8) & 0x01);
   int cc = 1;
-  if (CCMD == 0) {  // Calculate Rate mode
-    switch (ctrl->info.specialcolormode)
-    {
+
+  if (CCMD == 0) {  // Calculate Rate mode : cc=0 désactive le blending
+    switch (ctrl->info.specialcolormode) {
+    case 0: cc = 1; break; // toujours actif
     case 1: if (ctrl->info.specialcolorfunction == 0) { cc = 0; } break;
     case 2:
       if (ctrl->info.specialcolorfunction == 0) { cc = 0; }
       else { if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) { cc = 0; } }
       break;
-   case 3:
-     if (((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0)) { cc = 0; }
-     break;
-    }
-  }
-  else {  // Calculate Add mode
-    switch (ctrl->info.specialcolormode)
-    {
-    case 1:
-      if (ctrl->info.specialcolorfunction == 0) { cc = 0; }
+    case 3:
+      if (((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0)) { cc = 0; }
       break;
+    }
+  } else {  // Calculate Add mode : cc=0 = pas d'addition (pixel écrit direct)
+    // En mode Add, la condition d'activation est identique à Rate
+    // (spec VDP2 s.3.6.6 : même bits SFCCMD/SFSEL contrôlent l'activation)
+    // La différence Rate vs Add est dans l'équation GPU (src+dst vs src*ratio+dst)
+    switch (ctrl->info.specialcolormode) {
+    case 0: cc = 1; break;
+    case 1: if (ctrl->info.specialcolorfunction == 0) { cc = 0; } break;
     case 2:
       if (ctrl->info.specialcolorfunction == 0) { cc = 0; }
       else { if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) { cc = 0; } }
       break;
-   case 3:
-     if (((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0)) { cc = 0; }
-     break;
+    case 3:
+      if (((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0)) { cc = 0; }
+      break;
     }
   }
   return cc;
