@@ -2853,51 +2853,77 @@ static INLINE int Vdp2CheckWindow(vdp2draw_struct *info, int x, int y, int area,
   return 0;
 }
 
-// 0 .. all outsize, 1~3 .. partly inside, 4.. all inside
-static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
+// Helper : le segment [x, x+w] intersecte-t-il la fenêtre sur la ligne ly ?
+static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
+                                       int x, int ly, int w,
+                                       int area, u32 *win)
 {
-  if (_Ygl->Win0[ctrl->info.idScreen]  != 0 && _Ygl->Win1[ctrl->info.idScreen]  == 0)
+  if (ly < 0 || ly >= _Ygl->rheight) return 0;
+
+  int wl = win[ly] & 0xFFFF;
+  int wr = (win[ly] >> 16) & 0xFFFF;
+
+  if (area == WA_INSIDE) {
+    // Le tile intersecte la zone intérieure de la fenêtre
+    return (x <= wr && (x + w) >= wl);
+  } else {
+    // Au moins un pixel du tile est hors fenêtre
+    return (x < wl || (x + w) > wr);
+  }
+}
+
+static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl,
+                                          int x, int y, int w, int h)
+{
+  int idScreen = ctrl->info.idScreen;
+  int hasWin0  = _Ygl->Win0[idScreen] != 0;
+  int hasWin1  = _Ygl->Win1[idScreen] != 0;
+
+  if (hasWin0 && !hasWin1)
   {
-    if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    // Une seule fenêtre active : Win0
+    for (int ly = y; ly < y + h; ly++) {
+      if (Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
+                              _Ygl->Win0_mode[idScreen],
+                              _Ygl->win[0]))
+        return 1;
+    }
     return 0;
   }
-  else if (_Ygl->Win0[ctrl->info.idScreen]  == 0 && _Ygl->Win1[ctrl->info.idScreen]  != 0)
+  else if (!hasWin0 && hasWin1)
   {
-    if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    // Une seule fenêtre active : Win1
+    for (int ly = y; ly < y + h; ly++) {
+      if (Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
+                              _Ygl->Win1_mode[idScreen],
+                              _Ygl->win[1]))
+        return 1;
+    }
     return 0;
   }
-  else if (_Ygl->Win0[ctrl->info.idScreen]  != 0 && _Ygl->Win1[ctrl->info.idScreen]  != 0)
+  else if (hasWin0 && hasWin1)
   {
-    if (_Ygl->Win_op[ctrl->info.idScreen] == 0)
-    {
-      if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      return 0;
+    int use_and = (_Ygl->Win_op[idScreen] != 0);
+
+    for (int ly = y; ly < y + h; ly++) {
+      int w0 = Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
+                                   _Ygl->Win0_mode[idScreen],
+                                   _Ygl->win[0]);
+      int w1 = Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
+                                   _Ygl->Win1_mode[idScreen],
+                                   _Ygl->win[1]);
+      /*
+       * OR  (Win_op == 0) : visible si Win0 OU Win1 valide la ligne
+       * AND (Win_op != 0) : visible si Win0 ET Win1 valident la ligne
+       *                     (corrige le bug original qui faisait OR dans les deux cas)
+       */
+      if (use_and ? (w0 && w1) : (w0 || w1))
+        return 1;
     }
-    else {
-      if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-      if(Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-      return 0;
-    }
+    return 0;
   }
+
+  // Aucune fenêtre active
   return 0;
 }
 
@@ -4487,14 +4513,16 @@ static pixel_t *VIDCSGetVdp2ScreenExtract(u32 screen, int * w, int * h)
   }
   if (screen == 0xFF)
   {
-    //Get full framebuffer
-    pixel_t* pixels = (pixel_t*)malloc(_Ygl->width*_Ygl->height * sizeof(pixel_t));
+    pixel_t* pixels = (pixel_t*)malloc(_Ygl->width * _Ygl->height * sizeof(pixel_t));
     *w = _Ygl->width;
     *h = _Ygl->height;
     glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
-    glReadPixels(0,0,_Ygl->width,_Ygl->height,GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glReadPixels(0, 0, _Ygl->width, _Ygl->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     return pixels;
-  }
+  }  // Ecran inconnu
+  *w = 0;
+  *h = 0;
+  return NULL;
 }
 
 #endif
