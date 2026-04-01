@@ -313,10 +313,17 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
   tile.vertices[7] = (y + lines/*(float)ctrl->info.lineinc*/ );
 
   // Screen culling
-  //if (tile.vertices[0] >= _Ygl->rwidth || tile.vertices[1] >= _Ygl->rheight || tile.vertices[2] < 0 || tile.vertices[5] < 0)
-  //{
-  //	return;
-  //}
+  if (tile.vertices[0] >= _Ygl->rwidth || tile.vertices[1] >= _Ygl->rheight || tile.vertices[2] < 0 || tile.vertices[5] < 0)
+  {
+  	return;
+  }
+	  if (   tile.vertices[0] >= _Ygl->rwidth
+		|| tile.vertices[2] < 0
+		|| tile.vertices[1] >= _Ygl->rheight
+		|| tile.vertices[5] < 0)
+	{
+		return;
+	}
 
   if ((_Ygl->Win0[ctrl->info.idScreen] != 0 || _Ygl->Win1[ctrl->info.idScreen] != 0) && ctrl->info.coordincx == 1.0f && ctrl->info.coordincy == 1.0f)
   {                                                 // coordinate inc is not supported yet.
