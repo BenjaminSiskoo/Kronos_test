@@ -1030,11 +1030,16 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   y = cmd->CMDYA;
   // Setup Zoom Point
   switch ((cmd->CMDCTRL & 0x300) >> 8) {
-    //left/right/center/none => Compute X
-    case 0: //none
-        cmd->CMDXB = cmd->CMDXC;
-        cmd->CMDXD = cmd->CMDXA;
-    break;
+	// case 0x0 : deux coordonnées (XA,YA) = coin haut-gauche, (XC,YC) = coin bas-droit
+	case 0: //none (two-coordinates mode)
+		// XA,YA déjà positionnés. XC,YC = coin opposé.
+		// Reconstruire les 4 coins comme un rectangle aligné.
+		cmd->CMDXB = cmd->CMDXC;
+		cmd->CMDYB = cmd->CMDYA;
+		cmd->CMDXD = cmd->CMDXA;
+		cmd->CMDYD = cmd->CMDYC;
+		// CMDXC et CMDYC restent inchangés (déjà coin bas-droit)
+	break;
     case 1: //Left
     rw = cmd->CMDXB;
         if (rw < 0) return 0;
@@ -1062,11 +1067,11 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
         break;
     }
   switch ((cmd->CMDCTRL & 0xC00) >> 10) {
-    //left/right/center/none => Compute X
-    case 0: //none
-        cmd->CMDYB = cmd->CMDYA;
-        cmd->CMDYD = cmd->CMDYC;
-    break;
+	case 0: //none (two-coordinates mode)
+		// Y already handled: YB = YA (top), YD = YC (bottom)
+		cmd->CMDYB = cmd->CMDYA;
+		cmd->CMDYD = cmd->CMDYC;
+	break;
     case 1: //Top
     rh = cmd->CMDYB;
         if (rh < 0) return 0;
