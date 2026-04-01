@@ -3027,8 +3027,8 @@ void Vdp1SwitchFrame(void)
   VIDCore->Vdp1FrameChange();
   FRAMELOG("Change frames now draw %d, read %d (%d)\n", _Ygl->drawframe, _Ygl->readframe, yabsys.LineCount);
   Vdp1External.current_frame = !Vdp1External.current_frame;
-  Vdp1Regs->LOPR = Vdp1Regs->COPR;
-  Vdp1Regs->LOPR = Vdp1Regs->lCOPR;  // lCOPR = dernière adresse traitée
+  // Spec VDP1 §6.2 : LOPR = adresse dernière commande traitée
+  Vdp1Regs->LOPR = Vdp1Regs->lCOPR;
   Vdp1Regs->COPR = 0;
   Vdp1Regs->lCOPR = 0;
 
