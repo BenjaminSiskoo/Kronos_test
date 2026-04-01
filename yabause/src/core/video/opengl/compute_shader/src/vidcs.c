@@ -2246,14 +2246,18 @@ void VIDCSReadColorOffset(void) {
       a_cog |= 0xFFFFFF00;
     if (lVdp2Regs->COAB & 0x100)
       a_cob |= 0xFFFFFF00;
-    int colOffB =
-       (((int)(128.0f + (b_cob / 2.0)) & 0xFF) << 16)
-    | (((int)(128.0f + (b_cog / 2.0)) & 0xFF) << 8)
-    | (((int)(128.0f + (b_cor / 2.0)) & 0xFF) << 0);
-    int colOffA =
-      (((int)(128.0f + (a_cob / 2.0)) & 0xFF) << 16)
-    | (((int)(128.0f + (a_cog / 2.0)) & 0xFF) << 8)
-    | (((int)(128.0f + (a_cor / 2.0)) & 0xFF) << 0);
+	#define CLAMP_COLOR_OFFSET(v) (((v) < -128) ? 0 : (((v) > 127) ? 255 : (int)(128 + (v))))
+
+	int colOffB =
+	   (CLAMP_COLOR_OFFSET(b_cob) << 16)
+	| (CLAMP_COLOR_OFFSET(b_cog) << 8)
+	| (CLAMP_COLOR_OFFSET(b_cor) << 0);
+	int colOffA =
+	   (CLAMP_COLOR_OFFSET(a_cob) << 16)
+	| (CLAMP_COLOR_OFFSET(a_cog) << 8)
+	| (CLAMP_COLOR_OFFSET(a_cor) << 0);
+
+	#undef CLAMP_COLOR_OFFSET
     for(int id = 0; id<enBGMAX+1; id++){
       if (isEnabled(id,lVdp2Regs) == 0) {
         linebuf[line+512*id] = 0x0;
