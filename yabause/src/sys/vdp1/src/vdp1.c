@@ -2910,30 +2910,64 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-  int shift = ((Vdp1Regs->TVMR & 0x1) == 1)?4:3;
+  // TVMR bit 0 : 0 = 16bpp (1 pixel = 16b), 1 = 8bpp (1 pixel = 8b)
+  int shift = ((Vdp1Regs->TVMR & 0x1) == 1) ? 4 : 3;
+  // Double-interlace : Y coords doublées (FBCR bit 3)
+  int interlace_shift = (Vdp1Regs->FBCR & 0x8) ? 1 : 0;
+
   int limits[4] = {0};
-  limits[0] = ((Vdp1Regs->EWLR>>9)&0x3F)<<shift;
-  limits[1] = ((Vdp1Regs->EWLR)&0x1FF); //TODO: manage double interlace
-  limits[2] = (((Vdp1Regs->EWRR>>9)&0x7F)<<shift) - 1;
-  limits[3] = ((Vdp1Regs->EWRR)&0x1FF); //TODO: manage double interlace
+  limits[0] = ((Vdp1Regs->EWLR >> 9) & 0x3F) << shift;
+  limits[1] = ((Vdp1Regs->EWLR) & 0x1FF) >> interlace_shift; //TODO: manage double interlace
+  limits[2] = (((Vdp1Regs->EWRR >> 9) & 0x7F) << shift) - 1;
+  limits[3] = ((Vdp1Regs->EWRR) & 0x1FF) >> interlace_shift; //TODO: manage double interlace
 
   //Prohibited value - Example Quake first screens
-  if ((limits[2] == -1)||(limits[3] == 0)) return 0;
+  if ((limits[2] == -1) || (limits[3] == 0)) return 0;
+  if ((limits[0] >= limits[2]) || (limits[1] > limits[3])) return 0; //No erase write when invalid area - Should be done only for one dot but no idea of which dot it shall be
 
-  if ((limits[0]>=limits[2])||(limits[1]>limits[3])) {
-    return 0; //No erase write when invalid area - Should be done only for one dot but no idea of which dot it shall be
-  }
-  int nbPix = ((limits[2]-limits[0])*(limits[3]-limits[1]))>>(Vdp1Regs->TVMR & 0x1);
-  if (yabsys.IsPal == 0) {
-    return nbPix/(1820 - 200);
-  } else {
-    return nbPix/(1708 - 200);
-  }
+  int nbPix = ((limits[2] - limits[0]) * (limits[3] - limits[1])) 
+              >> (Vdp1Regs->TVMR & 0x1);
+
+  // Cycles disponibles par ligne pour l'érase.
+  // rasterValue = cycles totaux par ligne HBlank compris.
+  // Le VDP1 écrit 2 pixels par cycle en 16bpp, 1 en 8bpp.
+  // On utilise rasterValue directement comme budget.
+  int cycles_per_line = getVdp1CyclesPerLine();
+  if (cycles_per_line <= 0) return 0;
+
+  return nbPix / cycles_per_line;
 }
-
 static void Vdp1EraseWrite(int id){
   lastHash = -1;
   _Ygl->shallVdp1Erase[id] = 1;
+}
+
+static int getVdp1ErasePixelLine() {
+  // TVMR bit 0 : 0 = 16bpp (1 pixel = 16b), 1 = 8bpp (1 pixel = 8b)
+  int shift = ((Vdp1Regs->TVMR & 0x1) == 1) ? 4 : 3;
+  // Double-interlace : Y coords doublées (FBCR bit 3)
+  int interlace_shift = (Vdp1Regs->FBCR & 0x8) ? 1 : 0;
+
+  int limits[4] = {0};
+  limits[0] = ((Vdp1Regs->EWLR >> 9) & 0x3F) << shift;
+  limits[1] = ((Vdp1Regs->EWLR) & 0x1FF) >> interlace_shift;
+  limits[2] = (((Vdp1Regs->EWRR >> 9) & 0x7F) << shift) - 1;
+  limits[3] = ((Vdp1Regs->EWRR) & 0x1FF) >> interlace_shift;
+
+  if ((limits[2] == -1) || (limits[3] == 0)) return 0;
+  if ((limits[0] >= limits[2]) || (limits[1] > limits[3])) return 0;
+
+  int nbPix = ((limits[2] - limits[0]) * (limits[3] - limits[1]))
+              >> (Vdp1Regs->TVMR & 0x1);
+
+  // Cycles disponibles par ligne pour l'érase.
+  // rasterValue = cycles totaux par ligne HBlank compris.
+  // Le VDP1 écrit 2 pixels par cycle en 16bpp, 1 en 8bpp.
+  // On utilise rasterValue directement comme budget.
+  int cycles_per_line = getVdp1CyclesPerLine();
+  if (cycles_per_line <= 0) return 0;
+
+  return nbPix / cycles_per_line;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3023,9 +3057,11 @@ void Vdp1SwitchFrame(void)
   VIDCore->Vdp1FrameChange();
   FRAMELOG("Change frames now draw %d, read %d (%d)\n", _Ygl->drawframe, _Ygl->readframe, yabsys.LineCount);
   Vdp1External.current_frame = !Vdp1External.current_frame;
-  Vdp1Regs->LOPR = Vdp1Regs->COPR;
-  Vdp1Regs->COPR = 0;
-  Vdp1Regs->lCOPR = 0;
+	//LOPR reçoit lCOPR (dernière valeur connue de fin de liste)
+	// COPR est remis à 0 pour la nouvelle liste
+	Vdp1Regs->LOPR = Vdp1Regs->lCOPR;  // lCOPR = dernière adresse traitée
+	Vdp1Regs->COPR = 0;
+	Vdp1Regs->lCOPR = 0;
 
   if (Vdp1Regs->PTMR == 0x2) {
     FRAMELOG("[VDP1] PTMR == 0x2 start drawing immidiatly %d %d EDSR %x PTMR %x\n", yabsys.LineCount, yabsys.DecilineCount, Vdp1Regs->EDSR,  Vdp1Regs->PTMR);
