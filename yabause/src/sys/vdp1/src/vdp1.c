@@ -2919,17 +2919,21 @@ static int getVdp1ErasePixelLine() {
   if ((limits[2] == -1) || (limits[3] == 0)) return 0;
   if ((limits[0] >= limits[2]) || (limits[1] > limits[3])) return 0; //No erase write when invalid area - Should be done only for one dot but no idea of which dot it shall be
 
+  int area_w = limits[2] - limits[0];
+  int area_h = limits[3] - limits[1];
+
   int nbPix = ((limits[2] - limits[0]) * (limits[3] - limits[1])) 
               >> (Vdp1Regs->TVMR & 0x1);
 
-  // Cycles disponibles par ligne pour l'érase.
-  // rasterValue = cycles totaux par ligne HBlank compris.
-  // Le VDP1 écrit 2 pixels par cycle en 16bpp, 1 en 8bpp.
-  // On utilise rasterValue directement comme budget.
+  // Spec : 2 pixels/cycle en 16bpp, 1 pixel/cycle en 8bpp
+  // On calcule le nombre de cycles nécessaires
+  int pixels_per_cycle = (Vdp1Regs->TVMR & 0x1) ? 1 : 2;
+  int total_cycles = (area_w * area_h) / pixels_per_cycle;
+
   int cycles_per_line = getVdp1CyclesPerLine();
   if (cycles_per_line <= 0) return 0;
 
-  return nbPix / cycles_per_line;
+  return (total_cycles + cycles_per_line - 1) / cycles_per_line; // ceil
 }
 static void Vdp1EraseWrite(int id){
   lastHash = -1;
