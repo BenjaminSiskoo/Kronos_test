@@ -2317,6 +2317,7 @@ void VIDCSVdp2Draw(void)
     screenDirty = 1;
     vdp2busy = 1;
   } else {
+    VIDCSVdp2DispOff();
     if (screenDirty != 0)
       vdp2busy = 1;
     screenDirty = 0;
@@ -2477,6 +2478,8 @@ void VIDCSGetGlSize(int *width, int *height)
 
 void VIDCSVdp2DispOff()
 {
+    // TVMD bit 15 = 0 : forcer le background à noir
+    YglSetBackColor(0.0f, 0.0f, 0.0f);
 }
 
 void updateMeshMode(MESHMODE value) {
