@@ -3600,7 +3600,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   ctrl->info.patternpixelwh = 8 * ctrl->info.patternwh;
   ctrl->info.draww = _Ygl->rwidth;
 
-  const int incv = 1.0 / ctrl->info.coordincy*256.0;
+  const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
   int linemask = 0;
