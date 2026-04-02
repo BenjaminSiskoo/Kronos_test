@@ -63,6 +63,9 @@ typedef struct {
    u16 userclipY1;
    u16 userclipX2;
    u16 userclipY2;
+   u16 userclipMode; // VDP1 Manual §6.3 CMDPMOD bit 9 (Cmod):
+                     // 0 = inside drawing mode (draw within user clip rect)
+                     // 1 = outside drawing mode (draw outside user clip rect)
 
 
 } Vdp1;
