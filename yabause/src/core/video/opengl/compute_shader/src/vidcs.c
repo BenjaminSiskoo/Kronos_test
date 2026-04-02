@@ -519,9 +519,9 @@ static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg)
 
   YglQuadRbg0(rbg, NULL, &rbg->c, rbg->rbg_type, YglTM_vdp2, rbg->ctrl.regs);
 
- //Not optimal. Should be 0 if there is no offset used.
-  _Ygl->useLineColorOffset[0] = ((rbg->ctrl.regs->KTCTL & 0x1010)!=0)?_Ygl->linecolorcoef_tex[0]:0;
-  _Ygl->useLineColorOffset[1] = ((rbg->ctrl.regs->KTCTL & 0x1010)!=0)?_Ygl->linecolorcoef_tex[1]:0;
+	// RAKLCE=bit4(0x0010) → ParaA line color ; RBKLCE=bit12(0x1000) → ParaB line color
+	_Ygl->useLineColorOffset[0] = ((rbg->ctrl.regs->KTCTL & 0x0010)!=0)?_Ygl->linecolorcoef_tex[0]:0;
+	_Ygl->useLineColorOffset[1] = ((rbg->ctrl.regs->KTCTL & 0x1000)!=0)?_Ygl->linecolorcoef_tex[1]:0;
   return;
 }
 
