@@ -1127,8 +1127,13 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
       cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
     }
   }
-  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
-  VIDCore->Vdp1ScaledSpriteDraw(cmd, ram, regs);
+	// VDP1 Manual §4.2 EOS bit (FBCR bit 4):
+	// When HSS=1, EOS selects even(0) or odd(1) pixel sampling
+	// cmd->hss already set; add eos field:
+	cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+	// EOS is only meaningful when HSS=1
+	cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1; // 0=even coords, 1=odd coords
+	VIDCore->Vdp1ScaledSpriteDraw(cmd, ram, regs);
   return ret;
 }
 
