@@ -1981,10 +1981,19 @@ if (rbg->ctrl.regs->RPMD == 0x03)
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
   rbg->paraB.screenover = (rbg->ctrl.regs->PLSZ >> 14) & 0x03;
   
-  // Spec §6.5 : screenover=1 → zone hors écran = transparente
-  // On initialise over_pattern_name à une sentinelle reconnaissable
-  if (rbg->paraA.screenover == 1) rbg->paraA.over_pattern_name = 0xFFFF;
-  if (rbg->paraB.screenover == 1) rbg->paraB.over_pattern_name = 0xFFFF;
+	// APRÈS — spec §6.3 :
+	// mode 0 = repeat (default, over_pattern_name ignoré)
+	// mode 1 = pattern from OVPNRA/OVPNRB register (cell format only)
+	// mode 2 = transparent (sentinelle 0xFFFF pour signaler "force transparent")
+	// mode 3 = zone 0..512 transparente (géré via MaxH/MaxV + sentinelle)
+	if (rbg->paraA.screenover == 1)
+		rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA; // registre réel
+	else if (rbg->paraA.screenover == 2)
+		rbg->paraA.over_pattern_name = 0xFFFF; // transparent
+	if (rbg->paraB.screenover == 1)
+		rbg->paraB.over_pattern_name = rbg->ctrl.regs->OVPNRB;
+	else if (rbg->paraB.screenover == 2)
+		rbg->paraB.over_pattern_name = 0xFFFF;
 
   // Figure out which Rotation Parameter we're uqrt
   switch (rbg->ctrl.regs->RPMD & 0x3)
