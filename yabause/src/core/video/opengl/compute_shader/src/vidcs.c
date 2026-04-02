@@ -902,11 +902,11 @@ void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    // VDP1 Manual §6.3 CMDPMOD bit 9 (Clip=1) + bit 9 Cmod:
-    // Cmod=0 → draw inside user clip rect
-    // Cmod=1 → draw outside user clip rect (within system clip)
-    // Store Cmod so the compute shader can invert clip logic
-    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1; // 0=inside, 1=outside
+    // VDP1 Manual §6.3: Clip=bit10, Cmod=bit9
+    // Cmod=0: inside drawing mode (draw within user clip rect)
+    // Cmod=1: outside drawing mode (draw outside user clip rect)
+    // Store Cmod so startVdp1Render() can forward it to the shader.
+    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
     vdp1_add(cmd, 1);
 }
 
@@ -1031,7 +1031,6 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 Manual §7.2: invalid clip rectangle → reset local coords
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
@@ -1043,12 +1042,9 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    // VDP1 Manual §6.3 CMDPMOD bit 9 (Clip=1) + bit 9 Cmod:
-    // Cmod=0 → draw inside user clip rect
-    // Cmod=1 → draw outside user clip rect (within system clip)
-    // Store Cmod so the compute shader can invert clip logic
-    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1; // 0=inside, 1=outside
-    vdp1_add(cmd, 1);
+    // VDP1 Manual §6.3 Cmod bit 9: outside drawing mode when =1
+    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
+    vdp1_add(cmd, 1); // note: upscale version intentionally calls vdp1_add (not upscale)
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2244,7 +2240,7 @@ int VIDCSVdp1Reset(void)
 static inline int encodeColorOffset(int v) {
     if (v < -128) v = -128;
     if (v >  127) v =  127;
-    return (v + 128) & 0xFF;
+    return (v + 128) & 0xFF; // neutre=128, shader décode: (x/255-0.5)*2 → [-1,+1]
 }
 
 void VIDCSReadColorOffset(void) {
@@ -2260,20 +2256,30 @@ void VIDCSReadColorOffset(void) {
     for (int line = 0; line < _Ygl->rheight; line++) {
         Vdp2 * lVdp2Regs = &Vdp2Lines[line >> line_shift];
 
-        // Lecture des 9 bits signés — bit 8 = signe
-        int b_cor = lVdp2Regs->COBR & 0xFF;
-        int b_cog = lVdp2Regs->COBG & 0xFF;
-        int b_cob = lVdp2Regs->COBB & 0xFF;
-        int a_cor = lVdp2Regs->COAR & 0xFF;
-        int a_cog = lVdp2Regs->COAG & 0xFF;
-        int a_cob = lVdp2Regs->COAB & 0xFF;
+        // Lecture des registres avec sign-extend 9 bits PUIS division par 2 :
+		int a_cor = lVdp2Regs->COAR & 0x1FF;
+		if (a_cor & 0x100) a_cor |= ~0x1FF; // sign-extend 9→32 bits
+		a_cor >>= 1; // ramener dans [-128,+127] pour canal 8 bits
 
-        if (lVdp2Regs->COBR & 0x100) b_cor |= 0xFFFFFF00;
-        if (lVdp2Regs->COBG & 0x100) b_cog |= 0xFFFFFF00;
-        if (lVdp2Regs->COBB & 0x100) b_cob |= 0xFFFFFF00;
-        if (lVdp2Regs->COAR & 0x100) a_cor |= 0xFFFFFF00;
-        if (lVdp2Regs->COAG & 0x100) a_cog |= 0xFFFFFF00;
-        if (lVdp2Regs->COAB & 0x100) a_cob |= 0xFFFFFF00;
+		int a_cog = lVdp2Regs->COAG & 0x1FF;
+		if (a_cog & 0x100) a_cog |= ~0x1FF;
+		a_cog >>= 1;
+
+		int a_cob = lVdp2Regs->COAB & 0x1FF;
+		if (a_cob & 0x100) a_cob |= ~0x1FF;
+		a_cob >>= 1;
+
+		int b_cor = lVdp2Regs->COBR & 0x1FF;
+		if (b_cor & 0x100) b_cor |= ~0x1FF;
+		b_cor >>= 1;
+
+		int b_cog = lVdp2Regs->COBG & 0x1FF;
+		if (b_cog & 0x100) b_cog |= ~0x1FF;
+		b_cog >>= 1;
+
+		int b_cob = lVdp2Regs->COBB & 0x1FF;
+		if (b_cob & 0x100) b_cob |= ~0x1FF;
+		b_cob >>= 1;
 
         // Encodage sur 8 bits centré 128 — suppression du /2
         int colOffB =
@@ -2905,67 +2911,53 @@ static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
   int wl = win[ly] & 0xFFFF;
   int wr = (win[ly] >> 16) & 0xFFFF;
 
+  // win[ly] == 0x000000FF means END < START → window invalid/empty
+  if (win[ly] == 0x000000FF) {
+    // Fenêtre invalide (END < START)
+    // WA_INSIDE → rien n'est dans une fenêtre vide → 0
+    // WA_OUTSIDE → tout est hors d'une fenêtre vide → 1
+    return (area == WA_OUTSIDE) ? 1 : 0;
+  }
+
   if (area == WA_INSIDE) {
-    // Le tile intersecte la zone intérieure de la fenêtre
-    return (x <= wr && (x + w) >= wl);
+    // Le tile doit avoir au moins un pixel DANS la fenêtre pour être visible
+    return (x <= wr && (x + w - 1) >= wl);
   } else {
-    // Au moins un pixel du tile est hors fenêtre
-    return (x < wl || (x + w) > wr);
+    // WA_OUTSIDE : le tile doit avoir au moins un pixel EN DEHORS de la fenêtre
+    return (x < wl || (x + w - 1) > wr);
   }
 }
 
-static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl,
-                                          int x, int y, int w, int h)
+static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
 {
-  int idScreen = ctrl->info.idScreen;
-  int hasWin0  = _Ygl->Win0[idScreen] != 0;
-  int hasWin1  = _Ygl->Win1[idScreen] != 0;
-
-  if (hasWin0 && !hasWin1)
+  if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] == 0)
   {
-    // Une seule fenêtre active : Win0
-    for (int ly = y; ly < y + h; ly++) {
-      if (Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
-                              _Ygl->Win0_mode[idScreen],
-                              _Ygl->win[0]))
-        return 1;
-    }
+    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
     return 0;
   }
-  else if (!hasWin0 && hasWin1)
+  else if (_Ygl->Win0[ctrl->info.idScreen] == 0 && _Ygl->Win1[ctrl->info.idScreen] != 0)
   {
-    // Une seule fenêtre active : Win1
-    for (int ly = y; ly < y + h; ly++) {
-      if (Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
-                              _Ygl->Win1_mode[idScreen],
-                              _Ygl->win[1]))
-        return 1;
-    }
+    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
     return 0;
   }
-  else if (hasWin0 && hasWin1)
+  else if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] != 0)
   {
-    int use_and = (_Ygl->Win_op[idScreen] != 0);
-
-    for (int ly = y; ly < y + h; ly++) {
-      int w0 = Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
-                                   _Ygl->Win0_mode[idScreen],
-                                   _Ygl->win[0]);
-      int w1 = Vdp2CheckWindowLine(&ctrl->info, x, ly, w,
-                                   _Ygl->Win1_mode[idScreen],
-                                   _Ygl->win[1]);
-      /*
-       * OR  (Win_op == 0) : visible si Win0 OU Win1 valide la ligne
-       * AND (Win_op != 0) : visible si Win0 ET Win1 valident la ligne
-       *                     (corrige le bug original qui faisait OR dans les deux cas)
-       */
-      if (use_and ? (w0 && w1) : (w0 || w1))
-        return 1;
-    }
+    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
     return 0;
   }
-
-  // Aucune fenêtre active
   return 0;
 }
 
