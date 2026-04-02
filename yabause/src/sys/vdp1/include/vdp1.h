@@ -131,6 +131,7 @@ typedef struct
   float uBstepx;
   float uBstepy;
   float G[12];
+  int hss;
 } vdp1cmd_struct;
 
 typedef struct
