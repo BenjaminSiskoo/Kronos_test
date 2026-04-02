@@ -1001,33 +1001,33 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
 
-  switch ((cmd->CMDCTRL & 0xF00) >> 8)
-  {
-	case 0x0:
-    if ( CONVERTCMD(&cmd->CMDXA) ||
-         CONVERTCMD(&cmd->CMDYA) ||
-         CONVERTCMD(&cmd->CMDXC) ||
-         CONVERTCMD(&cmd->CMDYC)) {
-           yabsys.vdp1cycles += 70;
-           return -1;
-         }
-    // Reconstruire les 4 coins dès la validation
-    cmd->CMDXB = cmd->CMDXC;
-    cmd->CMDYB = cmd->CMDYA;
-    cmd->CMDXD = cmd->CMDXA;
-    cmd->CMDYD = cmd->CMDYC;
-    break;
-    default:
-      if ( CONVERTCMD(&cmd->CMDXA) ||
-           CONVERTCMD(&cmd->CMDYA) ||
-           CONVERTCMD(&cmd->CMDXB) ||
-           CONVERTCMD(&cmd->CMDYB)) {
-             // damaged data
-             yabsys.vdp1cycles += 70;
-             return -1;
-           }
-       break;
-  }
+	switch ((cmd->CMDCTRL & 0xF00) >> 8)
+	{
+		case 0x0:
+		  // Deux coordonnées : XA,YA = haut-gauche, XC,YC = bas-droit
+		  if ( CONVERTCMD(&cmd->CMDXA) ||
+			   CONVERTCMD(&cmd->CMDYA) ||
+			   CONVERTCMD(&cmd->CMDXC) ||
+			   CONVERTCMD(&cmd->CMDYC)) {
+				 yabsys.vdp1cycles += 70;
+				 return -1;
+			   }
+		  // Reconstruction immédiate des 4 coins (VDP1 Manual §4.4)
+		  cmd->CMDXB = cmd->CMDXC;
+		  cmd->CMDYB = cmd->CMDYA;
+		  cmd->CMDXD = cmd->CMDXA;
+		  cmd->CMDYD = cmd->CMDYC;
+		  break;
+		default:
+		  if ( CONVERTCMD(&cmd->CMDXA) ||
+			   CONVERTCMD(&cmd->CMDYA) ||
+			   CONVERTCMD(&cmd->CMDXB) ||
+			   CONVERTCMD(&cmd->CMDYB)) {
+				 yabsys.vdp1cycles += 70;
+				 return -1;
+			   }
+		   break;
+	}
 
 
   x = cmd->CMDXA;
@@ -1061,11 +1061,9 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
         break;
     }
   switch ((cmd->CMDCTRL & 0xC00) >> 10) {
-	case 0: //none (two-coordinates mode)
-		// Y already handled: YB = YA (top), YD = YC (bottom)
-		cmd->CMDYB = cmd->CMDYA;
-		cmd->CMDYD = cmd->CMDYC;
-	break;
+	case 0: //none (two-coordinates mode) — quad déjà reconstruit dans le switch X
+    // Rien : CMDYB et CMDYD déjà assignés ci-dessus
+    break;
     case 1: //Top
     rh = cmd->CMDYB;
         if (rh < 0) return 0;
