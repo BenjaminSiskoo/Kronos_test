@@ -967,16 +967,23 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   yabsys.vdp1cycles+= getNormalCycles(cmd);
 
   memset(cmd->G, 0, sizeof(float)*12);
-	// Spec §3.3 : pre-clipping à la system clip region si CMDPMOD bit 11 = 0
-	  if (!(cmd->CMDPMOD & 0x800)) {
-		s16 scx2 = (s16)regs->systemclipX2;
-		s16 scy2 = (s16)regs->systemclipY2;
-		// Clip le rectangle englobant — si entièrement hors zone, ne pas dessiner
-		if ((s16)cmd->CMDXA > scx2 || (s16)cmd->CMDYA > scy2 ||
-			(s16)cmd->CMDXC < 0   || (s16)cmd->CMDYC < 0) {
-		  return ret;
-		}
-	  }
+// Spec §6.3 Pre-Clipping: reject only if the entire bounding box is outside
+// system clip area. Partial overlap is handled per-line in the draw engine.
+if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
+  s16 scx2 = (s16)regs->systemclipX2;
+  s16 scy2 = (s16)regs->systemclipY2;
+  // Bounding box of the normal sprite: [XA, XA+w-1] × [YA, YA+h-1]
+  // after localX/Y has been added
+  s16 x1 = (s16)cmd->CMDXA;
+  s16 y1 = (s16)cmd->CMDYA;
+  s16 x2 = (s16)cmd->CMDXC; // set to CMDXA + w - 1 above
+  s16 y2 = (s16)cmd->CMDYC; // set to CMDYA + h - 1 above
+  // Entirely outside → skip
+  if (x1 > scx2 || y1 > scy2 || x2 < 0 || y2 < 0) {
+    return ret;
+  }
+  // Partial overlap: draw engine clips per scanline — fall through
+}
 
   VIDCore->Vdp1NormalSpriteDraw(cmd, ram, regs);
   return ret;
