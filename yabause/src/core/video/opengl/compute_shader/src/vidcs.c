@@ -1982,8 +1982,14 @@ if (rbg->ctrl.regs->RPMD == 0x03)
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
     break;
   case 2:
-    // Parameter A+B switched via coefficients
-    // FIX ME(need to figure out which Parameter is being used)
+    // RPMD=2 : commutation A/B par table de coefficients
+    info->rotatenum = 0;
+    info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
+    // Spec §6.4 : coefenab obligatoire pour les deux paramètres
+    rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;
+    rbg->paraB.coefenab = rbg->ctrl.regs->KTCTL & 0x100;
+    rbg->useb = 1;
+    break;
   case 3:
   default:
     // Parameter A+B switched via rotation parameter window
