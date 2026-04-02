@@ -965,21 +965,28 @@ void vdp1_update_mesh(void) {
 	vdp1_compute_reset();
 }
 
-void startVdp1Render() {
-	if (oldProg == -1) return;
-	glUseProgram(prg_vdp1[oldProg]);
-	if (a_prg_vdp1[oldProg][1] == vdp1_draw_line_start_f_rw)
-		glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
-	else
-		glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-	if (_Ygl->meshmode == IMPROVED_MESH) glBindImageTexture(1, get_vdp1_mesh(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
-	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_cmd_line_list_);
-	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_vdp1ram_);
-	glUniform1i(4, (Vdp1Regs->TVMR & 0x1));
-	glUniform2i(8, Vdp1Regs->systemclipX2, Vdp1Regs->systemclipY2);
-	glUniform4i(9, Vdp1Regs->userclipX1, Vdp1Regs->userclipY1, Vdp1Regs->userclipX2, Vdp1Regs->userclipY2);
-	glUniform1i(11, 0);
-	glUniform1i(12, 0);
+void startVdp1Render(void) {
+    if (oldProg == -1) return;
+    glUseProgram(prg_vdp1[oldProg]);
+    if (a_prg_vdp1[oldProg][1] == vdp1_draw_line_start_f_rw)
+        glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    else
+        glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    if (_Ygl->meshmode == IMPROVED_MESH)
+        glBindImageTexture(1, get_vdp1_mesh(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_cmd_line_list_);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_vdp1ram_);
+    glUniform1i(4, (Vdp1Regs->TVMR & 0x1));
+    glUniform2i(8, Vdp1Regs->systemclipX2, Vdp1Regs->systemclipY2);
+    glUniform4i(9, Vdp1Regs->userclipX1, Vdp1Regs->userclipY1,
+                   Vdp1Regs->userclipX2, Vdp1Regs->userclipY2);
+    // VDP1 Manual §6.3 Cmod (CMDPMOD bit 9):
+    // 0 = inside drawing mode, 1 = outside drawing mode.
+    // Stored per-draw in Vdp1Regs->userclipMode set by VIDCSVdp1UserClipping.
+    // Uniform 15: 0=inside clip, 1=outside clip
+    glUniform1i(15, Vdp1Regs->userclipMode);
+    glUniform1i(11, 0);
+    glUniform1i(12, 0);
 }
 
 static void flushVdp1Render(int nbWork, int nbPoints) {
@@ -1644,18 +1651,20 @@ static int getProgramLine(cmd_poly* cmd_pol, int type) {
 
 
 void startVdp1RenderUpscale() {
-	if (oldProg == -1) return;
-	glUseProgram(prg_vdp1[oldProg]);
-	glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
-	glBindImageTexture(1, get_vdp1_mesh(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-
-	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_vdp1ram_);
-	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ssbo_cmd_list_);
-	glUniform1i(4, (Vdp1Regs->TVMR & 0x1));
-	glUniform2f(7, tex_ratio, tex_ratio);
-	glUniform2i(8, Vdp1Regs->systemclipX2, Vdp1Regs->systemclipY2);
-	glUniform4i(9, Vdp1Regs->userclipX1, Vdp1Regs->userclipY1, Vdp1Regs->userclipX2, Vdp1Regs->userclipY2);
-	glUniform2i(10, 0, 0);
+    if (oldProg == -1) return;
+    glUseProgram(prg_vdp1[oldProg]);
+    glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    glBindImageTexture(1, get_vdp1_mesh(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_vdp1ram_);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ssbo_cmd_list_);
+    glUniform1i(4, (Vdp1Regs->TVMR & 0x1));
+    glUniform2f(7, tex_ratio, tex_ratio);
+    glUniform2i(8, Vdp1Regs->systemclipX2, Vdp1Regs->systemclipY2);
+    glUniform4i(9, Vdp1Regs->userclipX1, Vdp1Regs->userclipY1,
+                   Vdp1Regs->userclipX2, Vdp1Regs->userclipY2);
+    // VDP1 Manual §6.3 Cmod bit 9: outside drawing mode when =1
+    glUniform1i(15, Vdp1Regs->userclipMode);
+    glUniform2i(10, 0, 0);
 }
 
 void endVdp1RenderUpscale() {
