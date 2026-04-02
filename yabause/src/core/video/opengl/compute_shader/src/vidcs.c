@@ -317,13 +317,13 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
   {
   	return;
   }
-	  if (   tile.vertices[0] >= _Ygl->rwidth
-		|| tile.vertices[2] < 0
-		|| tile.vertices[1] >= _Ygl->rheight
-		|| tile.vertices[5] < 0)
-	{
-		return;
-	}
+  if (   tile.vertices[0] >= _Ygl->rwidth   // tile à droite de l'écran
+      || tile.vertices[2] < 0               // tile à gauche de l'écran
+      || tile.vertices[1] >= _Ygl->rheight  // tile en dessous de l'écran
+      || tile.vertices[5] < 0)              // tile au-dessus de l'écran
+  {
+      return;
+  }
 
   if ((_Ygl->Win0[ctrl->info.idScreen] != 0 || _Ygl->Win1[ctrl->info.idScreen] != 0) && ctrl->info.coordincx == 1.0f && ctrl->info.coordincy == 1.0f)
   {                                                 // coordinate inc is not supported yet.
