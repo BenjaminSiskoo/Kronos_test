@@ -4422,6 +4422,12 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 {
   if ((a->BGON & 0x130) != (b->BGON & 0x130)) return 0;
   if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
+  if ((a->CCRNA &0x1F) != (b->CCRNA &0x1F)) return 0;
+  if ((a->SFCCMD &0x3) != (b->SFCCMD &0x3)) return 0;
+  if ((a->RPTA.all) != (b->RPTA.all)) return 0;
+  if ((a->CHCTLA & 0x7F)   != (b->CHCTLA & 0x7F))   return 0; // colornumber/bitmap NBG0=RBG1
+  if ((a->PLSZ & 0xF000)   != (b->PLSZ & 0xF000))   return 0; // plane size ParaB
+  if ((a->PNCN0 & 0xFFFF)  != (b->PNCN0 & 0xFFFF))  return 0; // pattern name control
 //  if ((a->CCCTL & 0xFF01) != (b->CCCTL & 0xFF01)) return 0;
 //  if ((a->BMPNA & 0x7) != (b->BMPNA & 0x7)) return 0;
 //  if ((a->MPOFR & 0x77) != (b->MPOFR & 0x77)) return 0;
@@ -4432,8 +4438,6 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 //  if ((a->SFPRMD & 0x3) != (b->SFPRMD & 0x3)) return 0;
 //  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
 //  if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0;
- if ((a->CCRNA &0x1F) != (b->CCRNA &0x1F)) return 0;
- if ((a->SFCCMD &0x3) != (b->SFCCMD &0x3)) return 0;
 //  if ((a->SFSEL & 0x1) != (b->SFSEL & 0x1)) return 0;
 //  if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
 //  if ((a->LNCLEN & 0x1) != (b->LNCLEN & 0x1)) return 0;
@@ -4444,7 +4448,6 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 //  if ((a->SCRCTL & 0x3F) != (b->SCRCTL & 0x3F)) return 0;
 //  if ((a->LSTA0.all) != (b->LSTA0.all)) return 0;
 //  if ((a->VCSTA.all) != (b->VCSTA.all)) return 0;
-  if ((a->RPTA.all) != (b->RPTA.all)) return 0;
 //  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
 //  if ((a->LCTA.all) != (b->LCTA.all)) return 0;
 //  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
