@@ -1173,12 +1173,12 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
       break;
     case 1:
       ctrl.info.maxzoom = 0.5f;
-      //if( info.coordincx < 0.5f )  info.coordincx = 0.5f;
+      if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
       break;
     case 2:
     case 3:
       ctrl.info.maxzoom = 0.25f;
-      //if( info.coordincx < 0.25f )  info.coordincx = 0.25f;
+      if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
       break;
     }
 
@@ -1487,17 +1487,14 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
-  case 0:
-    ctrl.info.maxzoom = 1.0f;
-    break;
   case 1:
     ctrl.info.maxzoom = 0.5f;
-    //      if( ctrl.info.coordincx < 0.5f )  ctrl.info.coordincx = 0.5f;
+    if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
     break;
   case 2:
   case 3:
     ctrl.info.maxzoom = 0.25f;
-    //      if( ctrl.info.coordincx < 0.25f )  ctrl.info.coordincx = 0.25f;
+    if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
     break;
   }
   if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0)
