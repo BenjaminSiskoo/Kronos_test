@@ -132,6 +132,9 @@ typedef struct
   float uBstepy;
   float G[12];
   int hss;
+  int eos; // VDP1 Manual §4.2 FBCR bit 4: Even/Odd coord select for HSS
+           // 0 = sample even X coords only, 1 = sample odd X coords only
+           // Only meaningful when hss=1 (HSS enabled in CMDPMOD bit 12)
 } vdp1cmd_struct;
 
 typedef struct
