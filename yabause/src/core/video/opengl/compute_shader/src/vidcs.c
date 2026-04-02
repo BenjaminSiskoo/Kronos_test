@@ -1509,9 +1509,10 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
+  // APRÈS — spec §4.1 : NBG1 aussi désactivé si son propre colornumber >= 3
   if ((ctrl.info.priority == 0) ||
-    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4)) {
-      // If NBG0 16M mode is enabled, don't draw
+    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4) ||
+    (ctrl.info.colornumber >= 3)) { // NBG1 ne supporte pas 32768+ couleurs
       return;
     }
 
@@ -4090,7 +4091,13 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
   u32 * line_pixel_data;
   u32 addr;
 
+  // APRÈS — la vérification globale reste valide comme early-out
+  // Le per-layer check se fait dans le shader via le VDP2COLOR encoding
+  // On peut quand même logger les bits actifs pour debug
   if (varVdp2Regs->LNCLEN == 0) return;
+  // Note : LNCLEN bits 0-5 activent line color par layer
+  // Le shader doit utiliser ces bits individuellement
+  // (pas de changement fonctionnel CPU-side nécessaire ici)
 
   line_pixel_data = YglGetLineColorScreenPointer();
   if (line_pixel_data == NULL) {
