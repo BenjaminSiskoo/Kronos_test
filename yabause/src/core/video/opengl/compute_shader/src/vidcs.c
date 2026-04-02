@@ -2718,8 +2718,10 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   Win1_mode[SPRITE] = (varVdp2Regs->WCTLC >> 10) & 0x01;
   WinS_mode[SPRITE] = (varVdp2Regs->WCTLC >> 12) & 0x01;
 
-  Win_op[NBG0] = (varVdp2Regs->WCTLA >> 7) & 0x01;
-  Win_op[NBG1] = (varVdp2Regs->WCTLA >> 15) & 0x01;
+  // VDP2 Manual §8: Win_op bit 0=OR, 1=AND
+  // Vdp2CheckWindowRange: use_and = (Win_op[id] != 0)  ← correct
+  Win_op[NBG0] = (varVdp2Regs->WCTLA >> 7) & 0x01;  // correct: bit 7
+  Win_op[NBG1] = (varVdp2Regs->WCTLA >> 15) & 0x01; // correct: bit 15
   Win_op[NBG2] = (varVdp2Regs->WCTLB >> 7) & 0x01;
   Win_op[NBG3] = (varVdp2Regs->WCTLB >> 15) & 0x01;
   Win_op[RBG0] = (varVdp2Regs->WCTLC >> 7) & 0x01;
@@ -3625,21 +3627,20 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
-  int linemask = 0;
-  switch (ctrl->info.lineinc) {
-  case 1:
-    linemask = 0;
-    break;
-  case 2:
-    linemask = 0x01;
-    break;
-  case 4:
-    linemask = 0x03;
-    break;
-  case 8:
-    linemask = 0x07;
-    break;
-  }
+	// VDP2 Manual §5.3: Line Scroll Table Space (N0LSS bits 5-4 of SCRCTL)
+	// 00=every line, 01=every 2 lines, 10=every 4, 11=every 8
+	// ctrl->info.lineinc is the pattern pixel size (8 or 16), NOT the table spacing.
+	// linescroll_spacing is the actual table index step derived from SCRCTL.
+	int linescroll_spacing = 1;
+	if (ctrl->info.islinescroll) {
+	  int lss = 0;
+	  if (ctrl->info.idScreen == NBG0)
+		lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
+	  else if (ctrl->info.idScreen == NBG1)
+		lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
+	  linescroll_spacing = 1 << lss; // 1, 2, 4, or 8
+	}
+	int linemask = linescroll_spacing - 1; // 0, 1, 3, or 7
   int screenH = _Ygl->rheight;
   // if (_Ygl->interlace == DOUBLE_INTERLACE) screenH <<= 1;
   for (v = 0; v < screenH; v++) {  // ToDo: ctrl->info.coordincy
