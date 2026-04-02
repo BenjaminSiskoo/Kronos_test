@@ -2432,23 +2432,23 @@ static void Vdp2SetResolution(u16 TVMD)
 
   // Vertical Resolution
 // APRÈS — spec §2.1 : case 1 = 240 NTSC / 256 PAL
-  switch ((TVMD >> 4) & 0x3)
-  {
-  case 0:
-    height = 224;
-    break;
-  case 1:
-    // Spec : 240 lignes NTSC, 256 lignes PAL
-    height = yabsys.IsPal ? 256 : 240;
-    break;
-  case 2:
-    // Spec : 224 lignes NTSC, 256 lignes PAL  
-    height = yabsys.IsPal ? 256 : 224;
-    break;
-  default:
-    height = yabsys.IsPal ? 256 : 224;
-    break;
-  }
+	switch ((TVMD >> 4) & 0x3)
+	{
+	case 0:
+	  height = 224;
+	  break;
+	case 1:
+	  // VDP2 Manual §2.1: 240 lines NTSC, 256 lines PAL
+	  height = yabsys.IsPal ? 256 : 240;
+	  break;
+	case 2:
+	  // Reserved/undocumented — fall back to 224 NTSC / 256 PAL (conservative)
+	  height = yabsys.IsPal ? 256 : 224;
+	  break;
+	default:
+	  height = yabsys.IsPal ? 256 : 224;
+	  break;
+	}
 
   hratio = 1;
 
