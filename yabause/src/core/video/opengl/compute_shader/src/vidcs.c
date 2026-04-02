@@ -2013,8 +2013,8 @@ if (rbg->ctrl.regs->RPMD == 0x03)
     info->rotatenum = 0;
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
     // Spec §6.4 : coefenab obligatoire pour les deux paramètres
-    rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;
-    rbg->paraB.coefenab = rbg->ctrl.regs->KTCTL & 0x100;
+    rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;  // RAKTE bit0
+    rbg->paraB.coefenab = 0;  // Interdit en mode 2
     rbg->useb = 1;
     break;
   case 3:
