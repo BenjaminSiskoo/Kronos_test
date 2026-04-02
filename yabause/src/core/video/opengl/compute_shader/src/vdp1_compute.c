@@ -1595,24 +1595,43 @@ static void trace_prog(int progId) {
 	}
 }
 
-static int getProgramLine(cmd_poly* cmd_pol, int type){
-	int progId = DRAW_POLY_MSB_SHADOW_NO_MESH;
-	if((type == DISTORTED) || (type == QUAD)) {
-		progId = DRAW_QUAD_MSB_SHADOW_NO_MESH;
-	}
-	int delta = 0;
-	if ((cmd_pol->CMDPMOD & 0x8000) == 0) {
-		delta += 1;
-		if ((Vdp1Regs->TVMR & 0x1)==0) {
-			// Color calculation is working only on framebuffer 16 bits
-		  delta += (cmd_pol->CMDPMOD & 0x7);
-		}
-	}
+static int getProgramLine(cmd_poly* cmd_pol, int type) {
+    // VDP1 Manual §6.3 CMDPMOD layout:
+    //   bit 15 = MON (MSB On)
+    //   bits 2-0 = Color Calculation (0=replace,1=shadow,2=half-lum,
+    //              3=half-transp,4=gouraud,5=prohibited,6=gouraud+half-lum,
+    //              7=gouraud+half-transp)
+    //   bit 8 = Mesh enable
 
-	if (cmd_pol->CMDPMOD & 0x0100)
-		delta += DRAW_POLY_MSB_SHADOW_MESH - DRAW_POLY_MSB_SHADOW_NO_MESH;
+    int progId = ((type == DISTORTED) || (type == QUAD))
+                 ? DRAW_QUAD_MSB_SHADOW_NO_MESH
+                 : DRAW_POLY_MSB_SHADOW_NO_MESH;
 
-	return progId+delta;
+    int delta = 0;
+
+    if ((cmd_pol->CMDPMOD & 0x8000) == 0) {
+        // MON=0: normal color calculation path
+        delta += 1; // skip MSB_SHADOW slot → REPLACE is the base
+
+        if ((Vdp1Regs->TVMR & 0x1) == 0) {
+            // 16bpp: full color calculation available per VDP1 Manual §6.3
+            int cc = cmd_pol->CMDPMOD & 0x7;
+            // cc=5 is prohibited (UNSUPPORTED slot), pass through anyway —
+            // the UNSUPPORTED slot has NULL shaders and will be skipped in
+            // drawPolygonLine(). All other values 0-7 map 1:1 to the enum.
+            delta += cc;
+        }
+        // 8bpp: VDP1 Manual §6.3 "color calculation cannot be performed when
+        // there are 8 bits/pixel, so replace should be specified."
+        // delta stays at 1 → selects REPLACE. Correct per spec.
+    }
+    // MON=1: stays at base (MSB_SHADOW). Correct per spec.
+
+    // VDP1 Manual §6.3 bit 8 = Mesh enable
+    if (cmd_pol->CMDPMOD & 0x0100)
+        delta += DRAW_POLY_MSB_SHADOW_MESH - DRAW_POLY_MSB_SHADOW_NO_MESH;
+
+    return progId + delta;
 }
 
 
