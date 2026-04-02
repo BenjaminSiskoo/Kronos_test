@@ -79,7 +79,7 @@ static void checkFBSync();
 
 int CONVERTCMD(s32 *A) {
   s32 toto = (*A);
-  if ((((*A)>>12)&0x1)^(((*A)>>11)&0x1) != 0) {
+  if ((((*A)>>12)&0x1) ^ ((((*A)>>11)&0x1) != 0)) {
     return 1;
   }
   if (((*A)>>11)&0x1) (*A) |= 0xF800;
@@ -270,9 +270,8 @@ u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) 
 void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return; 
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
@@ -290,7 +289,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr
    u32 pixIdx = addr>>1;
    // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
   buf[pixIdx] = (val&0xFFFF)|0xFF000000;
@@ -308,7 +307,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr
    u32 pixIdx = addr>>1;
    // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, addr, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
   buf[pixIdx] = ((val>>16)&0xFFFF)|0xFF000000;
@@ -325,10 +324,9 @@ void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr
 
 u8 FASTCALL Vdp1FrameBuffer8bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
+   u32 pixIdx = addr;
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
@@ -340,10 +338,9 @@ u8 FASTCALL Vdp1FrameBuffer8bReadByte(SH2_struct *context, u8* mem, u32 addr) {
 
 u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
+   u32 pixIdx = addr;
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
@@ -357,10 +354,9 @@ u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
 
 u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
+   u32 pixIdx = addr;
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 4;
    if (context != NULL) context->cycles += 4;
@@ -376,10 +372,9 @@ u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
 
 void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
+   u32 pixIdx = addr;     // 8bpp : 1 octet = 1 pixel
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return;   // void : return sans valeur
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
@@ -394,10 +389,10 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr,
 
 void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
+   u32 pixIdx = addr; 
    // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
   buf[pixIdx] = ((val>>8)&0xFF)|0xFF000000;
@@ -414,10 +409,10 @@ void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr,
 
 void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr>>1;
+   u32 pixIdx = addr; 
    // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
+   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
   buf[pixIdx] = ((val>>24)&0xFF)|0xFF000000;
@@ -1127,7 +1122,7 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
       cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
     }
   }
-
+  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
   VIDCore->Vdp1ScaledSpriteDraw(cmd, ram, regs);
   return ret;
 }
@@ -2944,11 +2939,7 @@ static int getVdp1ErasePixelLine() {
   int area_w = limits[2] - limits[0];
   int area_h = limits[3] - limits[1];
 
-  int nbPix = ((limits[2] - limits[0]) * (limits[3] - limits[1])) 
-              >> (Vdp1Regs->TVMR & 0x1);
-
-  // Spec : 2 pixels/cycle en 16bpp, 1 pixel/cycle en 8bpp
-  // On calcule le nombre de cycles nécessaires
+  // Spec §5.3 : 2 pixels/cycle en 16bpp, 1 pixel/cycle en 8bpp
   int pixels_per_cycle = (Vdp1Regs->TVMR & 0x1) ? 1 : 2;
   int total_cycles = (area_w * area_h) / pixels_per_cycle;
 
