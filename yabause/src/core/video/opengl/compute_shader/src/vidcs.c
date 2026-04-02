@@ -2223,74 +2223,66 @@ int VIDCSVdp1Reset(void)
   return 0;
 }
 
+static inline int encodeColorOffset(int v) {
+    if (v < -128) v = -128;
+    if (v >  127) v =  127;
+    return (v + 128) & 0xFF;
+}
+
 void VIDCSReadColorOffset(void) {
-  u8 offset[enBGMAX+1] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x1, 0x40, 0x20};
-  int line_shift = 0;
-  if (_Ygl->rheight > 256) {
-    line_shift = 1;
-  }
-  else {
-    line_shift = 0;
-  }
-
-  u32 * linebuf = YglGetPerlineBuf();
-  for (int line = 0; line < _Ygl->rheight; line++) {
-    Vdp2 * lVdp2Regs = &Vdp2Lines[line >> line_shift];
-    int b_cor = lVdp2Regs->COBR & 0xFF;
-    int b_cog = lVdp2Regs->COBG & 0xFF;
-    int b_cob = lVdp2Regs->COBB & 0xFF;
-    int a_cor = lVdp2Regs->COAR & 0xFF;
-    int a_cog = lVdp2Regs->COAG & 0xFF;
-    int a_cob = lVdp2Regs->COAB & 0xFF;
-    if (lVdp2Regs->COBR & 0x100)
-      b_cor |= 0xFFFFFF00;
-    if (lVdp2Regs->COBG & 0x100)
-      b_cog |= 0xFFFFFF00;
-    if (lVdp2Regs->COBB & 0x100)
-      b_cob |= 0xFFFFFF00;
-    if (lVdp2Regs->COAR & 0x100)
-      a_cor |= 0xFFFFFF00;
-    if (lVdp2Regs->COAG & 0x100)
-      a_cog |= 0xFFFFFF00;
-    if (lVdp2Regs->COAB & 0x100)
-      a_cob |= 0xFFFFFF00;
-	#define CLAMP_COLOR_OFFSET(v) (((v) < -128) ? 0 : (((v) > 127) ? 255 : (int)(128 + (v))))
-
-	int colOffB =
-	   (CLAMP_COLOR_OFFSET(b_cob) << 16)
-	| (CLAMP_COLOR_OFFSET(b_cog) << 8)
-	| (CLAMP_COLOR_OFFSET(b_cor) << 0);
-	int colOffA =
-	   (CLAMP_COLOR_OFFSET(a_cob) << 16)
-	| (CLAMP_COLOR_OFFSET(a_cog) << 8)
-	| (CLAMP_COLOR_OFFSET(a_cor) << 0);
-
-	#undef CLAMP_COLOR_OFFSET
-    for(int id = 0; id<enBGMAX+1; id++){
-      if (isEnabled(id,lVdp2Regs) == 0) {
-        linebuf[line+512*id] = 0x0;
-      } else {
-        if (lVdp2Regs->CLOFEN & offset[id]) {
-          // color offset enable
-          if (lVdp2Regs->CLOFSL & offset[id])
-          {
-            // color offset B
-            linebuf[line+512*id] = colOffB;
-          }
-          else
-          {
-            // color offset A
-            linebuf[line+512*id] = colOffA;
-          }
-        }
-        else {
-          linebuf[line+512*id] = 0x00808080;
-        }
-      }
+    u8 offset[enBGMAX+1] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x1, 0x40, 0x20};
+    int line_shift = 0;
+    if (_Ygl->rheight > 256) {
+        line_shift = 1;
+    } else {
+        line_shift = 0;
     }
-  }
-  YglSetPerlineBuf(linebuf);
 
+    u32 * linebuf = YglGetPerlineBuf();
+    for (int line = 0; line < _Ygl->rheight; line++) {
+        Vdp2 * lVdp2Regs = &Vdp2Lines[line >> line_shift];
+
+        // Lecture des 9 bits signés — bit 8 = signe
+        int b_cor = lVdp2Regs->COBR & 0xFF;
+        int b_cog = lVdp2Regs->COBG & 0xFF;
+        int b_cob = lVdp2Regs->COBB & 0xFF;
+        int a_cor = lVdp2Regs->COAR & 0xFF;
+        int a_cog = lVdp2Regs->COAG & 0xFF;
+        int a_cob = lVdp2Regs->COAB & 0xFF;
+
+        if (lVdp2Regs->COBR & 0x100) b_cor |= 0xFFFFFF00;
+        if (lVdp2Regs->COBG & 0x100) b_cog |= 0xFFFFFF00;
+        if (lVdp2Regs->COBB & 0x100) b_cob |= 0xFFFFFF00;
+        if (lVdp2Regs->COAR & 0x100) a_cor |= 0xFFFFFF00;
+        if (lVdp2Regs->COAG & 0x100) a_cog |= 0xFFFFFF00;
+        if (lVdp2Regs->COAB & 0x100) a_cob |= 0xFFFFFF00;
+
+        // Encodage sur 8 bits centré 128 — suppression du /2
+        int colOffB =
+             (encodeColorOffset(b_cob) << 16)
+           | (encodeColorOffset(b_cog) << 8)
+           | (encodeColorOffset(b_cor) << 0);
+        int colOffA =
+             (encodeColorOffset(a_cob) << 16)
+           | (encodeColorOffset(a_cog) << 8)
+           | (encodeColorOffset(a_cor) << 0);
+
+        for (int id = 0; id < enBGMAX+1; id++) {
+            if (isEnabled(id, lVdp2Regs) == 0) {
+                linebuf[line + 512*id] = 0x0;
+            } else {
+                if (lVdp2Regs->CLOFEN & offset[id]) {
+                    if (lVdp2Regs->CLOFSL & offset[id])
+                        linebuf[line + 512*id] = colOffB;
+                    else
+                        linebuf[line + 512*id] = colOffA;
+                } else {
+                    linebuf[line + 512*id] = 0x00808080;
+                }
+            }
+        }
+    }
+    YglSetPerlineBuf(linebuf);
 }
 
 //////////////////////////////////////////////////////////////////////////////
