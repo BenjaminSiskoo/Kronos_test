@@ -2238,9 +2238,13 @@ int VIDCSVdp1Reset(void)
 }
 
 static inline int encodeColorOffset(int v) {
-    if (v < -128) v = -128;
-    if (v >  127) v =  127;
-    return (v + 128) & 0xFF;
+    // VDP2 Manual §13: color offset is 9-bit signed, range -255 to +255
+    // Encode to 0..510 range centered at 255 for shader consumption
+    if (v < -255) v = -255;
+    if (v >  255) v =  255;
+    // Map [-255,+255] → [0,510], store in 9-bit field
+    // The shader decodes as: actual = encoded - 255
+    return (v + 255) & 0x1FF;
 }
 
 void VIDCSReadColorOffset(void) {
@@ -2272,10 +2276,12 @@ void VIDCSReadColorOffset(void) {
         if (lVdp2Regs->COAB & 0x100) a_cob |= 0xFFFFFF00;
 
         // Encodage sur 8 bits centré 128 — suppression du /2
-        int colOffB =
-             (encodeColorOffset(b_cob) << 16)
-           | (encodeColorOffset(b_cog) << 8)
-           | (encodeColorOffset(b_cor) << 0);
+		// Dans VIDCSReadColorOffset, remplacer le packing sur 8 bits par 9 bits
+		// Attention : le buffer linebuf doit avoir assez de place (32 bits par entrée)
+		int colOffB =
+			 (encodeColorOffset(b_cob) << 18)   // 9 bits pour B
+		   | (encodeColorOffset(b_cog) << 9)    // 9 bits pour G
+		   | (encodeColorOffset(b_cor) << 0);   // 9 bits pour R
         int colOffA =
              (encodeColorOffset(a_cob) << 16)
            | (encodeColorOffset(a_cog) << 8)
