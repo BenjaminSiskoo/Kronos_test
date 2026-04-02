@@ -1967,6 +1967,11 @@ if (rbg->ctrl.regs->RPMD == 0x03)
 
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
   rbg->paraB.screenover = (rbg->ctrl.regs->PLSZ >> 14) & 0x03;
+  
+  // Spec §6.5 : screenover=1 → zone hors écran = transparente
+  // On initialise over_pattern_name à une sentinelle reconnaissable
+  if (rbg->paraA.screenover == 1) rbg->paraA.over_pattern_name = 0xFFFF;
+  if (rbg->paraB.screenover == 1) rbg->paraB.over_pattern_name = 0xFFFF;
 
   // Figure out which Rotation Parameter we're uqrt
   switch (rbg->ctrl.regs->RPMD & 0x3)
