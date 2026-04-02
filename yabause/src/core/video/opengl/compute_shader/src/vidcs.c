@@ -1518,11 +1518,10 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
   // APRÈS — spec §4.1 : NBG1 aussi désactivé si son propre colornumber >= 3
-  if ((ctrl.info.priority == 0) ||
-    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4) ||
-    (ctrl.info.colornumber >= 3)) { // NBG1 ne supporte pas 32768+ couleurs
-      return;
-    }
+		if ((ctrl.info.priority == 0) ||
+			(ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4)) {
+		  return;
+		}
 
   ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL >> 8, ctrl.regs->LSTA1.all);
   ctrl.info.lineinfo = lineNBG1;
@@ -2292,8 +2291,8 @@ void VIDCSReadColorOffset(void) {
            | (encodeColorOffset(a_cor) << 0);
 
         for (int id = 0; id < enBGMAX+1; id++) {
-            if (isEnabled(id, lVdp2Regs) == 0) {
-                linebuf[line + 512*id] = 0x0;
+			if (isEnabled(id, lVdp2Regs) == 0) {
+				linebuf[line + 512*id] = 0x00808080;
             } else {
                 if (lVdp2Regs->CLOFEN & offset[id]) {
                     if (lVdp2Regs->CLOFSL & offset[id])
@@ -4107,10 +4106,11 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
   // APRÈS — la vérification globale reste valide comme early-out
   // Le per-layer check se fait dans le shader via le VDP2COLOR encoding
   // On peut quand même logger les bits actifs pour debug
-  if (varVdp2Regs->LNCLEN == 0) return;
-  // Note : LNCLEN bits 0-5 activent line color par layer
+   // Note : LNCLEN bits 0-5 activent line color par layer
   // Le shader doit utiliser ces bits individuellement
   // (pas de changement fonctionnel CPU-side nécessaire ici)
+  if (varVdp2Regs->LNCLEN == 0) return;
+
 
   line_pixel_data = YglGetLineColorScreenPointer();
   if (line_pixel_data == NULL) {
