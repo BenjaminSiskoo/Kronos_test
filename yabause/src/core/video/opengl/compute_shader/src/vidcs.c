@@ -1841,13 +1841,17 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
 
-// APRÈS — spec §4.1 : NBG3 désactivé si NBG0 >= mode 2048 couleurs (colornumber >= 2)
-  if ((ctrl.info.priority == 0) ||
-    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
-    (ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
-    {
-      return;
-    }
+	// APRÈS — spec §4.1 : NBG3 désactivé si NBG0 >= mode 2048 couleurs (colornumber >= 2)
+	// VDP2 Manual §4.1: NBG3 is disabled when:
+	// - NBG0 has >= 2048 colors (colornumber >= 2)
+	// - NBG1 has >= 2048 colors (colornumber >= 2, i.e. mode 2)
+	// NBG1 max is 2048 colors (colornumber=2), so >=2 is equivalent to ==2 for NBG1
+	if ((ctrl.info.priority == 0) ||
+		(ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
+		(ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 == 2)) {
+	  // NBG1 can only reach colornumber==2 (2048 colors) as its maximum
+	  return;
+	}
 
   ctrl.info.islinescroll = 0;
   ctrl.info.linescrolltbl = 0;
