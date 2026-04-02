@@ -446,13 +446,14 @@ int Vdp1Init(void) {
    Vdp1Regs->FBCR = 0;
    Vdp1Regs->PTMR = 0;
 
-   Vdp1Regs->userclipX1=0;
-   Vdp1Regs->userclipY1=0;
-   Vdp1Regs->userclipX2=1024;
-   Vdp1Regs->userclipY2=512;
+   Vdp1Regs->userclipX1 = 0;
+   Vdp1Regs->userclipY1 = 0;
+   Vdp1Regs->userclipX2 = 1024;
+   Vdp1Regs->userclipY2 = 512;
+   Vdp1Regs->userclipMode = 0; // VDP1 Manual §6.3 Cmod: default = inside drawing mode
 
-   Vdp1Regs->localX=0;
-   Vdp1Regs->localY=0;
+   Vdp1Regs->localX = 0;
+   Vdp1Regs->localY = 0;
 
    VDP1_MASK = 0xFFFF;
 
@@ -2931,39 +2932,40 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-  // TVMR bit 0: 0 = 16bpp (8px/unit), 1 = 8bpp (16px/unit)
-  // VDP1 Manual §4.4 Table: X1 = reg × 8 (16bpp) or reg × 16 (8bpp)
-  int is8bpp = (Vdp1Regs->TVMR & 0x1);
-  int xunit  = is8bpp ? 16 : 8;
+    // VDP1 Manual §4.4 EWLR/EWRR coordinate encoding:
+    //   16bpp: X unit = 8 pixels  → X1 = ((EWLR >> 9) & 0x3F) * 8
+    //                               X3 = ((EWRR >> 9) & 0x7F) * 8 - 1
+    //    8bpp: X unit = 16 pixels → X1 = ((EWLR >> 9) & 0x3F) * 16
+    //                               X3 = ((EWRR >> 9) & 0x7F) * 16 - 1
+    //   Y: always in 1-line units (register value used directly)
+    //   Double-interlace: Y register stores half the actual coord,
+    //   but we use lines for cycle counting, so no adjustment needed here.
+    int is8bpp = (Vdp1Regs->TVMR & 0x1);
+    int xunit  = is8bpp ? 16 : 8;
 
-  // Double-interlace: Y coords are halved in register, actual = reg value (no shift needed here)
-  // Manual §4.4: "the register setting for Y is doubled during double interlace,
-  // so the actual coordinate value should be set to one half"
-  // => reg already encodes the halved value, so Y is used as-is
-  int interlace_shift = (Vdp1Regs->FBCR & 0x8) ? 0 : 0; // no shift needed
+    int x1 = ((Vdp1Regs->EWLR >> 9) & 0x3F) * xunit;
+    int y1 =  (Vdp1Regs->EWLR) & 0x1FF;
+    int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
+    int y3 =  (Vdp1Regs->EWRR) & 0x1FF;
 
-  int x1 = ((Vdp1Regs->EWLR >> 9) & 0x3F) * xunit;
-  int y1 = (Vdp1Regs->EWLR) & 0x1FF;
-  int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
-  int y3 = (Vdp1Regs->EWRR) & 0x1FF;
+    // VDP1 Manual §4.4: "If X1 >= X3 or Y1 > Y3, erase/write is performed
+    // for 1 dot only" → treat as no significant erase time
+    if ((x3 < 0) || (y3 == 0))    return 0;
+    if ((x1 >= x3) || (y1 > y3))  return 0;
 
-  // Prohibited or invalid values
-  if ((x3 < 0) || (y3 == 0)) return 0;
-  if ((x1 >= x3) || (y1 > y3)) return 0;
+    int area_w = x3 - x1 + 1;
+    int area_h = y3 - y1 + 1;
 
-  int area_w = x3 - x1 + 1;
-  int area_h = y3 - y1 + 1;
+    // VDP1 Manual §4.4: pixels required = (X3-X1) × (Y3-Y1+1) × 8  [16bpp]
+    // Erase/write rate: 2 pixels/cycle in 16bpp, 1 pixel/cycle in 8bpp
+    int pixels_per_cycle = is8bpp ? 1 : 2;
+    int total_cycles = (area_w * area_h) / pixels_per_cycle;
 
-  // Manual §4.4: pixels required = (X3 - X1) × (Y3 - Y1 + 1) × 8  [for 16bpp]
-  // Erase/write: 2 pixels per cycle in 16bpp, 1 pixel/cycle in 8bpp
-  // The manual formula gives total pixel count — divide by pixels_per_cycle for cycles
-  int pixels_per_cycle = is8bpp ? 1 : 2;
-  int total_cycles = (area_w * area_h) / pixels_per_cycle;
+    int cycles_per_line = getVdp1CyclesPerLine();
+    if (cycles_per_line <= 0) return 0;
 
-  int cycles_per_line = getVdp1CyclesPerLine();
-  if (cycles_per_line <= 0) return 0;
-
-  return (total_cycles + cycles_per_line - 1) / cycles_per_line; // ceil division
+    // Ceiling division: number of lines needed to complete the erase
+    return (total_cycles + cycles_per_line - 1) / cycles_per_line;
 }
 
 static void Vdp1EraseWrite(int id){
