@@ -1497,8 +1497,10 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
     if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
     break;
   }
-  if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0)
-    ctrl.info.coordincy = 1.0f;
+  // APRÈS — cohérence avec le traitement ZMXN1 : 0 = invalide = retour
+  if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) {
+    return; // valeur de zoom Y invalide, identique au traitement ZMXN1
+  }
   else
     ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN1.all & 0x7FF00);
 
