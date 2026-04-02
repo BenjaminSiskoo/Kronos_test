@@ -1717,7 +1717,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
     ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
 
 
-  ctrl.info.coloroffset = ctrl.regs->CRAOFA & 0x700;
+  ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x700);
 
   ctrl.info.linecheck_mask = 0x04;
   ctrl.info.coordincx = ctrl.info.coordincy = 1;
@@ -1820,7 +1820,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
     ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
 
 
-  ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x7000) >> 4;
+  ctrl.info.coloroffset = ((ctrl.regs->CRAOFA & 0x7000) >> 4);
 
   ctrl.info.linecheck_mask = 0x08;
   ctrl.info.coordincx = ctrl.info.coordincy = 1;
@@ -1828,9 +1828,10 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
 
+// APRÈS — spec §4.1 : NBG3 désactivé si NBG0 >= mode 2048 couleurs (colornumber >= 2)
   if ((ctrl.info.priority == 0) ||
-    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4) || // If NBG0 16M mode is enabled, don't draw
-    (ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2)) // If NBG1 2048/32786 is enabled, don't draw
+    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
+    (ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
     {
       return;
     }
@@ -4355,18 +4356,21 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 {
   if ((a->BGON & 0x1010) != (b->BGON & 0x1010)) return 0;
   if ((a->PRIR & 0x7) != (b->PRIR & 0x7)) return 0;
-//  if ((a->CCCTL & 0xFF10) != (b->CCCTL & 0xFF10)) return 0;
+  if ((a->RPTA.all) != (b->RPTA.all)) return 0;
+  if ((a->RPMD & 0x3) != (b->RPMD & 0x3)) return 0;
+  // Alpha/transparence RBG0 : CCRR bits 4-0, CCCTL bit 12
+  if ((a->CCRR & 0x1F) != (b->CCRR & 0x1F)) return 0;
+  if ((a->CCCTL & 0x0100) != (b->CCCTL & 0x0100)) return 0;
+  // Coefficient table
+  if ((a->KTCTL & 0x0101) != (b->KTCTL & 0x0101)) return 0;
 //  if ((a->SFPRMD & 0x300) != (b->SFPRMD & 0x300)) return 0;
 //  if ((a->CHCTLB & 0x7700) != (b->CHCTLB & 0x7700)) return 0;
 //  if ((a->WCTLC & 0xFF) != (b->WCTLC & 0xFF)) return 0;
-  if ((a->RPTA.all) != (b->RPTA.all)) return 0;
 //  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
 //  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
-//  if ((a->KTCTL & 0xFFFF) != (b->KTCTL & 0xFFFF)) return 0;
 //  if ((a->PLSZ & 0xFF00) != (b->PLSZ & 0xFF00)) return 0;
 //  if ((a->KTAOF & 0x707) != (b->KTAOF & 0x707)) return 0;
 //  if ((a->MPOFR & 0x77) != (b->MPOFR & 0x77)) return 0;
-  if ((a->RPMD & 0x3) != (b->RPMD & 0x3)) return 0;
 //  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
 //  if ((a->BMPNB & 0x7) != (b->BMPNB & 0x7)) return 0;
 //  if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0;
