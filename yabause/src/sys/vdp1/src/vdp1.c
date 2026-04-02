@@ -2919,33 +2919,41 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-  // TVMR bit 0 : 0 = 16bpp (1 pixel = 16b), 1 = 8bpp (1 pixel = 8b)
-  int shift = ((Vdp1Regs->TVMR & 0x1) == 1) ? 4 : 3;
-  // Double-interlace : Y coords doublées (FBCR bit 3)
-  int interlace_shift = (Vdp1Regs->FBCR & 0x8) ? 1 : 0;
+  // TVMR bit 0: 0 = 16bpp (8px/unit), 1 = 8bpp (16px/unit)
+  // VDP1 Manual §4.4 Table: X1 = reg × 8 (16bpp) or reg × 16 (8bpp)
+  int is8bpp = (Vdp1Regs->TVMR & 0x1);
+  int xunit  = is8bpp ? 16 : 8;
 
-  int limits[4] = {0};
-  limits[0] = ((Vdp1Regs->EWLR >> 9) & 0x3F) << shift;
-  limits[1] = ((Vdp1Regs->EWLR) & 0x1FF) >> interlace_shift; //TODO: manage double interlace
-  limits[2] = (((Vdp1Regs->EWRR >> 9) & 0x7F) << shift) - 1;
-  limits[3] = ((Vdp1Regs->EWRR) & 0x1FF) >> interlace_shift; //TODO: manage double interlace
+  // Double-interlace: Y coords are halved in register, actual = reg value (no shift needed here)
+  // Manual §4.4: "the register setting for Y is doubled during double interlace,
+  // so the actual coordinate value should be set to one half"
+  // => reg already encodes the halved value, so Y is used as-is
+  int interlace_shift = (Vdp1Regs->FBCR & 0x8) ? 0 : 0; // no shift needed
 
-  //Prohibited value - Example Quake first screens
-  if ((limits[2] == -1) || (limits[3] == 0)) return 0;
-  if ((limits[0] >= limits[2]) || (limits[1] > limits[3])) return 0; //No erase write when invalid area - Should be done only for one dot but no idea of which dot it shall be
+  int x1 = ((Vdp1Regs->EWLR >> 9) & 0x3F) * xunit;
+  int y1 = (Vdp1Regs->EWLR) & 0x1FF;
+  int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
+  int y3 = (Vdp1Regs->EWRR) & 0x1FF;
 
-  int area_w = limits[2] - limits[0];
-  int area_h = limits[3] - limits[1];
+  // Prohibited or invalid values
+  if ((x3 < 0) || (y3 == 0)) return 0;
+  if ((x1 >= x3) || (y1 > y3)) return 0;
 
-  // Spec §5.3 : 2 pixels/cycle en 16bpp, 1 pixel/cycle en 8bpp
-  int pixels_per_cycle = (Vdp1Regs->TVMR & 0x1) ? 1 : 2;
+  int area_w = x3 - x1 + 1;
+  int area_h = y3 - y1 + 1;
+
+  // Manual §4.4: pixels required = (X3 - X1) × (Y3 - Y1 + 1) × 8  [for 16bpp]
+  // Erase/write: 2 pixels per cycle in 16bpp, 1 pixel/cycle in 8bpp
+  // The manual formula gives total pixel count — divide by pixels_per_cycle for cycles
+  int pixels_per_cycle = is8bpp ? 1 : 2;
   int total_cycles = (area_w * area_h) / pixels_per_cycle;
 
   int cycles_per_line = getVdp1CyclesPerLine();
   if (cycles_per_line <= 0) return 0;
 
-  return (total_cycles + cycles_per_line - 1) / cycles_per_line; // ceil
+  return (total_cycles + cycles_per_line - 1) / cycles_per_line; // ceil division
 }
+
 static void Vdp1EraseWrite(int id){
   lastHash = -1;
   _Ygl->shallVdp1Erase[id] = 1;
