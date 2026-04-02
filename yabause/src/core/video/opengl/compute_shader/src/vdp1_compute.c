@@ -822,9 +822,12 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	int maxy = 0;
 	point A,B;
 
-	if ((Vdp1Regs->TVMR & 0x1)!=0) {
-		// Color calculation is working only on framebuffer 16 bits
-		cmd->CMDPMOD &= ~0x7; //Force a replace on framebuffer 8 bits
+	if ((Vdp1Regs->TVMR & 0x1) != 0) {
+		// VDP1 Manual §6.3: "color calculation cannot be performed when there are
+		// 8 bits/pixel, so replace should be specified."
+		// Force CC bits (2-0) to 0 (=replace). MON bit (15) and Mesh bit (8)
+		// are unaffected and remain valid in 8bpp mode.
+		cmd->CMDPMOD &= ~0x7U;
 	}
 
 	if (_Ygl->vdp1IsNotEmpty[_Ygl->drawframe] != -1) {
