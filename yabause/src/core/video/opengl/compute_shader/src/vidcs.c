@@ -4277,8 +4277,6 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
   int i;
   info->enable = 0;
 
-  info->cellh = 256 << shift;
-
 // RBG1 mode
   info->enable = ((rbg->ctrl.regs->BGON & 0x20)!=0);
   // RBG1 shall not work without RGB0 but it looks like the HW is able to... MechWarrior 2 - 31st Century Combat - Arcade Combat Edition is using this capability...
