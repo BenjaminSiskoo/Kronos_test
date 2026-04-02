@@ -694,6 +694,8 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 			{
 				float dl = (float)((idl)+0.5)/(float)(li);
 				float dr = (float)((idr)+0.5)/(float)(ri);
+				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
 					.CMDSRCA = cmd->CMDSRCA,
@@ -703,7 +705,7 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 					.CMDXB = dataR[idr].x,
 					.CMDYB = dataR[idr].y,
 					.CMDCOLR = cmd->CMDCOLR,
-					.misc = (cmd->flip & 0x3),
+					.misc = (cmd->flip & 0x3) | eos_bit,
 					.idx = i
 				};
 				// printf("(%d) %d,%d => %d,%d\n",i,
@@ -739,6 +741,8 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 			{
 				float dl = (float)((idl)+0.5)/(float)(li);
 				float dr = (float)((idr)+0.5)/(float)(ri);
+				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
 					.CMDSRCA = cmd->CMDSRCA,
@@ -748,7 +752,7 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 					.CMDXB = dataR[idr].x,
 					.CMDYB = dataR[idr].y,
 					.CMDCOLR = cmd->CMDCOLR,
-					.misc = (cmd->flip & 0x3),
+					.misc = (cmd->flip & 0x3) | eos_bit,
 					.idx = i
 				};
 				// printf("(%d) %d,%d => %d,%d\n",i,
@@ -792,6 +796,8 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 	int rx = (dx < dy)?0:(((B.x<A.x)?1:-1) + 2)&0x3;
 	int ry = (dx < dy)?0:(((B.y<A.y)?1:-1) + 2)&0x3;
 	int s = (ry<<2)|rx;
+	u32 eos_bit_line = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+
 	cmd_pol[0] = (cmd_poly){
 		.CMDPMOD = cmd->CMDPMOD,
 		.CMDSRCA = cmd->CMDSRCA,
@@ -801,8 +807,7 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 		.CMDXB = B.x,
 		.CMDYB = B.y,
 		.CMDCOLR = cmd->CMDCOLR,
-		.misc = cmd->flip & 0x3,
-		.misc = (cmd->flip & 0x3)|((s&0xF)<<6)|((s&0xF)<<2),
+		.misc = (cmd->flip & 0x3) | ((s & 0xF) << 6) | ((s & 0xF) << 2) | eos_bit_line,
 		.idx = 0
 	};
 	cmd_pol[0].G[0] = MIX(cmd->G[0], cmd->G[9], dl);
