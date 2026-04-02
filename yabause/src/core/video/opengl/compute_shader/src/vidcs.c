@@ -890,7 +890,7 @@ void VIDCSVdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 Manual §3.2 : reset localX/Y uniquement si rectangle invalide
+    // VDP1 Manual §7.2: invalid clip rectangle → reset local coords
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
@@ -902,7 +902,12 @@ void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    vdp1_add(cmd,1);
+    // VDP1 Manual §6.3 CMDPMOD bit 9 (Clip=1) + bit 9 Cmod:
+    // Cmod=0 → draw inside user clip rect
+    // Cmod=1 → draw outside user clip rect (within system clip)
+    // Store Cmod so the compute shader can invert clip logic
+    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1; // 0=inside, 1=outside
+    vdp1_add(cmd, 1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1026,7 +1031,7 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 Manual §3.2 : reset localX/Y uniquement si rectangle invalide
+    // VDP1 Manual §7.2: invalid clip rectangle → reset local coords
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
@@ -1038,7 +1043,12 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    vdp1_add(cmd,1);
+    // VDP1 Manual §6.3 CMDPMOD bit 9 (Clip=1) + bit 9 Cmod:
+    // Cmod=0 → draw inside user clip rect
+    // Cmod=1 → draw outside user clip rect (within system clip)
+    // Store Cmod so the compute shader can invert clip logic
+    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1; // 0=inside, 1=outside
+    vdp1_add(cmd, 1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
