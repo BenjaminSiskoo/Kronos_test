@@ -878,15 +878,16 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	}
 	if (clipcmd == 0) {
 		if (_Ygl->meshmode != ORIGINAL_MESH) {
-			//Hack for Improved MESH
-			//Games like J.League Go Go Goal or Sailor Moon are using MSB shadow with VDP2 in RGB/Palette mode
-			//In that case, the pixel is considered as RGB by the VDP2 displays it a black surface
-			// To simualte a transparent shadow, on improved mesh, we force the shadow mode and the usage of mesh
-			if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20)!=0)) {
-				//MSB is set to be used but VDP2 do not use it. Consider as invalid and remove the MSB
-				//Use shadow mode with Mesh to simulate the final effect
-				cmd->CMDPMOD &= ~0x8007;
-				cmd->CMDPMOD |= 0x101; //Use shadow mode and mesh then
+			// VDP1 Manual §6.3 + VDP2 Manual §9.1:
+			// When MON=1 (bit 15) is set but VDP2 SPCTL bit 5=1 (sprite color mode
+			// uses RGB), the MSB is NOT interpreted as shadow/window by VDP2.
+			// It would display as a black solid surface instead of transparency.
+			// Workaround for IMPROVED_MESH mode: replace MSB_ON + any CC with
+			// shadow (CC=001) + Mesh to approximate the visual transparency effect.
+			// Games: J.League Go Go Goal, Sailor Moon.
+			if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
+				cmd->CMDPMOD &= ~0x8007U; // clear MON (bit15) + CC bits (2-0)
+				cmd->CMDPMOD |= 0x0101U;  // set Mesh (bit8) + Shadow CC=1 (bit0)
 			}
 		}
 
