@@ -856,11 +856,13 @@ void VIDCSVdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
   return;
 }
 
+// Dans VIDCSVdp1PolygonDraw — vérifier qu'on ne masque pas CMDPMOD
 void VIDCSVdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-  // cmd->type = POLYGON;
+  // cmd->CMDPMOD bits 2-0 (color calc mode) must reach the shader intact
+  // Manual §6.3: mode 1 = shadow (MSB-dependent), mode 3 = half-transp (MSB-dep.)
   cmd->type = POLYGON;
-  vdp1_add(cmd,0);
+  vdp1_add(cmd, 0);
   return;
 }
 
