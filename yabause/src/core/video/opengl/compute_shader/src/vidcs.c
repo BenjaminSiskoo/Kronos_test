@@ -2593,6 +2593,10 @@ static u16 Vdp2ColorRamGetColorRaw(u32 colorindex) {
   switch (Vdp2Internal.ColorMode)
   {
   case 0:
+    // VDP2 Manual §3.4: mode 0 = 1024 colors, CRAM mirrored (index wraps at 0x3FF)
+    colorindex &= 0x3FF; // mirror: N and N+1024 are identical
+    colorindex <<= 1;
+    return T2ReadWord(Vdp2ColorRam, colorindex & 0xFFF);
   case 1:
   {
     colorindex <<= 1;
