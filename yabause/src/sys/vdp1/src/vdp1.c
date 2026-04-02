@@ -869,31 +869,29 @@ static int getDistortedCycles(vdp1cmd_struct *cmd) {
     dy = CAP(ly,dy,hy);
   }
 
-  int rw = (abs(bx-ax)
-          + abs(cx-dx)
-           )/2;
-  if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
+  int rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
+  if (Vdp1Regs->TVMR & 0x1) rw_screen >>= 1;
+
   int cmdW = cmd->w;
   switch ((cmd->CMDPMOD >> 3) & 0x7) {
    case 0:
    case 1:
-     // 4 pixels per 16 bits
-     cmdW  = cmdW >> 2;
+     cmdW = cmdW >> 2; // 4 pixels par mot
      break;
    case 2:
    case 3:
    case 4:
-     // 2 pixels per 16 bits
-     cmdW = cmdW >> 1;
+     cmdW = cmdW >> 1; // 2 pixels par mot
      break;
    default:
      break;
- }
-  if (((cmd->CMDPMOD>>12)&0x1) && (rw < cmd->w))  cmdW >>= 1; //HSS
-  rw = MAX(cmdW, rw);
-  int rh = MAX(abs(ay-dy),
-               abs(cy-by)
-              );
+  }
+  // HSS (High Speed Shrink) : texture lue en demi-résolution
+  if (((cmd->CMDPMOD >> 12) & 0x1) && (rw_screen < cmd->w)) cmdW >>= 1;
+
+  // Spec : on prend le max entre la largeur écran et la largeur texture
+  int rw = MAX(rw_screen, cmdW);
+  int rh = MAX(abs(ay - dy), abs(cy - by));
 
   return (int)((float)MAX(rw, 1) * (float)MAX(rh, 1));
 }
