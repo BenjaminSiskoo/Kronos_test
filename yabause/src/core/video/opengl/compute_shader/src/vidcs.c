@@ -2608,14 +2608,16 @@ static u32 Vdp2ColorRamGetLineColorOffset(u32 colorindex, int alpha, int offset)
     tmp = T2ReadWord(Vdp2ColorRam, colorindex & 0xFFF);
     return SAT2YAB1(alpha, tmp);
   }
+  // APRÈS — vérifier que tmp1 fournit bien le composant R (bits 7-0 de tmp1)
+  // VDP2 Manual §4.4 : mot0 = [msb|0|R(7-0)|0|G(7-3)], mot1 = [G(2-0)|B(7-0)|0...]
+  // SAT2YAB2 doit recevoir les deux mots dans l'ordre correct
   case 2:
   {
     u32 tmp1, tmp2;
     colorindex <<= 2;
     colorindex &= 0xFFF;
-    tmp1 = T2ReadWord(Vdp2ColorRam, colorindex & 0xFFF);
-    tmp2 = T2ReadWord(Vdp2ColorRam, (colorindex + 2) & 0xFFF);
-    //Line color offset from rotation table are not applicable here
+    tmp1 = T2ReadWord(Vdp2ColorRam, colorindex);          // mot haut : MSB + R
+    tmp2 = T2ReadWord(Vdp2ColorRam, (colorindex + 2) & 0xFFF); // mot bas : G + B
     return SAT2YAB2(alpha, tmp1, tmp2);
   }
   default: break;
