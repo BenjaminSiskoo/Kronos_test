@@ -967,18 +967,16 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   yabsys.vdp1cycles+= getNormalCycles(cmd);
 
   memset(cmd->G, 0, sizeof(float)*12);
-  // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// Spec §3.3 : pre-clipping à la system clip region si CMDPMOD bit 11 = 0
+	  if (!(cmd->CMDPMOD & 0x800)) {
+		s16 scx2 = (s16)regs->systemclipX2;
+		s16 scy2 = (s16)regs->systemclipY2;
+		// Clip le rectangle englobant — si entièrement hors zone, ne pas dessiner
+		if ((s16)cmd->CMDXA > scx2 || (s16)cmd->CMDYA > scy2 ||
+			(s16)cmd->CMDXC < 0   || (s16)cmd->CMDYC < 0) {
+		  return ret;
+		}
+	  }
 
   VIDCore->Vdp1NormalSpriteDraw(cmd, ram, regs);
   return ret;
