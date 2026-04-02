@@ -888,20 +888,19 @@ void VIDCSVdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 manual §3.2 : user clip invalide si coin bas-droit < coin haut-gauche
+    // VDP1 Manual §3.2 : reset localX/Y uniquement si rectangle invalide
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
         regs->localX = 0;
         regs->localY = 0;
     }
-
-  cmd->type = USER_CLIPPING;
-  regs->userclipX1 = cmd->CMDXA;
-  regs->userclipY1 = cmd->CMDYA;
-  regs->userclipX2 = cmd->CMDXC;
-  regs->userclipY2 = cmd->CMDYC;
-  vdp1_add(cmd,1);
+    cmd->type = USER_CLIPPING;
+    regs->userclipX1 = cmd->CMDXA;
+    regs->userclipY1 = cmd->CMDYA;
+    regs->userclipX2 = cmd->CMDXC;
+    regs->userclipY2 = cmd->CMDYC;
+    vdp1_add(cmd,1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1025,20 +1024,19 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-	// la spec dit OR : si l'un OU l'autre dépasse, reset local coords
-	if (  (cmd->CMDXC > regs->systemclipX2)
-	  || (cmd->CMDYC > regs->systemclipY2)
-	) {
-		regs->localX = 0;
-		regs->localY = 0;
-	}
-
-  cmd->type = USER_CLIPPING;
-  regs->userclipX1 = cmd->CMDXA;
-  regs->userclipY1 = cmd->CMDYA;
-  regs->userclipX2 = cmd->CMDXC;
-  regs->userclipY2 = cmd->CMDYC;
-  vdp1_add_upscale(cmd,1);
+    // VDP1 Manual §3.2 : reset localX/Y uniquement si rectangle invalide
+    if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
+       || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
+    ) {
+        regs->localX = 0;
+        regs->localY = 0;
+    }
+    cmd->type = USER_CLIPPING;
+    regs->userclipX1 = cmd->CMDXA;
+    regs->userclipY1 = cmd->CMDYA;
+    regs->userclipX2 = cmd->CMDXC;
+    regs->userclipY2 = cmd->CMDYC;
+    vdp1_add(cmd,1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
