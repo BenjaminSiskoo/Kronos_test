@@ -883,22 +883,25 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 				break;
 		}
 	}
-	if (clipcmd == 0) {
-		if (_Ygl->meshmode != ORIGINAL_MESH) {
-			// VDP1 Manual §6.3 + VDP2 Manual §9.1:
-			// When MON=1 (bit 15) is set but VDP2 SPCTL bit 5=1 (sprite color mode
-			// uses RGB), the MSB is NOT interpreted as shadow/window by VDP2.
-			// It would display as a black solid surface instead of transparency.
-			// Workaround for IMPROVED_MESH mode: replace MSB_ON + any CC with
-			// shadow (CC=001) + Mesh to approximate the visual transparency effect.
-			// Games: J.League Go Go Goal, Sailor Moon.
-			if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
-				cmd->CMDPMOD &= ~0x8007U; // clear MON (bit15) + CC bits (2-0)
-				cmd->CMDPMOD |= 0x0101U;  // set Mesh (bit8) + Shadow CC=1 (bit0)
-			}
-		}
 
-		point A = (point){
+		if (clipcmd == 0) {
+			// VDP2 Manual §9.1 + VDP1 Manual §6.3:
+			// The MON→Mesh workaround applies ONLY in IMPROVED_MESH mode.
+			// In ORIGINAL_MESH mode, MON=1 is handled by the MSB_SHADOW shader path
+			// and cmd->CMDPMOD must NOT be modified here.
+			if (_Ygl->meshmode != ORIGINAL_MESH) {
+				if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
+					// IMPROVED_MESH approximation: convert MON+CC → Mesh+Shadow
+					// Fixes: J.League Go Go Goal, Sailor Moon (SPCTL SPCLMD=RGB mode)
+					cmd->CMDPMOD &= ~0x8007U;
+					cmd->CMDPMOD |= 0x0101U;
+				}
+			}
+			// ORIGINAL_MESH: MSB_SHADOW shader handles MON=1 correctly per §6.3.
+			// No CMDPMOD mutation here — preserves correct shadow for:
+			// Advanced World War Sennetoku and all games using genuine MSB shadow.
+
+			point A = (point){
 			.x= MIN(cmd->CMDXA, MIN(cmd->CMDXB, MIN(cmd->CMDXC, cmd->CMDXD))),
 			.y= MIN(cmd->CMDYA, MIN(cmd->CMDYB, MIN(cmd->CMDYC, cmd->CMDYD)))
 		};
