@@ -1,4 +1,4 @@
-﻿/*
+/*
 Copyright 2011-2015 Shinya Miyamoto(devmiyax)
 
     This file is part of Yabause.
@@ -345,35 +345,25 @@ const char prg_rbg_rpmd1_2w[] =
 
 const char prg_rbg_rpmd2_2w[] =
 "//prg_rbg_rpmd2_2w\n"
+"// VDP2 Manual §6.3 RPMD=10B: per-dot switching A→B via paraA coefficient table.\n"
+"// If paraA coefficient MSB=1 (transparent/skip), use paraB instead.\n"
+"// ParaB never has its own coefficient table in this mode.\n"
 "  paramid = 0; \n"
-"  ky = para[paramid].ky; \n"
-"  kx = para[paramid].kx; \n"
-"  lineaddr = para[paramid].lineaddr; \n"
+"  ky = para[0].ky; \n"
+"  kx = para[0].kx; \n"
+"  lineaddr = para[0].lineaddr; \n"
 "  if( para[0].coefenab != 0 ){ \n"
-"    if( para[1].coefenab != 0 ){ \n"
-"      if( GetKValue(paramid,pos,ky, kx,lineaddr ) == -1 ) { \n"
-"        paramid = 1; \n"
-"  			 ky = para[paramid].ky; \n"
-"        kx = para[paramid].kx; \n"
-"  			 lineaddr = para[paramid].lineaddr; \n"
-"        if( GetKValue(paramid,pos,ky,kx,lineaddr ) == -1 ) { \n"
-"          if ( para[paramid].linecoefenab != 0) \n"
-"            imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
-"          else \n"
-"            imageStore(lnclSurface,texel,vec4(0.0));\n"
-"   	     imageStore(outSurface,texel,vec4(0.0));\n"
-"          return;\n"
-"        } \n"
-"      } \n"
-"    } else {\n"
-"        if( GetKValue(paramid,pos,ky,kx,lineaddr) == -1 ) { \n"
-"          paramid = 1;\n"
-"          ky = para[paramid].ky; \n"
-"          kx = para[paramid].kx; \n"
-"          lineaddr = para[paramid].lineaddr; \n"
-"        } \n"
-"    }\n"
-"  }\n";
+"    if( GetKValue(0, pos, ky, kx, lineaddr) == -1 ) { \n"
+"      // ParaA coef MSB=1: switch to paraB for this dot (§6.3)\n"
+"      paramid = 1; \n"
+"      ky = para[1].ky; \n"
+"      kx = para[1].kx; \n"
+"      lineaddr = para[1].lineaddr; \n"
+"      // ParaB has no coef table in RPMD=2, use its default kx/ky directly\n"
+"      // (para[1].coefenab == 0 guaranteed by CPU-side setup)\n"
+"    } \n"
+"  }\n"
+"  // If para[0].coefenab==0, RPMD=2 has no switching: always use paraA\n";
 
 
 const char prg_get_param_mode03[] =
@@ -2345,13 +2335,23 @@ DEBUGWIP("Init\n");
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, ssbo_alpha_);
 
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_paraA_);
-	if ( rbg->ctrl.info.idScreen == RBG0 ) {
-		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraA);
-		glBufferSubData(GL_SHADER_STORAGE_BUFFER, struct_size_, sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraB);
-	} else {
-		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraB);
-		glBufferSubData(GL_SHADER_STORAGE_BUFFER, struct_size_, sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraA);
-	}
+		if ( rbg->ctrl.info.idScreen == RBG0 ) {
+			// VDP2 Manual §6.3: para[0]=ParaA, para[1]=ParaB.
+			// In RPMD=2, paraA.coefenab=1 drives per-dot switching;
+			// paraB.coefenab must be 0 (verified CPU-side in Vdp2DrawRBG0_part).
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+				sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraA);
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, struct_size_,
+				sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraB);
+			DEBUGWIP("RBG0 RPMD=%d paraA.coefenab=%d paraB.coefenab=%d\n",
+				varVdp2Regs->RPMD, rbg->paraA.coefenab, rbg->paraB.coefenab);
+		} else {
+			// RBG1 uses paraB as primary (rotatenum=1), slot 0 = paraB, slot 1 = paraA
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+				sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraB);
+			glBufferSubData(GL_SHADER_STORAGE_BUFFER, struct_size_,
+				sizeof(vdp2rotationparameter_struct), (void*)&rbg->paraA);
+		}
        ErrorHandle("glBufferSubData");
        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_paraA_);
        uniform.vres_scale = (float)_Ygl->heightRatio;
