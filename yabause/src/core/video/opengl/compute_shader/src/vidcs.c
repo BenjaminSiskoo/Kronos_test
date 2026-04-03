@@ -1095,7 +1095,11 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   for (i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    ctrl.info.alpha_per_line[i] = (~Vdp2Lines[i].CCRNA & 0x1F) << 3;
+    /* VDP2 Manual §12.1 CCRNA (180108H) bits 4-0 = N0CCRT[4:0]:
+     * ratio=0 → fully opaque (alpha=255), ratio=31 → nearly transparent.
+     * Map 5-bit inverted ratio to full 0-255 range: (*255)/31 instead of <<3
+     * which clips at 248 and misses 0xFF for ratio=0. */
+    ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
   }
     if (!ctrl.info.enable) {
       return;
@@ -1397,8 +1401,13 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG1, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    ctrl.info.alpha_per_line[i] = ((~Vdp2Lines[i].CCRNA & 0x1F00) >> 5);
+    /* VDP2 Manual §12.1 CCRNA (180108H) bits 12-8 = N1CCRT[4:0]:
+     * Same encoding as NBG0. Shift right 8 to isolate the 5-bit field,
+     * then apply full 0-255 mapping. The original >>5 was equivalent to
+     * <<3 after masking, clipping at 248. */
+    ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNA >> 8) & 0x1F) * 255) / 31);
   }
+  
   if (!ctrl.info.enable) {
     return;
   }
@@ -1708,8 +1717,11 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG2, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    ctrl.info.alpha_per_line[i] = (~Vdp2Lines[i].CCRNB & 0x1F) << 3;
+    /* VDP2 Manual §12.1 CCRNB (18010AH) bits 4-0 = N2CCRT[4:0]:
+     * Same encoding as NBG0/NBG1. Full 0-255 mapping. */
+    ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNB & 0x1F) * 255) / 31);
   }
+  
   if (!ctrl.info.enable) {
     return;
   }
@@ -1814,8 +1826,11 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG3, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    ctrl.info.alpha_per_line[i] = (~Vdp2Lines[i].CCRNB & 0x1F00) >> 5;
+    /* VDP2 Manual §12.1 CCRNB (18010AH) bits 12-8 = N3CCRT[4:0]:
+     * Same encoding as NBG2. Shift right 8 to isolate, full 0-255 mapping. */
+    ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNB >> 8) & 0x1F) * 255) / 31);
   }
+  
   if (!ctrl.info.enable) {
     return;
   }
@@ -1939,8 +1954,9 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
 
   for (int i=info->startLine; i<info->endLine; i++) {
     info->display[i] = info->enable;
-    // Color calculation ratio
-    rbg->alpha[i] = (~(Vdp2Lines[i].CCRR & 0x1F)) << 3;
+    /* VDP2 Manual §12.1 CCRR (18010CH) bits 4-0 = R0CCRT[4:0]:
+     * Same encoding as NBG screens. Full 0-255 mapping. */
+    rbg->alpha[i] = (u8)(((~Vdp2Lines[i].CCRR & 0x1F) * 255) / 31);
     info->alpha_per_line[i] = rbg->alpha[i];
   }
 
@@ -4506,8 +4522,10 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
   for (int i = info->startLine; i < info->endLine; i++) {
     info->display[i] = info->enable;
-    // Color calculation ratio
-    rbg->alpha[i] = (~Vdp2Lines[i].CCRNA & 0x1F) << 3;
+    /* VDP2 Manual §12.1 CCRNA (180108H) bits 4-0 = N0CCRT[4:0]:
+     * RBG1 shares NBG0's color calculation ratio register (same bits).
+     * Full 0-255 mapping instead of <<3 which clips at 248. */
+    rbg->alpha[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
     info->alpha_per_line[i] = rbg->alpha[i];
   }
 
