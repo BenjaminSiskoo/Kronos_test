@@ -345,25 +345,23 @@ const char prg_rbg_rpmd1_2w[] =
 
 const char prg_rbg_rpmd2_2w[] =
 "//prg_rbg_rpmd2_2w\n"
-"// VDP2 Manual §6.3 RPMD=10B: per-dot switching A→B via paraA coefficient table.\n"
-"// If paraA coefficient MSB=1 (transparent/skip), use paraB instead.\n"
-"// ParaB never has its own coefficient table in this mode.\n"
+"// VDP2 §6.3 RPMD=10B: per-dot switch A→B via paraA coef MSB.\n"
+"// ParaB never has its own coef table in this mode.\n"
 "  paramid = 0; \n"
 "  ky = para[0].ky; \n"
 "  kx = para[0].kx; \n"
 "  lineaddr = para[0].lineaddr; \n"
-"  if( para[0].coefenab != 0 ){ \n"
-"    if( GetKValue(0, pos, ky, kx, lineaddr) == -1 ) { \n"
-"      // ParaA coef MSB=1: switch to paraB for this dot (§6.3)\n"
+"  if (para[0].coefenab != 0) { \n"
+"    if (GetKValue(0, pos, ky, kx, lineaddr) == -1) { \n"
+"      // MSB=1: switch to paraB (§6.3)\n"
 "      paramid = 1; \n"
 "      ky = para[1].ky; \n"
 "      kx = para[1].kx; \n"
 "      lineaddr = para[1].lineaddr; \n"
-"      // ParaB has no coef table in RPMD=2, use its default kx/ky directly\n"
-"      // (para[1].coefenab == 0 guaranteed by CPU-side setup)\n"
+"      // ParaB.coefenab must be 0 in RPMD=2 (guaranteed CPU-side)\n"
 "    } \n"
 "  }\n"
-"  // If para[0].coefenab==0, RPMD=2 has no switching: always use paraA\n";
+"  // If para[0].coefenab==0: no switching, always paraA\n";
 
 
 const char prg_get_param_mode03[] =
