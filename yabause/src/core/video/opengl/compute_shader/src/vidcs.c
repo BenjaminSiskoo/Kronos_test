@@ -1041,9 +1041,6 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     ) {
         // Invalid clip rectangle: skip command, do not modify local coordinates
         return;
-    } {
-        regs->localX = 0;
-        regs->localY = 0;
     }
     cmd->type = USER_CLIPPING;
     regs->userclipX1 = cmd->CMDXA;
@@ -2030,17 +2027,19 @@ if (rbg->ctrl.regs->RPMD == 0x03)
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
     break;
 	case 2:
-		// VDP2 Manual §6.3 RPMD=10B: Rotation Parameter switching by
-		// coefficient table. The coefficient table determines per-line
-		// which parameter (A or B) is active. paraB is enabled via useb=1.
-		// NOTE: Full per-line A/B switching based on coefficient data requires
-		// additional shader/generator support. The coef table is read via KTCTL
-		// bit 0 (RAKTE: Rotation A Coefficient Table Enable).
-		// TODO: implement per-line parameter switching in RBGGenerator.
+		// VDP2 Manual §6.3 RPMD=10B: "The rotation parameter is switched
+		// between A and B for each dot based on the coefficient data of
+		// rotation parameter A." ParaA's coefficient table (KTCTL bit 0 = RAKTE)
+		// is read per-dot; if its MSB is set, the dot uses paraB instead.
+		// ParaB does NOT have its own coefficient table in this mode.
+		// The shader (prg_rbg_rpmd2_2w) implements: read paraA coef → if MSB=1
+		// fallback to paraB. This requires paraA.coefenab=1 and paraB.coefenab=0.
 		info->rotatenum = 0;
 		info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
-		rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;  // RAKTE bit0
-		rbg->paraB.coefenab = 0;  // Prohibited in RPMD=2 per §6.3
+		// RAKTE (KTCTL bit 0): enables paraA coefficient table read
+		rbg->paraA.coefenab = (rbg->ctrl.regs->KTCTL & 0x01) ? 1 : 0;
+		// ParaB must NOT enable its own coef table in RPMD=2 (§6.3 explicit prohibition)
+		rbg->paraB.coefenab = 0;
 		rbg->useb = 1;
 		break;
   case 3:
@@ -2991,48 +2990,130 @@ static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
   }
 }
 
-	static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
-	{
-	  // VDP2 Manual §8.1: Three window types exist for each screen:
-	  // W0 (Window 0), W1 (Window 1), WS (Sprite Window).
-	  // WS is based on the MSB of VDP1 sprite pixels and is not implemented
-	  // in this CPU-side range check — it requires framebuffer sprite data.
-	  // TODO: implement WinS (Sprite Window) check using VDP1 framebuffer MSB.
-	  // Currently only W0 and W1 are checked.
 
-	  if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] == 0)
-	  {
-		if (Vdp2CheckWindow(&ctrl->info, x, y,
-			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-		if (Vdp2CheckWindow(&ctrl->info, x + w, y,
-			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-		if (Vdp2CheckWindow(&ctrl->info, x + w, y + h,
-			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-		if (Vdp2CheckWindow(&ctrl->info, x, y + h,
-			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-		return 0;
-	  }
-  else if (_Ygl->Win0[ctrl->info.idScreen] == 0 && _Ygl->Win1[ctrl->info.idScreen] != 0)
-  {
-    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    return 0;
-  }
-  else if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] != 0)
-  {
-    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
-    return 0;
-  }
-  return 0;
+/*
+ * Vdp2CheckSpriteWindow - check if a VDP2 screen coordinate is inside/outside
+ * the sprite window (WinS), which is defined by the MSB of VDP1 framebuffer pixels.
+ *
+ * VDP2 Manual §8.2: The sprite window uses the MSB of each VDP1 sprite pixel.
+ * A pixel belongs to the sprite window when its VDP1 framebuffer MSB = 1.
+ *
+ * Returns 1 if the pixel satisfies the window condition (inside or outside
+ * depending on WinS_mode), 0 otherwise.
+ */
+static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
+{
+    /* WinS not enabled for this layer */
+    if (_Ygl->WinS[id] == 0) return 0;
+
+    /* Map VDP2 screen coordinate → VDP1 framebuffer coordinate.
+     * The same ratio used by the compositor shader:
+     *   vdp1x = vdp2x * (vdp1ratio * vdp1wdensity / vdp2wdensity) * (rwidth / vdp1width)
+     * Simplified using the pre-computed densities stored in _Ygl.
+     */
+    float ratioX = _Ygl->vdp1ratio * _Ygl->vdp1wdensity / _Ygl->vdp2wdensity
+                   * (float)_Ygl->rwidth  / (float)_Ygl->vdp1width;
+    float ratioY = _Ygl->vdp1ratio * _Ygl->vdp1hdensity / _Ygl->vdp2hdensity
+                   * (float)_Ygl->rheight / (float)_Ygl->vdp1height;
+
+    int fbx = (int)(vdp2x * ratioX);
+    int fby = (int)(vdp2y * ratioY);
+
+    /* Clamp to VDP1 framebuffer bounds */
+    if (fbx < 0) fbx = 0;
+    if (fby < 0) fby = 0;
+    if (fbx >= _Ygl->vdp1width)  fbx = _Ygl->vdp1width  - 1;
+    if (fby >= _Ygl->vdp1height) fby = _Ygl->vdp1height - 1;
+
+    /* Read from the CPU-side VDP1 framebuffer copy.
+     * vdp1fb_read_buf[readframe] is populated by vdp1_read() / vdp1_read_gl().
+     * Each pixel is RGBA u8: R=color&0xFF, G=(color>>8)&0xFF, B=0, A=0.
+     * MSB of the 16-bit VDP1 color = bit 15 = bit 7 of the G byte.
+     */
+    u32 *fb = _Ygl->vdp1fb_read_buf[_Ygl->readframe];
+    if (fb == NULL) return 0;
+
+    u32 pixel = fb[fby * _Ygl->vdp1width + fbx];
+    /* Extract G channel (bits 15-8 of the original 16-bit color) */
+    u8 g = (pixel >> 8) & 0xFF;
+    int msb = (g >> 7) & 1;   /* bit 15 of the original VDP1 color */
+
+    /* msb=1 → pixel is inside the sprite window */
+    int inside = msb;
+
+    if (_Ygl->WinS_mode[id] == WA_INSIDE) {
+        /* Drawing inside: visible when inside the sprite window */
+        return inside;
+    } else {
+        /* Drawing outside: visible when outside the sprite window */
+        return !inside;
+    }
+}
+
+static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
+{
+    int id = ctrl->info.idScreen;
+
+    int useW0 = (_Ygl->Win0[id] != 0);
+    int useW1 = (_Ygl->Win1[id] != 0);
+    int useWS = (_Ygl->WinS[id] != 0);
+
+    /* If no window is active, everything is visible */
+    if (!useW0 && !useW1 && !useWS) return 0;
+
+    /* Test the four corners of the tile.
+     * A tile is considered visible if at least one corner satisfies
+     * the combined window condition.
+     *
+     * VDP2 Manual §8.1: When multiple windows are combined with OR (Win_op=0),
+     * a pixel is inside the active region if it satisfies ANY enabled window.
+     * With AND (Win_op=1), it must satisfy ALL enabled windows.
+     *
+     * For culling purposes (CPU-side, tile granularity):
+     * - OR  mode: return 1 (draw) if any corner is inside any window
+     * - AND mode: return 1 (draw) if any corner is inside all windows
+     *
+     * WinS is always OR-combined with W0/W1 when Win_op=0,
+     * and AND-combined when Win_op=1, per the hardware spec.
+     */
+    int use_and = (_Ygl->Win_op[id] != 0);
+
+    /* Corner coordinates (tile origin is at (x,y) relative to screen,
+     * but Vdp2DrawPatternPos calls us with cx=0,cy=0 offsets already
+     * applied; x,y here are already screen-space tile corners). */
+    int corners[4][2] = {
+        { x,     y     },
+        { x + w, y     },
+        { x + w, y + h },
+        { x,     y + h },
+    };
+
+    for (int c = 0; c < 4; c++) {
+        int cx = corners[c][0];
+        int cy = corners[c][1];
+        int result;
+
+        if (!use_and) {
+            /* OR mode: visible if any window condition is met */
+            result = 0;
+            if (useW0) result |= Vdp2CheckWindow(&ctrl->info, cx, cy,
+                                                  _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) result |= Vdp2CheckWindow(&ctrl->info, cx, cy,
+                                                  _Ygl->Win1_mode[id], _Ygl->win[1]);
+            if (useWS) result |= Vdp2CheckSpriteWindow(id, cx, cy);
+        } else {
+            /* AND mode: visible only if ALL active windows agree */
+            result = 1;
+            if (useW0) result &= Vdp2CheckWindow(&ctrl->info, cx, cy,
+                                                  _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) result &= Vdp2CheckWindow(&ctrl->info, cx, cy,
+                                                  _Ygl->Win1_mode[id], _Ygl->win[1]);
+            if (useWS) result &= Vdp2CheckSpriteWindow(id, cx, cy);
+        }
+
+        if (result) return 1;   /* at least one corner is drawable */
+    }
+    return 0;   /* all corners culled */
 }
 
 static void Vdp2GenLineinfo(vdp2draw_struct *info)
