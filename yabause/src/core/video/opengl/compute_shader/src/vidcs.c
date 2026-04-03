@@ -1980,19 +1980,20 @@ if (rbg->ctrl.regs->RPMD == 0x03)
 
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
   rbg->paraB.screenover = (rbg->ctrl.regs->PLSZ >> 14) & 0x03;
-  
-	// APRÈS — spec §6.3 :
-	// mode 0 = repeat (default, over_pattern_name ignoré)
-	// mode 1 = pattern from OVPNRA/OVPNRB register (cell format only)
-	// mode 2 = transparent (sentinelle 0xFFFF pour signaler "force transparent")
-	// mode 3 = zone 0..512 transparente (géré via MaxH/MaxV + sentinelle)
+	  
+	// APRÈS (spec §6.3 p.160) :
+	// mode 0 = repeat → over_pattern_name ignoré, laisser à 0
+	// mode 1 = pattern depuis registre OVPNRA/OVPNRB
+	// mode 2 = transparent → sentinelle 0xFFFF
+	// mode 3 = zone 512 transparente → sentinelle 0xFFFF (MaxH/MaxV déjà forcés à 512)
 	if (rbg->paraA.screenover == 1)
-		rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA; // registre réel
-	else if (rbg->paraA.screenover == 2)
-		rbg->paraA.over_pattern_name = 0xFFFF; // transparent
+		rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA;
+	else if (rbg->paraA.screenover >= 2)
+		rbg->paraA.over_pattern_name = 0xFFFF;
+
 	if (rbg->paraB.screenover == 1)
 		rbg->paraB.over_pattern_name = rbg->ctrl.regs->OVPNRB;
-	else if (rbg->paraB.screenover == 2)
+	else if (rbg->paraB.screenover >= 2)
 		rbg->paraB.over_pattern_name = 0xFFFF;
 
   // Figure out which Rotation Parameter we're uqrt
@@ -2093,14 +2094,33 @@ if (rbg->ctrl.regs->RPMD == 0x03)
       rbg->paraB.MaxV = 512;
     }
 
-    for (i = 0; i < 16; i++)
-    {
-	  Vdp2ParameterAPlaneAddr(info, i, rbg->ctrl.regs);
-      rbg->paraA.PlaneAddrv[i] = info->addr;
-	  Vdp2ParameterBPlaneAddr(info, i, rbg->ctrl.regs);
-      rbg->paraB.PlaneAddrv[i] = info->addr;
-    }
+// APRÈS :
+// Sauvegarder les valeurs de ParaA et substituer celles de ParaB pour la boucle B
+int saved_planew = info->planew;
+int saved_planeh = info->planeh;
+int saved_mapwh  = info->mapwh;
+
+for (i = 0; i < 16; i++) {
+    Vdp2ParameterAPlaneAddr(info, i, rbg->ctrl.regs);
+    rbg->paraA.PlaneAddrv[i] = info->addr;
+}
+
+// Restaurer les dimensions de ParaB pour Vdp2ParameterBPlaneAddr
+info->planew = rbg->paraB.planew;
+info->planeh = rbg->paraB.planeh;
+info->mapwh  = 4; // RBG0 toujours 4x4
+
+for (i = 0; i < 16; i++) {
+    Vdp2ParameterBPlaneAddr(info, i, rbg->ctrl.regs);
+    rbg->paraB.PlaneAddrv[i] = info->addr;
+}
+
+// Restaurer les valeurs de ParaA (info est utilisé ensuite pour le rendu)
+info->planew = saved_planew;
+info->planeh = saved_planeh;
+info->mapwh  = saved_mapwh;
   }
+  
 
   ReadMosaicData(info, 0x10, rbg->ctrl.regs);
 
@@ -3031,6 +3051,30 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
       }
     }
   }
+}
+
+// Ajouter un helper dans vidcs.c :
+static INLINE int Vdp2CheckCCWindow(int x, int y) {
+    // CCW est à l'index SPRITE+1 dans les tableaux _Ygl->Win0/Win1
+    int idx = SPRITE + 1;
+    if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // pas de CCW → cc actif
+    
+    int in_ccw = 0;
+    if (_Ygl->Win0[idx]) {
+        int w0 = Vdp2CheckWindow(NULL, x, y,
+                     _Ygl->Win0_mode[idx] == WA_INSIDE ? 1 : 0,
+                     _Ygl->win[0]);
+        in_ccw |= w0;
+    }
+    if (_Ygl->Win1[idx]) {
+        int w1 = Vdp2CheckWindow(NULL, x, y,
+                     _Ygl->Win1_mode[idx] == WA_INSIDE ? 1 : 0,
+                     _Ygl->win[1]);
+        if (_Ygl->Win_op[idx] == 0) in_ccw |= w1;  // OR
+        else                         in_ccw &= w1;  // AND
+    }
+    // CCW : color calc N'EST PAS effectué dans la zone active du CCW
+    return !in_ccw;
 }
 
 static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
