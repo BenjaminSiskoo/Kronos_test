@@ -2932,14 +2932,10 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-    // VDP1 Manual §4.4 EWLR/EWRR coordinate encoding:
-    //   16bpp: X unit = 8 pixels  → X1 = ((EWLR >> 9) & 0x3F) * 8
-    //                               X3 = ((EWRR >> 9) & 0x7F) * 8 - 1
-    //    8bpp: X unit = 16 pixels → X1 = ((EWLR >> 9) & 0x3F) * 16
-    //                               X3 = ((EWRR >> 9) & 0x7F) * 16 - 1
-    //   Y: always in 1-line units (register value used directly)
-    //   Double-interlace: Y register stores half the actual coord,
-    //   but we use lines for cycle counting, so no adjustment needed here.
+    // VDP1 Manual §4.4, Table 4.5:
+    // EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1
+    // EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3
+    // X unit: 8 pixels in 16bpp mode, 16 pixels in 8bpp mode
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
 
@@ -2949,22 +2945,25 @@ static int getVdp1ErasePixelLine() {
     int y3 =  (Vdp1Regs->EWRR) & 0x1FF;
 
     // VDP1 Manual §4.4: "If X1 >= X3 or Y1 > Y3, erase/write is performed
-    // for 1 dot only" → treat as no significant erase time
+    // for 1 dot only"
     if ((x3 < 0) || (y3 == 0))    return 0;
     if ((x1 >= x3) || (y1 > y3))  return 0;
 
     int area_w = x3 - x1 + 1;
     int area_h = y3 - y1 + 1;
 
-    // VDP1 Manual §4.4: pixels required = (X3-X1) × (Y3-Y1+1) × 8  [16bpp]
-    // Erase/write rate: 2 pixels/cycle in 16bpp, 1 pixel/cycle in 8bpp
-    int pixels_per_cycle = is8bpp ? 1 : 2;
-    int total_cycles = (area_w * area_h) / pixels_per_cycle;
+    // VDP1 Manual §4.4 Table 4.5:
+    // Bus pixels = (X3 - X1) × (Y3 - Y1 + 1) × 8  [16bpp]
+    // In 8bpp the area is the same in screen coords but each pixel costs
+    // 1 bus word instead of 2, so the × factor is 4 in 8bpp.
+    // VDP1 bus throughput: 2 pixels/cycle (16bpp) or 4 pixels/cycle (8bpp).
+    int bus_pixels = area_w * area_h * (is8bpp ? 4 : 8);
+    int pixels_per_cycle = is8bpp ? 4 : 2;
+    int total_cycles = (bus_pixels + pixels_per_cycle - 1) / pixels_per_cycle;
 
     int cycles_per_line = getVdp1CyclesPerLine();
     if (cycles_per_line <= 0) return 0;
 
-    // Ceiling division: number of lines needed to complete the erase
     return (total_cycles + cycles_per_line - 1) / cycles_per_line;
 }
 
