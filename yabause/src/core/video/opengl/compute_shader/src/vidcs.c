@@ -3711,14 +3711,25 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 	// linescroll_spacing is the actual table index step derived from SCRCTL.
 	int linescroll_spacing = 1;
 	if (ctrl->info.islinescroll) {
-	  int lss = 0;
-	  if (ctrl->info.idScreen == NBG0)
-		lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
-	  else if (ctrl->info.idScreen == NBG1)
-		lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
-	  linescroll_spacing = 1 << lss; // 1, 2, 4, or 8
+		int lss = 0;
+		// VDP2 Manual §5.3, SCRCTL N0LSS/N1LSS bits:
+		// NBG0: bits 5-4 (N0LSS1, N0LSS0)
+		// NBG1: bits 13-12 (N1LSS1, N1LSS0)
+		// lss=0 → every line, lss=1 → every 2 lines,
+		// lss=2 → every 4 lines, lss=3 → every 8 lines
+		if (ctrl->info.idScreen == NBG0)
+			lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
+		else if (ctrl->info.idScreen == NBG1)
+			lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
+		linescroll_spacing = 1 << lss;
+		// VDP2 Manual §5.3: In double-density interlace, the line scroll table
+		// is indexed per half-line. The spacing must be doubled to account for
+		// the fact that we iterate screen lines (not half-lines).
+		if (_Ygl->interlace == DOUBLE_INTERLACE) {
+			linescroll_spacing <<= 1;
+		}
 	}
-	int linemask = linescroll_spacing - 1; // 0, 1, 3, or 7
+	int linemask = linescroll_spacing - 1;
   int screenH = _Ygl->rheight;
   // if (_Ygl->interlace == DOUBLE_INTERLACE) screenH <<= 1;
   for (v = 0; v < screenH; v++) {  // ToDo: ctrl->info.coordincy
