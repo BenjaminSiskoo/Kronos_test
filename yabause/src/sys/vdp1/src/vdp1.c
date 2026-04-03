@@ -2957,10 +2957,25 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-    // VDP1 Manual §4.4, Table 4.5:
-    // EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1
-    // EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3
-    // X unit: 8 pixels in 16bpp mode, 16 pixels in 8bpp mode
+    /* VDP1 Manual §4.3 p.49: EWLR/EWRR register layout:
+     * EWLR bits 14-9 = X1 (6 bits, unit=8px for 16bpp / 16px for 8bpp)
+     * EWLR bits  8-0 = Y1 (9 bits)
+     * EWRR bits 15-9 = X3 (7 bits, same unit)
+     * EWRR bits  8-0 = Y3 (9 bits)
+     *
+     * VDP1 Manual §4.3 formula (p.49):
+     *   pixels_needed = (X3-X1) × (Y3-Y1+1) × 8   [16bpp]
+     *   pixels_needed = (X3-X1) × (Y3-Y1+1) × 4   [8bpp]
+     *
+     * VDP1 Manual Table 4.4 (p.49): pixels available per raster:
+     *   NTSC: 1708 total → (1708-200) = 1508 drawable pixels/raster
+     *   PAL : 1820 total → (1820-200) = 1620 drawable pixels/raster
+     *
+     * "Drawing is performed in sync with the CPU operating clock.
+     *  The CPU operating clock is 28 MHz, and the data for 1 pixel
+     *  is drawn in sync with this." (§2.5 p.20)
+     * → 1 cycle = 1 pixel drawn at 28MHz pixel clock.
+     */
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
 
@@ -2969,23 +2984,25 @@ static int getVdp1ErasePixelLine() {
     int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
     int y3 =  (Vdp1Regs->EWRR) & 0x1FF;
 
-    // VDP1 Manual §4.4: "If X1 >= X3 or Y1 > Y3, erase/write is performed
-    // for 1 dot only"
+    /* VDP1 Manual §4.3: "If X1 >= X3 or Y1 > Y3, erase/write is performed
+     * for 1 dot only" */
     if ((x3 < 0) || (y3 == 0))    return 0;
     if ((x1 >= x3) || (y1 > y3))  return 0;
 
     int area_w = x3 - x1 + 1;
     int area_h = y3 - y1 + 1;
 
-    // VDP1 Manual §4.4 Table 4.5:
-    // Bus pixels = (X3 - X1) × (Y3 - Y1 + 1) × 8  [16bpp]
-    // In 8bpp the area is the same in screen coords but each pixel costs
-    // 1 bus word instead of 2, so the × factor is 4 in 8bpp.
-    // VDP1 bus throughput: 2 pixels/cycle (16bpp) or 4 pixels/cycle (8bpp).
+    /* VDP1 Manual §4.3 p.49:
+     * 16bpp: pixels_needed = area_w × area_h × 8  (8 bus words per pixel)
+     *  8bpp: pixels_needed = area_w × area_h × 4  (4 bus words per pixel)
+     * Each bus word takes 1 cycle at 28MHz → total_cycles = pixels_needed / 2
+     * (2 pixels written per cycle in 16bpp; 4 in 8bpp per bus width) */
     int bus_pixels = area_w * area_h * (is8bpp ? 4 : 8);
     int pixels_per_cycle = is8bpp ? 4 : 2;
     int total_cycles = (bus_pixels + pixels_per_cycle - 1) / pixels_per_cycle;
 
+    /* VDP1 Manual Table 4.4: cycles available per raster = pixels/raster - 200
+     * (200 reserved for H-blank overhead per raster) */
     int cycles_per_line = getVdp1CyclesPerLine();
     if (cycles_per_line <= 0) return 0;
 
