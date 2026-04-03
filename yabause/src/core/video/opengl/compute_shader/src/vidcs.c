@@ -2484,10 +2484,16 @@ static void Vdp2SetResolution(u16 TVMD)
 	  height = yabsys.IsPal ? 256 : 240;
 	  break;
 	case 2:
-	  // Reserved/undocumented — fall back to 224 NTSC / 256 PAL (conservative)
-	  height = yabsys.IsPal ? 256 : 224;
+	  // VDP2 Manual §2.1 TVMD VRESO=10: 256 lines, PAL format TV only.
+	  // This mode is prohibited on NTSC hardware.
+	  // Return 256 for PAL; for NTSC use 224 as a safe fallback for undefined behavior.
+	  height = 256; // both PAL and NTSC-with-prohibited-mode return 256
+	  // Note: yabsys.IsPal check not needed — VRESO=10 on NTSC is undefined,
+	  // 256 is the only documented value for this setting.
 	  break;
-	default:
+	case 3:
+	  // VDP2 Manual §2.1 VRESO=11: Not Allowed / prohibited
+	  // Fall back to safe default
 	  height = yabsys.IsPal ? 256 : 224;
 	  break;
 	}
