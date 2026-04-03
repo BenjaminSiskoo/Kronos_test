@@ -4386,79 +4386,95 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
   int i;
   info->enable = 0;
 
-// RBG1 mode
+  // RBG1 mode
   info->enable = ((rbg->ctrl.regs->BGON & 0x20)!=0);
-  // RBG1 shall not work without RGB0 but it looks like the HW is able to... MechWarrior 2 - 31st Century Combat - Arcade Combat Edition is using this capability...
-  //if (!(varVdp2Regs->BGON & 0x10)) info->enable = 0; //When both R0ON and R1ON are 1, the normal scroll screen can no longer be displayed vdp2 pdf, section 4.1 Screen Display Control
+  // RBG1 shall not work without RBG0 but it looks like the HW is able to...
+  // MechWarrior 2 - 31st Century Combat - Arcade Combat Edition uses this capability.
+  //if (!(varVdp2Regs->BGON & 0x10)) info->enable = 0;
 
   if (!info->enable) {
-   pushRBG(rbg);
-   return;
+    pushRBG(rbg);
+    return;
   }
-  for (int i=info->startLine; i<info->endLine; i++) {
+
+  for (int i = info->startLine; i < info->endLine; i++) {
     info->display[i] = info->enable;
     // Color calculation ratio
-    rbg->alpha[i] = (~Vdp2Lines[i].CCRNA & 0x1F)<<3;
+    rbg->alpha[i] = (~Vdp2Lines[i].CCRNA & 0x1F) << 3;
     info->alpha_per_line[i] = rbg->alpha[i];
   }
 
-    // Read in Parameter B
-    Vdp2ReadRotationTable(1, &rbg->paraB, rbg->ctrl.regs, Vdp2Ram);
+  // Read in Parameter B
+  Vdp2ReadRotationTable(1, &rbg->paraB, rbg->ctrl.regs, Vdp2Ram);
 
-    if ((info->isbitmap = rbg->ctrl.regs->CHCTLA & 0x2) != 0)
+  if ((info->isbitmap = rbg->ctrl.regs->CHCTLA & 0x2) != 0)
+  {
+    // Bitmap Mode
+    ReadBitmapSize(info, rbg->ctrl.regs->CHCTLA >> 2, 0x3);
+    if (shift) info->cellh *= 2;
+
+    info->charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
+
+    // VDP2 Manual §6.1: Verify that the VRAM bank used by RBG1 bitmap
+    // is actually allocated for rotation screen use (RAMCTL bits).
+    // RAMCTL bits [2*bank+1 : 2*bank] must be 11B (rotation data) for the
+    // bank to be valid. This mirrors the check done in Vdp2DrawRBG0_part.
     {
-      // Bitmap Mode
-
-      ReadBitmapSize(info, rbg->ctrl.regs->CHCTLA >> 2, 0x3);
-      if (shift) info->cellh *= 2;
-
-      info->charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
-      info->paladdr = (rbg->ctrl.regs->BMPNA & 0x7) << 4;
-      info->flipfunction = 0;
-      info->specialfunction = 0;
-    }
-    else
-    {
-      // Tile Mode
-      info->mapwh = 4;
-      ReadPlaneSize(info, rbg->ctrl.regs->PLSZ >> 12);
-      ReadPatternData(info, rbg->ctrl.regs->PNCN0, rbg->ctrl.regs->CHCTLA & 0x1);
-
-      rbg->paraB.ShiftPaneX = 8 + info->planew;
-      rbg->paraB.ShiftPaneY = 8 + info->planeh;
-      rbg->paraB.MskH = (8 * 64 * info->planew) - 1;
-      rbg->paraB.MskV = (8 * 64 * info->planeh) - 1;
-      rbg->paraB.MaxH = 8 * 64 * info->planew * 4;
-      rbg->paraB.MaxV = 8 * 64 * info->planeh * 4;
-
+      int charAddrBk = (((info->charaddr >> 16) & 0xF)
+                        >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
+      if (((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
+        // VRAM bank not allocated for rotation screen: skip RBG1 bitmap draw
+        pushRBG(rbg);
+        return;
+      }
     }
 
-    info->rotatenum = 1;
-    //rbg->paraB.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
-    rbg->paraB.coefenab = rbg->ctrl.regs->KTCTL & 0x100;
-    rbg->paraB.charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
-    ReadPlaneSizeR(&rbg->paraB, rbg->ctrl.regs->PLSZ >> 12);
-    for (i = 0; i < 16; i++)
-    {
-      Vdp2ParameterBPlaneAddr(info, i, rbg->ctrl.regs);
-      rbg->paraB.PlaneAddrv[i] = info->addr;
-    }
+    info->paladdr = (rbg->ctrl.regs->BMPNA & 0x7) << 4;
+    info->flipfunction = 0;
+    info->specialfunction = 0;
+  }
+  else
+  {
+    // Tile Mode
+    info->mapwh = 4;
+    ReadPlaneSize(info, rbg->ctrl.regs->PLSZ >> 12);
+    ReadPatternData(info, rbg->ctrl.regs->PNCN0, rbg->ctrl.regs->CHCTLA & 0x1);
+
+    rbg->paraB.ShiftPaneX = 8 + info->planew;
+    rbg->paraB.ShiftPaneY = 8 + info->planeh;
+    rbg->paraB.MskH = (8 * 64 * info->planew) - 1;
+    rbg->paraB.MskV = (8 * 64 * info->planeh) - 1;
+    rbg->paraB.MaxH = 8 * 64 * info->planew * 4;
+    rbg->paraB.MaxV = 8 * 64 * info->planeh * 4;
+  }
+
+  info->rotatenum = 1;
+  rbg->paraB.coefenab = rbg->ctrl.regs->KTCTL & 0x100;
+  rbg->paraB.charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
+  ReadPlaneSizeR(&rbg->paraB, rbg->ctrl.regs->PLSZ >> 12);
+
+  for (i = 0; i < 16; i++)
+  {
+    Vdp2ParameterBPlaneAddr(info, i, rbg->ctrl.regs);
+    rbg->paraB.PlaneAddrv[i] = info->addr;
+  }
 
   ReadMosaicData(info, 0x1, rbg->ctrl.regs);
 
   info->transparencyenable = !(rbg->ctrl.regs->BGON & 0x100);
   info->specialprimode = rbg->ctrl.regs->SFPRMD & 0x3;
   info->specialcolormode = rbg->ctrl.regs->SFCCMD & 0x3;
+
   if (rbg->ctrl.regs->SFSEL & 0x1)
     info->specialcode = rbg->ctrl.regs->SFCODE >> 8;
   else
     info->specialcode = rbg->ctrl.regs->SFCODE & 0xFF;
 
   info->colornumber = (rbg->ctrl.regs->CHCTLA & 0x70) >> 4;
+
   int dest_alpha = ((rbg->ctrl.regs->CCCTL >> 9) & 0x01);
 
   info->coloroffset = (rbg->ctrl.regs->CRAOFA & 0x7) << 8;
-
   info->linecheck_mask = 0x01;
   info->priority = rbg->ctrl.regs->PRINA & 0x7;
 
@@ -4472,6 +4488,7 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
   ReadLineScrollData(info, rbg->ctrl.regs->SCRCTL & 0xFF, rbg->ctrl.regs->LSTA0.all);
   info->lineinfo = lineNBG0;
   Vdp2GenLineinfo(info);
+
   if (rbg->ctrl.regs->SCRCTL & 1)
   {
     info->isverticalscroll = 1;
