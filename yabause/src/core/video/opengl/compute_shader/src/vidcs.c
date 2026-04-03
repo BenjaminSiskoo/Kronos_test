@@ -890,12 +890,14 @@ void VIDCSVdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 Manual §7.2: invalid clip rectangle → reset local coords
+    // VDP1 Manual §7.2: "Operation cannot be guaranteed if XC < XA or YC < YA"
+    // The hardware does NOT reset localX/Y — it simply produces undefined results.
+    // We skip the command silently to avoid rendering artifacts.
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
-        regs->localX = 0;
-        regs->localY = 0;
+        // Invalid clip rectangle: skip command, do not modify local coordinates
+        return;
     }
     cmd->type = USER_CLIPPING;
     regs->userclipX1 = cmd->CMDXA;
@@ -1031,9 +1033,15 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
+    // VDP1 Manual §7.2: "Operation cannot be guaranteed if XC < XA or YC < YA"
+    // The hardware does NOT reset localX/Y — it simply produces undefined results.
+    // We skip the command silently to avoid rendering artifacts.
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
+        // Invalid clip rectangle: skip command, do not modify local coordinates
+        return;
+    } {
         regs->localX = 0;
         regs->localY = 0;
     }
