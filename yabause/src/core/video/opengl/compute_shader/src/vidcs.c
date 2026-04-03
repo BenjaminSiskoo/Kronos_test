@@ -4197,13 +4197,15 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
   u32 * line_pixel_data;
   u32 addr;
 
-  // APRÈS — la vérification globale reste valide comme early-out
-  // Le per-layer check se fait dans le shader via le VDP2COLOR encoding
-  // On peut quand même logger les bits actifs pour debug
-   // Note : LNCLEN bits 0-5 activent line color par layer
-  // Le shader doit utiliser ces bits individuellement
-  // (pas de changement fonctionnel CPU-side nécessaire ici)
-  if (varVdp2Regs->LNCLEN == 0) return;
+	// VDP2 Manual §11.3: LNCLEN register enables line color insertion per layer.
+	// Bits: 0=NBG0, 1=NBG1, 2=NBG2, 3=NBG3, 4=RBG0, 5=Sprite
+	// Early-out if no layer has line color enabled.
+	// Per-layer activation is handled by the shader via VDP2COLOR encoding.
+	if (varVdp2Regs->LNCLEN == 0) return;
+	// Note: individual bit checking (varVdp2Regs->LNCLEN & (1<<layer)) should
+	// be forwarded to the compositor shader. Currently the line color screen
+	// texture is generated globally — full per-layer enforcement requires
+	// shader-side LNCLEN bit testing. TODO: pass LNCLEN to compositor.
 
 
   line_pixel_data = YglGetLineColorScreenPointer();
