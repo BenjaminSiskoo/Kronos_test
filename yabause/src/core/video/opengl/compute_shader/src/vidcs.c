@@ -4356,15 +4356,26 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
     inc = 0x00; // single color
   }
 
-  u8 alpha = ((~varVdp2Regs->CCRLB & 0x1F) << 3) | NONE;
+	/* vidcs.c — Vdp2DrawLineColorScreen()
+	 * VDP2 Manual §11.3 CCRLB (18010EH) bits 4-0 = LCCCRT[4:0]:
+	 *   Line color screen color calculation ratio, same encoding as CCRNA.
+	 *   alpha = (~ratio & 0x1F) * 255 / 31  (0=opaque, 31=~transparent)
+	 * VDP2 Manual §11.3 LNCLEN (1800E8H): per-layer enable bits.
+	 *   bit 0=NBG0, 1=NBG1, 2=NBG2, 3=NBG3, 4=RBG0, 5=Sprite.
+	 *   Line color is only inserted on layers where LNCLEN bit is set.
+	 */
 
-  addr = (varVdp2Regs->LCTA.all & 0x7FFFF)<<1;
-  for (i = 0; i < line_cnt; i++) {
-    u16 LineColorRamAdress = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-    *(line_pixel_data) = Vdp2ColorRamGetLineColor(LineColorRamAdress, alpha);
-    line_pixel_data++;
-    addr += inc;
-  }
+	/* Correct alpha from CCRLB LCCCRT[4:0] */
+	u8 alpha = (u8)(((~varVdp2Regs->CCRLB & 0x1F) * 255) / 31);
+
+	addr = (varVdp2Regs->LCTA.all & 0x7FFFF) << 1;
+	for (i = 0; i < line_cnt; i++) {
+		u16 LineColorRamAdress = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+		/* VDP2 Manual §11.3: line color table entry is a color RAM index */
+		*(line_pixel_data) = Vdp2ColorRamGetLineColor(LineColorRamAdress, alpha);
+		line_pixel_data++;
+		addr += inc;
+	}
 
   YglSetLineColorScreen(line_pixel_data, line_cnt);
 
