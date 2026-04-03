@@ -1525,11 +1525,16 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
-  // APRÈS — spec §4.1 : NBG1 aussi désactivé si son propre colornumber >= 3
-		if ((ctrl.info.priority == 0) ||
-			(ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 == 4)) {
-		  return;
-		}
+	// VDP2 Manual §4.1 Table 4.1: NBG1 is disabled when NBG0 uses
+	// 32768 colors or more (colornumber >= 4 in CHCTLA bits 6-4).
+	// colornumber values: 0=16, 1=256, 2=2048, 3=32768, 4=16M (not for NBG0)
+	// Per Table 4.2 CHCTLA bits 6-4: 000=16col, 001=256col, 010=2048col,
+	// 011=32768col, 100=16Mcol. NBG1 disabled when NBG0 >= 32768 col (>= 3).
+	if ((ctrl.info.priority == 0) ||
+		(ctrl.regs->BGON & 0x1 &&
+		 ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 3)) {
+		return;
+}
 
   ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL >> 8, ctrl.regs->LSTA1.all);
   ctrl.info.lineinfo = lineNBG1;
