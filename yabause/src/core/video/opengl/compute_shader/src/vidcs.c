@@ -1745,11 +1745,13 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
   ctrl.info.priority = ctrl.regs->PRINB & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG2PlaneAddr;
 
-  if ((ctrl.info.priority == 0) ||
-    (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2)) {
-      // If NBG0 2048/32786/16M mode is enabled, don't draw
-      return;
-    }
+	// VDP2 Manual §4.1 Table 4.1: NBG2 is disabled when NBG0 uses
+	// 2048 colors or more (colornumber >= 2, i.e. CHCTLA bits 6-4 >= 010B).
+	if ((ctrl.info.priority == 0) ||
+		(ctrl.regs->BGON & 0x1 &&
+		 ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 2)) {
+		return;
+	}
 
   ctrl.info.islinescroll = 0;
   ctrl.info.linescrolltbl = 0;
