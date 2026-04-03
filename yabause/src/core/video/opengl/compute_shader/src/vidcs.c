@@ -2986,16 +2986,27 @@ static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
   }
 }
 
-static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
-{
-  if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] == 0)
-  {
-    if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x + w, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    if (Vdp2CheckWindow(&ctrl->info, x, y + h, _Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
-    return 0;
-  }
+	static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
+	{
+	  // VDP2 Manual §8.1: Three window types exist for each screen:
+	  // W0 (Window 0), W1 (Window 1), WS (Sprite Window).
+	  // WS is based on the MSB of VDP1 sprite pixels and is not implemented
+	  // in this CPU-side range check — it requires framebuffer sprite data.
+	  // TODO: implement WinS (Sprite Window) check using VDP1 framebuffer MSB.
+	  // Currently only W0 and W1 are checked.
+
+	  if (_Ygl->Win0[ctrl->info.idScreen] != 0 && _Ygl->Win1[ctrl->info.idScreen] == 0)
+	  {
+		if (Vdp2CheckWindow(&ctrl->info, x, y,
+			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+		if (Vdp2CheckWindow(&ctrl->info, x + w, y,
+			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+		if (Vdp2CheckWindow(&ctrl->info, x + w, y + h,
+			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+		if (Vdp2CheckWindow(&ctrl->info, x, y + h,
+			_Ygl->Win0_mode[ctrl->info.idScreen], _Ygl->win[0])) return 1;
+		return 0;
+	  }
   else if (_Ygl->Win0[ctrl->info.idScreen] == 0 && _Ygl->Win1[ctrl->info.idScreen] != 0)
   {
     if (Vdp2CheckWindow(&ctrl->info, x, y, _Ygl->Win1_mode[ctrl->info.idScreen], _Ygl->win[1])) return 1;
