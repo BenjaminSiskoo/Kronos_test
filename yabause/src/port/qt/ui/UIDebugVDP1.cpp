@@ -848,41 +848,58 @@ static int getNormalCycles(vdp1cmd_struct *cmd) {
 #define CAP(L,A,H) (((A)<(L))?(L):(((A)>(H))?(H):(A)))
 
 static int getScaledCycles(vdp1cmd_struct *cmd) {
-  int ax = cmd->CMDXA;
-  int ay = cmd->CMDYA;
-  int bx = cmd->CMDXB;
-  int dy = cmd->CMDYD;
-  if (!(cmd->CMDPMOD & 0x800)) {
-    int lx = Vdp1Regs->userclipX1;
-    int hx = Vdp1Regs->userclipX2;
-    int ly = Vdp1Regs->userclipY1;
-    int hy = Vdp1Regs->userclipY2;
-    ax = CAP(lx,ax,hx);
-    bx = CAP(lx,bx,hx);
-    ay = CAP(ly,ay,hy);
-    dy = CAP(ly,dy,hy);
-  }
-  int cmdW = MAX(cmd->w, 1);
-   switch ((cmd->CMDPMOD >> 3) & 0x7) {
-    case 0:
-    case 1:
-      // 4 pixels per 16 bits
-      cmdW  = cmdW >> 2;
-      break;
-    case 2:
-    case 3:
-    case 4:
-      // 2 pixels per 16 bits
-      cmdW = cmdW >> 1;
-      break;
-    default:
-      break;
-  }
-  int rh = abs(dy - ay);
-  int rw = abs(bx - ax);
-  if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-  if (((cmd->CMDPMOD>>12)&0x1) && (rw < cmd->w)) cmdW >>= 1; //HSS
-  return MAX(rw, cmdW) * MAX(rh, 1);
+    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
+     * For scaled sprites the output size is (rw × rh) pixels.
+     * The texture read cost depends on the color mode and HSS:
+     *
+     * VDP1 Manual §6.3 HSS (bit 12 of CMDPMOD, p.81):
+     *   When HSS=1 AND output_width < texture_width (reduction):
+     *   only even/odd texture columns are sampled → texture read
+     *   is halved: cmdW >>= 1.
+     *   When HSS=0: all texture columns sampled regardless of scaling.
+     *
+     * Color mode (CMDPMOD bits 5-3):
+     *   0/1 (4bpp):  4px per word → cmdW = w/4
+     *   2/3/4 (8bpp): 2px per word → cmdW = w/2
+     *   5 (16bpp):   1px per word (as 2-byte word) → cmdW = w
+     *
+     * VDP1 Manual §4.3 Table 4.4 (p.49): 8bpp FB halves write cycles.
+     *
+     * Effective cycles = max(output_write_cycles, texture_read_cycles)
+     * where output_write_cycles = rw (16bpp FB) or rw/2 (8bpp FB)
+     * and   texture_read_cycles = cmdW (after HSS and color-mode divisor)
+     */
+    int ax = cmd->CMDXA;
+    int ay = cmd->CMDYA;
+    int bx = cmd->CMDXB;
+    int dy = cmd->CMDYD;
+    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping enabled (Pclp=0) */
+        int lx = Vdp1Regs->userclipX1;
+        int hx = Vdp1Regs->userclipX2;
+        int ly = Vdp1Regs->userclipY1;
+        int hy = Vdp1Regs->userclipY2;
+        ax = CAP(lx,ax,hx);
+        bx = CAP(lx,bx,hx);
+        ay = CAP(ly,ay,hy);
+        dy = CAP(ly,dy,hy);
+    }
+    int cmdW = MAX(cmd->w, 1);
+    /* VDP1 Manual §6.3 color mode divisor (CMDPMOD bits 5-3):
+     * mode 0/1 (4bpp) : 4 pixels per 16-bit VRAM word → divide by 4
+     * mode 2/3/4 (8bpp): 2 pixels per 16-bit VRAM word → divide by 2
+     * mode 5 (16bpp)  : 1 pixel per 16-bit VRAM word  → no division */
+    switch ((cmd->CMDPMOD >> 3) & 0x7) {
+        case 0: case 1: cmdW >>= 2; break;   /* 4bpp: 4px/word */
+        case 2: case 3: case 4: cmdW >>= 1; break; /* 8bpp: 2px/word */
+        default: break;                        /* 16bpp: 1px/word */
+    }
+    int rh  = abs(dy - ay);
+    int rw  = abs(bx - ax);
+    if (Vdp1Regs->TVMR & 0x1) rw >>= 1; /* 8bpp FB: 2px/write-cycle */
+    /* VDP1 Manual §6.3 HSS p.81: when shrinking (rw_screen < texture_w)
+     * and HSS=1, texture read is at half resolution → cmdW halved again. */
+    if (((cmd->CMDPMOD >> 12) & 0x1) && (rw < cmd->w)) cmdW >>= 1;
+    return MAX(rw, cmdW) * MAX(rh, 1);
 }
 
 static int getDistortedCycles(vdp1cmd_struct *cmd) {
