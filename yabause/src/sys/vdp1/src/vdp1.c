@@ -1597,27 +1597,23 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
                nbCmdToProcess += Vdp1LineDraw(&cmd, ram, regs);
              }
              break;
-             case 8: // user clipping coordinates
+			 case 8: // user clipping coordinates
+             /* VDP1 Manual §6.1 p.71: command table = 30 bytes, fetched as
+              * 32-byte aligned block. No pixels drawn — fetch cost only.
+              * At 28MHz pixel clock: 32 bytes / 2 bytes per cycle = 16 cycles.
+              * VDP1 Manual §6.3 p.74 Table 6.1: set command overhead = 16. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1UserClipping(&cmd, ram, regs);
-             }
-             break;
              case 11: // undocumented command
               //Do nothing as we are skipping it.
              break;
-             case 9: // system clipping coordinates
+			case 9: // system clipping coordinates
+             /* VDP1 Manual §6.1/§6.3 Table 6.1: same fetch overhead as
+              * user clipping — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1SystemClipping(&cmd, ram, regs);
-             }
-             break;
-             case 10: // local coordinate
+			 case 10: // local coordinate
+             /* VDP1 Manual §6.1/§6.3 Table 6.1: local coordinate set command
+              * has fetch overhead only — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1LocalCoordinate(&cmd, ram, regs);
-             }
-             break;
              default: // Abort
              FRAMELOG("vdp1\t: Bad command: %x\n", command);
              Vdp1External.status &= ~VDP1_STATUS_MASK;
