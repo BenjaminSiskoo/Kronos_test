@@ -2029,15 +2029,20 @@ if (rbg->ctrl.regs->RPMD == 0x03)
     info->rotatenum = 1;
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
     break;
-  case 2:
-    // RPMD=2 : commutation A/B par table de coefficients
-    info->rotatenum = 0;
-    info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
-    // Spec §6.4 : coefenab obligatoire pour les deux paramètres
-    rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;  // RAKTE bit0
-    rbg->paraB.coefenab = 0;  // Interdit en mode 2
-    rbg->useb = 1;
-    break;
+	case 2:
+		// VDP2 Manual §6.3 RPMD=10B: Rotation Parameter switching by
+		// coefficient table. The coefficient table determines per-line
+		// which parameter (A or B) is active. paraB is enabled via useb=1.
+		// NOTE: Full per-line A/B switching based on coefficient data requires
+		// additional shader/generator support. The coef table is read via KTCTL
+		// bit 0 (RAKTE: Rotation A Coefficient Table Enable).
+		// TODO: implement per-line parameter switching in RBGGenerator.
+		info->rotatenum = 0;
+		info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
+		rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;  // RAKTE bit0
+		rbg->paraB.coefenab = 0;  // Prohibited in RPMD=2 per §6.3
+		rbg->useb = 1;
+		break;
   case 3:
   default:
     // Parameter A+B switched via rotation parameter window
