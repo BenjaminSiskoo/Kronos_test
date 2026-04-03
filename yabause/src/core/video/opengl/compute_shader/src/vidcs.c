@@ -3808,29 +3808,30 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
-	// VDP2 Manual §5.3: Line Scroll Table Space (N0LSS bits 5-4 of SCRCTL)
-	// 00=every line, 01=every 2 lines, 10=every 4, 11=every 8
-	// ctrl->info.lineinc is the pattern pixel size (8 or 16), NOT the table spacing.
-	// linescroll_spacing is the actual table index step derived from SCRCTL.
+	 // VDP2 Manual §5.3 SCRCTL NxLSS bits: line scroll table read interval depends
+	 // on interlace mode. Table (p.137):
+	 //   NxLSS = 00 → every line (NI), every 2 lines (SI), every line (DDI)
+	 //   NxLSS = 01 → every 2 lines (NI), every 4 lines (SI), every 2 lines (DDI)
+	 //   NxLSS = 10 → every 4 lines (NI), every 8 lines (SI), every 4 lines (DDI)
+	 //   NxLSS = 11 → every 8 lines (NI), every 16 lines (SI), every 8 lines (DDI)
+	 // In single-density interlace, each screen line = 2 table rows (one per field),
+	 // so the effective table spacing is multiplied by 2.
+	 ///
 	int linescroll_spacing = 1;
 	if (ctrl->info.islinescroll) {
 		int lss = 0;
-		// VDP2 Manual §5.3, SCRCTL N0LSS/N1LSS bits:
-		// NBG0: bits 5-4 (N0LSS1, N0LSS0)
-		// NBG1: bits 13-12 (N1LSS1, N1LSS0)
-		// lss=0 → every line, lss=1 → every 2 lines,
-		// lss=2 → every 4 lines, lss=3 → every 8 lines
 		if (ctrl->info.idScreen == NBG0)
 			lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
 		else if (ctrl->info.idScreen == NBG1)
 			lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
 		linescroll_spacing = 1 << lss;
-		// VDP2 Manual §5.3: In double-density interlace, the line scroll table
-		// is indexed per half-line. The spacing must be doubled to account for
-		// the fact that we iterate screen lines (not half-lines).
-		if (_Ygl->interlace == DOUBLE_INTERLACE) {
+		/* VDP2 Manual §5.3: In single-density interlace the line scroll table
+		 * is indexed every 2 physical lines (both fields share one table entry).
+		 * In double-density interlace the table is indexed every physical line
+		 * (per-field), identical to non-interlace. */
+		if (_Ygl->interlace == SINGLE_INTERLACE)
 			linescroll_spacing <<= 1;
-		}
+		/* DDI: no adjustment needed — spacing same as non-interlace */
 	}
 	int linemask = linescroll_spacing - 1;
   int screenH = _Ygl->rheight;
