@@ -3094,29 +3094,35 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
   }
 }
 
-// Ajouter un helper dans vidcs.c :
-static INLINE int Vdp2CheckCCWindow(int x, int y) {
-    // CCW est à l'index SPRITE+1 dans les tableaux _Ygl->Win0/Win1
-    int idx = SPRITE + 1;
-    if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // pas de CCW → cc actif
-    
-    int in_ccw = 0;
-    if (_Ygl->Win0[idx]) {
-        int w0 = Vdp2CheckWindow(NULL, x, y,
-                     _Ygl->Win0_mode[idx] == WA_INSIDE ? 1 : 0,
-                     _Ygl->win[0]);
-        in_ccw |= w0;
-    }
-    if (_Ygl->Win1[idx]) {
-        int w1 = Vdp2CheckWindow(NULL, x, y,
-                     _Ygl->Win1_mode[idx] == WA_INSIDE ? 1 : 0,
-                     _Ygl->win[1]);
-        if (_Ygl->Win_op[idx] == 0) in_ccw |= w1;  // OR
-        else                         in_ccw &= w1;  // AND
-    }
-    // CCW : color calc N'EST PAS effectué dans la zone active du CCW
-    return !in_ccw;
-}
+	static INLINE int Vdp2CheckCCWindow(int x, int y) {
+		// VDP2 Manual §9.4: Color Calculation Window (CCW) restricts color
+		// calculation to specific screen regions. CCW data is in WCTLD bits 15-8.
+		// CCW index in window arrays is SPRITE+1.
+		int idx = SPRITE + 1;
+		if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // no CCW → CC active everywhere
+
+		int in_ccw = 0;
+		if (_Ygl->Win0[idx]) {
+			// Vdp2CheckWindow requires a non-NULL vdp2draw_struct* only for
+			// fields accessed inside (currently none — y bounds use _Ygl directly).
+			// Pass a dummy zero-initialized struct to avoid undefined NULL deref.
+			vdp2draw_struct dummy = {0};
+			int w0 = Vdp2CheckWindow(&dummy, x, y,
+						 (_Ygl->Win0_mode[idx] == WA_INSIDE) ? 1 : 0,
+						 _Ygl->win[0]);
+			in_ccw |= w0;
+		}
+		if (_Ygl->Win1[idx]) {
+			vdp2draw_struct dummy = {0};
+			int w1 = Vdp2CheckWindow(&dummy, x, y,
+						 (_Ygl->Win1_mode[idx] == WA_INSIDE) ? 1 : 0,
+						 _Ygl->win[1]);
+			if (_Ygl->Win_op[idx] == 0) in_ccw |= w1;  // OR
+			else                         in_ccw &= w1;  // AND
+		}
+		// VDP2 Manual §9.4: CC is NOT performed inside the active CCW region
+		return !in_ccw;
+	}
 
 static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
   const int CCMD = ((ctrl->regs->CCCTL >> 8) & 0x01);
