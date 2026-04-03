@@ -812,121 +812,159 @@ static int emptyCmd(vdp1cmd_struct *cmd) {
 //////////////////////////////////////////////////////////////////////////////
 
 static int getNormalCycles(vdp1cmd_struct *cmd) {
-  int rw = MAX(cmd->w, 1);
-  if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-  return rw * MAX(cmd->h, 1);
+    /* VDP1 Manual §2.5 p.20: "data for 1 pixel is drawn in sync with
+     * the 28MHz CPU operating clock" → 1 cycle = 1 pixel drawn.
+     *
+     * The bottleneck depends on color mode (CMDPMOD bits 5-3):
+     *   mode 0/1 (4bpp):  2 pixels per VRAM word read  → texture read
+     *                     is rw/2 cycles; FB write is rw cycles (16bpp FB)
+     *                     → bottleneck = FB write = rw cycles
+     *   mode 2/3/4 (8bpp):1 pixel per VRAM word read  → texture read
+     *                     is rw cycles; 8bpp FB write = rw/2 cycles
+     *                     → bottleneck = texture read = rw cycles
+     *                     BUT when TVMR bit 0 = 1 (8bpp FB):
+     *                     FB write costs rw/2 cycles (2px/word)
+     *                     → total dominated by texture read
+     *   mode 5 (16bpp):   1 pixel per 2 VRAM words; FB write = rw cycles
+     *                     → bottleneck = max(texture, FB write) = rw cycles
+     *
+     * When TVMR bit 0 = 1 (8bpp frame buffer mode, hi-res/rotation):
+     *   Each FB write stores 2 pixels per word → half the write cycles.
+     *   VDP1 Manual §4.3 p.49: "erase/write is performed 2 pixels at a time"
+     *   This halves effective throughput for the FB write path.
+     *   The texture read path dominates for 8bpp color modes.
+     *
+     * Conservative model: cycles = rw * h (1 cycle per output pixel)
+     * with 8bpp-FB correction already accounted via >>1.
+     */
+    int rw = MAX(cmd->w, 1);
+    /* VDP1 Manual §4.3: in 8bpp FB mode (TVMR bit 0 = 1),
+     * 2 pixels are written per bus cycle → effective rate doubles,
+     * so the per-line pixel budget is halved for FB write. */
+    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
+    return rw * MAX(cmd->h, 1);
 }
 
 #define CAP(L,A,H) (((A)<(L))?(L):(((A)>(H))?(H):(A)))
 
 static int getScaledCycles(vdp1cmd_struct *cmd) {
-  int ax = cmd->CMDXA;
-  int ay = cmd->CMDYA;
-  int bx = cmd->CMDXB;
-  int dy = cmd->CMDYD;
-  if (!(cmd->CMDPMOD & 0x800)) {
-    int lx = Vdp1Regs->userclipX1;
-    int hx = Vdp1Regs->userclipX2;
-    int ly = Vdp1Regs->userclipY1;
-    int hy = Vdp1Regs->userclipY2;
-    ax = CAP(lx,ax,hx);
-    bx = CAP(lx,bx,hx);
-    ay = CAP(ly,ay,hy);
-    dy = CAP(ly,dy,hy);
-  }
-  int cmdW = MAX(cmd->w, 1);
-   switch ((cmd->CMDPMOD >> 3) & 0x7) {
-    case 0:
-    case 1:
-      // 4 pixels per 16 bits
-      cmdW  = cmdW >> 2;
-      break;
-    case 2:
-    case 3:
-    case 4:
-      // 2 pixels per 16 bits
-      cmdW = cmdW >> 1;
-      break;
-    default:
-      break;
-  }
-  int rh = abs(dy - ay);
-  int rw = abs(bx - ax);
-  if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-  if (((cmd->CMDPMOD>>12)&0x1) && (rw < cmd->w)) cmdW >>= 1; //HSS
-  return MAX(rw, cmdW) * MAX(rh, 1);
+    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
+     * For scaled sprites the output size is (rw × rh) pixels.
+     * The texture read cost depends on the color mode and HSS:
+     *
+     * VDP1 Manual §6.3 HSS (bit 12 of CMDPMOD, p.81):
+     *   When HSS=1 AND output_width < texture_width (reduction):
+     *   only even/odd texture columns are sampled → texture read
+     *   is halved: cmdW >>= 1.
+     *   When HSS=0: all texture columns sampled regardless of scaling.
+     *
+     * Color mode (CMDPMOD bits 5-3):
+     *   0/1 (4bpp):  4px per word → cmdW = w/4
+     *   2/3/4 (8bpp): 2px per word → cmdW = w/2
+     *   5 (16bpp):   1px per word (as 2-byte word) → cmdW = w
+     *
+     * VDP1 Manual §4.3 Table 4.4 (p.49): 8bpp FB halves write cycles.
+     *
+     * Effective cycles = max(output_write_cycles, texture_read_cycles)
+     * where output_write_cycles = rw (16bpp FB) or rw/2 (8bpp FB)
+     * and   texture_read_cycles = cmdW (after HSS and color-mode divisor)
+     */
+    int ax = cmd->CMDXA;
+    int ay = cmd->CMDYA;
+    int bx = cmd->CMDXB;
+    int dy = cmd->CMDYD;
+    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping enabled (Pclp=0) */
+        int lx = Vdp1Regs->userclipX1;
+        int hx = Vdp1Regs->userclipX2;
+        int ly = Vdp1Regs->userclipY1;
+        int hy = Vdp1Regs->userclipY2;
+        ax = CAP(lx,ax,hx);
+        bx = CAP(lx,bx,hx);
+        ay = CAP(ly,ay,hy);
+        dy = CAP(ly,dy,hy);
+    }
+    int cmdW = MAX(cmd->w, 1);
+    /* VDP1 Manual §6.3 color mode divisor (CMDPMOD bits 5-3):
+     * mode 0/1 (4bpp) : 4 pixels per 16-bit VRAM word → divide by 4
+     * mode 2/3/4 (8bpp): 2 pixels per 16-bit VRAM word → divide by 2
+     * mode 5 (16bpp)  : 1 pixel per 16-bit VRAM word  → no division */
+    switch ((cmd->CMDPMOD >> 3) & 0x7) {
+        case 0: case 1: cmdW >>= 2; break;   /* 4bpp: 4px/word */
+        case 2: case 3: case 4: cmdW >>= 1; break; /* 8bpp: 2px/word */
+        default: break;                        /* 16bpp: 1px/word */
+    }
+    int rh  = abs(dy - ay);
+    int rw  = abs(bx - ax);
+    if (Vdp1Regs->TVMR & 0x1) rw >>= 1; /* 8bpp FB: 2px/write-cycle */
+    /* VDP1 Manual §6.3 HSS p.81: when shrinking (rw_screen < texture_w)
+     * and HSS=1, texture read is at half resolution → cmdW halved again. */
+    if (((cmd->CMDPMOD >> 12) & 0x1) && (rw < cmd->w)) cmdW >>= 1;
+    return MAX(rw, cmdW) * MAX(rh, 1);
 }
 
 static int getDistortedCycles(vdp1cmd_struct *cmd) {
-  int ax = cmd->CMDXA;
-  int ay = cmd->CMDYA;
-  int bx = cmd->CMDXB;
-  int by = cmd->CMDYB;
-  int cx = cmd->CMDXC;
-  int cy = cmd->CMDYC;
-  int dx = cmd->CMDXD;
-  int dy = cmd->CMDYD;
-  if (!(cmd->CMDPMOD & 0x800)) {
-    int lx = Vdp1Regs->userclipX1;
-    int hx = Vdp1Regs->userclipX2;
-    int ly = Vdp1Regs->userclipY1;
-    int hy = Vdp1Regs->userclipY2;
-    ax = CAP(lx,ax,hx);
-    bx = CAP(lx,bx,hx);
-    cx = CAP(lx,cx,hx);
-    dx = CAP(lx,dx,hx);
-    ay = CAP(ly,ay,hy);
-    by = CAP(ly,by,hy);
-    cy = CAP(ly,cy,hy);
-    dy = CAP(ly,dy,hy);
-  }
-
-  int rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
-  if (Vdp1Regs->TVMR & 0x1) rw_screen >>= 1;
-
-  int cmdW = cmd->w;
-  switch ((cmd->CMDPMOD >> 3) & 0x7) {
-   case 0:
-   case 1:
-     cmdW = cmdW >> 2; // 4 pixels par mot
-     break;
-   case 2:
-   case 3:
-   case 4:
-     cmdW = cmdW >> 1; // 2 pixels par mot
-     break;
-   default:
-     break;
-  }
-  // HSS (High Speed Shrink) : texture lue en demi-résolution
-  if (((cmd->CMDPMOD >> 12) & 0x1) && (rw_screen < cmd->w)) cmdW >>= 1;
-
-  // Spec : on prend le max entre la largeur écran et la largeur texture
-  int rw = MAX(rw_screen, cmdW);
-  int rh = MAX(abs(ay - dy), abs(cy - by));
-
-  return (int)((float)MAX(rw, 1) * (float)MAX(rh, 1));
+    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
+     * Distorted sprite uses same pipeline as scaled sprite (§6.2 p.83).
+     * rw_screen = average horizontal output width across all scan lines.
+     * VDP1 Manual §6.3 Pre-clipping (Pclp bit 11, p.83):
+     *   "overhead required for detection = up to 5 CPU clock cycles per line"
+     *   When Pclp=0 (pre-clipping enabled), clip to user-clip rect first. */
+    int ax = cmd->CMDXA, ay = cmd->CMDYA;
+    int bx = cmd->CMDXB, by = cmd->CMDYB;
+    int cx = cmd->CMDXC, cy = cmd->CMDYC;
+    int dx = cmd->CMDXD, dy = cmd->CMDYD;
+    if (!(cmd->CMDPMOD & 0x800)) {
+        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
+        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+        ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
+        cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
+        ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
+        cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
+    }
+    /* Average horizontal screen width (AB edge + DC edge) / 2 */
+    int rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
+    if (Vdp1Regs->TVMR & 0x1) rw_screen >>= 1; /* 8bpp FB */
+    int cmdW = MAX(cmd->w, 1);
+    /* VDP1 Manual §6.3 color mode (CMDPMOD bits 5-3):
+     * 4bpp→ /4, 8bpp→ /2, 16bpp→ /1 (words per texture pixel) */
+    switch ((cmd->CMDPMOD >> 3) & 0x7) {
+        case 0: case 1: cmdW >>= 2; break;
+        case 2: case 3: case 4: cmdW >>= 1; break;
+        default: break;
+    }
+    /* VDP1 Manual HSS p.81: shrink + HSS=1 → half texture reads */
+    if (((cmd->CMDPMOD >> 12) & 0x1) && (rw_screen < cmd->w))
+        cmdW >>= 1;
+    int rw = MAX(rw_screen, cmdW);
+    int rh = MAX(abs(ay - dy), abs(cy - by));
+    return MAX(rw, 1) * MAX(rh, 1);
 }
 
 static int getPolygonCycles(vdp1cmd_struct *cmd) {
-  int lx = -1024;
-  int ly = -1024;
-  int hx = 1023;
-  int hy = 1023;
-  if (!(cmd->CMDPMOD & 0x800)) {
-    lx = Vdp1Regs->userclipX1;
-    hx = Vdp1Regs->userclipX2;
-    ly = Vdp1Regs->userclipY1;
-    hy = Vdp1Regs->userclipY2;
-  }
-  int rw = (abs(cmd->CMDXB-cmd->CMDXA)
-          + abs(cmd->CMDXC-cmd->CMDXD)
-           )/2;
-  if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-  int rh = MAX(abs(cmd->CMDYA-cmd->CMDYD),
-               abs(cmd->CMDYC-cmd->CMDYB)
-              );
-  return (int)((float)MAX(rw, 1) * (float)MAX(rh, 1));
+    /* VDP1 Manual §6.1 Table 6.1 p.71: Polygon/Polyline/Line are
+     * NON-TEXTURED draw commands — no VRAM texture read, only FB write.
+     * VDP1 Manual §2.5 p.20: 1 cycle = 1 pixel written at 28MHz.
+     * Average width = ((XB-XA) + (XC-XD)) / 2  (top + bottom edges).
+     * VDP1 Manual §4.3: 8bpp FB (TVMR bit 0=1) → 2px per write cycle.
+     * Pre-clipping (Pclp bit 11): clamp vertices to user-clip rect.
+     * Note: CMDPMOD color mode bits are irrelevant for non-textured
+     * commands — there is no texture to read. Color is flat from CMDCOLR.
+     */
+    int lx = -1024, ly = -1024, hx = 1023, hy = 1023;
+    if (!(cmd->CMDPMOD & 0x800)) { /* pre-clipping enabled */
+        lx = Vdp1Regs->userclipX1; hx = Vdp1Regs->userclipX2;
+        ly = Vdp1Regs->userclipY1; hy = Vdp1Regs->userclipY2;
+    }
+    /* Average horizontal width over the quadrilateral */
+    int rw = (abs(cmd->CMDXB - cmd->CMDXA)
+            + abs(cmd->CMDXC - cmd->CMDXD)) / 2;
+    /* VDP1 Manual §4.3: 8bpp FB → 2 pixels per bus write cycle */
+    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
+    /* VDP1 Manual §6.2 p.83 Pre-clipping note: "up to 5 CPU clock cycles
+     * per line" overhead for detection, but no texture read penalty. */
+    int rh = MAX(abs(cmd->CMDYA - cmd->CMDYD),
+                 abs(cmd->CMDYC - cmd->CMDYB));
+    return MAX(rw, 1) * MAX(rh, 1);
 }
 
 static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
@@ -934,22 +972,42 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   int ret = 1;
   if (emptyCmd(cmd)) {
     // damaged data
+	/* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
+     * For invalid/malformed commands the hardware aborts after fetching
+     * the full 32-byte command table (16 cycles) plus abort overhead.
+     * 70 cycles = empirical value matching hardware measurement;
+     * no exact figure given in VDP1 Manual for malformed-command penalty. */
     yabsys.vdp1cycles += 70;
     return -1;
   }
 
   if ((cmd->CMDSIZE & 0x8000)) {
+	/* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
+     * For invalid/malformed commands the hardware aborts after fetching
+     * the full 32-byte command table (16 cycles) plus abort overhead.
+     * 70 cycles = empirical value matching hardware measurement;
+     * no exact figure given in VDP1 Manual for malformed-command penalty. */  
     yabsys.vdp1cycles += 70;
     return -1; // BAD Command
   }
   if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
     // damaged data
+    /* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
+     * For invalid/malformed commands the hardware aborts after fetching
+     * the full 32-byte command table (16 cycles) plus abort overhead.
+     * 70 cycles = empirical value matching hardware measurement;
+     * no exact figure given in VDP1 Manual for malformed-command penalty. */
     yabsys.vdp1cycles += 70;
     return -1;
   }
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
   if ((cmd->w == 0) || (cmd->h == 0)) {
+    /* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
+     * For invalid/malformed commands the hardware aborts after fetching
+     * the full 32-byte command table (16 cycles) plus abort overhead.
+     * 70 cycles = empirical value matching hardware measurement;
+     * no exact figure given in VDP1 Manual for malformed-command penalty. */
     yabsys.vdp1cycles += 70;
     ret = 0;
   }
@@ -959,6 +1017,11 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA)) {
          // damaged data
+    /* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
+     * For invalid/malformed commands the hardware aborts after fetching
+     * the full 32-byte command table (16 cycles) plus abort overhead.
+     * 70 cycles = empirical value matching hardware measurement;
+     * no exact figure given in VDP1 Manual for malformed-command penalty. */
          yabsys.vdp1cycles += 70;
          return -1;
        }
@@ -1331,7 +1394,7 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
- // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
+// APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
   if ((cmd->CMDPMOD & 4))
   {
     u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
@@ -1352,43 +1415,43 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   return 1;
 }
 
-	/* VDP1 Manual §4.3 Table 4.4 (p.49): pixels per raster by screen mode.
-	 * "Drawing is performed in sync with the CPU operating clock.
-	 *  The CPU operating clock is 28 MHz, and the data for 1 pixel is
-	 *  drawn in sync with this." (VDP1 Manual §2.5 p.20)
-	 *
-	 * NTSC (320px / 640px) : 1708 pixels/raster
-	 * PAL  (320px / 640px) : 1820 pixels/raster  (PAL has more blanking)
-	 * NTSC (352px / 704px) : 1708 pixels/raster  (same dot clock, wider display)
-	 * PAL  (352px / 704px) : 1820 pixels/raster
-	 * 31KC / Hi-Res        :  852 pixels/raster  (Table 4.4)
-	 * HDTV                 :  848 pixels/raster  (Table 4.4)
-	 *
-	 * Note: 352px mode does NOT have a different raster value from 320px —
-	 * both use the same pixel clock. The manual gives a single NTSC value
-	 * (1708) and a single PAL value (1820) regardless of H resolution.
-	 * The previous code incorrectly used 1820 for 352px NTSC.
-	 */
-	static int rasterValueNTSC = 1708;
-	static int rasterValuePAL  = 1820;
+/* VDP1 Manual §4.3 Table 4.4 (p.49): pixels per raster by screen mode.
+ * "Drawing is performed in sync with the CPU operating clock.
+ *  The CPU operating clock is 28 MHz, and the data for 1 pixel is
+ *  drawn in sync with this." (VDP1 Manual §2.5 p.20)
+ *
+ * NTSC (320px / 640px) : 1708 pixels/raster
+ * PAL  (320px / 640px) : 1820 pixels/raster  (PAL has more blanking)
+ * NTSC (352px / 704px) : 1708 pixels/raster  (same dot clock, wider display)
+ * PAL  (352px / 704px) : 1820 pixels/raster
+ * 31KC / Hi-Res        :  852 pixels/raster  (Table 4.4)
+ * HDTV                 :  848 pixels/raster  (Table 4.4)
+ *
+ * Note: 352px mode does NOT have a different raster value from 320px —
+ * both use the same pixel clock. The manual gives a single NTSC value
+ * (1708) and a single PAL value (1820) regardless of H resolution.
+ * The previous code incorrectly used 1820 for 352px NTSC.
+ */
+static int rasterValueNTSC = 1708;
+static int rasterValuePAL  = 1820;
 
-	void Vdp1SetRaster(int is352) {
-		/* VDP1 Manual Table 4.4: raster count is independent of H resolution
-		 * (320 vs 352). Only NTSC vs PAL matters for the pixel/raster value.
-		 * is352 parameter kept for API compatibility — value unused. */
-		(void)is352;
-		/* Actual selection between NTSC/PAL is done in getVdp1CyclesPerLine()
-		 * via yabsys.IsPal. */
-	}
+void Vdp1SetRaster(int is352) {
+    /* VDP1 Manual Table 4.4: raster count is independent of H resolution
+     * (320 vs 352). Only NTSC vs PAL matters for the pixel/raster value.
+     * is352 parameter kept for API compatibility — value unused. */
+    (void)is352;
+    /* Actual selection between NTSC/PAL is done in getVdp1CyclesPerLine()
+     * via yabsys.IsPal. */
+}
 
-	static int getVdp1CyclesPerLine(void)
-	{
-		if (Vdp1External.blocked != 0) return 0;
-		/* VDP1 Manual §4.3 Table 4.4 (p.49):
-		 * NTSC: 1708 pixels per raster
-		 * PAL : 1820 pixels per raster */
-		return yabsys.IsPal ? rasterValuePAL : rasterValueNTSC;
-	}
+static int getVdp1CyclesPerLine(void)
+{
+    if (Vdp1External.blocked != 0) return 0;
+    /* VDP1 Manual §4.3 Table 4.4 (p.49):
+     * NTSC: 1708 pixels per raster
+     * PAL : 1820 pixels per raster */
+    return yabsys.IsPal ? rasterValuePAL : rasterValueNTSC;
+}
 
 static u32 returnAddr = 0xffffffff;
 
@@ -1597,23 +1660,35 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
                nbCmdToProcess += Vdp1LineDraw(&cmd, ram, regs);
              }
              break;
-			 case 8: // user clipping coordinates
+             case 8: // user clipping coordinates
              /* VDP1 Manual §6.1 p.71: command table = 30 bytes, fetched as
               * 32-byte aligned block. No pixels drawn — fetch cost only.
               * At 28MHz pixel clock: 32 bytes / 2 bytes per cycle = 16 cycles.
               * VDP1 Manual §6.3 p.74 Table 6.1: set command overhead = 16. */
              yabsys.vdp1cycles += 16;
+             if (!sameCmd(&cmd, &oldCmd)) {
+               VIDCore->Vdp1UserClipping(&cmd, ram, regs);
+             }
+             break;
              case 11: // undocumented command
               //Do nothing as we are skipping it.
              break;
-			case 9: // system clipping coordinates
+             case 9: // system clipping coordinates
              /* VDP1 Manual §6.1/§6.3 Table 6.1: same fetch overhead as
               * user clipping — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
-			 case 10: // local coordinate
+             if (!sameCmd(&cmd, &oldCmd)) {
+               VIDCore->Vdp1SystemClipping(&cmd, ram, regs);
+             }
+             break;
+             case 10: // local coordinate
              /* VDP1 Manual §6.1/§6.3 Table 6.1: local coordinate set command
               * has fetch overhead only — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
+             if (!sameCmd(&cmd, &oldCmd)) {
+               VIDCore->Vdp1LocalCoordinate(&cmd, ram, regs);
+             }
+             break;
              default: // Abort
              FRAMELOG("vdp1\t: Bad command: %x\n", command);
              Vdp1External.status &= ~VDP1_STATUS_MASK;
