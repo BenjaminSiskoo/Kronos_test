@@ -2285,10 +2285,14 @@ int VIDCSVdp1Reset(void)
   return 0;
 }
 
+// VDP2 Manual §13.1: Color offset range is -256 to +255 (9-bit two's complement).
+// We encode into 8-bit centered at 128 for the shader.
+// Clamp to [-128,+127] since RGB is 5-bit (0-31) and offsets beyond ±128
+// would saturate anyway. This preserves full precision within useful range.
 static inline int encodeColorOffset(int v) {
     if (v < -128) v = -128;
     if (v >  127) v =  127;
-    return (v + 128) & 0xFF; // neutre=128, shader décode: (x/255-0.5)*2 → [-1,+1]
+    return (v + 128) & 0xFF; // neutral=128, shader decodes: (x/255.0-0.5)*2→[-1,+1]
 }
 
 void VIDCSReadColorOffset(void) {
@@ -2304,30 +2308,30 @@ void VIDCSReadColorOffset(void) {
     for (int line = 0; line < _Ygl->rheight; line++) {
         Vdp2 * lVdp2Regs = &Vdp2Lines[line >> line_shift];
 
-        // Lecture des registres avec sign-extend 9 bits PUIS division par 2 :
-		int a_cor = lVdp2Regs->COAR & 0x1FF;
-		if (a_cor & 0x100) a_cor |= ~0x1FF; // sign-extend 9→32 bits
-		a_cor >>= 1; // ramener dans [-128,+127] pour canal 8 bits
+	// VDP2 Manual §13.1: Color offset registers are 9-bit two's complement,
+	// range -256 to +255, added directly to RGB components.
+	// No division needed — map [-256,+255] to the 8-bit centered encoding
+	// used by encodeColorOffset(). encodeColorOffset clamps to [-128,+127]
+	// which covers the practical range since RGB components are 5-bit (0-31).
+	// Division by 2 was incorrectly halving the effective range.
+	int a_cor = lVdp2Regs->COAR & 0x1FF;
+	if (a_cor & 0x100) a_cor |= ~0x1FF; // sign-extend 9→32 bits
+	// No >>1: keep full [-256,+255] range, encodeColorOffset clamps to [-128,+127]
 
-		int a_cog = lVdp2Regs->COAG & 0x1FF;
-		if (a_cog & 0x100) a_cog |= ~0x1FF;
-		a_cog >>= 1;
+	int a_cog = lVdp2Regs->COAG & 0x1FF;
+	if (a_cog & 0x100) a_cog |= ~0x1FF;
 
-		int a_cob = lVdp2Regs->COAB & 0x1FF;
-		if (a_cob & 0x100) a_cob |= ~0x1FF;
-		a_cob >>= 1;
+	int a_cob = lVdp2Regs->COAB & 0x1FF;
+	if (a_cob & 0x100) a_cob |= ~0x1FF;
 
-		int b_cor = lVdp2Regs->COBR & 0x1FF;
-		if (b_cor & 0x100) b_cor |= ~0x1FF;
-		b_cor >>= 1;
+	int b_cor = lVdp2Regs->COBR & 0x1FF;
+	if (b_cor & 0x100) b_cor |= ~0x1FF;
 
-		int b_cog = lVdp2Regs->COBG & 0x1FF;
-		if (b_cog & 0x100) b_cog |= ~0x1FF;
-		b_cog >>= 1;
+	int b_cog = lVdp2Regs->COBG & 0x1FF;
+	if (b_cog & 0x100) b_cog |= ~0x1FF;
 
-		int b_cob = lVdp2Regs->COBB & 0x1FF;
-		if (b_cob & 0x100) b_cob |= ~0x1FF;
-		b_cob >>= 1;
+	int b_cob = lVdp2Regs->COBB & 0x1FF;
+	if (b_cob & 0x100) b_cob |= ~0x1FF;
 
         // Encodage sur 8 bits centré 128 — suppression du /2
         int colOffB =
