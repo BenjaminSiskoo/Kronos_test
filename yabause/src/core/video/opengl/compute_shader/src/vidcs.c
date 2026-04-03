@@ -3116,55 +3116,73 @@ static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, in
     return 0;   /* all corners culled */
 }
 
+/* vidcs.c — Vdp2GenLineinfo()
+ * VDP2 Manual §5.3 Figure 5.4/5.5: line scroll table entry layout.
+ * Each enabled field occupies exactly 4 bytes (integer word + fractional word).
+ * Fields are stored contiguously in the order: H-scroll, V-scroll, H-coord-inc.
+ * 'bound' = total bytes per table entry = 4 × (number of enabled fields).
+ * The table index for screen line i is: floor(i / lineinc) × bound
+ * (lineinc = patternpixelwh when in tile mode, 1 when per-line).
+ */
 static void Vdp2GenLineinfo(vdp2draw_struct *info)
 {
-  int bound = 0;
-  int i;
-  u16 val1, val2;
-  int index = 0;
-  if (info->lineinc == 0 || info->islinescroll == 0) return;
+    int bound = 0;
+    int i;
+    u16 val1, val2;
+    int index = 0;
+    if (info->lineinc == 0 || info->islinescroll == 0) return;
 
-  if (VDPLINE_SY(info->islinescroll)) bound += 0x04;
-  if (VDPLINE_SX(info->islinescroll)) bound += 0x04;
-  if (VDPLINE_SZ(info->islinescroll)) bound += 0x04;
+    /* VDP2 Manual §5.3 Figure 5.4: each active field = 4 bytes */
+    if (VDPLINE_SX(info->islinescroll)) bound += 4;  /* H-scroll: int(2) + frac(2) */
+    if (VDPLINE_SY(info->islinescroll)) bound += 4;  /* V-scroll: int(2) + frac(2) */
+    if (VDPLINE_SZ(info->islinescroll)) bound += 4;  /* H-coord-inc: int(2) + frac(2) */
 
-  int height = _Ygl->rheight;
-  // if (_Ygl->interlace == DOUBLE_INTERLACE) height <<= 1;
+    int height = _Ygl->rheight;
 
-  for (i = 0; i < height; i ++)
-  {
-    index = 0;
-    if (VDPLINE_SX(info->islinescroll))
-    {
-      info->lineinfo[i].LineScrollValH = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + i*bound);
-      if ((info->lineinfo[i].LineScrollValH & 0x400)) info->lineinfo[i].LineScrollValH |= 0xF800; else info->lineinfo[i].LineScrollValH &= 0x07FF;
-      index += 4;
-    }
-    else {
-      info->lineinfo[i].LineScrollValH = 0;
-    }
+    for (i = 0; i < height; i++) {
+        /* VDP2 Manual §5.3: table entry index advances once per lineinc lines */
+        int table_entry = i / info->lineinc;  /* screen line → table entry index */
+        int byte_offset = table_entry * bound;
+        int field_off = 0;
+        index = 0;
 
-    if (VDPLINE_SY(info->islinescroll))
-    {
-      info->lineinfo[i].LineScrollValV = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + i*bound + index);
-      if ((info->lineinfo[i].LineScrollValV & 0x400)) info->lineinfo[i].LineScrollValV |= 0xF800; else info->lineinfo[i].LineScrollValV &= 0x07FF;
-      index += 4;
-    }
-    else {
-      info->lineinfo[i].LineScrollValV = 0;
-    }
+        if (VDPLINE_SX(info->islinescroll)) {
+            /* VDP2 Manual §5.3: H-scroll value, 11-bit signed integer + fractional */
+            info->lineinfo[i].LineScrollValH =
+                Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+            if (info->lineinfo[i].LineScrollValH & 0x400)
+                info->lineinfo[i].LineScrollValH |= 0xF800;
+            else
+                info->lineinfo[i].LineScrollValH &= 0x07FF;
+            field_off += 4;
+        } else {
+            info->lineinfo[i].LineScrollValH = 0;
+        }
 
-    if (VDPLINE_SZ(info->islinescroll))
-    {
-      val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + i*bound + index);
-      val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + i*bound + index + 2);
-      info->lineinfo[i].CoordinateIncH = (((int)((val1) & 0x07) << 8) | (int)((val2) >> 8));
-      index += 4;
+        if (VDPLINE_SY(info->islinescroll)) {
+            /* VDP2 Manual §5.3: V-scroll value, 11-bit signed integer + fractional */
+            info->lineinfo[i].LineScrollValV =
+                Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+            if (info->lineinfo[i].LineScrollValV & 0x400)
+                info->lineinfo[i].LineScrollValV |= 0xF800;
+            else
+                info->lineinfo[i].LineScrollValV &= 0x07FF;
+            field_off += 4;
+        } else {
+            info->lineinfo[i].LineScrollValV = 0;
+        }
+
+        if (VDPLINE_SZ(info->islinescroll)) {
+            /* VDP2 Manual §5.3 Figure 5.4: H-coord-inc = 8.8 fixed point
+             * stored as integer word + fractional word */
+            val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+            val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
+            info->lineinfo[i].CoordinateIncH = (((int)(val1 & 0x07) << 8) | (int)(val2 >> 8));
+            field_off += 4;
+        } else {
+            info->lineinfo[i].CoordinateIncH = 0x0100;
+        }
     }
-    else {
-      info->lineinfo[i].CoordinateIncH = 0x0100;
-    }
-  }
 }
 
 INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32 * cramindex ) {
