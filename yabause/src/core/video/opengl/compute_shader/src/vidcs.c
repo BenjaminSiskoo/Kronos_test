@@ -3066,70 +3066,61 @@ static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
     }
 }
 
+
+/* vidcs.c — Vdp2CheckWindowRange()
+ * VDP2 Manual §8.1: Window area is applied per-dot. In line window mode
+ * (LWTA0/LWTA1 bit 15 = 1, §8.2 LWTA register), horizontal bounds change
+ * each line. Testing only 4 tile corners misses cases where a tile is
+ * entirely inside or outside the window on intermediate lines.
+ *
+ * Fix: sample all lines of the tile (y, y+1, ..., y+h-1) at tile left and
+ * right edges, and return 1 (draw) if any sample satisfies the window
+ * condition. This is accurate for both rectangular and line window modes.
+ *
+ * VDP2 Manual §8.1: "If the start coordinate of either the horizontal or
+ * vertical direction is larger than the end coordinate, the whole screen
+ * is considered outside the window."
+ */
 static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
 {
     int id = ctrl->info.idScreen;
-
     int useW0 = (_Ygl->Win0[id] != 0);
     int useW1 = (_Ygl->Win1[id] != 0);
     int useWS = (_Ygl->WinS[id] != 0);
 
-    /* If no window is active, everything is visible */
     if (!useW0 && !useW1 && !useWS) return 0;
 
-    /* Test the four corners of the tile.
-     * A tile is considered visible if at least one corner satisfies
-     * the combined window condition.
-     *
-     * VDP2 Manual §8.1: When multiple windows are combined with OR (Win_op=0),
-     * a pixel is inside the active region if it satisfies ANY enabled window.
-     * With AND (Win_op=1), it must satisfy ALL enabled windows.
-     *
-     * For culling purposes (CPU-side, tile granularity):
-     * - OR  mode: return 1 (draw) if any corner is inside any window
-     * - AND mode: return 1 (draw) if any corner is inside all windows
-     *
-     * WinS is always OR-combined with W0/W1 when Win_op=0,
-     * and AND-combined when Win_op=1, per the hardware spec.
-     */
     int use_and = (_Ygl->Win_op[id] != 0);
 
-    /* Corner coordinates (tile origin is at (x,y) relative to screen,
-     * but Vdp2DrawPatternPos calls us with cx=0,cy=0 offsets already
-     * applied; x,y here are already screen-space tile corners). */
-    int corners[4][2] = {
-        { x,     y     },
-        { x + w, y     },
-        { x + w, y + h },
-        { x,     y + h },
-    };
+    /* VDP2 Manual §8.2 line window: sample every line of the tile at
+     * left (x) and right (x+w) edges to handle per-line window bounds. */
+    for (int ly = y; ly < y + h; ly++) {
+        /* Test left and right edge of tile at this screen line */
+        int test_xs[2] = { x, x + w };
+        for (int ei = 0; ei < 2; ei++) {
+            int cx = test_xs[ei];
+            int result;
 
-    for (int c = 0; c < 4; c++) {
-        int cx = corners[c][0];
-        int cy = corners[c][1];
-        int result;
+            if (!use_and) {
+                result = 0;
+                if (useW0) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
+                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
+                if (useW1) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
+                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
+                if (useWS) result |= Vdp2CheckSpriteWindow(id, cx, ly);
+            } else {
+                result = 1;
+                if (useW0) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
+                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
+                if (useW1) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
+                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
+                if (useWS) result &= Vdp2CheckSpriteWindow(id, cx, ly);
+            }
 
-        if (!use_and) {
-            /* OR mode: visible if any window condition is met */
-            result = 0;
-            if (useW0) result |= Vdp2CheckWindow(&ctrl->info, cx, cy,
-                                                  _Ygl->Win0_mode[id], _Ygl->win[0]);
-            if (useW1) result |= Vdp2CheckWindow(&ctrl->info, cx, cy,
-                                                  _Ygl->Win1_mode[id], _Ygl->win[1]);
-            if (useWS) result |= Vdp2CheckSpriteWindow(id, cx, cy);
-        } else {
-            /* AND mode: visible only if ALL active windows agree */
-            result = 1;
-            if (useW0) result &= Vdp2CheckWindow(&ctrl->info, cx, cy,
-                                                  _Ygl->Win0_mode[id], _Ygl->win[0]);
-            if (useW1) result &= Vdp2CheckWindow(&ctrl->info, cx, cy,
-                                                  _Ygl->Win1_mode[id], _Ygl->win[1]);
-            if (useWS) result &= Vdp2CheckSpriteWindow(id, cx, cy);
+            if (result) return 1;
         }
-
-        if (result) return 1;   /* at least one corner is drawable */
     }
-    return 0;   /* all corners culled */
+    return 0;
 }
 
 /* vidcs.c — Vdp2GenLineinfo()
