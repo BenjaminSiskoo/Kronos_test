@@ -1858,7 +1858,12 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
 	// NBG1 max is 2048 colors (colornumber=2), so >=2 is equivalent to ==2 for NBG1
 	if ((ctrl.info.priority == 0) ||
 		(ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
-		(ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 == 2)) {
+	// VDP2 Manual §4.1 Table 4.1: NBG3 is disabled when NBG1 uses
+	// 2048 colors or more. For NBG1, CHCTLA bits 13-12 max value is 2
+	// (2048 colors — 32768 colors is not available for NBG1).
+	// Use >= 2 for correctness even if == 2 is currently equivalent.
+		(ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
+	{
 	  // NBG1 can only reach colornumber==2 (2048 colors) as its maximum
 	  return;
 	}
