@@ -827,13 +827,20 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	int maxy = 0;
 	point A,B;
 
-	if ((Vdp1Regs->TVMR & 0x1) != 0) {
+	//if ((Vdp1Regs->TVMR & 0x1) != 0) {
 		// VDP1 Manual §6.3: "color calculation cannot be performed when there are
 		// 8 bits/pixel, so replace should be specified."
 		// Force CC bits (2-0) to 0 (=replace). MON bit (15) and Mesh bit (8)
 		// are unaffected and remain valid in 8bpp mode.
-		cmd->CMDPMOD &= ~0x7U;
-	}
+		//cmd->CMDPMOD &= ~0x7U;
+	//}
+
+    // VDP1 Manual §6.3: "Color calculation cannot be performed when there are
+    // 8 bits/pixel, so replace should be specified."
+    // Do NOT mutate cmd->CMDPMOD here — the CC override is already applied
+    // locally in getProgramLine() which selects the REPLACE shader slot when
+    // TVMR bit 0 = 1. Mutating cmd here corrupts the command if it is reused.
+    // (removed: cmd->CMDPMOD &= ~0x7U)
 
 	if (_Ygl->vdp1IsNotEmpty[_Ygl->drawframe] != -1) {
 		if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
