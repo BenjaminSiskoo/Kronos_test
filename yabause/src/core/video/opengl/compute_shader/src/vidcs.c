@@ -3887,24 +3887,26 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       targetv += Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl) >> 16;
     }
 
-    if (VDPLINE_SZ(ctrl->info.islinescroll)) {
-      /* VDP2 Manual §5.3 SCRCTL N0LZMX/N1LZMX (bits 3/11, p.138):
-       * H-coordinate increment stored in line scroll table as 8.8 fixed-point.
-       * Value 0x0100 = 1.0 (no zoom). Value 0x0000 is undefined/invalid;
-       * treat as 1.0 to avoid division-by-zero. "Make sure that the horizontal
-       * coordinate increment does not exceed the reduction setting." */
-      u16 raw_inc = (u16)ctrl->info.lineinfo[lineindex<<res_shift].CoordinateIncH;
-      if (raw_inc == 0) {
-        /* Undefined value — treat as 1.0 (no zoom) per VDP2 §5.3 */
-        ctrl->info.coordincx = 1.0f;
-      } else {
-        ctrl->info.coordincx = 1.0f / ((float)raw_inc / 256.0f);
-      }
-    }
-
-    /* VDP2 Manual §4.3 ZMCTL: clamp to minimum zoom allowed */
-    if (ctrl->info.coordincx < ctrl->info.maxzoom)
-      ctrl->info.coordincx = ctrl->info.maxzoom;
+	/* vidcs.c — Vdp2DrawMapPerLine() line zoom update
+	 * VDP2 Manual §5.3 SCRCTL N0LZMX/N1LZMX: when set, horizontal coordinate
+	 * increment is read per-line from the line scroll table (8.8 fixed-point).
+	 * Table value 0x0100 = 1.0 (no zoom). Value 0x0000 is undefined/invalid;
+	 * treat as 1.0 to avoid division by zero. Value > 0x0100 = reduction.
+	 * VDP2 Manual §5.3: "coordinate increment must not exceed reduction setting."
+	 */
+	if (VDPLINE_SZ(ctrl->info.islinescroll)) {
+		u16 raw_inc = ctrl->info.lineinfo[lineindex].CoordinateIncH;
+		if (raw_inc == 0) {
+			/* VDP2 Manual §5.3: 0 is undefined — treat as 1.0 (no zoom) */
+			ctrl->info.coordincx = 1.0f;
+		} else {
+			/* 8.8 fixed-point: integer part bits 10-8, frac bits 7-0 */
+			ctrl->info.coordincx = 1.0f / ((float)raw_inc / 256.0f);
+		}
+	}
+	/* VDP2 Manual §4.3 ZMCTL: clamp to minimum zoom allowed by reduction register */
+	if (ctrl->info.coordincx < ctrl->info.maxzoom)
+		ctrl->info.coordincx = ctrl->info.maxzoom;
 
     mapy = (targetv) >> planeh_shift;
     dot_on_planey = (targetv)-(mapy << planeh_shift);
