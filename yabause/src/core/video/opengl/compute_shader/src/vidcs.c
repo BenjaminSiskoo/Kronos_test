@@ -3780,15 +3780,22 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
   }
 }
 
+/* vidcs.c — getPriority() — VDP2 Manual §11.1 PRINA/PRINB/PRINB registers
+ * Priority number is a 3-bit value per scroll screen (bits 2-0 of each field).
+ * PRINA (1800F8H): bits 2-0 = NBG0, bits 10-8 = NBG1
+ * PRINB (1800FAH): bits 2-0 = NBG2, bits 10-8 = NBG3
+ * PRIR  (1800FCH): bits 2-0 = RBG0
+ * When priority == 0, the screen is treated as transparent (not displayed).
+ */
 static int getPriority(int id, Vdp2 *a) {
-  switch (id) {
-  case NBG0:
-      return (a->PRINA & 0x7);
-  case NBG1:
-    return ((a->PRINA >> 8) & 0x7);
-  default:
-    return 0;
-  }
+    switch (id) {
+    case NBG0:  return  (a->PRINA)       & 0x7;
+    case NBG1:  return  (a->PRINA >> 8)  & 0x7;
+    case NBG2:  return  (a->PRINB)       & 0x7;
+    case NBG3:  return  (a->PRINB >> 8)  & 0x7;
+    case RBG0:  return  (a->PRIR)        & 0x7;
+    default:    return  0;
+    }
 }
 //////////////////////////////////////////////////////////////////////////////
 
@@ -3796,7 +3803,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
   int lineindex = 0;
 
-  int sx; //, sy;
+  int sx;
   int mapx, mapy;
   int planex, planey;
   int pagex, pagey;
@@ -3826,35 +3833,33 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
-	 // VDP2 Manual §5.3 SCRCTL NxLSS bits: line scroll table read interval depends
-	 // on interlace mode. Table (p.137):
-	 //   NxLSS = 00 → every line (NI), every 2 lines (SI), every line (DDI)
-	 //   NxLSS = 01 → every 2 lines (NI), every 4 lines (SI), every 2 lines (DDI)
-	 //   NxLSS = 10 → every 4 lines (NI), every 8 lines (SI), every 4 lines (DDI)
-	 //   NxLSS = 11 → every 8 lines (NI), every 16 lines (SI), every 8 lines (DDI)
-	 // In single-density interlace, each screen line = 2 table rows (one per field),
-	 // so the effective table spacing is multiplied by 2.
-	 ///
-	int linescroll_spacing = 1;
-	if (ctrl->info.islinescroll) {
-		int lss = 0;
-		if (ctrl->info.idScreen == NBG0)
-			lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
-		else if (ctrl->info.idScreen == NBG1)
-			lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
-		linescroll_spacing = 1 << lss;
-		/* VDP2 Manual §5.3: In single-density interlace the line scroll table
-		 * is indexed every 2 physical lines (both fields share one table entry).
-		 * In double-density interlace the table is indexed every physical line
-		 * (per-field), identical to non-interlace. */
-		if (_Ygl->interlace == SINGLE_INTERLACE)
-			linescroll_spacing <<= 1;
-		/* DDI: no adjustment needed — spacing same as non-interlace */
-	}
-	int linemask = linescroll_spacing - 1;
+  /* VDP2 Manual §5.3 SCRCTL NxLSS bits: line scroll table read interval.
+   * Table (p.137):
+   *   NxLSS=00 → every line (NI), every 2 lines (SI), every line  (DDI)
+   *   NxLSS=01 → every 2 lines (NI), every 4 lines (SI), every 2  (DDI)
+   *   NxLSS=10 → every 4 lines (NI), every 8 lines (SI), every 4  (DDI)
+   *   NxLSS=11 → every 8 lines (NI), every 16 lines(SI), every 8  (DDI)
+   * SCRCTL (1800 9AH): NBG0 NxLSS = bits 5-4, NBG1 NxLSS = bits 13-12.
+   * In single-density interlace both fields share one table entry,
+   * so effective spacing doubles. DDI is identical to non-interlace.
+   */
+  int linescroll_spacing = 1;
+  if (ctrl->info.islinescroll) {
+    int lss = 0;
+    if (ctrl->info.idScreen == NBG0)
+      lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
+    else if (ctrl->info.idScreen == NBG1)
+      lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
+    linescroll_spacing = 1 << lss;
+    if (_Ygl->interlace == SINGLE_INTERLACE)
+      linescroll_spacing <<= 1;   /* SI: both fields → one entry */
+    /* DDI: no adjustment, same as non-interlace */
+  }
+  int linemask = linescroll_spacing - 1;
+
   int screenH = _Ygl->rheight;
-  // if (_Ygl->interlace == DOUBLE_INTERLACE) screenH <<= 1;
-  for (v = 0; v < screenH; v++) {  // ToDo: ctrl->info.coordincy
+
+  for (v = 0; v < screenH; v++) {
     int targetv = 0;
 
     if (VDPLINE_SX(ctrl->info.islinescroll)) {
@@ -3872,52 +3877,46 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     }
 
     if (ctrl->info.isverticalscroll) {
-      // this is *wrong*, vertical scroll use a different value per cell
-      // ctrl->info.verticalscrolltbl should be incremented by ctrl->info.verticalscrollinc
-      // each time there's a cell change and reseted at the end of the line...
-      // or something like that :)
       targetv += Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl) >> 16;
     }
 
     if (VDPLINE_SZ(ctrl->info.islinescroll)) {
-      ctrl->info.coordincx = ctrl->info.lineinfo[lineindex<<res_shift].CoordinateIncH / 256.0f;
-      if (ctrl->info.coordincx == 0) {
-        ctrl->info.coordincx = _Ygl->rwidth;
-      }
-      else {
-        ctrl->info.coordincx = 1.0f / ctrl->info.coordincx;
+      /* VDP2 Manual §5.3 SCRCTL N0LZMX/N1LZMX (bits 3/11, p.138):
+       * H-coordinate increment stored in line scroll table as 8.8 fixed-point.
+       * Value 0x0100 = 1.0 (no zoom). Value 0x0000 is undefined/invalid;
+       * treat as 1.0 to avoid division-by-zero. "Make sure that the horizontal
+       * coordinate increment does not exceed the reduction setting." */
+      u16 raw_inc = (u16)ctrl->info.lineinfo[lineindex<<res_shift].CoordinateIncH;
+      if (raw_inc == 0) {
+        /* Undefined value — treat as 1.0 (no zoom) per VDP2 §5.3 */
+        ctrl->info.coordincx = 1.0f;
+      } else {
+        ctrl->info.coordincx = 1.0f / ((float)raw_inc / 256.0f);
       }
     }
 
-    if (ctrl->info.coordincx < ctrl->info.maxzoom) ctrl->info.coordincx = ctrl->info.maxzoom;
+    /* VDP2 Manual §4.3 ZMCTL: clamp to minimum zoom allowed */
+    if (ctrl->info.coordincx < ctrl->info.maxzoom)
+      ctrl->info.coordincx = ctrl->info.maxzoom;
 
-    // determine which chara shoud be used.
-    //mapy   = (v+sy) / (512 * ctrl->info.planeh);
     mapy = (targetv) >> planeh_shift;
-    //int dot_on_planey = (v + sy) - mapy*(512 * ctrl->info.planeh);
     dot_on_planey = (targetv)-(mapy << planeh_shift);
     mapy = mapy & 0x01;
-    //planey = dot_on_planey / 512;
     planey = dot_on_planey >> plane_shift;
-    //int dot_on_pagey = dot_on_planey - planey * 512;
     dot_on_pagey = dot_on_planey & plane_mask;
     planey = planey & (ctrl->info.planeh - 1);
-    //pagey = dot_on_pagey / (512 / ctrl->info.pagewh);
     pagey = dot_on_pagey >> page_shift;
-    //chary = dot_on_pagey - pagey*(512 / ctrl->info.pagewh);
     chary = dot_on_pagey & page_mask;
     if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
 
-    int inch = 1.0 / ctrl->info.coordincx*256.0;
+    int inch = (int)(1.0f / ctrl->info.coordincx * 256.0f);
 
     for (int j = 0; j < ctrl->info.draww; j += 1) {
 
-      int h = ((j*inch) >> 8);
+      int hh = ((j*inch) >> 8);
 
-      //mapx = (h + sx) / (512 * ctrl->info.planew);
-      mapx = (h + sx) >> planew_shift;
-      //int dot_on_planex = (h + sx) - mapx*(512 * ctrl->info.planew);
-      dot_on_planex = (h + sx) - (mapx << planew_shift);
+      mapx = (hh + sx) >> planew_shift;
+      dot_on_planex = (hh + sx) - (mapx << planew_shift);
       mapx = mapx & 0x01;
 
       mapid = ctrl->info.mapwh * mapy + mapx;
@@ -3929,32 +3928,46 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
         premapid = mapid;
       }
 
-      //planex = dot_on_planex / 512;
       planex = dot_on_planex >> plane_shift;
-      //int dot_on_pagex = dot_on_planex - planex * 512;
       dot_on_pagex = dot_on_planex & plane_mask;
       planex = planex & (ctrl->info.planew - 1);
-      //pagex = dot_on_pagex / (512 / ctrl->info.pagewh);
       pagex = dot_on_pagex >> page_shift;
-      //charx = dot_on_pagex - pagex*(512 / ctrl->info.pagewh);
       charx = dot_on_pagex & page_mask;
       if (pagex < 0) pagex = ctrl->info.pagewh - 1 + pagex;
 
-      if (planex != preplanex || pagex != prepagex || planey != preplaney || pagey != prepagey) {
+      if (planex != preplanex || pagex != prepagex ||
+          planey != preplaney || pagey != prepagey) {
         if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) == 0) continue;
         preplanex = planex;
         preplaney = planey;
         prepagex = pagex;
         prepagey = pagey;
       }
+
       ctrl->info.draw_line = v;
       if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl->info.draw_line >>= 1;
-      ctrl->info.priority = getPriority(ctrl->info.idScreen, &Vdp2Lines[ctrl->info.draw_line]); //MapPerLine is called only for NBG0 and NBG1
+
+      /* VDP2 Manual §11.1 PRINA/PRINB (1800F8H-1800FAH, p.225):
+       * Priority is a 3-bit value per scroll screen, sampled per line
+       * from Vdp2Lines[] to capture mid-frame register changes.
+       * PRINA bits 2-0 = NBG0, bits 10-8 = NBG1.
+       * PRINB bits 2-0 = NBG2, bits 10-8 = NBG3.
+       * (MapPerLine is only called for NBG0 and NBG1.) */
+      ctrl->info.priority = getPriority(ctrl->info.idScreen,
+                                        &Vdp2Lines[ctrl->info.draw_line]);
+
+      /* VDP2 Manual §11.2 Special Priority Function (p.227):
+       * specialprimode==1: LSB of the 3-bit priority number is replaced
+       * by the special priority bit from pattern name data.
+       * Must save/restore so the per-line base priority is not corrupted
+       * across pixels within the same line. */
       int priority = ctrl->info.priority;
       if (ctrl->info.specialprimode == 1) {
-        ctrl->info.priority = (ctrl->info.priority & 0xFFFFFFFE) | ctrl->info.specialfunction;
+        ctrl->info.priority = (ctrl->info.priority & 0xFFFFFFFE)
+                              | ctrl->info.specialfunction;
       }
 
+      /* Compute tile-local pixel coordinates with flip */
       int x = charx;
       int y = chary;
 
@@ -3962,14 +3975,8 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       {
         x &= 8 - 1;
         y &= 8 - 1;
-
-        // vertical flip
-        if (ctrl->info.flipfunction & 0x2)
-          y = 8 - 1 - y;
-
-        // horizontal flip
-        if (ctrl->info.flipfunction & 0x1)
-          x = 8 - 1 - x;
+        if (ctrl->info.flipfunction & 0x2) y = 8 - 1 - y;
+        if (ctrl->info.flipfunction & 0x1) x = 8 - 1 - x;
       }
       else
       {
@@ -3978,19 +3985,15 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
           y &= 16 - 1;
           if (ctrl->info.flipfunction & 0x2)
           {
-            if (!(y & 8))
-              y = 8 - 1 - y + 16;
-            else
-              y = 16 - 1 - y;
+            if (!(y & 8)) y = 8 - 1 - y + 16;
+            else          y = 16 - 1 - y;
           }
           else if (y & 8)
             y += 8;
 
           if (ctrl->info.flipfunction & 0x1)
           {
-            if (!(x & 8))
-              y += 8;
-
+            if (!(x & 8)) y += 8;
             x &= 8 - 1;
             x = 8 - 1 - x;
           }
@@ -4005,20 +4008,24 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
         else
         {
           y &= 16 - 1;
-          if (y & 8)
-            y += 8;
-          if (x & 8)
-            y += 8;
+          if (y & 8) y += 8;
+          if (x & 8) y += 8;
           x &= 8 - 1;
         }
       }
-      *(ctrl->texture.textdata++) = Vdp2RotationFetchPixel(&ctrl->info, x, y, ctrl->info.cellw);
+
+      /* Fetch pixel — priority already set above, restored below */
+      *(ctrl->texture.textdata++) =
+          Vdp2RotationFetchPixel(&ctrl->info, x, y, ctrl->info.cellw);
+
+      /* VDP2 Manual §11.2: restore base priority after each pixel,
+       * whether or not specialprimode modified it. */
       ctrl->info.priority = priority;
     }
-    if((v & linemask) == linemask) lineindex++;
+
+    if ((v & linemask) == linemask) lineindex++;
     ctrl->texture.textdata += ctrl->texture.w;
   }
-
 }
 
 static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
