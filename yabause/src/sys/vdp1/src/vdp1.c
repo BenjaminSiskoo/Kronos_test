@@ -1331,7 +1331,7 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
-// APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
+ // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
   if ((cmd->CMDPMOD & 4))
   {
     u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
@@ -1352,22 +1352,43 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   return 1;
 }
 
-static int rasterValue = 1708;
+	/* VDP1 Manual §4.3 Table 4.4 (p.49): pixels per raster by screen mode.
+	 * "Drawing is performed in sync with the CPU operating clock.
+	 *  The CPU operating clock is 28 MHz, and the data for 1 pixel is
+	 *  drawn in sync with this." (VDP1 Manual §2.5 p.20)
+	 *
+	 * NTSC (320px / 640px) : 1708 pixels/raster
+	 * PAL  (320px / 640px) : 1820 pixels/raster  (PAL has more blanking)
+	 * NTSC (352px / 704px) : 1708 pixels/raster  (same dot clock, wider display)
+	 * PAL  (352px / 704px) : 1820 pixels/raster
+	 * 31KC / Hi-Res        :  852 pixels/raster  (Table 4.4)
+	 * HDTV                 :  848 pixels/raster  (Table 4.4)
+	 *
+	 * Note: 352px mode does NOT have a different raster value from 320px —
+	 * both use the same pixel clock. The manual gives a single NTSC value
+	 * (1708) and a single PAL value (1820) regardless of H resolution.
+	 * The previous code incorrectly used 1820 for 352px NTSC.
+	 */
+	static int rasterValueNTSC = 1708;
+	static int rasterValuePAL  = 1820;
 
-  // VDP1 clock ~28.6363 MHz (NTSC). Cycles alloués par ligne HBlank inclus.
-  // 320px/640px : ~1708 cy/line (empirique, Yabause/Mednafen compatible)
-  // 352px/704px : ~1820 cy/line (pixel clock plus élevé)
 	void Vdp1SetRaster(int is352) {
-	  if (is352)
-		rasterValue = 1820;
-	  else
-		rasterValue =  1708;
+		/* VDP1 Manual Table 4.4: raster count is independent of H resolution
+		 * (320 vs 352). Only NTSC vs PAL matters for the pixel/raster value.
+		 * is352 parameter kept for API compatibility — value unused. */
+		(void)is352;
+		/* Actual selection between NTSC/PAL is done in getVdp1CyclesPerLine()
+		 * via yabsys.IsPal. */
 	}
 
-static int getVdp1CyclesPerLine(void)
-{
-  return (Vdp1External.blocked!=0)?0:rasterValue;
-}
+	static int getVdp1CyclesPerLine(void)
+	{
+		if (Vdp1External.blocked != 0) return 0;
+		/* VDP1 Manual §4.3 Table 4.4 (p.49):
+		 * NTSC: 1708 pixels per raster
+		 * PAL : 1820 pixels per raster */
+		return yabsys.IsPal ? rasterValuePAL : rasterValueNTSC;
+	}
 
 static u32 returnAddr = 0xffffffff;
 
