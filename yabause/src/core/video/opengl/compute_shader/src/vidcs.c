@@ -2754,6 +2754,21 @@ static u32 Vdp2ColorRamGetLineColorOffset(u32 colorindex, int alpha, int offset)
 static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
   return Vdp2ColorRamGetLineColorOffset(colorindex, alpha,0);
 }
+
+	/* Vdp2IsNormalShadow — VDP2 Manual §14.1 Normal Shadow
+	 *
+	 * Returns 1 if sprite CRAM address maps to the shadow palette zone.
+	 * The caller must NOT draw the sprite pixel; instead it applies >>1 to
+	 * each RGB channel of the underlying scroll-screen pixel. */
+static INLINE int Vdp2IsNormalShadow(u32 cramindex) {
+	  switch (Vdp2Internal.ColorMode) {
+	  case 0: return ((cramindex & 0x3FF) == 0x3FE) || ((cramindex & 0x3FF) == 0x3FF);
+	  case 1: return (cramindex & 0xF) == 0;
+	  case 2: return (cramindex & 0xFF) == 0;
+	  default: return 0;
+	  }
+	}
+
 //////////////////////////////////////////////////////////////////////////////
 // Window
 static int useRotWin = 0;
