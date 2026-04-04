@@ -812,7 +812,13 @@ void VIDCSVdp1Draw()
 void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
   LOG_CMD("%d\n", __LINE__);
-
+  /* VDP1 §6.3 SPD (CMDPMOD bit 6): transparent pixel disable.
+   * When SPD=0: transparent code (mode 0-4: pixel==0; mode 5: pixel==0x0000)
+   *             is not drawn.
+   * When SPD=1: transparent code is drawn as a normal pixel (black in RGB).
+   * For RGB mode (mode 5): transparent test is (dot == 0x0000), NOT (MSB==0).
+   * MSB=0 with non-zero data is a palette bank code, not transparent in VDP1 FB. */
+   
   if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
     // hard/vdp2/hon/p09_20.htm#no9_21
     u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
@@ -953,7 +959,11 @@ void VIDCSVdp1NormalSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
   /* VDP1 §5.3 Gouraud: correction = gouraud_table_5bit - 0x10.
    * Shader must compute: out_ch = clamp(src_ch + (gtab_ch - 0x10), 0, 0x1F)
    * for each of R,G,B.  Only valid when color mode = RGB (mode 5) or LUT
-   * with RGB entries (mode 1).  Gouraud on palette bank codes = undefined. */
+   * with RGB entries (mode 1).  Gouraud on palette bank codes = undefined.
+     VDP1 §5.2 mode 1 (lookup table): write 16-bit LUT entry verbatim to FB.
+   * Do NOT mask MSB — VDP2 uses MSB to determine palette vs. RGB format.
+   * Color calculation only valid when LUT entry is RGB (MSB=1).
+   * Prohibited to use RGB LUT entries in 8-bit/pixel frame buffer mode. */
 
   cmd->CMDXB = cmd->CMDXA + MAX(1,cmd->w);
   cmd->CMDYB = cmd->CMDYA;
