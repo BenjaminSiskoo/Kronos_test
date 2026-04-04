@@ -3784,10 +3784,16 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
       }
       return   VDP2COLOR(info->idScreen, alpha, priority, cc, cramindex);
     }
-  case 3: // 16 BPP(RGB)
-    dot = Vdp2RamReadWord(NULL, Vdp2Ram, (info->charaddr + ((y * cellw) + x) * 2));
-    if (!(dot & 0x8000) && info->transparencyenable) return 0x00000000;
-    else return VDP2COLOR(info->idScreen, alpha, info->priority, 1, RGB555_TO_RGB24(dot & 0xFFFF));
+	// VDP2 Manual §4.3 Figure 4.6: RGB format, bit15=transparent.
+	// §11.2: Special priority mode applies to RGB format tiles the same as palette tiles.
+	// Pass dot lower nibble as special priority check value (consistent with palette cases).
+	case 3: // 16 BPP(RGB)
+	  dot = Vdp2RamReadWord(NULL, Vdp2Ram, (info->charaddr + ((y * cellw) + x) * 2));
+	  if (!(dot & 0x8000) && info->transparencyenable) return 0x00000000;
+	  else {
+		Vdp2SetSpecialPriority(info, (u8)(dot & 0xF), &priority, &cramindex);
+		return VDP2COLOR(info->idScreen, alpha, priority, 1, RGB555_TO_RGB24(dot & 0xFFFF));
+	  }
   case 4: // 32 BPP
     dot = Vdp2RamReadLong(NULL, Vdp2Ram, (info->charaddr + ((y * cellw) + x) * 4));
     if (!(dot & 0x80000000) && info->transparencyenable) return 0x00000000;
