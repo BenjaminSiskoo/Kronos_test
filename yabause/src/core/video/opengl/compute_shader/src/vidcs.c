@@ -4255,6 +4255,10 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
 
 #if defined(__ANDROID__) || defined(_OGLES3_) || defined(_OGLES31_) || defined(_OGL3_)
   if ((varVdp2Regs->BKTAU & 0x8000) != 0 ) {
+    /* VDP2 §12.1 CCRLB (18010EH) bits 12-8 = BKCCRT[4:0]:
+     * Back screen color calculation ratio (inverted: 0=opaque, 31=transparent) */
+    u8 bk_alpha = (u8)(((~(varVdp2Regs->CCRLB >> 8) & 0x1F) * 255) / 31);
+    /* pass bk_alpha to YglSetBackTextureColor / back_pixel_data alpha channel */
     // per line background color
     u32* back_pixel_data = YglGetBackColorPointer();
     if (back_pixel_data != NULL) {
