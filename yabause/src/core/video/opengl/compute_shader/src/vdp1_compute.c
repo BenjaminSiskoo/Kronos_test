@@ -995,7 +995,11 @@ void startVdp1Render(void) {
         glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
     else
         glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    if (_Ygl->meshmode == IMPROVED_MESH)
+    /* Bind mesh texture only for MESH programs (those that read/write the mesh buffer).
+     * VDP1 §6.3 Mesh: mesh programs draw only (X+Y)-even pixels and store the
+     * alpha accumulation in the mesh texture for IMPROVED_MESH blending. */
+    int isMeshProg = (oldProg >= DRAW_POLY_MSB_SHADOW_MESH);
+    if (_Ygl->meshmode == IMPROVED_MESH && isMeshProg)
         glBindImageTexture(1, get_vdp1_mesh(_Ygl->drawframe), 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssbo_cmd_line_list_);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_vdp1ram_);
