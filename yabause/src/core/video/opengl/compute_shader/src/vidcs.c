@@ -861,7 +861,12 @@ void VIDCSVdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
    /* VDP1 Manual §6.3 CMDPMOD bits 2-0 — Color Calculation mode table:
    *  000 Replace:           write sprite pixel as-is, no FB read
-   *  001 Shadow:            if FB pixel MSB=1 → halve FB RGB; else no-op
+   * Shadow (001) and Half-transparent (011):
+   *   - Read FB pixel at draw coordinate.
+   *   - If FB_MSB = 0: replace (shadow) or replace (half-transp) → no blend.
+   *   - If FB_MSB = 1: shadow → FB_rgb >>= 1 (preserve MSB).
+   *                    half-transp → (sprite + FB) / 2 (preserve MSB).
+   *   Shadow does NOT modify the MSB bit (VDP1 §6.3 explicit requirement).
    *  010 Half-luminance:    sprite_out = sprite_in >> 1 (each channel)
    *  011 Half-transparent:  if FB MSB=1 → (sprite+FB)/2; else replace
    *  100 Gouraud:           sprite + Gouraud interpolated offset
@@ -938,6 +943,11 @@ void VIDCSVdp1SystemClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 void VIDCSVdp1NormalSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
   LOG_CMD("%d\n", __LINE__);
+  
+  /* VDP1 §5.3 Gouraud: correction = gouraud_table_5bit - 0x10.
+   * Shader must compute: out_ch = clamp(src_ch + (gtab_ch - 0x10), 0, 0x1F)
+   * for each of R,G,B.  Only valid when color mode = RGB (mode 5) or LUT
+   * with RGB entries (mode 1).  Gouraud on palette bank codes = undefined. */
 
   cmd->CMDXB = cmd->CMDXA + MAX(1,cmd->w);
   cmd->CMDYB = cmd->CMDYA;
@@ -1059,7 +1069,10 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY2 = cmd->CMDYC;
     // VDP1 Manual §6.3 Cmod bit 9: outside drawing mode when =1
     regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
-    vdp1_add(cmd, 1); // note: upscale version intentionally calls vdp1_add (not upscale)
+    /* VDP1 §7.2: User clipping coordinates are VDP1 framebuffer coordinates,
+     * not display coordinates.  The upscale path must NOT scale them;
+     * use vdp1_add (not vdp1_add_upscale) to forward raw register values. */
+	vdp1_add(cmd, 1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
