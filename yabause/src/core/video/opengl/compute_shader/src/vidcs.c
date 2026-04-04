@@ -1140,19 +1140,23 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
       ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x10) >> 4;
       ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
 
-      //If RBG0 is used and the VRAM is used for it, check that NBGx is not using reserved area, otherwise, do not display
-      int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
-      int needUpdate = 0;
-      for (int i=0; i<yabsys.VBlankLineCount; i++) {
-        if ((Vdp2Lines[i].BGON & 0x10)!=0) {
-          //RBG0 is enabled for this line. Check we can display the NBGx
-          if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
-            //VRAM on the dedicated bank is used by RBG0, it can not be used by NBGx
-            needUpdate = 1;
-            ctrl.info.display[i] = 0;
-          }
-        }
-      }
+		// APRÈS — VDP2 Manual §4.5: RGB format (colornumber >= 3) reads VRAM as direct
+		// pixel data. The RAMCTL rotation-exclusion check (!=0x0 means bank used by RBG0)
+		// applies only to palette-format bitmaps where data is a CRAM address. For RGB
+		// bitmaps, the pixel data and RBG0 coefficient/map data can coexist in the same bank
+		// because they are read independently. Skip the exclusion for RGB bitmaps.
+		int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
+		int needUpdate = 0;
+		if (ctrl.info.colornumber < 3) { /* palette format only — RGB bypasses RAMCTL check */
+		  for (int i=0; i<yabsys.VBlankLineCount; i++) {
+			if ((Vdp2Lines[i].BGON & 0x10)!=0) {
+			  if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
+				needUpdate = 1;
+				ctrl.info.display[i] = 0;
+			  }
+			}
+		  }
+		}
       if (needUpdate != 0) {
         ctrl.info.enable = 0;
         for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
