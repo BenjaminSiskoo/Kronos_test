@@ -875,7 +875,11 @@ void VIDCSVdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
    *  111 Gouraud+Half-transp: Gouraud result, MSB-dep half-transparency
    *
    * CMDPMOD bits 2-0 MUST reach the compute shader intact via cmd->CMDPMOD.
-   * Do NOT mask or clear these bits before calling vdp1_add(). */
+   * Do NOT mask or clear these bits before calling vdp1_add().
+   * Mesh (CMDPMOD bit 8):
+   *   Draw pixel when: (fb_x & 1) XOR (fb_y & 1) == 0  (i.e. (fb_x+fb_y) even)
+   *   Skip pixel otherwise.  Uses FRAME BUFFER coordinates, not screen coords.
+   *   MSB-ON (MON=1) still applies to drawn pixels in mesh mode. */
   cmd->type = POLYGON;
   vdp1_add(cmd, 0);
   return;
