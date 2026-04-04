@@ -890,13 +890,32 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 			// In ORIGINAL_MESH mode, MON=1 is handled by the MSB_SHADOW shader path
 			// and cmd->CMDPMOD must NOT be modified here.
 			if (_Ygl->meshmode != ORIGINAL_MESH) {
-				if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
-					// IMPROVED_MESH approximation: convert MON+CC → Mesh+Shadow
-					// Fixes: J.League Go Go Goal, Sailor Moon (SPCTL SPCLMD=RGB mode)
-					cmd->CMDPMOD &= ~0x8007U;
-					cmd->CMDPMOD |= 0x0101U;
-				}
-			}
+      /* IMPROVED_MESH: approximate MON=1 with Mesh+Shadow when the FB is
+       * in mixed palette+RGB format (SPCTL SPCLMD=1, bit 5).
+       *
+       * VDP1 §6.3 MON: forces bit15=1 in FB without CC.
+       * VDP2 §9.1 SPCLMD=1: FB has mixed palette+RGB → VDP2 uses bit15 as
+       * RGB discriminator, so MON's "bit15=1" marks the pixel as RGB.
+       * The improved-mesh approximation uses Mesh+Shadow as a visual stand-in
+       * because the MSB_SHADOW shader path does not look right in IMPROVED_MESH.
+       *
+       * VDP1 §6.3: "Do not specify color calculation when MON=1."
+       * We clear CC bits (0x7) and Gouraud bit (0x8000→ clearing), then set
+       * Mesh (bit8=0x100) and Shadow (CC=1=0x1) as the approximation.
+       *
+       * Games: J.League Go Go Goal, Sailor Moon SS (both use SPCLMD=1). */
+		  if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
+			  cmd->CMDPMOD &= ~0x8007U;   /* clear MON + CC bits */
+			  cmd->CMDPMOD |=  0x0101U;   /* set Mesh(bit8) + Shadow(CC=1) */
+		  }
+		}
+		// ORIGINAL_MESH: MSB_SHADOW shader handles MON=1 correctly per §6.3.
+		// No CMDPMOD mutation here — preserves correct shadow for:
+		// Advanced World War Sennetoku and all games using genuine MSB shadow.
+		/* ORIGINAL_MESH: the MSB_SHADOW shader (getProgramLine delta=0) correctly
+		* implements MON=1 per VDP1 §6.3 — forces bit15=1 on every non-transparent
+		* pixel without doing any color calculation.  Do not mutate CMDPMOD. */
+
 			// ORIGINAL_MESH: MSB_SHADOW shader handles MON=1 correctly per §6.3.
 			// No CMDPMOD mutation here — preserves correct shadow for:
 			// Advanced World War Sennetoku and all games using genuine MSB shadow.
