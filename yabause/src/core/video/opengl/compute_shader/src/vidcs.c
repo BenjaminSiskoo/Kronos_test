@@ -4549,13 +4549,18 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
     // RAMCTL bits [2*bank+1 : 2*bank] must be 11B (rotation data) for the
     // bank to be valid. This mirrors the check done in Vdp2DrawRBG0_part.
     {
-      int charAddrBk = (((info->charaddr >> 16) & 0xF)
-                        >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
-      if (((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
-        // VRAM bank not allocated for rotation screen: skip RBG1 bitmap draw
-        pushRBG(rbg);
-        return;
-      }
+	// VDP2 Manual §6.1: RAMCTL rotation-exclusive check only applies to
+	// palette format bitmaps. RGB format (colornumber==3) reads VRAM directly as
+	// pixel data and does not require the bank to be rotation-allocated (0x3).
+	// Skipping the check for RGB format prevents incorrectly suppressing RBG1 RGB bitmaps.
+
+	int charAddrBk = (((info->charaddr >> 16) & 0xF)
+					  >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
+	if (info->colornumber != 3 &&  /* RGB format bypasses VRAM bank restriction */
+		((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
+		pushRBG(rbg);
+		return;
+	}
     }
 
     info->paladdr = (rbg->ctrl.regs->BMPNA & 0x7) << 4;
