@@ -967,13 +967,25 @@ void vdp1_update_banding(void) {
 	a_prg_vdp1[DRAW_POLY_GOURAUD_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_f:vdp1_get_pixel_gouraud_extended_f;
 	a_prg_vdp1[DRAW_QUAD_GOURAUD_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_f:vdp1_get_pixel_gouraud_extended_f;
 	a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_LUMINANCE_NO_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
-	a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_TRANSPARENT_NO_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
+    a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_TRANSPARENT_NO_MESH][3] =
+        (_Ygl->bandingmode == ORIGINAL_BANDING)
+        ? vdp1_get_pixel_gouraud_half_transparent_f
+        : vdp1_get_pixel_gouraud_extended_half_transparent_f;
 	a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_LUMINANCE_NO_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
-	a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_TRANSPARENT_NO_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
+    a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_TRANSPARENT_NO_MESH][3] =
+        (_Ygl->bandingmode == ORIGINAL_BANDING)
+        ? vdp1_get_pixel_gouraud_half_transparent_f
+        : vdp1_get_pixel_gouraud_extended_half_transparent_f;
 	a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_LUMINANCE_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
-	a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_TRANSPARENT_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
+    a_prg_vdp1[DRAW_POLY_GOURAUD_HALF_TRANSPARENT_MESH][3] =
+        (_Ygl->bandingmode == ORIGINAL_BANDING)
+        ? vdp1_get_pixel_gouraud_half_transparent_f
+        : vdp1_get_pixel_gouraud_extended_half_transparent_f;	
 	a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_LUMINANCE_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
-	a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_TRANSPARENT_MESH][3] = (_Ygl->bandingmode==ORIGINAL_BANDING)?vdp1_get_pixel_gouraud_half_luminance_f:vdp1_get_pixel_gouraud_extended_half_luminance_f;
+    a_prg_vdp1[DRAW_QUAD_GOURAUD_HALF_TRANSPARENT_MESH][3] =
+        (_Ygl->bandingmode == ORIGINAL_BANDING)
+        ? vdp1_get_pixel_gouraud_half_transparent_f
+        : vdp1_get_pixel_gouraud_extended_half_transparent_f;
 
 	vdp1_compute_reset();
 }
