@@ -1872,6 +1872,10 @@ void vdp1_compute(vdp1cmd_struct* cmd, point tl, point br) {
 
 	glUniform2i(10, tl.x, tl.y);
 	if (Vdp1External.updateVdp1Ram != 0) {
+     /* Ensure the previous dispatch has finished reading ssbo_cmd_list_
+      * before we overwrite it.  GL 4.3 §2.2.2: SSBO writes require an
+      * explicit barrier. */
+		glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);		
 		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_vdp1ram_);
 		glBufferSubData(GL_SHADER_STORAGE_BUFFER, vdp1Ram_update_start, vdp1Ram_update_end-vdp1Ram_update_start, (void*)&Vdp1Ram[vdp1Ram_update_start]);
 		vdp1Ram_update_start = 0x80000;
