@@ -697,7 +697,9 @@ static void drawQuad(vdp1cmd_struct* cmd) {
              * for a correct parametric factor, not the scan-line counter. */
             float dl = (li > 1) ? ((float)(idl) + 0.5f) / (float)(li) : 0.5f;
             float dr = (ri > 1) ? ((float)(idr) + 0.5f) / (float)(ri) : 0.5f;
-				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+            /* VDP1 §4.2 FBCR bit 4 = EOS. Placed at bit 10 in misc (consistent
+             * with drawLine) so the shader reads it from the same position. */
+            u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
 
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
