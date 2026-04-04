@@ -1029,9 +1029,12 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbTotalLines, int nbLines, u3
 		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
 	}
 	if (oldProg != progId) {
-		// 	Might be some stuff to clean
-			oldProg = progId;
-			if (VIDCore->startVdp1Render) VIDCore->startVdp1Render();
+    /* End the previous render pass before starting a new one.
+     * Failing to unbind causes READ_WRITE/WRITE_ONLY access conflicts
+     * when switching between shadow/half-transp (RW) and replace/gouraud (WO). */
+    if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
+    oldProg = progId;
+    if (VIDCore->startVdp1Render) VIDCore->startVdp1Render();
 	}
 
 	if (Vdp1External.updateVdp1Ram != 0) {
