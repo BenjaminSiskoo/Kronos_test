@@ -1622,42 +1622,57 @@ static void trace_prog(int progId) {
 }
 
 static int getProgramLine(cmd_poly* cmd_pol, int type) {
-    // VDP1 Manual §6.3 CMDPMOD layout:
-    //   bit 15 = MON (MSB On)
-    //   bits 2-0 = Color Calculation (0=replace,1=shadow,2=half-lum,
-    //              3=half-transp,4=gouraud,5=prohibited,6=gouraud+half-lum,
-    //              7=gouraud+half-transp)
-    //   bit 8 = Mesh enable
-
-    int progId = ((type == DISTORTED) || (type == QUAD))
-                 ? DRAW_QUAD_MSB_SHADOW_NO_MESH
-                 : DRAW_POLY_MSB_SHADOW_NO_MESH;
+    /* VDP1 Manual §6.3 CMDPMOD layout:
+     *   bit 15     = MON  (MSB ON — force bit15=1 on every drawn FB pixel)
+     *   bit  8     = Mesh (draw only (X+Y)-even pixels per §6.3 Fig.6.8)
+     *   bits 2-0   = Color Calculation mode:
+     *     0 = Replace              → REPLACE shader   (no FB read)
+     *     1 = Shadow               → SHADOW shader    (FB read, MSB-gate)
+     *     2 = Half-luminance       → HALF_LUM         (no FB read, src>>1)
+     *     3 = Half-transparent     → HALF_TRANSP      (FB read, MSB-gate)
+     *     4 = Gouraud              → GOURAUD          (no FB read)
+     *     5 = Prohibited           → UNSUPPORTED      (NULL shaders, skipped)
+     *     6 = Gouraud+Half-lum    → G_HALF_LUM        (no FB read)
+     *     7 = Gouraud+Half-transp → G_HALF_TRANSP     (FB read, MSB-gate)
+     *
+     * Program table block layout (per type: POLY vs QUAD, NO_MESH vs MESH):
+     *   base+0  MSB_SHADOW   (MON=1 path)
+     *   base+1  REPLACE      (cc=0)
+     *   base+2  SHADOW       (cc=1)
+     *   base+3  HALF_LUM     (cc=2)
+     *   base+4  HALF_TRANSP  (cc=3)
+     *   base+5  GOURAUD      (cc=4)
+     *   base+6  UNSUPPORTED  (cc=5, NULL shaders)
+     *   base+7  G_HALF_LUM   (cc=6)
+     *   base+8  G_HALF_TRANSP(cc=7)
+     */
+    int base = ((type == DISTORTED) || (type == QUAD))
+               ? DRAW_QUAD_MSB_SHADOW_NO_MESH
+               : DRAW_POLY_MSB_SHADOW_NO_MESH;
 
     int delta = 0;
 
     if ((cmd_pol->CMDPMOD & 0x8000) == 0) {
-        // MON=0: normal color calculation path
-        delta += 1; // skip MSB_SHADOW slot → REPLACE is the base
-
+        /* MON=0: select CC mode. Base is +1 (REPLACE). */
+        delta = 1;
         if ((Vdp1Regs->TVMR & 0x1) == 0) {
-            // 16bpp: full color calculation available per VDP1 Manual §6.3
-            int cc = cmd_pol->CMDPMOD & 0x7;
-            // cc=5 is prohibited (UNSUPPORTED slot), pass through anyway —
-            // the UNSUPPORTED slot has NULL shaders and will be skipped in
-            // drawPolygonLine(). All other values 0-7 map 1:1 to the enum.
-            delta += cc;
+            /* 16bpp: full CC table available. cc maps 0→+0 .. 7→+7 within block. */
+            delta += (cmd_pol->CMDPMOD & 0x7);
         }
-        // 8bpp: VDP1 Manual §6.3 "color calculation cannot be performed when
-        // there are 8 bits/pixel, so replace should be specified."
-        // delta stays at 1 → selects REPLACE. Correct per spec.
+        /* 8bpp (TVMR bit0=1): VDP1 §6.3 — CC not available in 8bpp mode.
+         * delta stays at 1 → REPLACE. Correct per spec. */
     }
-    // MON=1: stays at base (MSB_SHADOW). Correct per spec.
+    /* MON=1: delta=0 → MSB_SHADOW. Correct per spec. */
 
-    // VDP1 Manual §6.3 bit 8 = Mesh enable
-    if (cmd_pol->CMDPMOD & 0x0100)
+    /* Mesh bit (CMDPMOD bit 8): offset to MESH block.
+     * VDP1 §6.3: mesh draws (X+Y)-even pixels only; applies independently of CC. */
+    if (cmd_pol->CMDPMOD & 0x0100) {
+        /* The MESH block starts at DRAW_POLY_MSB_SHADOW_MESH (or QUAD variant).
+         * The distance between NO_MESH and MESH blocks is constant for POLY and QUAD. */
         delta += DRAW_POLY_MSB_SHADOW_MESH - DRAW_POLY_MSB_SHADOW_NO_MESH;
+    }
 
-    return progId + delta;
+    return base + delta;
 }
 
 
