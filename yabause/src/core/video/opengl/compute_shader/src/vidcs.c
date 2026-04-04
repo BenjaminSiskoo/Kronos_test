@@ -2780,6 +2780,33 @@ static INLINE int Vdp2GetSpriteShadowBit(u16 sprite_word, int sptype, int spwine
 	  if (sptype >= 2 && sptype <= 7) return (sprite_word >> 15) & 1;
 	  return 0;
 	}
+	
+ /* Vdp2GetSpriteCCEnable — VDP2 Manual §9.2
+  * @param priority_number  3-bit sprite character priority (from PR bits)
+  * @param color_data_msb   MSB of CRAM color entry (1=enable for SPCCCS=3)
+  * @param spcccs           SPCTL bits 13-12: condition selector
+  * @param spccn            SPCTL bits 10-8: condition number (0-7)
+  * @param spccen           CCCTL bit 6: master CC enable for sprites */
+  
+static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb, int spcccs, int spccn, int spccen) {
+	  if (!spccen) return 0;
+	  switch (spcccs) {
+	  case 0: return (priority_number <= spccn);
+	  case 1: return (priority_number == spccn);
+	  case 2: return (priority_number >= spccn);
+	  case 3: return (color_data_msb != 0);
+	  default: return 0;
+	  }
+	}
+
+/* Per-line extraction in VIDCSReadColorOffset():
+ *   int sptype  =  lVdp2Regs->SPCTL & 0xF;
+ *   int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
+ *   int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
+ *   int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
+ *   int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
+ * Sprite priority is decoded from PR bits of the active sprite type
+ * (VDP2 §9.1 Figure 9.1, Table 9.2) selecting registers 1800F0H-1800F6H. */
 
 /* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
  * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
