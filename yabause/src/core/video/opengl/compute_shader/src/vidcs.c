@@ -3371,14 +3371,20 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   }
 }
 
+// APRÈS — VDP2 Manual §4.3: RGB format dot, bits 4-0 = red palette index equivalent.
+// Vdp2GetCCOn uses 'dot' lower nibble for special color mode 2. For RGB format,
+// the lower 4 bits of the 16-bit word are the red LSBs — pass them as dot proxy.
+// specialcolormode 3 checks CRAM MSB but cramindex is 0 (not applicable for RGB),
+// so cc will always be 1 in mode 3 with cramindex=0. Behavior is unchanged for
+// modes 0/1/2, but the dot value is now meaningful for mode 2 nibble checking.
 static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
   u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-//if (ctrl->info.patternwh == 2) printf("%x\n", dot);
-//Ca deconne ici
-  int cc = Vdp2GetCCOn(ctrl, dot, 0);
-  if (!(dot & 0x8000) && ctrl->info.transparencyenable) color = 0x00000000;
-  else color = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, ctrl->info.priority, cc, RGB555_TO_RGB24(dot));
+  /* VDP2 Manual §4.3 Table 4.3: RGB format transparent when bit 15 = 0 */
+  if (!(dot & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
+  int cc = Vdp2GetCCOn(ctrl, (u8)(dot & 0xF), 0);
+  color = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha,
+                    ctrl->info.priority, cc, RGB555_TO_RGB24(dot));
   return color;
 }
 
