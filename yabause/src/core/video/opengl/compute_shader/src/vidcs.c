@@ -2768,6 +2768,28 @@ static INLINE int Vdp2IsNormalShadow(u32 cramindex) {
 	  default: return 0;
 	  }
 	}
+	
+ /* Vdp2GetSpriteShadowBit — VDP2 Manual §14.1 MSB Shadow / §9.1 Figure 9.1
+  * Returns the SD (shadow) bit from a raw 16-bit sprite frame-buffer word.
+  * SD is at bit 15 for types 2-7 (16-bit pixel types with shadow support).
+   * Types 0,1 and 8-F have no SD bit; returns 0.
+  * When SPWINEN=1, bit 15 is sprite-window, not shadow; MSB shadow disabled. */
+  
+static INLINE int Vdp2GetSpriteShadowBit(u16 sprite_word, int sptype, int spwinen) {
+	  if (spwinen)                    return 0;  /* bit 15 = sprite window */
+	  if (sptype >= 2 && sptype <= 7) return (sprite_word >> 15) & 1;
+	  return 0;
+	}
+
+/* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
+ * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
+ * VDP2 §14.1: processing order is after CC and after color offset. */
+static INLINE u32 Vdp2ApplyMSBShadow(u32 scroll_rgb32) {
+	  u8 r = ((scroll_rgb32 >> 16) & 0xFF) >> 1;
+	  u8 g = ((scroll_rgb32 >>  8) & 0xFF) >> 1;
+	  u8 b = ((scroll_rgb32      ) & 0xFF) >> 1;
+	  return (scroll_rgb32 & 0xFF000000) | ((u32)r << 16) | ((u32)g << 8) | b;
+	}
 
 //////////////////////////////////////////////////////////////////////////////
 // Window
