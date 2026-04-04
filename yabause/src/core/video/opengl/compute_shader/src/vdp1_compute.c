@@ -799,7 +799,10 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 	int rx = (dx < dy)?0:(((B.x<A.x)?1:-1) + 2)&0x3;
 	int ry = (dx < dy)?0:(((B.y<A.y)?1:-1) + 2)&0x3;
 	int s = (ry<<2)|rx;
-	u32 eos_bit_line = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+    /* VDP1 §4.2 FBCR bit 4 = EOS. Place at bit 10 to avoid collision with
+     * the s-orientation field which occupies bits 9:6 via (s<<6). */
+    u32 eos_bit_line = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
+        
 
 	cmd_pol[0] = (cmd_poly){
 		.CMDPMOD = cmd->CMDPMOD,
