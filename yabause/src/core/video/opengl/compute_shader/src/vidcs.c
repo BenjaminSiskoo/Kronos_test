@@ -2379,6 +2379,12 @@ void VIDCSReadColorOffset(void) {
            | (encodeColorOffset(a_cog) << 8)
            | (encodeColorOffset(a_cor) << 0);
 
+	  int sptype  =  lVdp2Regs->SPCTL & 0xF;
+	  int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
+	  int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
+	  int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
+	  int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
+
         for (int id = 0; id < enBGMAX+1; id++) {
 			if (isEnabled(id, lVdp2Regs) == 0) {
 				linebuf[line + 512*id] = 0x00808080;
@@ -2798,15 +2804,6 @@ static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb,
 	  default: return 0;
 	  }
 	}
-
-/* Per-line extraction in VIDCSReadColorOffset():
- *   int sptype  =  lVdp2Regs->SPCTL & 0xF;
- *   int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
- *   int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
- *   int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
- *   int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
- * Sprite priority is decoded from PR bits of the active sprite type
- * (VDP2 §9.1 Figure 9.1, Table 9.2) selecting registers 1800F0H-1800F6H. */
 
 /* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
  * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
