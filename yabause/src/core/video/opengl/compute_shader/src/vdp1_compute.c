@@ -1748,10 +1748,13 @@ void vdp1_clear(int id, float *col, int* lim) {
 	if (prg_vdp1[progId] == 0) {
 		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
 	}
-	limits[0] = limits[0]*_Ygl->vdp1width/512;
-	limits[1] = limits[1]*_Ygl->vdp1height/256;
-	limits[2] = limits[2]*_Ygl->vdp1width/512+tex_ratio-1;
-	limits[3] = limits[3]*_Ygl->vdp1height/256+tex_ratio-1;
+    /* VDP1 §4.4: scale erase area from VDP1 FB coordinates to texture pixels.
+     * Use ceiling division for the right/bottom edges to avoid missing pixels.
+     * limits[0]/[1] = top-left (floor OK), limits[2]/[3] = bottom-right (ceil). */
+    limits[0] = (limits[0] * _Ygl->vdp1width)  / 512;
+    limits[1] = (limits[1] * _Ygl->vdp1height) / 256;
+    limits[2] = (limits[2] * _Ygl->vdp1width  + 511) / 512 + tex_ratio - 1;
+    limits[3] = (limits[3] * _Ygl->vdp1height + 255) / 256 + tex_ratio - 1;
   glUseProgram(prg_vdp1[progId]);
 	glBindImageTexture(0, get_vdp1_tex(id), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glBindImageTexture(1, get_vdp1_mesh(id), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
