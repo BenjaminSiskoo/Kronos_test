@@ -682,15 +682,15 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 		for (i = 0; i != li; i++) {
 			a += ri;
 			idl = i;
-			if (((dataL[idl].y < (Vdp1Regs->systemclipY2+1))
-			 || (dataL[idl].x < (Vdp1Regs->systemclipX2+1))
-			 || (dataR[idr].y < (Vdp1Regs->systemclipY2+1))
-			 || (dataR[idr].x < (Vdp1Regs->systemclipX2+1)))
-			 &&
-				 ((dataL[idl].y >= 0)
-			 || (dataL[idl].x >= 0)
-			 || (dataR[idr].y >= 0)
-			 || (dataR[idr].x >= 0)))
+            /* VDP1 §7.1: include scan-line when at least one endpoint is
+             * within the system clipping rectangle [0..clipX2, 0..clipY2].
+             * Use the same logic as the ri>=li branch for consistency. */
+            if (((dataL[idl].y < (Vdp1Regs->systemclipY2 + 1))
+              || (dataR[idr].y < (Vdp1Regs->systemclipY2 + 1)))
+             && ((dataL[idl].x < (Vdp1Regs->systemclipX2 + 1))
+              || (dataR[idr].x < (Vdp1Regs->systemclipX2 + 1)))
+             && ((dataL[idl].x >= 0) || (dataR[idr].x >= 0))
+             && ((dataL[idl].y >= 0) || (dataR[idr].y >= 0)))
 			{
             /* VDP1 §5.3: Gouraud correction is interpolated linearly along
              * each edge.  Use the true edge-point index divided by edge length
