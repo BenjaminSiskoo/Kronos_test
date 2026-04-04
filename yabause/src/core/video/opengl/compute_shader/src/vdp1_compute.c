@@ -692,8 +692,11 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 			 || (dataR[idr].y >= 0)
 			 || (dataR[idr].x >= 0)))
 			{
-				float dl = (float)((idl)+0.5)/(float)(li);
-				float dr = (float)((idr)+0.5)/(float)(ri);
+            /* VDP1 §5.3: Gouraud correction is interpolated linearly along
+             * each edge.  Use the true edge-point index divided by edge length
+             * for a correct parametric factor, not the scan-line counter. */
+            float dl = (li > 1) ? ((float)(idl) + 0.5f) / (float)(li) : 0.5f;
+            float dr = (ri > 1) ? ((float)(idr) + 0.5f) / (float)(ri) : 0.5f;
 				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
 
 				cmd_pol[add] = (cmd_poly){
