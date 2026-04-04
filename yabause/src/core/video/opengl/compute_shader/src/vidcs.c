@@ -859,20 +859,18 @@ void VIDCSVdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 // Dans VIDCSVdp1PolygonDraw — vérifier qu'on ne masque pas CMDPMOD
 void VIDCSVdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-  // VDP1 Manual §6.3 bits 2-0: color calculation mode
-  //   000 = Replace
-  //   001 = Shadow       (draw only if FB pixel MSB == 1)
-  //   010 = Half-luminance (sprite >> 1 per channel)
-  //   011 = Half-transparent (if FB MSB==1: out=(sprite+FB)>>1, else replace)
-  //   100 = Gouraud shading
-  //   101 = Prohibited
-  //   110 = Gouraud + Half-luminance
-  //   111 = Gouraud + Half-transparent (MSB-dependent)
-  //
-  // CMDPMOD must reach vdp1_add() / the compute shader unmasked.
-  // The shader reads: cc_mode = (CMDPMOD >> 0) & 0x7
-  //                   mon     = (CMDPMOD >> 15) & 0x1  (MSB ON flag)
-  // Do NOT apply any bitmask to cmd->CMDPMOD here.
+   /* VDP1 Manual §6.3 CMDPMOD bits 2-0 — Color Calculation mode table:
+   *  000 Replace:           write sprite pixel as-is, no FB read
+   *  001 Shadow:            if FB pixel MSB=1 → halve FB RGB; else no-op
+   *  010 Half-luminance:    sprite_out = sprite_in >> 1 (each channel)
+   *  011 Half-transparent:  if FB MSB=1 → (sprite+FB)/2; else replace
+   *  100 Gouraud:           sprite + Gouraud interpolated offset
+   *  101 Prohibited:        do not use
+   *  110 Gouraud+Half-lum:  Gouraud then >> 1
+   *  111 Gouraud+Half-transp: Gouraud result, MSB-dep half-transparency
+   *
+   * CMDPMOD bits 2-0 MUST reach the compute shader intact via cmd->CMDPMOD.
+   * Do NOT mask or clear these bits before calling vdp1_add(). */
   cmd->type = POLYGON;
   vdp1_add(cmd, 0);
   return;
