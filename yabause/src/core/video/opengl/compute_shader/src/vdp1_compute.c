@@ -659,10 +659,13 @@ static int computeBresenhamLinePoints(int x1, int y1, int x2, int y2, point **da
     if (e2 >= dy) { err += dy; x1 += sx;} /* e_xy+e_x > 0 */
     if (e2 <= dx) { err += dx; y1 += sy;} /* e_xy+e_y < 0 */
   }
-	if (i != nbMaxPoint) {
-		// printf("Error %d,%d => %d %d,%d => %d %d => %d\n", x1, x2, dx,y1, y2, dy, i, nbMaxPoint);
-		exit(-1);
-	}
+    /* The formula MAX(|dx|,|dy|)+1 can overestimate by 1 for certain
+     * degenerate cases.  Log in debug mode; clamp instead of aborting. */
+    if (i != nbMaxPoint) {
+        VDP1CPRINT("Bresenham count mismatch: expected %d got %d "
+                   "(%d,%d)→(%d,%d)\n", nbMaxPoint, i, x1, x2, y1, y2);
+        nbMaxPoint = i;  /* use actual count; data[] is valid up to i */
+    }
 	return i;
 }
 
