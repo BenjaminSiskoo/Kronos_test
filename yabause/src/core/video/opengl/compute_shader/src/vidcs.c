@@ -859,8 +859,20 @@ void VIDCSVdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 // Dans VIDCSVdp1PolygonDraw — vérifier qu'on ne masque pas CMDPMOD
 void VIDCSVdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-  // cmd->CMDPMOD bits 2-0 (color calc mode) must reach the shader intact
-  // Manual §6.3: mode 1 = shadow (MSB-dependent), mode 3 = half-transp (MSB-dep.)
+  // VDP1 Manual §6.3 bits 2-0: color calculation mode
+  //   000 = Replace
+  //   001 = Shadow       (draw only if FB pixel MSB == 1)
+  //   010 = Half-luminance (sprite >> 1 per channel)
+  //   011 = Half-transparent (if FB MSB==1: out=(sprite+FB)>>1, else replace)
+  //   100 = Gouraud shading
+  //   101 = Prohibited
+  //   110 = Gouraud + Half-luminance
+  //   111 = Gouraud + Half-transparent (MSB-dependent)
+  //
+  // CMDPMOD must reach vdp1_add() / the compute shader unmasked.
+  // The shader reads: cc_mode = (CMDPMOD >> 0) & 0x7
+  //                   mon     = (CMDPMOD >> 15) & 0x1  (MSB ON flag)
+  // Do NOT apply any bitmask to cmd->CMDPMOD here.
   cmd->type = POLYGON;
   vdp1_add(cmd, 0);
   return;
@@ -3209,51 +3221,57 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
   }
 }
 
-	static INLINE int Vdp2CheckCCWindow(int x, int y) {
+static INLINE int Vdp2CheckCCWindow(int x, int y) {
 		// VDP2 Manual §9.4: Color Calculation Window (CCW) restricts color
 		// calculation to specific screen regions. CCW data is in WCTLD bits 15-8.
 		// CCW index in window arrays is SPRITE+1.
 		int idx = SPRITE + 1;
 		if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // no CCW → CC active everywhere
 
-		int in_ccw = 0;
-		if (_Ygl->Win0[idx]) {
-			// Vdp2CheckWindow requires a non-NULL vdp2draw_struct* only for
-			// fields accessed inside (currently none — y bounds use _Ygl directly).
-			// Pass a dummy zero-initialized struct to avoid undefined NULL deref.
-			vdp2draw_struct dummy = {0};
-			int w0 = Vdp2CheckWindow(&dummy, x, y,
-						 (_Ygl->Win0_mode[idx] == WA_INSIDE) ? 1 : 0,
-						 _Ygl->win[0]);
-			in_ccw |= w0;
-		}
-		if (_Ygl->Win1[idx]) {
-			vdp2draw_struct dummy = {0};
-			int w1 = Vdp2CheckWindow(&dummy, x, y,
-						 (_Ygl->Win1_mode[idx] == WA_INSIDE) ? 1 : 0,
-						 _Ygl->win[1]);
-			if (_Ygl->Win_op[idx] == 0) in_ccw |= w1;  // OR
-			else                         in_ccw &= w1;  // AND
-		}
-		// VDP2 Manual §9.4: CC is NOT performed inside the active CCW region
-		return !in_ccw;
+		  int have_w0 = (_Ygl->Win0[idx] != 0);
+		  int have_w1 = (_Ygl->Win1[idx] != 0);
+		  vdp2draw_struct dummy = {0};
+		  int w0 = have_w0 ? Vdp2CheckWindow(&dummy, x, y,
+					   (_Ygl->Win0_mode[idx] == WA_INSIDE) ? 1 : 0, _Ygl->win[0]) : 0;
+		  int w1 = have_w1 ? Vdp2CheckWindow(&dummy, x, y,
+					   (_Ygl->Win1_mode[idx] == WA_INSIDE) ? 1 : 0, _Ygl->win[1]) : 0;
+		  int in_ccw;
+		  if (_Ygl->Win_op[idx] == 0) {   /* OR */
+			in_ccw = (have_w0 ? w0 : 0) | (have_w1 ? w1 : 0);
+		  } else {                         /* AND */
+			if (have_w0 && have_w1) in_ccw = w0 & w1;
+			else if (have_w0)        in_ccw = w0;
+			else                     in_ccw = w1;
+		  }
+		  /* VDP2 §9.4: CC not performed INSIDE the CCW — return 1 = "do CC here" */
+		  return !in_ccw;
 	}
 
 static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
-  /* CCMD selects Rate vs Add blend equation — both use same CC-enable logic */
+  /* VDP2 Manual §12.1 CCCTL (1800ECH) bit 8 = CCMD:
+   *   CCMD=0  "Rate mode": out = top*(ratio/32) + 2nd*((32-ratio)/32)
+   *   CCMD=1  "Add mode":  out = saturate(top + 2nd)
+   * Both modes use the same dot-level enable logic (§12.3 SFCCMD/SFSEL).
+   * cc=0 → do NOT color-calculate this dot (write top pixel as-is). */
   int cc = 1;
   switch (ctrl->info.specialcolormode) {
-  case 0: break; /* always CC */
+  case 0: /* always CC */ break;
   case 1:
+    /* VDP2 §12.3 mode 1: CC only when pattern-name special-CC bit = 1 */
     if (ctrl->info.specialcolorfunction == 0) cc = 0;
     break;
   case 2:
-    if (ctrl->info.specialcolorfunction == 0) cc = 0;
-    else if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) cc = 0;
+    /* VDP2 §12.3 mode 2: special-CC bit AND special code matches nibble */
+    if (ctrl->info.specialcolorfunction == 0) {
+      cc = 0;
+    } else if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) {
+      cc = 0;
+    }
     break;
   case 3:
-    /* VDP2 §12.3: CRAM MSB only meaningful for palette format.
-     * For RGB pixels (colornumber>=3), cramindex is NOT a CRAM addr — skip. */
+    /* VDP2 §12.3 mode 3: CRAM MSB is CC-enable flag.
+     * Only valid for palette format (colornumber<3). For RGB pixels,
+     * cramindex is a direct color value, NOT a CRAM address — skip read. */
     if (ctrl->info.colornumber < 3) {
       if ((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0) cc = 0;
     }
