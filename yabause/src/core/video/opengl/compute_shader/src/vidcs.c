@@ -1117,7 +1117,6 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
   ctrl.info.coordincy = 1.0f;
-
   ctrl.info.cor = 0;
   ctrl.info.cog = 0;
   ctrl.info.cob = 0;
@@ -1125,158 +1124,132 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   ctrl.info.enable = 0;
   ctrl.info.startLine = 0;
   ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
-
   ctrl.info.cellh = 256;
   if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl.info.cellh = ctrl.info.cellh << 1;
   ctrl.info.specialcolorfunction = 0;
 
-    // NBG0 mode
+  /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
+  ctrl.info.bitmap_base      = 0;
+  ctrl.info.bitmap_wrap_size = 0;
+
   for (i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    /* VDP2 Manual §12.1 CCRNA (180108H) bits 4-0 = N0CCRT[4:0]:
-     * ratio=0 → fully opaque (alpha=255), ratio=31 → nearly transparent.
-     * Map 5-bit inverted ratio to full 0-255 range: (*255)/31 instead of <<3
-     * which clips at 248 and misses 0xFF for ratio=0. */
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
   }
-    if (!ctrl.info.enable) {
-      return;
-    }
+  if (!ctrl.info.enable) return;
 
-    for (int i=0; i < 4; i++) {
-        ctrl.info.char_bank[i] = 0;
-        ctrl.info.pname_bank[i] = 0;
-        for (int j=0; j < 8; j++) {
-          if (Vdp2External.AC_VRAM[i][j] == 0x04) {
-            ctrl.info.char_bank[i] = 1;
-            char_access |= 1<<j;
-          }
-          if (Vdp2External.AC_VRAM[i][j] == 0x00) {
-            ctrl.info.pname_bank[i] = 1;
-            ptn_access |= (1 << j);
+  for (int i=0; i < 4; i++) {
+    ctrl.info.char_bank[i] = 0;
+    ctrl.info.pname_bank[i] = 0;
+    for (int j=0; j < 8; j++) {
+      if (Vdp2External.AC_VRAM[i][j] == 0x04) {
+        ctrl.info.char_bank[i] = 1;
+        char_access |= 1<<j;
+      }
+      if (Vdp2External.AC_VRAM[i][j] == 0x00) {
+        ctrl.info.pname_bank[i] = 1;
+        ptn_access |= (1 << j);
+      }
+    }
+  }
+
+  if (char_access == 0) return;
+
+  /* VDP2 Manual §4.2 CHCTLA bits 6-4 : colornumber NBG0
+   * Doit être assigné AVANT ReadBitmapSize et le calcul du wrap,
+   * car bitmap_wrap_size dépend de colornumber et de cellw/cellh. */
+  ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
+
+  if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
+  {
+    // Bitmap Mode
+    ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
+
+    ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
+    ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
+
+    /* charaddr doit être assigné AVANT bitmap_base */
+    ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
+    ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
+    ctrl.info.flipfunction = 0;
+    ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x10) >> 4;
+    ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
+
+    /* VDP2 Manual p.95 : wrap bitmap.
+     * Calculé APRÈS charaddr (bitmap_base) ET colornumber ET cellw/cellh.
+     * Si le bitmap dépasse la VRAM, il se répète verticalement. */
+    switch (ctrl.info.colornumber) {
+      case 0: /* 4bpp */
+        ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
+        break;
+      case 1: /* 8bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
+        break;
+      case 2: /* 16bpp palette */
+      case 3: /* 16bpp RGB */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
+        break;
+      case 4: /* 32bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
+        break;
+      default:
+        ctrl.info.bitmap_wrap_size = 0;
+        break;
+    }
+    ctrl.info.bitmap_base = ctrl.info.charaddr;
+
+    /* VDP2 Manual §4.5: RGB format bypasses RAMCTL rotation-exclusion check */
+    int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
+    int needUpdate = 0;
+    if (ctrl.info.colornumber < 3) {
+      for (int i=0; i<yabsys.VBlankLineCount; i++) {
+        if ((Vdp2Lines[i].BGON & 0x10)!=0) {
+          if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
+            needUpdate = 1;
+            ctrl.info.display[i] = 0;
           }
         }
       }
-
-      //ToDo Need to determine if NBG0 shall be disabled due to VRAM access
-      //if (char_access == 0) return;
-
-    if (char_access == 0) {
-      return;
     }
-    if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
-    {
-      // Bitmap Mode
-      ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
-	  
-		// Mode bitmap uniquement
-		// Calculer la taille logique du bitmap et l'adresse de base pour le wrap vertical.
-		// VDP2 Manual p.95 : si le bitmap dépasse la VRAM, il se répète verticalement
-		// à partir de son adresse de début (wrap dans le bitmap, pas dans la VRAM).
-		{
-			int bpp_shift; // log2(octets par pixel * 2) pour éviter le float
-			switch (ctrl.info.colornumber) {
-				case 0: /* 4bpp  : cellw/2 octets par ligne */
-					ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
-					break;
-				case 1: /* 8bpp  : cellw octets par ligne */
-					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
-					break;
-				case 2: /* 16bpp palette : cellw*2 octets par ligne */
-				case 3: /* 16bpp RGB     : cellw*2 octets par ligne */
-					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
-					break;
-				case 4: /* 32bpp : cellw*4 octets par ligne */
-					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
-					break;
-				default:
-					ctrl.info.bitmap_wrap_size = 0;
-					break;
-			}
-			ctrl.info.bitmap_base = ctrl.info.charaddr;
-		}
-      ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
-      ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
-
-      ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
-      ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
-      ctrl.info.flipfunction = 0;
-      ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x10) >> 4;
-      ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
-
-		// APRÈS — VDP2 Manual §4.5: RGB format (colornumber >= 3) reads VRAM as direct
-		// pixel data. The RAMCTL rotation-exclusion check (!=0x0 means bank used by RBG0)
-		// applies only to palette-format bitmaps where data is a CRAM address. For RGB
-		// bitmaps, the pixel data and RBG0 coefficient/map data can coexist in the same bank
-		// because they are read independently. Skip the exclusion for RGB bitmaps.
-		int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
-		int needUpdate = 0;
-		if (ctrl.info.colornumber < 3) { /* palette format only — RGB bypasses RAMCTL check */
-		  for (int i=0; i<yabsys.VBlankLineCount; i++) {
-			if ((Vdp2Lines[i].BGON & 0x10)!=0) {
-			  if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
-				needUpdate = 1;
-				ctrl.info.display[i] = 0;
-			  }
-			}
-		  }
-		}
-      if (needUpdate != 0) {
-        ctrl.info.enable = 0;
-        for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
-        if (!ctrl.info.enable) {
-          return;
-        }
-      }
+    if (needUpdate != 0) {
+      ctrl.info.enable = 0;
+      for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
+      if (!ctrl.info.enable) return;
     }
-    else
-    {
-      // Tile Mode
-      if (ptn_access == 0) {
-        return;
-      }
-      ctrl.info.mapwh = 2;
+  }
+  else
+  {
+    // Tile Mode — bitmap_base et bitmap_wrap_size restent à 0
+    if (ptn_access == 0) return;
+    ctrl.info.mapwh = 2;
+    ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ);
+    ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % (512 * ctrl.info.planew));
+    ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % (512 * ctrl.info.planeh));
+    ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
+  }
 
-      ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ);
+  if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
+  else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
 
-      ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % (512 * ctrl.info.planew));
-      ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % (512 * ctrl.info.planeh));
-      ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
-    }
+  switch (ctrl.regs->ZMCTL & 0x03)
+  {
+  case 0: ctrl.info.maxzoom = 1.0f; break;
+  case 1:
+    ctrl.info.maxzoom = 0.5f;
+    if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
+    break;
+  case 2:
+  case 3:
+    ctrl.info.maxzoom = 0.25f;
+    if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
+    break;
+  }
 
-    if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) {
-      //invalid zoom value
-      return;
-    }
-    else
-      ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
+  if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
+  else ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
 
-    switch (ctrl.regs->ZMCTL & 0x03)
-    {
-    case 0:
-      ctrl.info.maxzoom = 1.0f;
-      break;
-    case 1:
-      ctrl.info.maxzoom = 0.5f;
-      if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
-      break;
-    case 2:
-    case 3:
-      ctrl.info.maxzoom = 0.25f;
-      if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
-      break;
-    }
-
-    if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) {
-      //Invalid zoom value
-      return;
-    }
-    else
-      ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
-
-    ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
-
+  ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
 
   ReadMosaicData(&ctrl.info, 0x1, ctrl.regs);
 
@@ -1289,24 +1262,20 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   else
     ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
 
-  ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
-
-  int dest_alpha = ((ctrl.regs->CCCTL >> 9) & 0x01);
+  /* colornumber déjà assigné plus haut — ne pas réassigner ici
+   * pour ne pas écraser la valeur utilisée pour bitmap_wrap_size */
 
   ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x7) << 8;
   ctrl.info.linecheck_mask = 0x01;
   ctrl.info.priority = ctrl.regs->PRINA & 0x7;
 
-  if (ctrl.info.priority == 0){
-    return;
-  }
+  if (ctrl.info.priority == 0) return;
 
   ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL & 0xFF, ctrl.regs->LSTA0.all);
   ctrl.info.lineinfo = lineNBG0;
   Vdp2GenLineinfo(&ctrl.info);
 
-  if (ctrl.regs->SCRCTL & 1)
-  {
+  if (ctrl.regs->SCRCTL & 1) {
     ctrl.info.isverticalscroll = 1;
     ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
     if (ctrl.regs->SCRCTL & 0x100)
@@ -1314,137 +1283,98 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
     else
       ctrl.info.verticalscrollinc = 4;
   }
-  else
-    ctrl.info.isverticalscroll = 0;
+  else ctrl.info.isverticalscroll = 0;
 
-// NBG0 draw
-    if (ctrl.info.isbitmap)
-    {
-      if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
-        ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
-        ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-        ctrl.info.x = 0;
-        ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0;
-        ctrl.info.vertices[1] = 0;
-        ctrl.info.vertices[2] = _Ygl->rwidth;
-        ctrl.info.vertices[3] = 0;
-        ctrl.info.vertices[4] = _Ygl->rwidth;
-        ctrl.info.vertices[5] = _Ygl->rheight;
-        ctrl.info.vertices[6] = 0;
-        ctrl.info.vertices[7] = _Ygl->rheight;
-        vdp2draw_struct infotmp = ctrl.info;
-        infotmp.cellw = _Ygl->rwidth;
-        infotmp.cellh = _Ygl->rheight;
-        // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh = infotmp.cellh << 1;
-        YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
-        Vdp2DrawBitmapCoordinateInc(&ctrl);
-      }
-      else {
-
-        int xx, yy;
-        int isCached = 0;
-
-        if (ctrl.info.islinescroll) // Nights Movie
-        {
-          ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
-          ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-          ctrl.info.x = 0;
-          ctrl.info.y = 0;
-          ctrl.info.vertices[0] = 0;
-          ctrl.info.vertices[1] = 0;
-          ctrl.info.vertices[2] = _Ygl->rwidth;
-          ctrl.info.vertices[3] = 0;
-          ctrl.info.vertices[4] = _Ygl->rwidth;
-          ctrl.info.vertices[5] = _Ygl->rheight;
-          ctrl.info.vertices[6] = 0;
-          ctrl.info.vertices[7] = _Ygl->rheight;
-          vdp2draw_struct infotmp = ctrl.info;
-          infotmp.cellw = _Ygl->rwidth;
-          infotmp.cellh = _Ygl->rheight;
-          // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh = infotmp.cellh << 1;
-          YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
-          Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
-
-        }
-        else {
-          int cellh = ctrl.info.cellh;
-          // if (_Ygl->interlace == SINGLE_INTERLACE) cellh = cellh << 1;
-          yy = ctrl.info.y;
-          while (yy + ctrl.info.y < _Ygl->rheight)
-          {
-            ctrl.info.draw_line = yy;
-            xx = ctrl.info.x;
-            while (xx + ctrl.info.x < _Ygl->rwidth)
-            {
-              ctrl.info.vertices[0] = xx;
-              ctrl.info.vertices[1] = yy;
-              ctrl.info.vertices[2] = (xx + ctrl.info.cellw);
-              ctrl.info.vertices[3] = yy;
-              ctrl.info.vertices[4] = (xx + ctrl.info.cellw);
-              ctrl.info.vertices[5] = (yy + cellh);
-              ctrl.info.vertices[6] = xx;
-              ctrl.info.vertices[7] = (yy + cellh);
-              if (isCached == 0)
-              {
-                YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
-                if (ctrl.info.islinescroll) {
-                  Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
-                } else {
-                  requestDrawCell(&ctrl);
-                }
-                isCached = 1;
-              }
-              else {
-                YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
-              }
-              xx += ctrl.info.cellw;
-            }
-            yy += cellh;
-          }
-        }
-      }
+  if (ctrl.info.isbitmap)
+  {
+    if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
+      ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
+      ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
+      ctrl.info.x = 0;
+      ctrl.info.y = 0;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
+      vdp2draw_struct infotmp = ctrl.info;
+      infotmp.cellw = _Ygl->rwidth;
+      infotmp.cellh = _Ygl->rheight;
+      YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
+      Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
-    else
-    {
+    else {
+      int xx, yy;
+      int isCached = 0;
       if (ctrl.info.islinescroll) {
-        int screenH = _Ygl->rheight;
-        // if (_Ygl->interlace == DOUBLE_INTERLACE) screenH <<= 1;
         ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-        ctrl.info.x = 0;
-        ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0;
-        ctrl.info.vertices[1] = 0;
-        ctrl.info.vertices[2] = _Ygl->rwidth;
-        ctrl.info.vertices[3] = 0;
-        ctrl.info.vertices[4] = _Ygl->rwidth;
-        ctrl.info.vertices[5] = screenH;
-        ctrl.info.vertices[6] = 0;
-        ctrl.info.vertices[7] = screenH;
+        ctrl.info.x = 0; ctrl.info.y = 0;
+        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+        ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+        ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
+        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
         vdp2draw_struct infotmp = ctrl.info;
         infotmp.cellw = _Ygl->rwidth;
         infotmp.cellh = _Ygl->rheight;
-        // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh <<= 1;
-        infotmp.flipfunction = 0;
-
         YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
-        Vdp2DrawMapPerLine(&ctrl);
+        Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
       }
       else {
-        int delayed = 0;
-        // Setting miss of cycle patten need to plus 8 dot vertical
-        // If pattern access is defined on T0 for NBG0 or NBG1, there is no limitation
-        if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
-          delayed = 1;
+        int cellh = ctrl.info.cellh;
+        yy = ctrl.info.y;
+        while (yy + ctrl.info.y < _Ygl->rheight) {
+          ctrl.info.draw_line = yy;
+          xx = ctrl.info.x;
+          while (xx + ctrl.info.x < _Ygl->rwidth) {
+            ctrl.info.vertices[0] = xx; ctrl.info.vertices[1] = yy;
+            ctrl.info.vertices[2] = (xx + ctrl.info.cellw); ctrl.info.vertices[3] = yy;
+            ctrl.info.vertices[4] = (xx + ctrl.info.cellw); ctrl.info.vertices[5] = (yy + cellh);
+            ctrl.info.vertices[6] = xx; ctrl.info.vertices[7] = (yy + cellh);
+            if (isCached == 0) {
+              YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
+              if (ctrl.info.islinescroll)
+                Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
+              else
+                requestDrawCell(&ctrl);
+              isCached = 1;
+            }
+            else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
+            xx += ctrl.info.cellw;
+          }
+          yy += cellh;
         }
-        ctrl.info.x = ctrl.regs->SCXIN0 & 0x7FF;
-        ctrl.info.y = ctrl.regs->SCYIN0 & 0x7FF;
-        Vdp2DrawMapTest(&ctrl, delayed);
       }
     }
+  }
+  else
+  {
+    if (ctrl.info.islinescroll) {
+      int screenH = _Ygl->rheight;
+      ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
+      ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
+      ctrl.info.x = 0; ctrl.info.y = 0;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = screenH;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = screenH;
+      vdp2draw_struct infotmp = ctrl.info;
+      infotmp.cellw = _Ygl->rwidth;
+      infotmp.cellh = _Ygl->rheight;
+      infotmp.flipfunction = 0;
+      YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
+      Vdp2DrawMapPerLine(&ctrl);
+    }
+    else {
+      int delayed = 0;
+      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
+        delayed = 1;
+      ctrl.info.x = ctrl.regs->SCXIN0 & 0x7FF;
+      ctrl.info.y = ctrl.regs->SCYIN0 & 0x7FF;
+      Vdp2DrawMapTest(&ctrl, delayed);
+    }
+  }
 #ifdef CELL_ASYNC
-    YabThreadYield();
+  YabThreadYield();
 #endif
 }
 
@@ -1467,67 +1397,83 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   ctrl.info.startLine = 0;
   ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
 
+  /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
+  ctrl.info.bitmap_base      = 0;
+  ctrl.info.bitmap_wrap_size = 0;
+
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG1, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    /* VDP2 Manual §12.1 CCRNA (180108H) bits 12-8 = N1CCRT[4:0]:
-     * Same encoding as NBG0. Shift right 8 to isolate the 5-bit field,
-     * then apply full 0-255 mapping. The original >>5 was equivalent to
-     * <<3 after masking, clipping at 248. */
     ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNA >> 8) & 0x1F) * 255) / 31);
   }
-  
-  if (!ctrl.info.enable) {
-    return;
-  }
+
+  if (!ctrl.info.enable) return;
 
   for (int i=0; i < 4; i++) {
-      ctrl.info.char_bank[i] = 0;
-      ctrl.info.pname_bank[i] = 0;
-      for (int j=0; j < 8; j++) {
-        if (Vdp2External.AC_VRAM[i][j] == 0x05) {
-          ctrl.info.char_bank[i] = 1;
-          char_access |= 1<<j;
-        }
-        if (Vdp2External.AC_VRAM[i][j] == 0x01) {
-          ctrl.info.pname_bank[i] = 1;
-          ptn_access |= (1 << j);
-        }
+    ctrl.info.char_bank[i] = 0;
+    ctrl.info.pname_bank[i] = 0;
+    for (int j=0; j < 8; j++) {
+      if (Vdp2External.AC_VRAM[i][j] == 0x05) {
+        ctrl.info.char_bank[i] = 1;
+        char_access |= 1<<j;
+      }
+      if (Vdp2External.AC_VRAM[i][j] == 0x01) {
+        ctrl.info.pname_bank[i] = 1;
+        ptn_access |= (1 << j);
       }
     }
-  //ToDo Need to determine if NBG1 shall be disabled due to VRAM access
-  //if (char_access == 0) return;
+  }
 
   ctrl.info.transparencyenable = !(ctrl.regs->BGON & 0x200);
   ctrl.info.specialprimode = (ctrl.regs->SFPRMD >> 2) & 0x3;
 
+  /* VDP2 Manual §4.2 CHCTLA bits 13-12 : colornumber NBG1
+   * Doit être assigné AVANT ReadBitmapSize et le calcul du wrap. */
   ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x3000) >> 12;
 
-  if (char_access == 0) {
-    return;
-  }
+  if (char_access == 0) return;
 
   if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x200) != 0)
   {
-    //If there is no access to character pattern data, do not display the layer
     ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 10, 0x3);
 
     ctrl.info.x = -((ctrl.regs->SCXIN1 & 0x7FF) % ctrl.info.cellw);
     ctrl.info.y = -((ctrl.regs->SCYIN1 & 0x7FF) % ctrl.info.cellh);
+
+    /* charaddr doit être assigné AVANT bitmap_base */
     ctrl.info.charaddr = ((ctrl.regs->MPOFN & 0x70) >> 4) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x700) >> 4;
     ctrl.info.flipfunction = 0;
     ctrl.info.specialfunction = 0;
     ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x1000) >> 4;
 
-    //If RBG0 is used and the VRAM is used for it, check that NBGx is not using reserved area, otherwise, do not display
+    /* VDP2 Manual p.95 : wrap bitmap.
+     * Calculé APRÈS charaddr (bitmap_base) ET colornumber ET cellw/cellh. */
+    switch (ctrl.info.colornumber) {
+      case 0: /* 4bpp */
+        ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
+        break;
+      case 1: /* 8bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
+        break;
+      case 2: /* 16bpp palette */
+      case 3: /* 16bpp RGB */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
+        break;
+      case 4: /* 32bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
+        break;
+      default:
+        ctrl.info.bitmap_wrap_size = 0;
+        break;
+    }
+    ctrl.info.bitmap_base = ctrl.info.charaddr;
+
     int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
     int needUpdate = 0;
     for (int i=0; i<yabsys.VBlankLineCount; i++) {
       if ((Vdp2Lines[i].BGON & 0x10)!=0) {
-        //RBG0 is enabled for this line. Check we can display the NBGx
         if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
-          //VRAM on the dedicated bank is used by RBG0, it can not be used by NBGx
           needUpdate = 1;
           ctrl.info.display[i] = 0;
         }
@@ -1536,23 +1482,17 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
     if (needUpdate != 0) {
       ctrl.info.enable = 0;
       for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
-      if (!ctrl.info.enable) {
-        return;
-      }
+      if (!ctrl.info.enable) return;
     }
   }
   else
   {
-    if (ptn_access == 0) {
-      return;
-    }
+    // Tile Mode — bitmap_base et bitmap_wrap_size restent à 0
+    if (ptn_access == 0) return;
     ctrl.info.mapwh = 2;
-
     ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 2);
-
     ctrl.info.x = -((ctrl.regs->SCXIN1 & 0x7FF) % (512 * ctrl.info.planew));
     ctrl.info.y = -((ctrl.regs->SCYIN1 & 0x7FF) % (512 * ctrl.info.planeh));
-
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN1, ctrl.regs->CHCTLA & 0x100);
   }
 
@@ -1565,16 +1505,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 
   ReadMosaicData(&ctrl.info, 0x2, ctrl.regs);
 
-
   ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x70) << 4;
   ctrl.info.linecheck_mask = 0x02;
 
-  if ((ctrl.regs->ZMXN1.all & 0x7FF00) == 0){
-    //invalid zoom value
-    return;
-  }
-  else
-    ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN1.all & 0x7FF00);
+  if ((ctrl.regs->ZMXN1.all & 0x7FF00) == 0) return;
+  else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN1.all & 0x7FF00);
 
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
@@ -1588,130 +1523,90 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
     if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
     break;
   }
-  // APRÈS — cohérence avec le traitement ZMXN1 : 0 = invalide = retour
-  if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) {
-    return; // valeur de zoom Y invalide, identique au traitement ZMXN1
-  }
-  else
-    ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN1.all & 0x7FF00);
 
+  if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) return;
+  else ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN1.all & 0x7FF00);
 
   ctrl.info.priority = (ctrl.regs->PRINA >> 8) & 0x7;
 
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
-	// VDP2 Manual §4.1 Table 4.1: NBG1 is disabled when NBG0 uses
-	// 32768 colors or more (colornumber >= 4 in CHCTLA bits 6-4).
-	// colornumber values: 0=16, 1=256, 2=2048, 3=32768, 4=16M (not for NBG0)
-	// Per Table 4.2 CHCTLA bits 6-4: 000=16col, 001=256col, 010=2048col,
-	// 011=32768col, 100=16Mcol. NBG1 disabled when NBG0 >= 32768 col (>= 3).
-	if ((ctrl.info.priority == 0) ||
-		(ctrl.regs->BGON & 0x1 &&
-		 ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 3)) {
-		return;
-}
+  /* VDP2 Manual §4.1 Table 4.1: NBG1 désactivé si NBG0 >= 32768 couleurs */
+  if ((ctrl.info.priority == 0) ||
+      (ctrl.regs->BGON & 0x1 && ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 3)) {
+    return;
+  }
 
   ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL >> 8, ctrl.regs->LSTA1.all);
   ctrl.info.lineinfo = lineNBG1;
   Vdp2GenLineinfo(&ctrl.info);
-  if (ctrl.regs->SCRCTL & 0x100)
-  {
+
+  if (ctrl.regs->SCRCTL & 0x100) {
     ctrl.info.isverticalscroll = 1;
-    if (ctrl.regs->SCRCTL & 0x1)
-    {
+    if (ctrl.regs->SCRCTL & 0x1) {
       ctrl.info.verticalscrolltbl = 4 + ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1);
       ctrl.info.verticalscrollinc = 8;
     }
-    else
-    {
+    else {
       ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
       ctrl.info.verticalscrollinc = 4;
     }
   }
-  else
-    ctrl.info.isverticalscroll = 0;
+  else ctrl.info.isverticalscroll = 0;
 
   if (ctrl.info.isbitmap)
   {
-
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
-      ctrl.info.x = 0;
-      ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0;
-      ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth;
-      ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth;
-      ctrl.info.vertices[5] = _Ygl->rheight;
-      ctrl.info.vertices[6] = 0;
-      ctrl.info.vertices[7] = _Ygl->rheight;
+      ctrl.info.x = 0; ctrl.info.y = 0;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
       infotmp.cellh = _Ygl->rheight;
-      // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh = infotmp.cellh << 1;
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
     else {
-
       int xx, yy;
       int isCached = 0;
-
-      if (ctrl.info.islinescroll) // Nights Movie
-      {
+      if (ctrl.info.islinescroll) {
         ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
-        ctrl.info.x = 0;
-        ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0;
-        ctrl.info.vertices[1] = 0;
-        ctrl.info.vertices[2] = _Ygl->rwidth;
-        ctrl.info.vertices[3] = 0;
-        ctrl.info.vertices[4] = _Ygl->rwidth;
-        ctrl.info.vertices[5] = _Ygl->rheight;
-        ctrl.info.vertices[6] = 0;
-        ctrl.info.vertices[7] = _Ygl->rheight;
+        ctrl.info.x = 0; ctrl.info.y = 0;
+        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+        ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+        ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
+        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
         vdp2draw_struct infotmp = ctrl.info;
         infotmp.cellw = _Ygl->rwidth;
         infotmp.cellh = _Ygl->rheight;
-        // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh = infotmp.cellh << 1;
         YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
         Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
       }
       else {
         int cellh = ctrl.info.cellh;
-        // if (_Ygl->interlace == SINGLE_INTERLACE) cellh = cellh << 1;
         yy = ctrl.info.y;
-        while (yy + ctrl.info.y < _Ygl->rheight)
-        {
+        while (yy + ctrl.info.y < _Ygl->rheight) {
           ctrl.info.draw_line = yy;
           xx = ctrl.info.x;
-          while (xx + ctrl.info.x < _Ygl->rwidth)
-          {
-            ctrl.info.vertices[0] = xx;
-            ctrl.info.vertices[1] = yy;
-            ctrl.info.vertices[2] = (xx + ctrl.info.cellw);
-            ctrl.info.vertices[3] = yy;
-            ctrl.info.vertices[4] = (xx + ctrl.info.cellw);
-            ctrl.info.vertices[5] = (yy + cellh);
-            ctrl.info.vertices[6] = xx;
-            ctrl.info.vertices[7] = (yy + cellh);
-            if (isCached == 0)
-            {
+          while (xx + ctrl.info.x < _Ygl->rwidth) {
+            ctrl.info.vertices[0] = xx; ctrl.info.vertices[1] = yy;
+            ctrl.info.vertices[2] = (xx + ctrl.info.cellw); ctrl.info.vertices[3] = yy;
+            ctrl.info.vertices[4] = (xx + ctrl.info.cellw); ctrl.info.vertices[5] = (yy + cellh);
+            ctrl.info.vertices[6] = xx; ctrl.info.vertices[7] = (yy + cellh);
+            if (isCached == 0) {
               YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
-              if (ctrl.info.islinescroll) {
+              if (ctrl.info.islinescroll)
                 Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
-              }
-              else {
+              else
                 requestDrawCell(&ctrl);
-              }
               isCached = 1;
             }
-            else {
-              YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
-            }
+            else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
             xx += ctrl.info.cellw;
           }
           yy += cellh;
@@ -1721,50 +1616,34 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   }
   else {
     if (ctrl.info.islinescroll) {
-      if (char_access == 0) {
-        return;
-      }
+      if (char_access == 0) return;
       int screenH = _Ygl->rheight;
-      // if (_Ygl->interlace == DOUBLE_INTERLACE) screenH <<= 1;
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
-      ctrl.info.x = 0;
-      ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0;
-      ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth;
-      ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth;
-      ctrl.info.vertices[5] = screenH;
-      ctrl.info.vertices[6] = 0;
-      ctrl.info.vertices[7] = screenH;
+      ctrl.info.x = 0; ctrl.info.y = 0;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
+      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
+      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = screenH;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = screenH;
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
       infotmp.cellh = _Ygl->rheight;
-      // if (_Ygl->interlace == SINGLE_INTERLACE) infotmp.cellh <<= 1;
       infotmp.flipfunction = 0;
-
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawMapPerLine(&ctrl);
     }
     else {
-      //Vdp2DrawMap(&ctrl.info, &ctrl.texture);
       int delayed = 0;
-      // Setting miss of cycle patten need to plus 8 dot vertical
-      // If pattern access is defined on T0 for NBG0 or NBG1, there is no limitation
-      //If there is no access to pattern data, do not display the layer
-      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
+      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
         delayed = 1;
-        // YuiMsg("Penalty %x %x\n", char_access, ptn_access);
-      }
       ctrl.info.x = ctrl.regs->SCXIN1 & 0x7FF;
       ctrl.info.y = ctrl.regs->SCYIN1 & 0x7FF;
       Vdp2DrawMapTest(&ctrl, delayed);
     }
   }
-  #ifdef CELL_ASYNC
-      YabThreadYield();
-  #endif
+#ifdef CELL_ASYNC
+  YabThreadYield();
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////////////
