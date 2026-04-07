@@ -1169,7 +1169,33 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
     {
       // Bitmap Mode
       ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
-
+	  
+		// Mode bitmap uniquement
+		// Calculer la taille logique du bitmap et l'adresse de base pour le wrap vertical.
+		// VDP2 Manual p.95 : si le bitmap dépasse la VRAM, il se répète verticalement
+		// à partir de son adresse de début (wrap dans le bitmap, pas dans la VRAM).
+		{
+			int bpp_shift; // log2(octets par pixel * 2) pour éviter le float
+			switch (ctrl.info.colornumber) {
+				case 0: /* 4bpp  : cellw/2 octets par ligne */
+					ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
+					break;
+				case 1: /* 8bpp  : cellw octets par ligne */
+					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
+					break;
+				case 2: /* 16bpp palette : cellw*2 octets par ligne */
+				case 3: /* 16bpp RGB     : cellw*2 octets par ligne */
+					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
+					break;
+				case 4: /* 32bpp : cellw*4 octets par ligne */
+					ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
+					break;
+				default:
+					ctrl.info.bitmap_wrap_size = 0;
+					break;
+			}
+			ctrl.info.bitmap_base = ctrl.info.charaddr;
+		}
       ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
       ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
 
@@ -3509,81 +3535,158 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
   return info->alpha_per_line[idx>>shift];
 }
 
+static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
+    /* VDP2 Manual §3.1 RAMCTL bits 9-8 (VRAMD) et 11-10 (VRBMD):
+     * 00 = banque unique (256 Ko), 01 = deux banques (128 Ko chacune).
+     * AC_VRAM[bank][timeslot] utilise le même découpage.
+     * RAMCTL bit 8  (VRAMD) : 1 = VRAMA partitionnée en A0+A1
+     * RAMCTL bit 12 (VRBMD) : 1 = VRAMB partitionnée en B0+B1 */
+    int vrama_split = (ctrl->regs->RAMCTL >> 8)  & 0x1;
+    int vramb_split = (ctrl->regs->RAMCTL >> 12) & 0x1;
+
+    addr &= 0x7FFFF;
+
+    int bank;
+    if (addr < 0x40000) {
+        /* VRAMA : 0x00000–0x3FFFF */
+        if (vrama_split) {
+            /* partitionnée : A0=0x00000–0x1FFFF, A1=0x20000–0x3FFFF */
+            bank = (addr < 0x20000) ? 0 : 1;
+        } else {
+            /* non partitionnée : une seule banque A = index 0 */
+            bank = 0;
+        }
+    } else {
+        /* VRAMB : 0x40000–0x7FFFF */
+        if (vramb_split) {
+            /* partitionnée : B0=0x40000–0x5FFFF, B1=0x60000–0x7FFFF */
+            bank = (addr < 0x60000) ? 2 : 3;
+        } else {
+            /* non partitionnée : une seule banque B = index 2 */
+            bank = 2;
+        }
+    }
+
+    if (bank > 3) return 0;
+    return ctrl->info.char_bank[bank];
+}
+
 static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
 {
   int i, j;
+	//   if ((vdp2_interlace == 1) && (_Ygl->rheight > 448)) {
+	//     // Weird... Partly fix True Pinball in case of interlace only but it is breaking Zen Nihon Pro Wres, so use the bad test of the height
+	//     Vdp2DrawCellInterlace(info, texture, ctrl->regs);
+	//     return;
+	//   }
+  /* Wrap et accessibilité VRAM : uniquement en mode bitmap.
+   * En mode tile, le filtrage est fait en amont dans Vdp2DrawMapTest
+   * via char_bank[]. Appliquer isVramAccessible aux tiles causerait
+   * des faux positifs (tiles dont le charaddr tombe dans une banque
+   * non déclarée accessible pour ce layer mais valide via pattern name). */
+  u32 base      = ctrl->info.bitmap_base;
+  u32 wrap_size = ctrl->info.bitmap_wrap_size;
+  int is_bitmap = (ctrl->info.isbitmap != 0) && (wrap_size > 0);
 
+#define BITMAP_ADDR(raw_addr) \
+  ((is_bitmap && ((raw_addr) >= base + wrap_size)) \
+   ? (base + ((raw_addr) - base) % wrap_size) \
+   : (raw_addr))
 
-//   if ((vdp2_interlace == 1) && (_Ygl->rheight > 448)) {
-//     // Weird... Partly fix True Pinball in case of interlace only but it is breaking Zen Nihon Pro Wres, so use the bad test of the height
-//     Vdp2DrawCellInterlace(info, texture, ctrl->regs);
-//     return;
-//   }
+#define BITMAP_ACCESSIBLE(raw_addr) \
+  (!is_bitmap || isVramAccessible(ctrl, BITMAP_ADDR(raw_addr)))
+
   switch (ctrl->info.colornumber)
   {
   case 0: // 4 BPP
-    for (i = 0; i < ctrl->info.cellh; i++)
-    {
+    for (i = 0; i < ctrl->info.cellh; i++) {
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
-      for (j = 0; j < ctrl->info.cellw; j += 4)
-      {
-        Vdp2GetPixel4bpp(ctrl, ctrl->info.charaddr);
-        ctrl->info.charaddr += 2;
+      for (j = 0; j < ctrl->info.cellw; j += 4) {
+        u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
+        if (BITMAP_ACCESSIBLE(ctrl->info.charaddr)) {
+          u32 save = ctrl->info.charaddr;
+          ctrl->info.charaddr = eff_addr;
+          Vdp2GetPixel4bpp(ctrl, ctrl->info.charaddr);
+          ctrl->info.charaddr = save + 2;
+        } else {
+          *ctrl->texture.textdata++ = 0x00000000;
+          *ctrl->texture.textdata++ = 0x00000000;
+          *ctrl->texture.textdata++ = 0x00000000;
+          *ctrl->texture.textdata++ = 0x00000000;
+          ctrl->info.charaddr += 2;
+        }
       }
       ctrl->texture.textdata += ctrl->texture.w;
     }
     break;
   case 1: // 8 BPP
-    for (i = 0; i < ctrl->info.cellh; i++)
-    {
+    for (i = 0; i < ctrl->info.cellh; i++) {
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
-      for (j = 0; j < ctrl->info.cellw; j += 2)
-      {
-        Vdp2GetPixel8bpp(ctrl, ctrl->info.charaddr);
-        ctrl->info.charaddr += 2;
+      for (j = 0; j < ctrl->info.cellw; j += 2) {
+        u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
+        if (BITMAP_ACCESSIBLE(ctrl->info.charaddr)) {
+          u32 save = ctrl->info.charaddr;
+          ctrl->info.charaddr = eff_addr;
+          Vdp2GetPixel8bpp(ctrl, ctrl->info.charaddr);
+          ctrl->info.charaddr = save + 2;
+        } else {
+          *ctrl->texture.textdata++ = 0x00000000;
+          *ctrl->texture.textdata++ = 0x00000000;
+          ctrl->info.charaddr += 2;
+        }
       }
       ctrl->texture.textdata += ctrl->texture.w;
     }
     break;
   case 2: // 16 BPP(palette)
-    for (i = 0; i < ctrl->info.cellh; i++)
-    {
+    for (i = 0; i < ctrl->info.cellh; i++) {
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
-      for (j = 0; j < ctrl->info.cellw; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel16bpp(ctrl, ctrl->info.charaddr);
+      for (j = 0; j < ctrl->info.cellw; j++) {
+        u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
+        if (BITMAP_ACCESSIBLE(ctrl->info.charaddr)) {
+          *ctrl->texture.textdata++ = Vdp2GetPixel16bpp(ctrl, eff_addr);
+        } else {
+          *ctrl->texture.textdata++ = 0x00000000;
+        }
         ctrl->info.charaddr += 2;
       }
       ctrl->texture.textdata += ctrl->texture.w;
     }
     break;
   case 3: // 16 BPP(RGB)
-    for (i = 0; i < ctrl->info.cellh; i++)
-    {
+    for (i = 0; i < ctrl->info.cellh; i++) {
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
-      for (j = 0; j < ctrl->info.cellw; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel16bppbmp(ctrl, ctrl->info.charaddr);
+      for (j = 0; j < ctrl->info.cellw; j++) {
+        u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
+        if (BITMAP_ACCESSIBLE(ctrl->info.charaddr)) {
+          *ctrl->texture.textdata++ = Vdp2GetPixel16bppbmp(ctrl, eff_addr);
+        } else {
+          *ctrl->texture.textdata++ = 0x00000000;
+        }
         ctrl->info.charaddr += 2;
       }
       ctrl->texture.textdata += ctrl->texture.w;
     }
     break;
   case 4: // 32 BPP
-    for (i = 0; i < ctrl->info.cellh; i++)
-    {
+    for (i = 0; i < ctrl->info.cellh; i++) {
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
-      for (j = 0; j < ctrl->info.cellw; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, ctrl->info.charaddr);
+      for (j = 0; j < ctrl->info.cellw; j++) {
+        u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
+        if (BITMAP_ACCESSIBLE(ctrl->info.charaddr)) {
+          *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, eff_addr);
+        } else {
+          *ctrl->texture.textdata++ = 0x00000000;
+        }
         ctrl->info.charaddr += 4;
       }
       ctrl->texture.textdata += ctrl->texture.w;
     }
     break;
   }
+#undef BITMAP_ADDR
+#undef BITMAP_ACCESSIBLE
 }
-
 
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height)
 {
