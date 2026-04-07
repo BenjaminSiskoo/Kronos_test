@@ -191,6 +191,14 @@ typedef struct
    u16 pname_bank[4];
    u8 alpha_per_line[270];
    int draw_line;
+   
+   /* VDP2 Manual p.95: bitmap wrap support.
+    * bitmap_base      = charaddr de départ du bitmap (fixé une fois dans Vdp2DrawNBGx).
+    * bitmap_wrap_size = taille logique totale du bitmap en octets.
+    * Si le bitmap dépasse la VRAM disponible, la lecture wrappe dans le bitmap
+    * (répétition verticale), pas dans la VRAM globale. */
+   u32 bitmap_base;
+   u32 bitmap_wrap_size;
 
 } vdp2draw_struct;
 
