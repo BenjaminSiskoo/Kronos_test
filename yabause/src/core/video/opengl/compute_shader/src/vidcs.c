@@ -2316,6 +2316,11 @@ void VIDCSReadColorOffset(void) {
 	  int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
 	  int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
 	  int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
+	  
+/* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7.
+* Store per-line flag so the compositor shader can apply MSB shadow. */
+_Ygl->msb_shadow_enabled_per_line[line] =
+    (u8)((!spwinen) && (sptype >= 2) && (sptype <= 7)); 
 
         for (int id = 0; id < enBGMAX+1; id++) {
 			if (isEnabled(id, lVdp2Regs) == 0) {
@@ -2693,18 +2698,47 @@ static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
   return Vdp2ColorRamGetLineColorOffset(colorindex, alpha,0);
 }
 
-	/* Vdp2IsNormalShadow — VDP2 Manual §14.1 Normal Shadow
-	 *
-	 * Returns 1 if sprite CRAM address maps to the shadow palette zone.
-	 * The caller must NOT draw the sprite pixel; instead it applies >>1 to
-	 * each RGB channel of the underlying scroll-screen pixel. */
-static INLINE int Vdp2IsNormalShadow(u32 cramindex) {
-	  switch (Vdp2Internal.ColorMode) {
-	  case 0: return ((cramindex & 0x3FF) == 0x3FE) || ((cramindex & 0x3FF) == 0x3FF);
-	  case 1: return (cramindex & 0xF) == 0;
-	  case 2: return (cramindex & 0xFF) == 0;
-	  default: return 0;
-	  }
+	/* VDP2 Manual §14.1 Figure 14.3:
+	 * Normal Shadow = all DC bits at 1 except LSB (DC0=0).
+	 * The shadow palette address depends on the sprite type's DC bit count.
+	 * We detect by checking if the raw CRAM index (dot color data portion)
+	 * has all bits set except bit 0.
+	 * sptype must be passed to determine the DC bit mask. */
+	static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
+		/* DC bit masks per sprite type (Figure 14.3):
+		 * Types 0,1,2,3,5 : 11 DC bits → shadow mask = 0x7FE (bits 10~1=1, bit0=0)
+		 * Types 4,6       : 10 DC bits → shadow mask = 0x3FE
+		 * Type 7          :  9 DC bits → shadow mask = 0x1FE
+		 * Type 8          :  7 DC bits → shadow mask = 0x7E
+		 * Types 9,A,B     :  6 DC bits → shadow mask = 0x3E
+		 * Types C~F       :  7 DC bits shared → shadow mask = 0x3E */
+		u32 dc_mask;
+		u32 dc_bits = cramindex; /* cramindex IS the dot color data for palette types */
+
+		switch (sptype) {
+		case 0: case 1: case 2: case 3: case 5:
+			dc_mask = 0x7FF; /* 11 DC bits */
+			break;
+		case 4: case 6:
+			dc_mask = 0x3FF; /* 10 DC bits */
+			break;
+		case 7:
+			dc_mask = 0x1FF; /* 9 DC bits */
+			break;
+		case 8: /* type 8: 7 DC bits */
+			dc_mask = 0x7F;
+			break;
+		case 9: case 10: case 11: /* A, B */
+		case 12: case 13: case 14: case 15: /* C~F */
+			dc_mask = 0x3F; /* 6 DC bits */
+			break;
+		default:
+			return 0;
+		}
+
+		/* Normal shadow: all DC bits = 1 except bit 0 = 0 */
+		u32 shadow_val = dc_mask & ~1u; /* e.g. 0x7FE for 11-bit */
+		return (dc_bits & dc_mask) == shadow_val;
 	}
 	
  /* Vdp2GetSpriteShadowBit — VDP2 Manual §14.1 MSB Shadow / §9.1 Figure 9.1
