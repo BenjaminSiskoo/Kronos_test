@@ -819,11 +819,16 @@ void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
    * For RGB mode (mode 5): transparent test is (dot == 0x0000), NOT (MSB==0).
    * MSB=0 with non-zero data is a palette bank code, not transparent in VDP1 FB. */
    
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
   cmd->type = QUAD;
 
   vdp1_add(cmd,0);
@@ -834,11 +839,16 @@ void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 void VIDCSVdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
 
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
 
   cmd->type = QUAD;
   vdp1_add(cmd,0);
@@ -850,11 +860,16 @@ void VIDCSVdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
   LOG_CMD("%d\n", __LINE__);
 
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
 
   cmd->type = DISTORTED;
   vdp1_add(cmd,0);
@@ -972,11 +987,16 @@ void VIDCSVdp1NormalSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
   cmd->CMDXD = cmd->CMDXA;
   cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h);
 
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
   cmd->type = QUAD;
 
   vdp1_add_upscale(cmd,0);
@@ -1010,11 +1030,16 @@ void VIDCSVdp1ScaledSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
       break;
     default: break;
   }
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
 
   cmd->type = QUAD;
   vdp1_add_upscale(cmd,0);
@@ -1026,11 +1051,16 @@ void VIDCSVdp1DistortedSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * r
 {
   LOG_CMD("%d\n", __LINE__);
 
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
+   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
+   * Do NOT modify CCRSA globally — just set a flag on the command so the
+   * shader uses priority register 0. Setting cmd type is sufficient.
+     Remove the cclist masking entirely — it corrupts global state
+	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+		// hard/vdp2/hon/p09_20.htm#no9_21
+		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+		cclist[0] &= 0x1Fu;
+	  }*/
 
   addCSCommands(cmd, DISTORTED);
 
