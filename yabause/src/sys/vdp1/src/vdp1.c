@@ -1056,7 +1056,13 @@ if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
   }
   // Partial overlap: draw engine clips per scanline — fall through
 }
-
+  /* VDP1 Manual §6.3 Color Calculation bits 2~0:
+   * Mode 101B (5) = "Setting prohibited (do not set)"
+   * Skip the command silently to avoid undefined behavior. */
+  if ((cmd->CMDPMOD & 0x7) == 5) {    // ← GARDER CE BLOC (CHECK 2, bon endroit)
+    yabsys.vdp1cycles += 70;
+   return -1;                         // ← doit être -1 comme les autres erreurs
+  }
   VIDCore->Vdp1NormalSpriteDraw(cmd, ram, regs);
   return ret;
 }
@@ -1210,6 +1216,11 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
 	// EOS is only meaningful when HSS=1
 	cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1; // 0=even coords, 1=odd coords
+	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
+	 if ((cmd->CMDPMOD & 0x7) == 5) {
+	   yabsys.vdp1cycles += 70;
+	   return -1;
+	 }
 	VIDCore->Vdp1ScaledSpriteDraw(cmd, ram, regs);
   return ret;
 }
@@ -1276,6 +1287,11 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
 		}
 	}
+	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
+	 if ((cmd->CMDPMOD & 0x7) == 5) {
+	   yabsys.vdp1cycles += 70;
+	   return -1;
+	 }
 
   VIDCore->Vdp1DistortedSpriteDraw(cmd, ram, regs);
   return ret;
@@ -1329,6 +1345,11 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->w = 1;
   cmd->h = 1;
   cmd->flip = 0;
+	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
+	 if ((cmd->CMDPMOD & 0x7) == 5) {
+	   yabsys.vdp1cycles += 70;
+	   return -1;
+	 }
 
   VIDCore->Vdp1PolygonDraw(cmd, ram, regs);
   return 1;
@@ -1384,6 +1405,13 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
 		}
 	}
+	
+	/* VDP1 §6.3: color calculation mode 101B is prohibited */
+	 if ((cmd->CMDPMOD & 0x7) == 5) {
+	   yabsys.vdp1cycles += 70;
+	   return -1;
+	 }
+
   VIDCore->Vdp1PolylineDraw(cmd, ram, regs);
 
   return 1;
@@ -1434,6 +1462,11 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->w = 1;
   cmd->h = 1;
   cmd->flip = 0;
+	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
+	 if ((cmd->CMDPMOD & 0x7) == 5) {
+	   yabsys.vdp1cycles += 70;
+	   return -1;
+	 }
 
   VIDCore->Vdp1LineDraw(cmd, ram, regs);
 
