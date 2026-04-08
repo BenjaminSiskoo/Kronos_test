@@ -2343,21 +2343,21 @@ void VIDCSReadColorOffset(void) {
 		 * - dot color data != Normal Shadow pattern
 		 * This info must reach the compositor shader. */
 
-		// Encoder dans linebuf un flag shadow par ligne :
-		int sptype  = lVdp2Regs->SPCTL & 0xF;
-		int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
-		int msb_shadow_enabled = (!spwinen) && (sptype >= 2) && (sptype <= 7);
-		int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
-		int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
-		int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
-	  
-		/* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7.
-		* Store per-line flag so the compositor shader can apply MSB shadow. */
-		_Ygl->msb_shadow_enabled_per_line[line] =
-			(u8)((!spwinen) && (sptype >= 2) && (sptype <= 7));
-		// Stocker msb_shadow_enabled dans un buffer dédié transmis au shader
-		// (ajouter un uniform ou étendre le linebuf existant)
-		_Ygl->msb_shadow_enabled_per_line[line] = msb_shadow_enabled;
+        int sptype  = lVdp2Regs->SPCTL & 0xF;
+        int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
+        int msb_shadow_enabled = (!spwinen) && (sptype >= 2) && (sptype <= 7);
+        int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
+        int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
+        int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
+
+        /* VDP2 Manual §9.2: RGB sprite data always selects priority register 0.
+         * SPCLMD = SPCTL bit 5: 1 = RGB format, 0 = palette format. */
+        int spclmd = (lVdp2Regs->SPCTL >> 5) & 1;
+        int sprite_rgb_priority = lVdp2Regs->PRISA & 0x7; /* register 0 */
+        _Ygl->sprite_rgb_priority_per_line[line] = spclmd ? sprite_rgb_priority : -1;
+
+        /* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7. */
+        _Ygl->msb_shadow_enabled_per_line[line] = (u8)msb_shadow_enabled;
 
         for (int id = 0; id < enBGMAX+1; id++) {
 			if (isEnabled(id, lVdp2Regs) == 0) {
