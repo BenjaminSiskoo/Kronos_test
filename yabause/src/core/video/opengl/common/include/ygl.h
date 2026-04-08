@@ -632,6 +632,8 @@ typedef struct {
    YabMutex * crammutex;
 
    int msb_shadow_count_[2];
+   u8 msb_shadow_enabled_per_line[512];
+   s8  sprite_rgb_priority_per_line[512];
    GLuint vao;
    GLuint win0v_buf;
    GLuint win1v_buf;
