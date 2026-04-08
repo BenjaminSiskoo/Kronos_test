@@ -2311,16 +2311,28 @@ void VIDCSReadColorOffset(void) {
            | (encodeColorOffset(a_cog) << 8)
            | (encodeColorOffset(a_cor) << 0);
 
-	  int sptype  =  lVdp2Regs->SPCTL & 0xF;
-	  int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
-	  int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
-	  int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
-	  int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
+		/* VDP2 Manual §14.1: MSB shadow active when:
+		 * - SPWINEN = 0 (sprite window disabled)
+		 * - sprite type is 2~7
+		 * - sprite FB pixel MSB = 1
+		 * - dot color data != Normal Shadow pattern
+		 * This info must reach the compositor shader. */
+
+		// Encoder dans linebuf un flag shadow par ligne :
+		int sptype  = lVdp2Regs->SPCTL & 0xF;
+		int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
+		int msb_shadow_enabled = (!spwinen) && (sptype >= 2) && (sptype <= 7);
+		int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
+		int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
+		int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
 	  
-/* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7.
-* Store per-line flag so the compositor shader can apply MSB shadow. */
-_Ygl->msb_shadow_enabled_per_line[line] =
-    (u8)((!spwinen) && (sptype >= 2) && (sptype <= 7)); 
+		/* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7.
+		* Store per-line flag so the compositor shader can apply MSB shadow. */
+		_Ygl->msb_shadow_enabled_per_line[line] =
+			(u8)((!spwinen) && (sptype >= 2) && (sptype <= 7));
+		// Stocker msb_shadow_enabled dans un buffer dédié transmis au shader
+		// (ajouter un uniform ou étendre le linebuf existant)
+		_Ygl->msb_shadow_enabled_per_line[line] = msb_shadow_enabled;
 
         for (int id = 0; id < enBGMAX+1; id++) {
 			if (isEnabled(id, lVdp2Regs) == 0) {
