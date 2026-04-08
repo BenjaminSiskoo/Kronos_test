@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1280</width>
-    <height>367</height>
+    <width>1500</width>
+    <height>520</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,7 +15,7 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_12">
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_6" stretch="1,2,3,1">
+    <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="1,2,3,1,2">
      <item>
       <widget class="QGroupBox" name="gbCommandRaw">
        <property name="title">
@@ -33,7 +33,7 @@
        <property name="title">
         <string>VDP1 Command List</string>
        </property>
-       <layout class="QVBoxLayout" name="verticalLayout_10">
+       <layout class="QVBoxLayout" name="verticalLayout_10b">
         <item>
          <widget class="QListWidget" name="lwCommandList"/>
         </item>
@@ -56,6 +56,12 @@
           </property>
           <property name="readOnly">
            <bool>true</bool>
+          </property>
+          <property name="font">
+           <font>
+            <family>Courier New</family>
+            <pointsize>9</pointsize>
+           </font>
           </property>
          </widget>
         </item>
@@ -84,12 +90,6 @@
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="sizeIncrement">
-             <size>
-              <width>0</width>
-              <height>0</height>
-             </size>
-            </property>
             <property name="styleSheet">
              <string notr="true">background-color: transparent;</string>
             </property>
@@ -112,7 +112,7 @@
             <property name="sizeHint" stdset="0">
              <size>
               <width>20</width>
-              <height>40</height>
+              <height>20</height>
              </size>
             </property>
            </spacer>
@@ -126,7 +126,7 @@
               </property>
               <property name="sizeHint" stdset="0">
                <size>
-                <width>40</width>
+                <width>20</width>
                 <height>20</height>
                </size>
               </property>
@@ -153,7 +153,7 @@
               </property>
               <property name="sizeHint" stdset="0">
                <size>
-                <width>40</width>
+                <width>20</width>
                 <height>20</height>
                </size>
               </property>
@@ -165,6 +165,34 @@
         </widget>
        </item>
       </layout>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="gbVdp1Regs">
+       <property name="title">
+        <string>VDP1 Registers</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_regs">
+        <item>
+         <widget class="QPlainTextEdit" name="pteVdp1Regs">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Expanding">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="font">
+           <font>
+            <family>Courier New</family>
+            <pointsize>9</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
      </item>
     </layout>
    </item>
