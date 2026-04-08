@@ -1125,6 +1125,8 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1SystemClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
+  /* VDP1 Manual §7.1: "Operation cannot be ensured if XC < 0 or YC < 0." */
+  if ((s16)cmd->CMDXC < 0 || (s16)cmd->CMDYC < 0) return;
   if (((cmd->CMDXC) == regs->systemclipX2) && (regs->systemclipY2 == (cmd->CMDYC))) return;
   cmd->type = SYSTEM_CLIPPING;
   regs->systemclipX2 = cmd->CMDXC;
