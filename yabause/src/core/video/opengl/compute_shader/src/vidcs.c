@@ -1099,13 +1099,9 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-    // VDP1 Manual §7.2: "Operation cannot be guaranteed if XC < XA or YC < YA"
-    // The hardware does NOT reset localX/Y — it simply produces undefined results.
-    // We skip the command silently to avoid rendering artifacts.
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
-        // Invalid clip rectangle: skip command, do not modify local coordinates
         return;
     }
     cmd->type = USER_CLIPPING;
@@ -1113,12 +1109,9 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    // VDP1 Manual §6.3 Cmod bit 9: outside drawing mode when =1
+    /* Read Cmod BEFORE any CMDPMOD modification */
     regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
-    /* VDP1 §7.2: User clipping coordinates are VDP1 framebuffer coordinates,
-     * not display coordinates.  The upscale path must NOT scale them;
-     * use vdp1_add (not vdp1_add_upscale) to forward raw register values. */
-	vdp1_add(cmd, 1);
+    vdp1_add(cmd, 1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
