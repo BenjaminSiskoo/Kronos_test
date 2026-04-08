@@ -1187,18 +1187,23 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
- // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
+	if ((cmd->CMDPMOD & 4))
+	{
+		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+		for (int i = 0; i < 4; i++){
+			u16 color2 = Vdp1RamReadWord(NULL, ram,
+				(gouraud_base + (i << 1)) & 0x7FFFF);
+			/* VDP1 Manual §5.3 Table 5.3:
+			 * correction = table_value - 0x10
+			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
+			 * Normalize to [-1,+1] for shader: divide by 16.0f
+			 * (not 31.0f — range is asymmetric [-16,+15]) */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+		}
+	}
 	// VDP1 Manual §4.2 EOS bit (FBCR bit 4):
 	// When HSS=1, EOS selects even(0) or odd(1) pixel sampling
 	// cmd->hss already set; add eos field:
@@ -1254,18 +1259,23 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   yabsys.vdp1cycles+= getDistortedCycles(cmd);
 
   memset(cmd->G, 0, sizeof(float)*12);
- // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
+	if ((cmd->CMDPMOD & 4))
+	{
+		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+		for (int i = 0; i < 4; i++){
+			u16 color2 = Vdp1RamReadWord(NULL, ram,
+				(gouraud_base + (i << 1)) & 0x7FFFF);
+			/* VDP1 Manual §5.3 Table 5.3:
+			 * correction = table_value - 0x10
+			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
+			 * Normalize to [-1,+1] for shader: divide by 16.0f
+			 * (not 31.0f — range is asymmetric [-16,+15]) */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+		}
+	}
 
   VIDCore->Vdp1DistortedSpriteDraw(cmd, ram, regs);
   return ret;
@@ -1299,18 +1309,23 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   yabsys.vdp1cycles += getPolygonCycles(cmd);
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
-  // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
+	if ((cmd->CMDPMOD & 4))
+	{
+		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+		for (int i = 0; i < 4; i++){
+			u16 color2 = Vdp1RamReadWord(NULL, ram,
+				(gouraud_base + (i << 1)) & 0x7FFFF);
+			/* VDP1 Manual §5.3 Table 5.3:
+			 * correction = table_value - 0x10
+			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
+			 * Normalize to [-1,+1] for shader: divide by 16.0f
+			 * (not 31.0f — range is asymmetric [-16,+15]) */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+		}
+	}
   cmd->w = 1;
   cmd->h = 1;
   cmd->flip = 0;
@@ -1352,18 +1367,23 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
-  // APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
+	if ((cmd->CMDPMOD & 4))
+	{
+		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+		for (int i = 0; i < 4; i++){
+			u16 color2 = Vdp1RamReadWord(NULL, ram,
+				(gouraud_base + (i << 1)) & 0x7FFFF);
+			/* VDP1 Manual §5.3 Table 5.3:
+			 * correction = table_value - 0x10
+			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
+			 * Normalize to [-1,+1] for shader: divide by 16.0f
+			 * (not 31.0f — range is asymmetric [-16,+15]) */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+		}
+	}
   VIDCore->Vdp1PolylineDraw(cmd, ram, regs);
 
   return 1;
@@ -1394,18 +1414,23 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
-// APRÈS — utiliser cmd->CMDGRDA déjà lu par Vdp1ReadCommand
-  if ((cmd->CMDPMOD & 4))
-  {
-    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-    for (int i = 0; i < 4; i++){
-      u16 color2 = Vdp1RamReadWord(NULL, ram,
-          (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((color2 & 0x001F))        / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 1] = (float)((color2 & 0x03E0) >> 5)   / (float)(0x1F) - 0.5f;
-      cmd->G[(i * 3) + 2] = (float)((color2 & 0x7C00) >> 10)  / (float)(0x1F) - 0.5f;
-    }
-  }
+	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
+	if ((cmd->CMDPMOD & 4))
+	{
+		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+		for (int i = 0; i < 4; i++){
+			u16 color2 = Vdp1RamReadWord(NULL, ram,
+				(gouraud_base + (i << 1)) & 0x7FFFF);
+			/* VDP1 Manual §5.3 Table 5.3:
+			 * correction = table_value - 0x10
+			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
+			 * Normalize to [-1,+1] for shader: divide by 16.0f
+			 * (not 31.0f — range is asymmetric [-16,+15]) */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+		}
+	}
   cmd->w = 1;
   cmd->h = 1;
   cmd->flip = 0;
