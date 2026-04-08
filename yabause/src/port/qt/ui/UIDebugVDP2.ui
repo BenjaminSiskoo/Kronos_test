@@ -11,21 +11,20 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Debug VDP2Viewer</string>
+   <string>Debug VDP2</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_7">
    <item>
     <layout class="QGridLayout" name="DebugGrid">
      <item row="0" column="0">
       <widget class="QGroupBox" name="NBG0Debug">
-       <property name="title">
-        <string>NBG0 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout">
+       <property name="title"><string>NBG0 Info</string></property>
+       <layout class="QVBoxLayout" name="vl0">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG0Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -34,14 +33,13 @@
      </item>
      <item row="0" column="1">
       <widget class="QGroupBox" name="NBG1Debug">
-       <property name="title">
-        <string>NBG1 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_2">
+       <property name="title"><string>NBG1 Info</string></property>
+       <layout class="QVBoxLayout" name="vl1">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG1Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -50,14 +48,13 @@
      </item>
      <item row="0" column="2">
       <widget class="QGroupBox" name="NBG2Debug">
-       <property name="title">
-        <string>NBG2 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_3">
+       <property name="title"><string>NBG2 Info</string></property>
+       <layout class="QVBoxLayout" name="vl2">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG2Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -66,14 +63,13 @@
      </item>
      <item row="1" column="0">
       <widget class="QGroupBox" name="NBG3Debug">
-       <property name="title">
-        <string>NBG3 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_4">
+       <property name="title"><string>NBG3 Info</string></property>
+       <layout class="QVBoxLayout" name="vl3">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG3Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -82,14 +78,13 @@
      </item>
      <item row="1" column="1">
       <widget class="QGroupBox" name="RBG0Debug">
-       <property name="title">
-        <string>RBG0 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_5">
+       <property name="title"><string>RBG0 Info</string></property>
+       <layout class="QVBoxLayout" name="vl4">
         <item>
          <widget class="QPlainTextEdit" name="pteRBG0Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -98,14 +93,13 @@
      </item>
      <item row="1" column="2">
       <widget class="QGroupBox" name="RBG1Debug">
-       <property name="title">
-        <string>RBG1 Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout">
+       <property name="title"><string>RBG1 Info</string></property>
+       <layout class="QVBoxLayout" name="vl5">
         <item>
          <widget class="QPlainTextEdit" name="pteRBG1Info">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -114,14 +108,13 @@
      </item>
      <item row="2" column="0">
       <widget class="QGroupBox" name="SPRITEDebug">
-       <property name="title">
-        <string>Sprite Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout">
+       <property name="title"><string>Sprite Info</string></property>
+       <layout class="QVBoxLayout" name="vl6">
         <item>
          <widget class="QPlainTextEdit" name="pteSPRITEInfo">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -130,14 +123,13 @@
      </item>
      <item row="2" column="1">
       <widget class="QGroupBox" name="GeneralDebug">
-       <property name="title">
-        <string>General Info</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_6">
+       <property name="title"><string>General Info</string></property>
+       <layout class="QVBoxLayout" name="vl7">
         <item>
          <widget class="QPlainTextEdit" name="pteGeneralInfo">
-          <property name="readOnly">
-           <bool>true</bool>
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font">
+           <font><family>Courier New</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -150,16 +142,12 @@
     <layout class="QHBoxLayout" name="horizontalLayout">
      <item>
       <widget class="QPushButton" name="pbViewer">
-       <property name="text">
-        <string>Viewer</string>
-       </property>
+       <property name="text"><string>Viewer / Registers</string></property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pbNextButton">
-        <property name="text">
-         <string>Next Frame</string>
-        </property>
+       <property name="text"><string>Next Frame</string></property>
       </widget>
      </item>
      <item>
@@ -181,14 +169,8 @@
    <receiver>UIDebugVDP2</receiver>
    <slot>reject()</slot>
    <hints>
-    <hint type="sourcelabel">
-     <x>347</x>
-     <y>321</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>335</x>
-     <y>376</y>
-    </hint>
+    <hint type="sourcelabel"><x>347</x><y>321</y></hint>
+    <hint type="destinationlabel"><x>335</x><y>376</y></hint>
    </hints>
   </connection>
  </connections>
