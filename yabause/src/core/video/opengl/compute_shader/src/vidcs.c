@@ -2336,8 +2336,25 @@ _Ygl->msb_shadow_enabled_per_line[line] =
                 }
             }
         }
+       /* VDP2 §9.2: sprite CC params per line, packed into slot enBGMAX.
+        * Overwrite after the loop since slot 8 is the last and was just set. */
+		linebuf[line + 512 * enBGMAX] =
+             ((u32)(spcccs  & 0x3))
+           | ((u32)(spccn   & 0x7) << 2)
+           | ((u32)(spccen  & 0x1) << 5)
+           | ((u32)(sptype  & 0xF) << 6)
+           | ((u32)(spwinen & 0x1) << 10);
     }
     YglSetPerlineBuf(linebuf);
+}
+
+// APRÈS : ajouter le calcul de color_data_msb pour chaque sprite pixel
+/* VDP2 Manual §9.2 SPCCCS=3: condition = MSB of CRAM color entry is 1.
+ * Read the MSB of the CRAM word at the sprite's color index. */
+static INLINE int Vdp2GetSpriteCRAMMSB(u32 cramindex) {
+    /* Read the raw CRAM word and check bit 15 */
+    u16 cram_word = Vdp2ColorRamGetColorRaw(cramindex);
+    return (cram_word >> 15) & 1;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2760,16 +2777,20 @@ static INLINE int Vdp2GetSpriteShadowBit(u16 sprite_word, int sptype, int spwine
   * @param spccn            SPCTL bits 10-8: condition number (0-7)
   * @param spccen           CCCTL bit 6: master CC enable for sprites */
   
-static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb, int spcccs, int spccn, int spccen) {
-	  if (!spccen) return 0;
-	  switch (spcccs) {
-	  case 0: return (priority_number <= spccn);
-	  case 1: return (priority_number == spccn);
-	  case 2: return (priority_number >= spccn);
-	  case 3: return (color_data_msb != 0);
-	  default: return 0;
-	  }
-	}
+static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb,
+                                         int spcccs, int spccn, int spccen) {
+    if (!spccen) return 0;
+    switch (spcccs) {
+    case 0: return (priority_number <= spccn);
+    case 1: return (priority_number == spccn);
+    case 2: return (priority_number >= spccn);
+    case 3:
+        /* VDP2 §9.2: color data MSB=1 enables CC.
+         * For RGB sprites: always perform CC (§14.1 note in SPCCCS table). */
+        return (color_data_msb != 0);
+    default: return 0;
+    }
+}
 
 /* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
  * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
