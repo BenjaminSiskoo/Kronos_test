@@ -79,30 +79,31 @@ static void checkFBSync();
 
 int CONVERTCMD(s32 *A) {
   s32 toto = (*A);
-  // VDP1 Manual §6.7: coordinate range is -1024 to +1023 (11-bit signed).
-  // Bits 15-11 are sign-extension bits and must all equal bit 10.
-  // If any of bits 15-11 differ from bit 10, the coordinate is invalid.
+  /* VDP1 Manual §6.7: coordinates are 11-bit signed, bits 15~11 are sign extension.
+   * Valid range: -1024 to +1023. */
   s32 sign_bit = ((*A) >> 10) & 0x1;
-  s32 ext_bits = ((*A) >> 11) & 0x1F; // bits 15-11
+  s32 ext_bits = ((*A) >> 11) & 0x1F;
   s32 expected = sign_bit ? 0x1F : 0x0;
   if (ext_bits != expected) {
     DEBUG_BAD_COORD("Bad sign-ext %x (%d, 0x%x)\n", (*A), (*A), toto);
     return 1;
   }
-  // Sign-extend from bit 10
+  /* Sign-extend from bit 10 to 32 bits */
   if (sign_bit) (*A) |= 0xFFFFF800;
   else          (*A) &= 0x000007FF;
-  ((*A) = (s32)(s16)(*A));
-  if (((*A)) < -1024) {
+  /* SUPPRIMÉ: ((*A) = (s32)(s16)(*A)); — incorrect, écrase l'extension 11 bits */
+  if ((*A) < -1024) {
     DEBUG_BAD_COORD("Bad(-1024) %x (%d, 0x%x)\n", (*A), (*A), toto);
     return 1;
   }
-  if (((*A)) > 1023) {
+  if ((*A) > 1023) {
     DEBUG_BAD_COORD("Bad(1023) %x (%d, 0x%x)\n", (*A), (*A), toto);
     return 1;
   }
   return 0;
 }
+
+
 
 static void RequestVdp1ToDraw() {
   if (needVdp1draw == 0){
