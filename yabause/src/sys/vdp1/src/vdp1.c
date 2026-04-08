@@ -1088,10 +1088,17 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
 
-	switch ((cmd->CMDCTRL & 0xF00) >> 8)
-	{
-		case 0x0:
-		  // Deux coordonnées : XA,YA = haut-gauche, XC,YC = bas-droit
+  /* VDP1 Manual §10: When HSS=1, end codes are ignored whether the sprite
+   * is enlarged or reduced. Force ECD=1 (bit 7) to prevent end code
+   * processing in the shader. */
+  if (cmd->CMDPMOD & 0x1000) { /* HSS = bit 12 */
+      cmd->CMDPMOD |= 0x0080;  /* ECD = bit 7 = 1 (end code disabled) */
+  }
+
+  switch ((cmd->CMDCTRL & 0xF00) >> 8)
+  {
+      case 0x0:
+        // Deux coordonnées : XA,YA = haut-gauche, XC,YC = bas-droit
 		  if ( CONVERTCMD(&cmd->CMDXA) ||
 			   CONVERTCMD(&cmd->CMDYA) ||
 			   CONVERTCMD(&cmd->CMDXC) ||
@@ -1243,6 +1250,13 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   }
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
+
+  /* VDP1 Manual §10: When HSS=1, end codes are ignored whether the sprite
+   * is enlarged or reduced. Force ECD=1 (bit 7) to prevent end code
+   * processing in the shader. */
+  if (cmd->CMDPMOD & 0x1000) { /* HSS = bit 12 */
+      cmd->CMDPMOD |= 0x0080;  /* ECD = bit 7 = 1 (end code disabled) */
+  }
 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
