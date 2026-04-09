@@ -1051,16 +1051,11 @@ void VIDCSVdp1DistortedSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * r
 {
   LOG_CMD("%d\n", __LINE__);
 
-  /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
-   * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
-   * Do NOT modify CCRSA globally — just set a flag on the command so the
-   * shader uses priority register 0. Setting cmd type is sufficient.
-     Remove the cclist masking entirely — it corrupts global state
-	  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-		// hard/vdp2/hon/p09_20.htm#no9_21
-		u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-		cclist[0] &= 0x1Fu;
-	  }*/
+  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
+    // hard/vdp2/hon/p09_20.htm#no9_21
+    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
+    cclist[0] &= 0x1Fu;
+  }
 
   addCSCommands(cmd, DISTORTED);
 
@@ -1099,9 +1094,13 @@ void VIDCSVdp1LineDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
+    // VDP1 Manual §7.2: "Operation cannot be guaranteed if XC < XA or YC < YA"
+    // The hardware does NOT reset localX/Y — it simply produces undefined results.
+    // We skip the command silently to avoid rendering artifacts.
     if (  ((s16)cmd->CMDXC < (s16)cmd->CMDXA)
        || ((s16)cmd->CMDYC < (s16)cmd->CMDYA)
     ) {
+        // Invalid clip rectangle: skip command, do not modify local coordinates
         return;
     }
     cmd->type = USER_CLIPPING;
@@ -1109,9 +1108,12 @@ void VIDCSVdp1UserClippingUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    /* Read Cmod BEFORE any CMDPMOD modification */
+    // VDP1 Manual §6.3 Cmod bit 9: outside drawing mode when =1
     regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
-    vdp1_add(cmd, 1);
+    /* VDP1 §7.2: User clipping coordinates are VDP1 framebuffer coordinates,
+     * not display coordinates.  The upscale path must NOT scale them;
+     * use vdp1_add (not vdp1_add_upscale) to forward raw register values. */
+	vdp1_add(cmd, 1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2343,6 +2345,7 @@ void VIDCSReadColorOffset(void) {
 		 * - dot color data != Normal Shadow pattern
 		 * This info must reach the compositor shader. */
 
+		// Encoder dans linebuf un flag shadow par ligne :
         int sptype  = lVdp2Regs->SPCTL & 0xF;
         int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
         int msb_shadow_enabled = (!spwinen) && (sptype >= 2) && (sptype <= 7);
@@ -2359,39 +2362,36 @@ void VIDCSReadColorOffset(void) {
         /* VDP2 Manual §14.1: MSB shadow requires SPWINEN=0 and sprite types 2~7. */
         _Ygl->msb_shadow_enabled_per_line[line] = (u8)msb_shadow_enabled;
 
-        for (int id = 0; id < enBGMAX+1; id++) {
-			if (isEnabled(id, lVdp2Regs) == 0) {
-				linebuf[line + 512*id] = 0x00808080;
-            } else {
-                if (lVdp2Regs->CLOFEN & offset[id]) {
-                    if (lVdp2Regs->CLOFSL & offset[id])
-                        linebuf[line + 512*id] = colOffB;
-                    else
-                        linebuf[line + 512*id] = colOffA;
-                } else {
-                    linebuf[line + 512*id] = 0x00808080;
-                }
-            }
+for (int id = 0; id < enBGMAX+1; id++) {
+    u32 col;
+    if (isEnabled(id, lVdp2Regs) == 0) {
+        col = 0x00808080;
+    } else {
+        if (lVdp2Regs->CLOFEN & offset[id]) {
+            if (lVdp2Regs->CLOFSL & offset[id])
+                col = colOffB;
+            else
+                col = colOffA;
+        } else {
+            col = 0x00808080;
         }
-       /* VDP2 §9.2: sprite CC params per line, packed into slot enBGMAX.
-        * Overwrite after the loop since slot 8 is the last and was just set. */
-		linebuf[line + 512 * enBGMAX] =
-             ((u32)(spcccs  & 0x3))
-           | ((u32)(spccn   & 0x7) << 2)
-           | ((u32)(spccen  & 0x1) << 5)
-           | ((u32)(sptype  & 0xF) << 6)
-           | ((u32)(spwinen & 0x1) << 10);
+    }
+
+    if (id == SPRITE) {
+        /* VDP2 Manual §9.2: encode spcccs (bits 25-24), spccn (bits 28-26),
+         * spccen (bit 29) dans les bits 31-24 du slot SPRITE.
+         * Le shader lira cramindex du pixel courant et calculera
+         * color_data_msb lui-même pour SPCCCS=3. */
+        u32 sp_ctrl_bits = ((u32)(spccen & 0x1) << 29)
+                         | ((u32)(spccn  & 0x7) << 26)
+                         | ((u32)(spcccs & 0x3) << 24);
+        linebuf[line + 512*id] = sp_ctrl_bits | (col & 0x00FFFFFFu);
+    } else {
+        linebuf[line + 512*id] = col;
+    }
+}
     }
     YglSetPerlineBuf(linebuf);
-}
-
-// APRÈS : ajouter le calcul de color_data_msb pour chaque sprite pixel
-/* VDP2 Manual §9.2 SPCCCS=3: condition = MSB of CRAM color entry is 1.
- * Read the MSB of the CRAM word at the sprite's color index. */
-static INLINE int Vdp2GetSpriteCRAMMSB(u32 cramindex) {
-    /* Read the raw CRAM word and check bit 15 */
-    u16 cram_word = Vdp2ColorRamGetColorRaw(cramindex);
-    return (cram_word >> 15) & 1;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2814,20 +2814,16 @@ static INLINE int Vdp2GetSpriteShadowBit(u16 sprite_word, int sptype, int spwine
   * @param spccn            SPCTL bits 10-8: condition number (0-7)
   * @param spccen           CCCTL bit 6: master CC enable for sprites */
   
-static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb,
-                                         int spcccs, int spccn, int spccen) {
-    if (!spccen) return 0;
-    switch (spcccs) {
-    case 0: return (priority_number <= spccn);
-    case 1: return (priority_number == spccn);
-    case 2: return (priority_number >= spccn);
-    case 3:
-        /* VDP2 §9.2: color data MSB=1 enables CC.
-         * For RGB sprites: always perform CC (§14.1 note in SPCCCS table). */
-        return (color_data_msb != 0);
-    default: return 0;
-    }
-}
+static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb, int spcccs, int spccn, int spccen) {
+	  if (!spccen) return 0;
+	  switch (spcccs) {
+	  case 0: return (priority_number <= spccn);
+	  case 1: return (priority_number == spccn);
+	  case 2: return (priority_number >= spccn);
+	  case 3: return (color_data_msb != 0);
+	  default: return 0;
+	  }
+	}
 
 /* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
  * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
