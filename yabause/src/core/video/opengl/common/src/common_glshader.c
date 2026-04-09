@@ -595,8 +595,35 @@ static const GLchar Yglprg_vdp2_common_draw[] =
 "    tmpColor.b += (int(col.a*255.0)&0x7)/255.0;\n"
 "    msb = 1;\n"
 "  } \n"
-"  ret.offset_color = texelFetch( s_perline, ivec2(int(PosY * u_emu_height), is_perline[6]), 0 ).rgb;\n"
+"  vec4 sp_perline = texelFetch( s_perline, ivec2(int(PosY * u_emu_height), is_perline[6]), 0 );\n"
+"  ret.offset_color = sp_perline.rgb;\n"
 "  ret.offset_color = (ret.offset_color - vec3(0.5))*2.0;\n"
+/* VDP2 Manual §9.2: décoder spcccs/spccn/spccen depuis les bits 31-24
+ * du mot s_perline slot SPRITE, encodés dans vidcs.c VIDCSReadColorOffset.
+ * sp_perline.a contient les bits 31-24 (canal alpha = bits 31-24 du u32).
+ * Encodage: bit7=spccen, bits6-4=spccn, bits5-4=spcccs (dans l'octet alpha). */
+"  int sp_ctrl = int(sp_perline.a * 255.0);\n"
+"  int spccen  = (sp_ctrl >> 5) & 0x1;\n"
+"  int spccn   = (sp_ctrl >> 2) & 0x7;\n"
+"  int spcccs  = (sp_ctrl >> 0) & 0x3;\n"
+/* SPCCCS=3: lire le MSB du mot CRAM à l'index ret.code (cramindex du pixel sprite).
+ * s_color est bindé sur GL_TEXTURE11. getColorLine(line) donne la ligne CRAM.
+ * Le MSB du mot CRAM 16-bit est le bit 15 = bit 7 du canal alpha de s_color
+ * (format RGBA8: alpha stocke les bits 15-8 du mot CRAM original). */
+"  int color_data_msb = 0;\n"
+"  if (spcccs == 3) {\n"
+"    vec4 cram_entry = getColoredPixel(ret.code, line);\n"
+"    color_data_msb = (int(cram_entry.a * 255.0) != 0) ? 1 : 0;\n"
+"  }\n"
+"  int cc_enable = 0;\n"
+"  if (spccen != 0) {\n"
+"    if      (spcccs == 0) cc_enable = (ret.prio <= spccn) ? 1 : 0;\n"
+"    else if (spcccs == 1) cc_enable = (ret.prio == spccn) ? 1 : 0;\n"
+"    else if (spcccs == 2) cc_enable = (ret.prio >= spccn) ? 1 : 0;\n"
+"    else                  cc_enable = color_data_msb;\n"
+"  }\n"
+/* Appliquer cc_enable : si 0, forcer fbmode=2 pour bypasser la CC sprite */
+"  if (cc_enable == 0) fbmode = 2;\n"
 "  if (fbmode != 0) {\n";
 
 static const GLchar Yglprg_vdp2_common_part[] =
