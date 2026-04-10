@@ -4831,34 +4831,64 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->RPMD & 0x3) != (b->RPMD & 0x3)) return 0;
   // Alpha/transparence RBG0 : CCRR bits 4-0, CCCTL bit 12
   if ((a->CCRR & 0x1F) != (b->CCRR & 0x1F)) return 0;
+   /* §12.1 : R0CCEN(4) active le color calc pour RBG0.
+   *          CCMD(8) bascule mode ratio/add.
+   *          CCRTMD(9) sélectionne top vs second screen pour le ratio.
+   *          EXCCEN(10) active le extended color calc (3e/4e plan). */
   if ((a->CCCTL & 0x0710) != (b->CCCTL & 0x0710)) return 0;
-  // Coefficient table
+  /* ------------------------------------------------------------------
+   * §6.4 : tous les bits contrôlent le mode, la taille des données et
+   *         la line-color-enable des tables coefficient A et B.
+   *   ParaA: RAKTE(0)+RAKDBS(1)+RAKMD(3-2)+RAKLCE(4)
+   *   ParaB: RBKTE(8)+RBKDBS(9)+RBKMD(11-10)+RBKLCE(12)
+   * Masque 0x1F1F = bits 12..8 | 4..0.
+   * ------------------------------------------------------------------ */
   if ((a->KTCTL & 0x1F1F) != (b->KTCTL & 0x1F1F)) return 0;
   if ((a->CHCTLB & 0x7700) != (b->CHCTLB & 0x7700)) return 0; // colornumber + bitmap RBG0
   if ((a->PLSZ & 0xFF00)   != (b->PLSZ & 0xFF00))   return 0; // plane size ParaA + ParaB
   if ((a->MPOFR & 0x77)    != (b->MPOFR & 0x77))     return 0; // map offset RBG0 A+B
   if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0; // R0PNB,R0CNSM,R0SPR,etc.
   if ((a->KTAOF & 0x0707) != (b->KTAOF & 0x0707)) return 0; // RAKTAOS+RBKTAOS
-//  if ((a->SFPRMD & 0x300) != (b->SFPRMD & 0x300)) return 0;
-//  if ((a->WCTLC & 0xFF) != (b->WCTLC & 0xFF)) return 0;
-//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
-//  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
-//  if ((a->BMPNB & 0x7) != (b->BMPNB & 0x7)) return 0;
-//  if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
-//  if ((a->SFCCMD &0x300) != (b->SFCCMD &0x300)) return 0;
-//  if ((a->SFSEL & 0x10) != (b->SFSEL & 0x10)) return 0;
-//  if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
-//  if ((a->LNCLEN & 0x10) != (b->LNCLEN & 0x10)) return 0;
-//  if ((a->LCTA.all) != (b->LCTA.all)) return 0;
-//  if ((a->CRAOFB & 0x7) != (b->CRAOFB & 0x7)) return 0;
-//  if ((a->CLOFSL & 0x10) != (b->CLOFSL & 0x10)) return 0;
-//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
-//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
-//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
-//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
-//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
-//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
+  /* ------------------------------------------------------------------
+   * [AJOUTÉ] SFPRMD 1800EAH bits 9~8 : R0SPRM1,R0SPRM0
+   * §11.2 : special priority mode RBG0 (par écran / par caractère /
+   *          par dot). Change comment le LSB du numéro de priorité est
+   *          sélectionné pour chaque dot → doit provoquer un split.
+   * Masque 0x0300 = bits 9,8.
+   * ------------------------------------------------------------------ */
+  if ((a->SFPRMD & 0x0300) != (b->SFPRMD & 0x0300)) return 0;
+  /* ------------------------------------------------------------------
+   * [AJOUTÉ] WCTLC 1800D4H bits 7~0 : fenêtres RBG0
+   * §8.1 : R0W0A,R0W0E,R0W1A,R0W1E,R0SWA,R0SWE + R0LOG(7).
+   *          Un changement mid-frame active, désactive ou inverse
+   *          la zone de fenêtre appliquée à RBG0.
+   * Masque 0x00FF = octet bas.
+   * ------------------------------------------------------------------ */
+  if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;;
+  /* ------------------------------------------------------------------
+   * [AJOUTÉ] WCTLD 1800D6H bits 3~0 : rotation parameter window
+   * §8.2 : RPW0A(0),RPW0E(1),RPW1A(2),RPW1E(3).
+   *          Utilisé directement dans Vdp2DrawRBG0_part() pour
+   *          info->RotWin (mode RPMD=3). Masque 0x000F.
+   * ------------------------------------------------------------------ */
+  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0;
+  if ((a->BMPNB & 0x0077) != (b->BMPNB & 0x0077)) return 0;
+  if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
+  if ((a->SFCCMD & 0x0300) != (b->SFCCMD & 0x0300)) return 0;
+  if ((a->SFSEL & 0x0010) != (b->SFSEL & 0x0010)) return 0;
+  if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0; 
+  if ((a->LNCLEN & 0x0010) != (b->LNCLEN & 0x0010)) return 0;
+  if ((a->LCTA.all) != (b->LCTA.all)) return 0;
+  if ((a->CRAOFB & 0x0007) != (b->CRAOFB & 0x0007)) return 0;
+  if ((a->CLOFSL & 0x0010) != (b->CLOFSL & 0x0010)) return 0;
+	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
+	//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
+	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
+	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
+	//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
+	//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
+	//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
+	//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
   return 1;
 }
 
@@ -4875,31 +4905,31 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->CCCTL & 0x0301) != (b->CCCTL & 0x0301)) return 0; // N0CCEN(0)+CCMD(8)+CCRTMD(9)
   if ((a->MPOFR & 0x70) != (b->MPOFR & 0x70)) return 0; // charaddr RBG1 = (MPOFR&0x70)*0x2000
   if ((a->SCRCTL & 0x3F) != (b->SCRCTL & 0x3F)) return 0; // N0LSCE+N0LSSX/Y+N0LZMX+N0LSS
-//  if ((a->BMPNA & 0x7) != (b->BMPNA & 0x7)) return 0;
-//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
-//  if ((a->KTCTL & 0xFFFF) != (b->KTCTL & 0xFFFF)) return 0;
-//  if ((a->PLSZ & 0xFF00) != (b->PLSZ & 0xFF00)) return 0;
-//  if ((a->SFPRMD & 0x3) != (b->SFPRMD & 0x3)) return 0;
-//  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
-//  if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0;
-//  if ((a->SFSEL & 0x1) != (b->SFSEL & 0x1)) return 0;
-//  if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
-//  if ((a->LNCLEN & 0x1) != (b->LNCLEN & 0x1)) return 0;
-//  if ((a->CRAOFA & 0x7) != (b->CRAOFA & 0x7)) return 0;
-//  if ((a->CLOFSL & 0x1) != (b->CLOFSL & 0x1)) return 0;
-//  if ((a->WCTLA & 0xFF) != (b->WCTLA & 0xFF)) return 0;
-//  if ((a->PNCN0 & 0xFFFF) != (b->PNCN0 & 0xFFFF)) return 0;
-//  if ((a->LSTA0.all) != (b->LSTA0.all)) return 0;
-//  if ((a->VCSTA.all) != (b->VCSTA.all)) return 0;
-//  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
-//  if ((a->LCTA.all) != (b->LCTA.all)) return 0;
-//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
-//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
-//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
-//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
-//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
-//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
+  if ((a->SFPRMD & 0x0003) != (b->SFPRMD & 0x0003)) return 0; // special priority mode NBG0/RBG1. Masque 0x0003
+  if ((a->BMPNA & 0x0077) != (b->BMPNA & 0x0077)) return 0; // Actif uniquement en bitmap mode (N0BMEN=1 dans CHCTLA).
+  if ((a->KTCTL & 0x1F00) != (b->KTCTL & 0x1F00)) return 0; // RBG1 utilise uniquement ParaB — seul l'octet haut compte.
+  if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0; // N0MZE(0) enable, MZSZH(11-8)+MZSZV(15-12) taille commune.
+  if ((a->SFSEL & 0x0001) != (b->SFSEL & 0x0001)) return 0;  // N0SFCS code A ou B pour NBG0/RBG1.
+  if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0; // special function code A+B pertinent quand SFCCMD ou SFPRMD >= mode 2.  
+  if ((a->LNCLEN & 0x0001) != (b->LNCLEN & 0x0001)) return 0; // N0LCEN line color insert NBG0/RBG1.
+  if ((a->LCTA.all) != (b->LCTA.all)) return 0; // adresse table ligne couleur source des couleurs line-color.
+  if ((a->CRAOFA & 0x0007) != (b->CRAOFA & 0x0007)) return 0; // N0CAOS2..0 color RAM address offset NBG0/RBG1.
+  if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0; // N0COSL color offset A vs B pour NBG0/RBG1.
+  if ((a->LSTA0.all) != (b->LSTA0.all)) return 0; // adresse table line scroll NBG0/RBG1 scroll est actif (SCRCTL bits 5-0 != 0).
+  if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
+  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
+	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
+	//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
+	//  if ((a->PLSZ & 0xFF00) != (b->PLSZ & 0xFF00)) return 0;
+	//  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
+	//  if ((a->WCTLA & 0xFF) != (b->WCTLA & 0xFF)) return 0;
+	//  if ((a->PNCN0 & 0xFFFF) != (b->PNCN0 & 0xFFFF)) return 0;
+	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
+	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
+	//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
+	//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
+	//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
+	//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
   return 1;
 }
 
