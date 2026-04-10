@@ -680,8 +680,24 @@ void Vdp2VBlankOUT_It(void) {
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
-  yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
-  if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
+    switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
+    case 0:
+        yabsys.VBlankLineCount = 224;
+        break;
+    case 1:
+        /* VDP2 Manual §2.4: 240 lines NTSC, 256 lines PAL */
+        yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240;
+        break;
+    case 2:
+        /* VDP2 Manual §2.4: 256 lines, PAL format TV only. */
+        yabsys.VBlankLineCount = 256;
+        break;
+    case 3:
+    default:
+        /* VDP2 Manual §2.4: Not Allowed — safe fallback */
+        yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224;
+        break;
+    }
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
@@ -789,13 +805,27 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    {
       case 0x000:
          Vdp2Regs->TVMD = val;
-         if ((yabsys.LineCount < yabsys.VBlankLineCount) && (yabsys.LineCount < 225+(Vdp2Regs->TVMD & 0x30)) && ((Vdp2Regs->TVMD & 0x30)<(yabsys.VBlankLineCount - 225))) {
-           //Safe to change right now
-           yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
-           if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
-         }
-         Vdp1SetRaster(Vdp2Regs->TVMD & 0x1);
-         updateCyclePattern();
+    /* Calcul du nouveau VBlankLineCount selon VRESO (TVMD bits 5-4) */
+    int new_vblank;
+    switch ((val >> 4) & 0x3) {
+    case 0: new_vblank = 224; break;
+    case 1: new_vblank = yabsys.IsPal ? 256 : 240; break;
+    case 2: new_vblank = 256; break;
+    case 3:
+    default: new_vblank = yabsys.IsPal ? 256 : 224; break;
+    }
+ 
+    /* Mise à jour anticipée uniquement si le changement est sûr mid-frame :
+     * la ligne courante doit être < nouveau VBlank, et strictement inférieure
+     * à la résolution cible pour ne pas tronquer une frame en cours. */
+    if (yabsys.LineCount < new_vblank &&
+        yabsys.LineCount < (int)(225 + ((Vdp2Regs->TVMD & 0x30))) &&
+        new_vblank > yabsys.VBlankLineCount) {
+        yabsys.VBlankLineCount = new_vblank;
+    }
+ 
+    Vdp1SetRaster(Vdp2Regs->TVMD & 0x1);
+    updateCyclePattern();
          return;
       case 0x002:
          Vdp2Regs->EXTEN = val;
