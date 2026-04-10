@@ -3144,7 +3144,7 @@ static int getVdp1ErasePixelLine() {
      * (2 pixels written per cycle in 16bpp; 4 in 8bpp per bus width) */
     int bus_pixels = area_w * area_h * (is8bpp ? 4 : 8);
     int pixels_per_cycle = is8bpp ? 4 : 2;
-    int total_cycles = (bus_pixels + pixels_per_cycle - 1) / pixels_per_cycle;
+    int total_cycles = area_w * area_h * (is8bpp ? 4 : 8);
 
     /* VDP1 Manual Table 4.4: cycles available per raster = pixels/raster - 200
      * (200 reserved for H-blank overhead per raster) */
