@@ -4873,8 +4873,9 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->PLSZ & 0xF000)   != (b->PLSZ & 0xF000))   return 0; // plane size ParaB
   if ((a->PNCN0 & 0xFFFF)  != (b->PNCN0 & 0xFFFF))  return 0; // pattern name control
   if ((a->CCCTL & 0x0301) != (b->CCCTL & 0x0301)) return 0; // N0CCEN(0)+CCMD(8)+CCRTMD(9)
+  if ((a->MPOFR & 0x70) != (b->MPOFR & 0x70)) return 0; // charaddr RBG1 = (MPOFR&0x70)*0x2000
+  if ((a->SCRCTL & 0x3F) != (b->SCRCTL & 0x3F)) return 0; // N0LSCE+N0LSSX/Y+N0LZMX+N0LSS
 //  if ((a->BMPNA & 0x7) != (b->BMPNA & 0x7)) return 0;
-//  if ((a->MPOFR & 0x77) != (b->MPOFR & 0x77)) return 0;
 //  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
 //  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
 //  if ((a->KTCTL & 0xFFFF) != (b->KTCTL & 0xFFFF)) return 0;
@@ -4889,7 +4890,6 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 //  if ((a->CLOFSL & 0x1) != (b->CLOFSL & 0x1)) return 0;
 //  if ((a->WCTLA & 0xFF) != (b->WCTLA & 0xFF)) return 0;
 //  if ((a->PNCN0 & 0xFFFF) != (b->PNCN0 & 0xFFFF)) return 0;
-//  if ((a->SCRCTL & 0x3F) != (b->SCRCTL & 0x3F)) return 0;
 //  if ((a->LSTA0.all) != (b->LSTA0.all)) return 0;
 //  if ((a->VCSTA.all) != (b->VCSTA.all)) return 0;
 //  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
