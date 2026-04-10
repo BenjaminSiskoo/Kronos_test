@@ -4833,7 +4833,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->CCRR & 0x1F) != (b->CCRR & 0x1F)) return 0;
   if ((a->CCCTL & 0x0710) != (b->CCCTL & 0x0710)) return 0;
   // Coefficient table
-  if ((a->KTCTL & 0x0101) != (b->KTCTL & 0x0101)) return 0;
+  if ((a->KTCTL & 0x1F1F) != (b->KTCTL & 0x1F1F)) return 0;
   if ((a->CHCTLB & 0x7700) != (b->CHCTLB & 0x7700)) return 0; // colornumber + bitmap RBG0
   if ((a->PLSZ & 0xFF00)   != (b->PLSZ & 0xFF00))   return 0; // plane size ParaA + ParaB
   if ((a->MPOFR & 0x77)    != (b->MPOFR & 0x77))     return 0; // map offset RBG0 A+B
