@@ -4837,6 +4837,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->CHCTLB & 0x7700) != (b->CHCTLB & 0x7700)) return 0; // colornumber + bitmap RBG0
   if ((a->PLSZ & 0xFF00)   != (b->PLSZ & 0xFF00))   return 0; // plane size ParaA + ParaB
   if ((a->MPOFR & 0x77)    != (b->MPOFR & 0x77))     return 0; // map offset RBG0 A+B
+  if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0; // R0PNB,R0CNSM,R0SPR,etc.
 //  if ((a->SFPRMD & 0x300) != (b->SFPRMD & 0x300)) return 0;
 //  if ((a->WCTLC & 0xFF) != (b->WCTLC & 0xFF)) return 0;
 //  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
@@ -4844,7 +4845,6 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 //  if ((a->KTAOF & 0x707) != (b->KTAOF & 0x707)) return 0;
 //  if ((a->WCTLD & 0xF) != (b->WCTLD & 0xF)) return 0;
 //  if ((a->BMPNB & 0x7) != (b->BMPNB & 0x7)) return 0;
-//  if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0;
 //  if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
 //  if ((a->SFCCMD &0x300) != (b->SFCCMD &0x300)) return 0;
 //  if ((a->SFSEL & 0x10) != (b->SFSEL & 0x10)) return 0;
