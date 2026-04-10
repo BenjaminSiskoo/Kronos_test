@@ -1052,11 +1052,8 @@ if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
   s16 x2 = (s16)cmd->CMDXC; // set to CMDXA + w - 1 above
   s16 y2 = (s16)cmd->CMDYC; // set to CMDYA + h - 1 above
   // Entirely outside → skip
-  if (x1 > scx2 || y1 > scy2 || x2 < 0 || y2 < 0) {
-    return ret;
-  }
-  // Partial overlap: draw engine clips per scanline — fall through
-}
+  if (x1 > scx2 || y1 > scy2 || x2 < 0 || y2 < 0) { return 0; }
+	}
   /* VDP1 Manual §6.3 Color Calculation bits 2~0:
    * Mode 101B (5) = "Setting prohibited (do not set)"
    * Skip the command silently to avoid undefined behavior. */
