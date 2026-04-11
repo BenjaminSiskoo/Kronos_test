@@ -2,179 +2,124 @@
 <ui version="4.0">
  <class>UIDebugVDP2Viewer</class>
  <widget class="QDialog" name="UIDebugVDP2Viewer">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>760</width>
-    <height>620</height>
-   </rect>
-  </property>
-  <property name="windowTitle">
-   <string>VDP2 Viewer</string>
-  </property>
-  <layout class="QVBoxLayout" name="verticalLayout_main">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>920</width><height>720</height></rect></property>
+  <property name="windowTitle"><string>VDP2 Viewer</string></property>
+  <layout class="QVBoxLayout" name="vlay_root">
    <item>
     <widget class="QTabWidget" name="tabWidget">
-     <!-- TAB 1: Screen viewer -->
+
+     <!-- 0: Screen Viewer -->
      <widget class="QWidget" name="tabViewer">
-      <attribute name="title">
-       <string>Screen Viewer</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_viewer">
-       <item>
-        <layout class="QHBoxLayout" name="horizontalLayout_sel">
-         <item>
-          <widget class="QLabel" name="label">
-           <property name="text">
-            <string>Screen Select:</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QComboBox" name="cbScreen"/>
-         </item>
-         <item>
-          <spacer name="horizontalSpacer">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QCheckBox" name="cbOpaque">
-           <property name="text">
-            <string>Opaque</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
-       <item>
-        <widget class="QGraphicsView" name="gvScreen">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <layout class="QHBoxLayout" name="horizontalLayout_save">
-         <item>
-          <spacer name="hspacer2">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QPushButton" name="pbSaveAsBitmap">
-           <property name="text">
-            <string>Save As Bitmap</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
+      <attribute name="title"><string>Screen Viewer</string></attribute>
+      <layout class="QVBoxLayout">
+       <item><layout class="QHBoxLayout">
+        <item><widget class="QLabel" name="lScreenLabel"><property name="text"><string>Screen:</string></property></widget></item>
+        <item><widget class="QComboBox" name="cbScreen"/></item>
+        <item><spacer name="hs1"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QCheckBox" name="cbOpaque"><property name="text"><string>Opaque</string></property></widget></item>
+       </layout></item>
+       <item><widget class="QGraphicsView" name="gvScreen"><property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property></widget></item>
+       <item><layout class="QHBoxLayout">
+        <item><spacer name="hs2"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QPushButton" name="pbSaveAsBitmap"><property name="text"><string>Save As Bitmap</string></property></widget></item>
+       </layout></item>
       </layout>
      </widget>
-     <!-- TAB 2: VDP2 Registers -->
+
+     <!-- 1: VDP2 Registers -->
      <widget class="QWidget" name="tabRegisters">
-      <attribute name="title">
-       <string>VDP2 Registers</string>
-      </attribute>
-      <layout class="QVBoxLayout" name="verticalLayout_regs">
-       <item>
-        <widget class="QSplitter" name="splitterRegs">
-         <property name="orientation">
-          <enum>Qt::Horizontal</enum>
-         </property>
-         <!-- Left: raw register list -->
-         <widget class="QGroupBox" name="gbRawRegs">
-          <property name="title">
-           <string>Raw Values</string>
-          </property>
-          <layout class="QVBoxLayout" name="vl_raw">
-           <item>
-            <widget class="QPlainTextEdit" name="pteRawRegs">
-             <property name="readOnly">
-              <bool>true</bool>
-             </property>
-             <property name="font">
-              <font>
-               <family>Courier New</family>
-               <pointsize>9</pointsize>
-              </font>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </widget>
-         <!-- Right: decoded registers -->
-         <widget class="QGroupBox" name="gbDecodedRegs">
-          <property name="title">
-           <string>Decoded</string>
-          </property>
-          <layout class="QVBoxLayout" name="vl_dec">
-           <item>
-            <widget class="QPlainTextEdit" name="pteDecodedRegs">
-             <property name="readOnly">
-              <bool>true</bool>
-             </property>
-             <property name="font">
-              <font>
-               <family>Courier New</family>
-               <pointsize>9</pointsize>
-              </font>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </widget>
+      <attribute name="title"><string>Registers</string></attribute>
+      <layout class="QVBoxLayout">
+       <item><widget class="QSplitter" name="splitterRegs">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <widget class="QGroupBox" name="gbRawRegs">
+         <property name="title"><string>Raw Values</string></property>
+         <layout class="QVBoxLayout"><item><widget class="QPlainTextEdit" name="pteRawRegs">
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+         </widget></item></layout>
         </widget>
-       </item>
+        <widget class="QGroupBox" name="gbDecodedRegs">
+         <property name="title"><string>Decoded</string></property>
+         <layout class="QVBoxLayout"><item><widget class="QPlainTextEdit" name="pteDecodedRegs">
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+         </widget></item></layout>
+        </widget>
+       </widget></item>
       </layout>
      </widget>
+
+     <!-- 2: Statistics -->
+     <widget class="QWidget" name="tabStats">
+      <attribute name="title"><string>Debug</string></attribute>
+      <layout class="QVBoxLayout">
+       <item><widget class="QPlainTextEdit" name="pteStats">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
+     <!-- 3: Color RAM -->
+     <widget class="QWidget" name="tabColorRam">
+      <attribute name="title"><string>Color RAM</string></attribute>
+      <layout class="QVBoxLayout">
+       <item><layout class="QHBoxLayout">
+        <item><widget class="QLabel" name="lCramInfo"><property name="text"><string>Color RAM</string></property></widget></item>
+        <item><spacer name="hs3"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QCheckBox" name="cbCramHex"><property name="text"><string>Show hex dump</string></property></widget></item>
+       </layout></item>
+       <item><widget class="QGraphicsView" name="gvColorRam">
+        <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+       </widget></item>
+       <item><widget class="QPlainTextEdit" name="pteColorRamHex">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="maximumHeight"><number>120</number></property>
+        <property name="font"><font><family>Courier New</family><pointsize>8</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
+     <!-- 4: VRAM Hex -->
+     <widget class="QWidget" name="tabVram">
+      <attribute name="title"><string>VRAM Hex</string></attribute>
+      <layout class="QVBoxLayout">
+       <item><layout class="QHBoxLayout">
+        <item><widget class="QLabel" name="lVramBank"><property name="text"><string>Bank:</string></property></widget></item>
+        <item><widget class="QComboBox" name="cbVramBank">
+         <item><property name="text"><string>VRAM-A  (0x00000-0x3FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B  (0x40000-0x7FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-A0 (0x00000-0x1FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-A1 (0x20000-0x3FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B0 (0x40000-0x5FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B1 (0x60000-0x7FFFF)</string></property></item>
+        </widget></item>
+        <item><widget class="QLabel" name="lVramOff"><property name="text"><string>  Offset (hex):</string></property></widget></item>
+        <item><widget class="QLineEdit" name="leVramOffset"><property name="text"><string>0</string></property><property name="maximumWidth"><number>80</number></property></widget></item>
+        <item><widget class="QPushButton" name="pbVramGo"><property name="text"><string>Go</string></property><property name="maximumWidth"><number>50</number></property></widget></item>
+        <item><spacer name="hs4"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout></item>
+       <item><widget class="QPlainTextEdit" name="pteVramHex">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
     </widget>
    </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_bot">
-     <item>
-      <widget class="QDialogButtonBox" name="dbbButtons">
-       <property name="standardButtons">
-        <set>QDialogButtonBox::Close</set>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
+   <item><layout class="QHBoxLayout" name="hlay_bot">
+    <item><widget class="QDialogButtonBox" name="dbbButtons"><property name="standardButtons"><set>QDialogButtonBox::Close</set></property></widget></item>
+   </layout></item>
   </layout>
  </widget>
  <resources/>
  <connections>
   <connection>
-   <sender>dbbButtons</sender>
-   <signal>rejected()</signal>
-   <receiver>UIDebugVDP2Viewer</receiver>
-   <slot>reject()</slot>
-   <hints>
-    <hint type="sourcelabel"><x>347</x><y>570</y></hint>
-    <hint type="destinationlabel"><x>335</x><y>620</y></hint>
-   </hints>
+   <sender>dbbButtons</sender><signal>rejected()</signal>
+   <receiver>UIDebugVDP2Viewer</receiver><slot>reject()</slot>
+   <hints><hint type="sourcelabel"><x>347</x><y>670</y></hint><hint type="destinationlabel"><x>335</x><y>720</y></hint></hints>
   </connection>
  </connections>
 </ui>
