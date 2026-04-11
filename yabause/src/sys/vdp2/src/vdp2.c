@@ -564,11 +564,9 @@ void Vdp2VBlankIN_It(void) {
 void Vdp2VBlankIN(void) {
   FRAMELOG("***** VIN *****");
 
-  if (Vdp2Regs->EXTEN & 0x200) // Should be revised for accuracy(should occur only occur on the line it happens at, etc.)
+  if (Vdp2Regs->EXTEN & 0x200)
   {
     if ((SmpcRegs->EXLE & 0x8) == 0){
-      // Use unused bit to detect latch already done
-      // Only Latch if EXLTEN is enabled
       if (SmpcRegs->EXLE & 0x1){
         Vdp2SendExternalLatch(((PORTDATA1.data[2] & 0x40) == 0), (PORTDATA1.data[3]<<8)|PORTDATA1.data[4], (PORTDATA1.data[5]<<8)|PORTDATA1.data[6]);
       }
@@ -579,24 +577,27 @@ void Vdp2VBlankIN(void) {
     }
   }
 
-   /* this should be done after a frame change or a plot trigger */
+  /* VDP2 Manual §2.4: update VBlankLineCount from TVMD VRESO BEFORE Vdp2Draw(),
+   * so Vdp2DrawNBGx() endLine uses the correct value for this field.
+   * Vdp2VBlankOUT() would update it too late — after the render. */
+  switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
+  case 0: yabsys.VBlankLineCount = 224; break;
+  case 1: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240; break;
+  case 2: yabsys.VBlankLineCount = 256; break;
+  case 3:
+  default: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
+  }
 
-   /* I'm not 100% sure about this, but it seems that when using manual change
-   we should swap framebuffers in the "next field" and thus, clear the CEF...
-   now we're lying a little here as we're not swapping the framebuffers. */
-   //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
-
-   if (checkFrameSkip() != 0) {
-     dropFrameDisplay();
-     isSkipped = 1;
-   } else {
-     VIDCore->Vdp2Draw();
-     isSkipped = 0;
-   }
-   nextFrameTime  += yabsys.OneFrameTime;
-
-   VIDCore->Sync();
-
+  //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
+  if (checkFrameSkip() != 0) {
+    dropFrameDisplay();
+    isSkipped = 1;
+  } else {
+    VIDCore->Vdp2Draw();
+    isSkipped = 0;
+  }
+  nextFrameTime  += yabsys.OneFrameTime;
+  VIDCore->Sync();
 }
 
 //////////////////////////////////////////////////////////////////////////////
