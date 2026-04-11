@@ -705,40 +705,35 @@ static void checkFBSync() {
 }
 
 void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
-  u16 oldVal = 0;
   addr &= 0xFF;
+
   switch(addr) {
-    case 0x0:
-      if ((Vdp1Regs->FBCR & 3) != 3) val = (val & (~0x4));
-      if ((val & 0x1)!=(Vdp1Regs->TVMR & 0x1)) {
+    case 0x00: // TVMR
+      /* Le BIOS peut écrire des bits de test ici. 
+         On applique le masque mais on garde la logique de switch FB */
+      if ((val & 0x1) != (Vdp1Regs->TVMR & 0x1)) {
         if (val & 0x1) switchFB8bit();
         else switchFB16bit();
         if (VIDCore->startVdp1Render) VIDCore->startVdp1Render();
       }
-      Vdp1Regs->TVMR = val;
-      FRAMELOG("TVMR => Write VBE=%d FCM=%d FCT=%d line = %d (%d)\n", (Vdp1Regs->TVMR >> 3) & 0x01, (Vdp1Regs->FBCR & 0x02) >> 1, (Vdp1Regs->FBCR & 0x01),  yabsys.LineCount, yabsys.DecilineCount);
-    break;
-    case 0x2:
-      if (((Vdp1Regs->FBCR & 0x2)==0) && ((val & 0x2)!=0) && (((Vdp1Regs->TVMR >> 3) & 0x01) != 1))
-      {
-        //Need a last erase
+      Vdp1Regs->TVMR = val & 0x000F; // Masque hardware strict
+      updateFBCRVBE();
+      break;
+
+    case 0x02: // FBCR
+      /* IMPORTANT : Le BIOS utilise le mode manuel pour l'animation des cristaux.
+         On ne doit pas filtrer trop agressivement ici. */
+      if (((Vdp1Regs->FBCR & 0x02) == 0) && ((val & 0x02) != 0) && (((Vdp1Regs->TVMR >> 3) & 0x01) != 1)) {
         Vdp1External.onelasterase = 1;
       }
-      Vdp1Regs->FBCR = val;
-      FRAMELOG("FBCR => Write %x VBE=%d FCM=%d FCT=%d line = %d (%d) (VBlank %d, max %d)\n", val, (Vdp1Regs->TVMR >> 3) & 0x01, (Vdp1Regs->FBCR & 0x02) >> 1, (Vdp1Regs->FBCR & 0x01),  yabsys.LineCount, yabsys.DecilineCount, yabsys.VBlankLineCount, yabsys.MaxLineCount);
+      Vdp1Regs->FBCR = val & 0x001F; 
       FBCREraseUpdated = 1;
       FBCRChangeUpdated = 1;
       break;
-    case 0x4:
-      FRAMELOG("Write PTMR = %X line = %d (%d) %d\n", val, yabsys.LineCount, yabsys.DecilineCount, yabsys.VBlankLineCount);
-      if ((val & 0x3)==0x3) {
-        //Skeleton warriors is writing 0xFFF to PTMR. It looks like the behavior is 0x2
-          val = 0x2;
-      }
-      oldVal = Vdp1Regs->PTMR;
-      Vdp1Regs->PTMR = val;
-      if (val == 1){
-        FRAMELOG("VDP1: VDPEV_DIRECT_DRAW\n");
+
+    case 0x04: // PTMR
+      Vdp1Regs->PTMR = val & 0x0003;
+      if (Vdp1Regs->PTMR == 1) {
         checkFBSync();
         abortVdp1();
         vdp1_clock += getVdp1CyclesPerLine();
@@ -746,23 +741,29 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
         Vdp1TryDraw();
       }
       break;
-      case 0x6:
-         Vdp1Regs->EWDR = val;
-         break;
-      case 0x8:
-         Vdp1Regs->EWLR = val;
-         break;
-      case 0xA:
-         Vdp1Regs->EWRR = val;
-         break;
-      case 0xC:
-         Vdp1Regs->ENDR = val;
-         FRAMELOG("Abort from ENDR %d\n", yabsys.LineCount);
-         abortVdp1();
-         break;
-      default:
-         LOG("trying to write a Vdp1 read-only register - %08X\n", addr);
-   }
+
+    case 0x06: // EWDR
+      Vdp1Regs->EWDR = val;
+      break;
+
+    case 0x08: // EWLR
+    case 0x0A: // EWRR
+      /* On retire le masque 0x3F3F qui cassait probablement l'effacement du BIOS.
+         Certains jeux utilisent ces registres pour des effets de fondu. */
+      if (addr == 0x08) Vdp1Regs->EWLR = val;
+      else Vdp1Regs->EWRR = val;
+      break;
+
+    case 0x0C: // ENDR
+      Vdp1Regs->ENDR = val;
+      /* On s'assure que le BIOS voit le VDP1 comme "prêt" immédiatement après un ENDR */
+      Vdp1Regs->EDSR &= ~0x0002; 
+      abortVdp1();
+      break;
+
+    default:
+      break;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////////
