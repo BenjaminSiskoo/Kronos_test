@@ -2529,9 +2529,9 @@ static void Vdp2SetResolution(u16 TVMD)
 	  height = 224;
 	  break;
 	case 1:
-	  // VDP2 Manual §2.1: 240 lines NTSC, 256 lines PAL
-	  height = yabsys.IsPal ? 256 : 240;
-	  break;
+		// PAL 240 lignes, NTSC 240 lignes aussi
+		height = 240;  // ← PAS yabsys.IsPal ? 256 : 240
+		break;
 	case 2:
 	  // VDP2 Manual §2.1 TVMD VRESO=10: 256 lines, PAL format TV only.
 	  // This mode is prohibited on NTSC hardware.
