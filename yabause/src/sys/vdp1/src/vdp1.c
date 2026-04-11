@@ -731,9 +731,12 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       FBCRChangeUpdated = 1;
       break;
 
-    case 0x04: // PTMR
-      Vdp1Regs->PTMR = val & 0x0003;
-      if (Vdp1Regs->PTMR == 1) {
+	case 0x04: // PTMR
+      val &= 0x0003;
+      if (val == 0x3) val = 0x2;
+      Vdp1Regs->PTMR = val;
+      if (val == 1){
+        Vdp1Regs->EDSR |= 0x0002; // <--- AJOUT : Force le bit BUSY (BE) immédiatement
         checkFBSync();
         abortVdp1();
         vdp1_clock += getVdp1CyclesPerLine();
