@@ -935,10 +935,12 @@ static const char fclear_img[] =
   "out vec4 fragColor; \n"
   "void main()   \n"
   "{  \n"
-"    ivec2 linepos; \n "
-"    linepos.y = 0; \n "
-"    linepos.x = int(gl_FragCoord.y);\n"
-  "  fragColor = texelFetch( u_Clear, linepos,0 ); \n"
+  "    ivec2 linepos; \n"
+  "    linepos.y = 0; \n"
+  "    linepos.x = int(gl_FragCoord.y);\n"
+  "    vec4 texColor = texelFetch( u_Clear, linepos, 0 );\n"
+  "    // On s'assure que l'alpha est bien transmis\n"
+  "    fragColor = texColor;\n"
   "} \n";
 
 int YglDrawBackScreen() {
@@ -1006,7 +1008,8 @@ int YglDrawBackScreen() {
   }
   glDisable(GL_STENCIL_TEST);
   glDisable(GL_DEPTH_TEST);
-  glDisable(GL_BLEND);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
   glEnableVertexAttribArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, _Ygl->vertexPosition_buf);
