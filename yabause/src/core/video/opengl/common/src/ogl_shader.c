@@ -941,7 +941,7 @@ static const char fclear_img[] =
   "    vec4 texColor = texelFetch( u_Clear, linepos, 0 );\n"
   "    // On s'assure que l'alpha est bien transmis\n"
   "    fragColor = texColor;\n"
-  "} \n";
+  "} \n";;
 
 int YglDrawBackScreen() {
 
