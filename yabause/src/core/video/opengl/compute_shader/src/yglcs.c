@@ -426,12 +426,12 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   modescreens[6] =  setupBlend(varVdp2Regs, 6);
   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->back_fbo);
   glDrawBuffers(1, &DrawBuffers[0]);
-  //glClearBufferfv(GL_COLOR, 0, col);
-  if ((varVdp2Regs->BKTAU & 0x8000) != 0) {
-    YglDrawBackScreen();
-  }else{
-    glClearBufferfv(GL_COLOR, 0, _Ygl->last_back_color);
-  }
+  // Toujours appeler YglDrawBackScreen() : en mode single color,
+  // Vdp2DrawBackScreen() a déjà rempli back_tex avec la couleur uniforme
+  // sur toutes les lignes. Sans cet appel, back_fbotex garde les données
+  // résiduelles du frame précédent, visibles via YglFillWithBackScreen()
+  // et le uniform s_back du shader de composition.
+  YglDrawBackScreen();
 
   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->original_fbo);
 
