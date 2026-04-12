@@ -4402,40 +4402,52 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     u32* back_pixel_data = YglGetBackColorPointer();
     if (back_pixel_data == NULL) return;
 
+    // --- CALCUL DE L'ADRESSE ---
     u32 scrAddr;
-    // Calcul de l'adresse basé sur tes registres (BKTAU: 0x8001, BKTAL: 0x7400)
     if (varVdp2Regs->VRSIZE & 0x8000)
         scrAddr = (((varVdp2Regs->BKTAU & 0x7) << 16) | varVdp2Regs->BKTAL) * 2;
     else
         scrAddr = (((varVdp2Regs->BKTAU & 0x3) << 16) | varVdp2Regs->BKTAL) * 2;
 
-    // Protection : On s'assure que l'adresse ne sort pas de la VRAM (512 Ko)
-    scrAddr &= 0x7FFFF;
-
     int isPerLine = (varVdp2Regs->BKTAU & 0x8000);
     int line_shift = (_Ygl->rheight > 256) ? 1 : 0;
 
+    // --- LOGIQUE D'ALPHA (FIX DIE HARD / NBG3) ---
+    u8 alpha8;
+
+    // Si NBG3 a la Color Calculation activée (CCRNB bits 14-15), 
+    // le fond doit être traité comme une base opaque pour permettre le mélange.
+    if (varVdp2Regs->CCRNB & 0xC000) 
+    {
+        alpha8 = 0xFF; 
+    } 
+    else 
+    {
+        // Calcul standard basé sur CCRLB (ratio de mélange du Back Screen)
+        // On récupère les bits 8-12 (0x1F00)
+        u8 alpha = (u8)((varVdp2Regs->CCRLB & 0x1F00) >> 8);
+        
+        // Sur Saturn, 0 peut signifier transparent ou opaque selon le contexte.
+        // On convertit vers 8 bits (0-255).
+        if (alpha == 0) alpha8 = 0xFF; 
+        else alpha8 = (alpha << 3) | (alpha >> 2);
+    }
+
+    // --- BOUCLE DE RENDU ---
     for (int i = 0; i < _Ygl->rheight; i++) {
-        u32 currentAddr;
-        if (isPerLine) {
-            // Mode dégradé : une couleur par ligne
-            currentAddr = (scrAddr + (2 * (i >> line_shift))) & 0x7FFFF;
-        } else {
-            // Mode couleur unique
-            currentAddr = scrAddr;
-        }
+        u32 currentAddr = isPerLine ? (scrAddr + (2 * (i >> line_shift))) : scrAddr;
+        
+        // Masque de sécurité VRAM 512Ko
+        u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr & 0x7FFFF);
 
-		u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr);
-
-        // Extraction 5-bit Saturn
+        // Extraction des composants 5-bit
         u8 r = (dot & 0x1F) << 3;
         u8 g = ((dot & 0x3E0) >> 5) << 3;
         u8 b = ((dot & 0x7C00) >> 10) << 3;
-        u8 a = 0xFF; 
 
-        // Si l'image de gauche est la bonne, l'ordre correct est celui-ci :
-        // On place le R dans l'octet de poids faible, le B dans le poids fort
-        back_pixel_data[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        // On utilise l'ordre BGRA (le 'b' en premier car ton test bleu a fonctionné)
+        // back_pixel_data[i] = (Alpha << 24) | (Bleu << 16) | (Vert << 8) | Rouge
+        back_pixel_data[i] = (alpha8 << 24) | (b << 16) | (g << 8) | r;
     }
 
     YglSetBackTextureColor(_Ygl->rheight);
