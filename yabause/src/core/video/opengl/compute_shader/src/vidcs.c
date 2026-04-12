@@ -4399,112 +4399,47 @@ static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int m
 
 static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
 {
-  u32 scrAddr;
-  int dot;
-  u32 * linebuf;
-  vdp2draw_struct info = {0};
-
-  static int line[512 * 4];
-
-  if (varVdp2Regs->VRSIZE & 0x8000)
-    scrAddr = (((varVdp2Regs->BKTAU & 0x7) << 16) | varVdp2Regs->BKTAL) * 2;
-  else
-    scrAddr = (((varVdp2Regs->BKTAU & 0x3) << 16) | varVdp2Regs->BKTAL) * 2;
-
-#if defined(__ANDROID__) || defined(_OGLES3_) || defined(_OGLES31_) || defined(_OGL3_)
-  if ((varVdp2Regs->BKTAU & 0x8000) != 0 ) {
-    /* VDP2 §12.1 CCRLB (18010EH) bits 12-8 = BKCCRT[4:0]:
-     * Back screen color calculation ratio (inverted: 0=opaque, 31=transparent) */
-    u8 bk_alpha = (u8)(((~(varVdp2Regs->CCRLB >> 8) & 0x1F) * 255) / 31);
-    /* pass bk_alpha to YglSetBackTextureColor / back_pixel_data alpha channel */
-    // per line background color
     u32* back_pixel_data = YglGetBackColorPointer();
-    if (back_pixel_data != NULL) {
-      int line_shift = 0;
-      if (_Ygl->rheight > 256) {
-        line_shift = 1;
-      }
-      else {
-        line_shift = 0;
-      }
-      for (int i = 0; i < _Ygl->rheight; i++) {
-        u8 r, g, b, a;
-        ReadVdp2ColorOffset(&Vdp2Lines[i >> line_shift], &info, 0x20);
-        dot = Vdp2RamReadWord(NULL, Vdp2Ram, (scrAddr + 2 * i));
-        r = Y_MAX(((dot & 0x1F) << 3) + info.cor, 0);
-        g = Y_MAX((((dot & 0x3E0) >> 5) << 3) + info.cog, 0);
-        b = Y_MAX((((dot & 0x7C00) >> 10) << 3) + info.cob, 0);
-        a = ((~varVdp2Regs->CCRLB & 0x1F00) >> 5)|NONE;
-        *back_pixel_data++ = (a << 24) | ((b&0xFF) << 16) | ((g&0xFF) << 8) | (r&0xFF);
-        if (i == _Ygl->rheight-1) {
-          _Ygl->last_back_color[0] = (float)r/255.0;
-          _Ygl->last_back_color[1] = (float)g/255.0;
-          _Ygl->last_back_color[2] = (float)b/255.0;
-          _Ygl->last_back_color[3] = 1.0;
+    if (back_pixel_data == NULL) return;
+
+    u32 scrAddr;
+    // Calcul de l'adresse basé sur tes registres (BKTAU: 0x8001, BKTAL: 0x7400)
+    if (varVdp2Regs->VRSIZE & 0x8000)
+        scrAddr = (((varVdp2Regs->BKTAU & 0x7) << 16) | varVdp2Regs->BKTAL) * 2;
+    else
+        scrAddr = (((varVdp2Regs->BKTAU & 0x3) << 16) | varVdp2Regs->BKTAL) * 2;
+
+    // Protection : On s'assure que l'adresse ne sort pas de la VRAM (512 Ko)
+    scrAddr &= 0x7FFFF;
+
+    int isPerLine = (varVdp2Regs->BKTAU & 0x8000);
+    int line_shift = (_Ygl->rheight > 256) ? 1 : 0;
+
+    for (int i = 0; i < _Ygl->rheight; i++) {
+        u32 currentAddr;
+        if (isPerLine) {
+            // Mode dégradé : une couleur par ligne
+            currentAddr = (scrAddr + (2 * (i >> line_shift))) & 0x7FFFF;
+        } else {
+            // Mode couleur unique
+            currentAddr = scrAddr;
         }
-      }
-      YglSetBackTextureColor(_Ygl->rheight);
-    }
-  }
-  else {
-    dot = Vdp2RamReadWord(NULL, Vdp2Ram, scrAddr);
-    YglSetBackColor(
-      (float)(((dot & 0x1F) << 3) + info.cor) / (float)(0xFF),
-      (float)((((dot & 0x3E0) >> 5) << 3) + info.cog) / (float)(0xFF),
-      (float)((((dot & 0x7C00) >> 10) << 3) + info.cob) / (float)(0xFF)
-    );
-  }
-#else
-  if (varVdp2Regs->BKTAU & 0x8000)
-  {
-    int y;
 
-    for (y = 0; y < _Ygl->rheight; y++)
-    {
-      dot = Vdp2RamReadWord(NULL, Vdp2Ram, scrAddr);
-      scrAddr += 2;
+		u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr);
 
-      lineColors[3 * y + 0] = (dot & 0x1F) << 3;
-      lineColors[3 * y + 1] = (dot & 0x3E0) >> 2;
-      lineColors[3 * y + 2] = (dot & 0x7C00) >> 7;
-      line[4 * y + 0] = 0;
-      line[4 * y + 1] = y;
-      line[4 * y + 2] = _Ygl->rwidth;
-      line[4 * y + 3] = y;
+        // Extraction 5-bit Saturn
+        u8 r = (dot & 0x1F) << 3;
+        u8 g = ((dot & 0x3E0) >> 5) << 3;
+        u8 b = ((dot & 0x7C00) >> 10) << 3;
+        u8 a = 0xFF; 
+
+        // Si l'image de gauche est la bonne, l'ordre correct est celui-ci :
+        // On place le R dans l'octet de poids faible, le B dans le poids fort
+        back_pixel_data[i] = (a << 24) | (b << 16) | (g << 8) | r;
     }
 
-    glColorPointer(3, GL_UNSIGNED_BYTE, 0, lineColors);
-    glEnableClientState(GL_COLOR_ARRAY);
-    glVertexPointer(2, GL_INT, 0, line);
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glDrawArrays(GL_LINES, 0, _Ygl->rheight * 2);
-    glDisableClientState(GL_COLOR_ARRAY);
-    glColor3ub(0xFF, 0xFF, 0xFF);
-  }
-  else
-  {
-    dot = Vdp2RamReadWord(NULL, Vdp2Ram, scrAddr);
-
-    glColor3ub((dot & 0x1F) << 3, (dot & 0x3E0) >> 2, (dot & 0x7C00) >> 7);
-
-    line[0] = 0;
-    line[1] = 0;
-    line[2] = _Ygl->rwidth;
-    line[3] = 0;
-    line[4] = _Ygl->rwidth;
-    line[5] = _Ygl->rheight;
-    line[6] = 0;
-    line[7] = _Ygl->rheight;
-
-    glVertexPointer(2, GL_INT, 0, line);
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 8);
-    glColor3ub(0xFF, 0xFF, 0xFF);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    YglSetBackTextureColor(_Ygl->rheight);
 }
-#endif
-  }
 
 //////////////////////////////////////////////////////////////////////////////
 // 11.3 Line Color insertion
