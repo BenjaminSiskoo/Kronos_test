@@ -11,6 +11,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <QWheelEvent>
 
 extern "C" {
 #include "vdp1.h"
@@ -397,6 +398,34 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     pteDecodedRegs->setPlainText(QString::fromStdString(d.str()));
 }
+
+// ============================================================
+//  Screen viewer : use CTRL + mouse to zoom & dezoom
+// ============================================================
+
+
+
+void UIDebugVDP2Viewer::wheelEvent(QWheelEvent *event)
+{
+    // Vérifie si la touche CTRL est enfoncée
+    if (event->modifiers() & Qt::ControlModifier) {
+        // Vérifie si le curseur est au-dessus du QGraphicsView du Screen Viewer
+        if (gvScreen->underMouse()) {
+            const double scaleFactor = 1.15; // Facteur de zoom
+            if (event->angleDelta().y() > 0) {
+                // Zoom avant
+                gvScreen->scale(scaleFactor, scaleFactor);
+            } else {
+                // Zoom arrière
+                gvScreen->scale(1.0 / scaleFactor, 1.0 / scaleFactor);
+            }
+            event->accept();
+            return;
+        }
+    }
+    QDialog::wheelEvent(event);
+}
+
 
 // ============================================================
 //  updateStats  — aggregate the 8 VDP2 debug text functions
