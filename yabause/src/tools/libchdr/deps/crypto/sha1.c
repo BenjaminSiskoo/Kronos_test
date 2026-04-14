@@ -1,19 +1,3 @@
-/*********************************************************************
-* Filename:   sha1.c
-* Author:     Brad Conte (brad AT bradconte.com)
-* Copyright:
-* Disclaimer: This code is presented "as is" without any guarantees.
-* Details:    Implementation of the SHA1 hashing algorithm.
-              Algorithm specification can be found here:
-               * http://csrc.nist.gov/publications/fips/fips180-2/fips180-2withchangenotice.pdf
-              This implementation uses little endian byte order.
-*********************************************************************/
-
-/*************************** HEADER FILES ***************************/
-#include <stdlib.h>
-#include <memory.h>
-#include "sha1.h"
-
 /****************************** MACROS ******************************//*********************************************************************
 * Filename:   sha1.c
 * Author:     Brad Conte (brad AT bradconte.com)
