@@ -1,4 +1,4 @@
-/*  Copyright 2003-2006 Guillaume Duhamel
+/* Copyright 2003-2006 Guillaume Duhamel
     Copyright 2004 Lawrence Sebald
     Copyright 2004-2007 Theo Berkau
 
@@ -27,7 +27,6 @@
 #include <math.h>
 #define EPSILON (1e-10 )
 
-
 #include "vidcs.h"
 #include "vidshared.h"
 #include "debug.h"
@@ -41,7 +40,6 @@
 #define Y_MIN(a, b) ((a) < (b) ? (a) : (b))
 
 #define LOG_AREA
-
 #define LOG_CMD
 
 static int renderer_started = 0;
@@ -54,7 +52,7 @@ static void Vdp2SetResolution(u16 TVMD);
 
 extern GLuint GetCSVDP1fb(int id);
 
-static Vdp2 baseVdp2Regs;
+// Correction : Double déclaration de baseVdp2Regs supprimée ici.
 
 static int vdp1_interlace = 0;
 
@@ -70,8 +68,9 @@ static int screenDirty = 0;
 
 vdp2rotationparameter_struct  Vdp1ParaA;
 
-
-static void Vdp2DrawRBG0();
+// Correction : (void) pour éviter l'avertissement de liste de paramètres indéterminée
+static void Vdp2DrawRBG0(void);
+static void Vdp2DrawRBG1(void);
 
 static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha);
 static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int y);
@@ -79,8 +78,9 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
 static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int mask);
 static INLINE u16 Vdp2ColorRamGetColorRaw(u32 colorindex);
 static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg);
-static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg);
 
+// Correction : Prototype mis en conformité avec l'argument RBGDrawInfo*
+static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg);
 
 static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h);
 static void requestDrawCell(Vdp2Ctrl * ctrl);
@@ -97,10 +97,16 @@ static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b);
 static void Vdp2GenLineinfo(vdp2draw_struct *info);
 static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs);
 static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs);
-static void Vdp2DrawRBG1();
 static void Vdp1SetTextureRatio(int vdp2widthratio, int vdp2heightratio);
 
-static void finishRbgQueue();
+// Correction : Prototypes mis à jour avec les 3 arguments (Vdp2*, int, int)
+static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine);
+static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine);
+static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine);
+static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine);
+
+static void finishRbgQueue(void);
+
 
 static pixel_t *VIDCSGetVdp2ScreenExtract(u32 screen, int * w, int * h);
 
@@ -454,75 +460,54 @@ static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int
 
 static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg)
 {
+    if (rbg == NULL) return;
 
-  if (rbg == NULL) return;
+    // Seules ces variables sont réellement utilisées par le code actuel
+    int cellw, cellh;
+    vdp2draw_struct *info = &rbg->ctrl.info;
 
-  vdp2draw_struct *info = &rbg->ctrl.info;
-  YglTexture *texture = &rbg->ctrl.texture;
+    cellw = rbg->ctrl.info.cellw;
+    cellh = rbg->ctrl.info.cellh;
 
-  float i, j;
-  int k,l;
-  int x, y;
-  int cellw, cellh;
-  int oldcellx = -1, oldcelly = -1;
-  u32 color;
-  int vres, hres, vstart;
-  int h;
-  int v;
-  vdp2rotationparameter_struct *parameter;
-  u32* colpoint = NULL;
+    if (rbg->rbg_type == 0)
+    {
+        rbg->paraA.dx = rbg->paraA.A * rbg->paraA.deltaX + rbg->paraA.B * rbg->paraA.deltaY;
+        rbg->paraA.dy = rbg->paraA.D * rbg->paraA.deltaX + rbg->paraA.E * rbg->paraA.deltaY;
+        rbg->paraA.Xp = rbg->paraA.A * (rbg->paraA.Px - rbg->paraA.Cx) +
+            rbg->paraA.B * (rbg->paraA.Py - rbg->paraA.Cy) +
+            rbg->paraA.C * (rbg->paraA.Pz - rbg->paraA.Cz) + rbg->paraA.Cx + rbg->paraA.Mx;
+        rbg->paraA.Yp = rbg->paraA.D * (rbg->paraA.Px - rbg->paraA.Cx) +
+            rbg->paraA.E * (rbg->paraA.Py - rbg->paraA.Cy) +
+            rbg->paraA.F * (rbg->paraA.Pz - rbg->paraA.Cz) + rbg->paraA.Cy + rbg->paraA.My;
+    }
 
-  u32 addr;
-  u8 alpha = 0x00;
-  vres = rbg->vres * (rbg->ctrl.info.endLine - rbg->ctrl.info.startLine)/yabsys.VBlankLineCount;
-  vstart = rbg->ctrl.info.startLine;
-  hres = rbg->hres;
+    if (rbg->useb)
+    {
+        rbg->paraB.dx = rbg->paraB.A * rbg->paraB.deltaX + rbg->paraB.B * rbg->paraB.deltaY;
+        rbg->paraB.dy = rbg->paraB.D * rbg->paraB.deltaX + rbg->paraB.E * rbg->paraB.deltaY;
+        rbg->paraB.Xp = rbg->paraB.A * (rbg->paraB.Px - rbg->paraB.Cx) + rbg->paraB.B * (rbg->paraB.Py - rbg->paraB.Cy)
+            + rbg->paraB.C * (rbg->paraB.Pz - rbg->paraB.Cz) + rbg->paraB.Cx + rbg->paraB.Mx;
+        rbg->paraB.Yp = rbg->paraB.D * (rbg->paraB.Px - rbg->paraB.Cx) + rbg->paraB.E * (rbg->paraB.Py - rbg->paraB.Cy)
+            + rbg->paraB.F * (rbg->paraB.Pz - rbg->paraB.Cz) + rbg->paraB.Cy + rbg->paraB.My;
+    }
 
-  cellw = rbg->ctrl.info.cellw;
-  cellh = rbg->ctrl.info.cellh;
+    rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA;
+    rbg->paraB.over_pattern_name = rbg->ctrl.regs->OVPNRB;
 
-  x = 0;
-  y = 0;
-  if (rbg->rbg_type == 0)
-  {
-    rbg->paraA.dx = rbg->paraA.A * rbg->paraA.deltaX + rbg->paraA.B * rbg->paraA.deltaY;
-    rbg->paraA.dy = rbg->paraA.D * rbg->paraA.deltaX + rbg->paraA.E * rbg->paraA.deltaY;
-    rbg->paraA.Xp = rbg->paraA.A * (rbg->paraA.Px - rbg->paraA.Cx) +
-      rbg->paraA.B * (rbg->paraA.Py - rbg->paraA.Cy) +
-      rbg->paraA.C * (rbg->paraA.Pz - rbg->paraA.Cz) + rbg->paraA.Cx + rbg->paraA.Mx;
-    rbg->paraA.Yp = rbg->paraA.D * (rbg->paraA.Px - rbg->paraA.Cx) +
-      rbg->paraA.E * (rbg->paraA.Py - rbg->paraA.Cy) +
-      rbg->paraA.F * (rbg->paraA.Pz - rbg->paraA.Cz) + rbg->paraA.Cy + rbg->paraA.My;
-  }
+    rbg->ctrl.info.cellw = rbg->hres;
+    rbg->ctrl.info.cellh = (rbg->vres * (info->endLine - info->startLine)) / yabsys.VBlankLineCount;
 
-  if (rbg->useb)
-  {
-    rbg->paraB.dx = rbg->paraB.A * rbg->paraB.deltaX + rbg->paraB.B * rbg->paraB.deltaY;
-    rbg->paraB.dy = rbg->paraB.D * rbg->paraB.deltaX + rbg->paraB.E * rbg->paraB.deltaY;
-    rbg->paraB.Xp = rbg->paraB.A * (rbg->paraB.Px - rbg->paraB.Cx) + rbg->paraB.B * (rbg->paraB.Py - rbg->paraB.Cy)
-      + rbg->paraB.C * (rbg->paraB.Pz - rbg->paraB.Cz) + rbg->paraB.Cx + rbg->paraB.Mx;
-    rbg->paraB.Yp = rbg->paraB.D * (rbg->paraB.Px - rbg->paraB.Cx) + rbg->paraB.E * (rbg->paraB.Py - rbg->paraB.Cy)
-      + rbg->paraB.F * (rbg->paraB.Pz - rbg->paraB.Cz) + rbg->paraB.Cy + rbg->paraB.My;
-  }
+    if (info->isbitmap) {
+        rbg->ctrl.info.cellw = cellw;
+        rbg->ctrl.info.cellh = cellh;
+    }
 
-  rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA;
-  rbg->paraB.over_pattern_name = rbg->ctrl.regs->OVPNRB;
+    // Appel au moteur de rendu OpenGL (Ygl)
+    YglQuadRbg0(rbg, NULL, &rbg->c, rbg->rbg_type, YglTM_vdp2, rbg->ctrl.regs);
 
-
-  rbg->ctrl.info.cellw = rbg->hres;
-  rbg->ctrl.info.cellh = (rbg->vres * (info->endLine - info->startLine))/yabsys.VBlankLineCount;
-
-  if (info->isbitmap) {
-    rbg->ctrl.info.cellw = cellw;
-    rbg->ctrl.info.cellh = cellh ;
-  }
-
-  YglQuadRbg0(rbg, NULL, &rbg->c, rbg->rbg_type, YglTM_vdp2, rbg->ctrl.regs);
-
-	// RAKLCE=bit4(0x0010) → ParaA line color ; RBKLCE=bit12(0x1000) → ParaB line color
-	_Ygl->useLineColorOffset[0] = ((rbg->ctrl.regs->KTCTL & 0x0010)!=0)?_Ygl->linecolorcoef_tex[0]:0;
-	_Ygl->useLineColorOffset[1] = ((rbg->ctrl.regs->KTCTL & 0x1000)!=0)?_Ygl->linecolorcoef_tex[1]:0;
-  return;
+    // Mise à jour des offsets de couleur de ligne
+    _Ygl->useLineColorOffset[0] = ((rbg->ctrl.regs->KTCTL & 0x0010) != 0) ? _Ygl->linecolorcoef_tex[0] : 0;
+    _Ygl->useLineColorOffset[1] = ((rbg->ctrl.regs->KTCTL & 0x1000) != 0) ? _Ygl->linecolorcoef_tex[1] : 0;
 }
 
   /*------------------------------------------------------------------------------
@@ -1134,11 +1119,28 @@ void VIDCSVdp1DrawFB(void) {
   vdp1_write();
 }
 
-static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
+static void Vdp2DrawNBG0_zones(void)
+{
+  int lastLine = 0;
+  int line;
+  int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+
+  for (line = 1; line < max; line++) {
+    if (!sameVDP2Reg(NBG0, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
+      Vdp2DrawNBG0(&Vdp2Lines[lastLine], lastLine, line);
+      lastLine = line;
+    }
+  }
+  Vdp2DrawNBG0(&Vdp2Lines[lastLine], lastLine, max);
+}
+
+static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   YglCache tmpc;
   u32 char_access = 0;
   u32 ptn_access = 0;
   Vdp2Ctrl ctrl;
+  int i;
+
   ctrl.regs = varVdp2Regs;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
@@ -1147,35 +1149,33 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   ctrl.info.cor = 0;
   ctrl.info.cog = 0;
   ctrl.info.cob = 0;
-  int i;
+  
   ctrl.info.enable = 0;
-  ctrl.info.startLine = 0;
-  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
+  ctrl.info.startLine = startLine;
+  ctrl.info.endLine   = endLine;
   ctrl.info.cellh = 256;
   if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl.info.cellh = ctrl.info.cellh << 1;
   ctrl.info.specialcolorfunction = 0;
-
-  /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
 
-  for (i=0; i<yabsys.VBlankLineCount; i++) {
+  for (i = 0; i < yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
   }
   if (!ctrl.info.enable) return;
 
-  for (int i=0; i < 4; i++) {
-    ctrl.info.char_bank[i] = 0;
-    ctrl.info.pname_bank[i] = 0;
-    for (int j=0; j < 8; j++) {
-      if (Vdp2External.AC_VRAM[i][j] == 0x04) {
-        ctrl.info.char_bank[i] = 1;
-        char_access |= 1<<j;
+  for (int b = 0; b < 4; b++) {
+    ctrl.info.char_bank[b] = 0;
+    ctrl.info.pname_bank[b] = 0;
+    for (int j = 0; j < 8; j++) {
+      if (Vdp2External.AC_VRAM[b][j] == 0x04) {
+        ctrl.info.char_bank[b] = 1;
+        char_access |= 1 << j;
       }
-      if (Vdp2External.AC_VRAM[i][j] == 0x00) {
-        ctrl.info.pname_bank[i] = 1;
+      if (Vdp2External.AC_VRAM[b][j] == 0x00) {
+        ctrl.info.pname_bank[b] = 1;
         ptn_access |= (1 << j);
       }
     }
@@ -1183,71 +1183,55 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
 
   if (char_access == 0) return;
 
-  /* VDP2 Manual §4.2 CHCTLA bits 6-4 : colornumber NBG0
-   * Doit être assigné AVANT ReadBitmapSize et le calcul du wrap,
-   * car bitmap_wrap_size dépend de colornumber et de cellw/cellh. */
   ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
 
   if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
   {
-    // Bitmap Mode
     ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
 
-    ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
-    ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
+    /* --- CORRECTION KONAMI ANTIQUES & BITMAP WRAP --- */
+    // On force la taille de wrap à 512KB (Taille physique d'une banque VRAM)
+    ctrl.info.bitmap_wrap_size = 0x80000; 
+    
+    // Pour éviter les coordonnées négatives qui font échouer les boucles de rendu,
+    // on utilise un scroll positif wrappé sur la taille de la mémoire (0x7FF = 2047 pixels)
+    // On convertit le scroll en une valeur positive exploitable.
+    ctrl.info.x = -(s16)(ctrl.regs->SCXIN0 & 0x7FF);
+    ctrl.info.y = -(s16)(ctrl.regs->SCYIN0 & 0x7FF);
 
-    /* charaddr doit être assigné AVANT bitmap_base */
+    // Si on est en mode bitmap linéaire, on s'assure que x et y ne sont pas négatifs 
+    // par rapport à l'origine du dessin dans la boucle while plus bas.
+    while (ctrl.info.x < 0) ctrl.info.x += 1024; // Largeur bitmap max
+    while (ctrl.info.y < 0) ctrl.info.y += 512;  // Hauteur bitmap max
+
     ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
     ctrl.info.flipfunction = 0;
     ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x10) >> 4;
     ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
-
-    /* VDP2 Manual p.95 : wrap bitmap.
-     * Calculé APRÈS charaddr (bitmap_base) ET colornumber ET cellw/cellh.
-     * Si le bitmap dépasse la VRAM, il se répète verticalement. */
-    switch (ctrl.info.colornumber) {
-      case 0: /* 4bpp */
-        ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
-        break;
-      case 1: /* 8bpp */
-        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
-        break;
-      case 2: /* 16bpp palette */
-      case 3: /* 16bpp RGB */
-        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
-        break;
-      case 4: /* 32bpp */
-        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
-        break;
-      default:
-        ctrl.info.bitmap_wrap_size = 0;
-        break;
-    }
     ctrl.info.bitmap_base = ctrl.info.charaddr;
 
-    /* VDP2 Manual §4.5: RGB format bypasses RAMCTL rotation-exclusion check */
-    int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
+    // Calcul de la banque VRAM correct (0 ou 1 pour A ou B)
+    int charAddrBk = (ctrl.info.charaddr >> 18) & 0x1;
     int needUpdate = 0;
     if (ctrl.info.colornumber < 3) {
-      for (int i=0; i<yabsys.VBlankLineCount; i++) {
-        if ((Vdp2Lines[i].BGON & 0x10)!=0) {
-          if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
+      for (int k = 0; k < yabsys.VBlankLineCount; k++) {
+        if ((Vdp2Lines[k].BGON & 0x10) != 0) {
+          if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
             needUpdate = 1;
-            ctrl.info.display[i] = 0;
+            ctrl.info.display[k] = 0;
           }
         }
       }
     }
     if (needUpdate != 0) {
       ctrl.info.enable = 0;
-      for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
+      for (int k = 0; k < yabsys.VBlankLineCount; k++) ctrl.info.enable |= ctrl.info.display[k];
       if (!ctrl.info.enable) return;
     }
   }
   else
   {
-    // Tile Mode — bitmap_base et bitmap_wrap_size restent à 0
     if (ptn_access == 0) return;
     ctrl.info.mapwh = 2;
     ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ);
@@ -1256,42 +1240,35 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
   }
 
+  // Zoom
   if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
   else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
 
   switch (ctrl.regs->ZMCTL & 0x03)
   {
-  case 0: ctrl.info.maxzoom = 1.0f; break;
-  case 1:
-    ctrl.info.maxzoom = 0.5f;
-    if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
-    break;
-  case 2:
-  case 3:
-    ctrl.info.maxzoom = 0.25f;
-    if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
-    break;
+    case 0: ctrl.info.maxzoom = 1.0f; break;
+    case 1:
+      ctrl.info.maxzoom = 0.5f;
+      if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
+      break;
+    case 2:
+    case 3:
+      ctrl.info.maxzoom = 0.25f;
+      if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
+      break;
   }
 
   if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
   else ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
 
-  ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
+  ctrl.info.PlaneAddr = (void (FASTCALL*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
 
   ReadMosaicData(&ctrl.info, 0x1, ctrl.regs);
 
   ctrl.info.transparencyenable = !(ctrl.regs->BGON & 0x100);
   ctrl.info.specialprimode = ctrl.regs->SFPRMD & 0x3;
   ctrl.info.specialcolormode = ctrl.regs->SFCCMD & 0x3;
-
-  if (ctrl.regs->SFSEL & 0x1)
-    ctrl.info.specialcode = ctrl.regs->SFCODE >> 8;
-  else
-    ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
-
-  /* colornumber déjà assigné plus haut — ne pas réassigner ici
-   * pour ne pas écraser la valeur utilisée pour bitmap_wrap_size */
-
+  ctrl.info.specialcode = (ctrl.regs->SFSEL & 0x1) ? (ctrl.regs->SFCODE >> 8) : (ctrl.regs->SFCODE & 0xFF);
   ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x7) << 8;
   ctrl.info.linecheck_mask = 0x01;
   ctrl.info.priority = ctrl.regs->PRINA & 0x7;
@@ -1305,65 +1282,76 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   if (ctrl.regs->SCRCTL & 1) {
     ctrl.info.isverticalscroll = 1;
     ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
-    if (ctrl.regs->SCRCTL & 0x100)
-      ctrl.info.verticalscrollinc = 8;
-    else
-      ctrl.info.verticalscrollinc = 4;
+    ctrl.info.verticalscrollinc = (ctrl.regs->SCRCTL & 0x100) ? 8 : 4;
   }
   else ctrl.info.isverticalscroll = 0;
 
   if (ctrl.info.isbitmap)
   {
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
+      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+      
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
       ctrl.info.x = 0;
       ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+      ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
+
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
-      infotmp.cellh = _Ygl->rheight;
+      infotmp.cellh = screenY2 - screenY1;
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
     else {
-      int xx, yy;
-      int isCached = 0;
       if (ctrl.info.islinescroll) {
+        int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+        int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
         ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
         ctrl.info.x = 0; ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-        ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-        ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
-        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
+        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+        ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+        ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
+
         vdp2draw_struct infotmp = ctrl.info;
         infotmp.cellw = _Ygl->rwidth;
-        infotmp.cellh = _Ygl->rheight;
+        infotmp.cellh = screenY2 - screenY1;
         YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
         Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
       }
       else {
         int cellh = ctrl.info.cellh;
+        int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+        int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+        int xx, yy;
+        int isCachedLocal = 0;
+
         yy = ctrl.info.y;
-        while (yy + ctrl.info.y < _Ygl->rheight) {
+        // Correction de la boucle de clipping pour ne pas sauter le dessin
+        while (yy < screenY1 && yy < _Ygl->rheight) yy += cellh;
+
+        while (yy < screenY2) {
           ctrl.info.draw_line = yy;
           xx = ctrl.info.x;
-          while (xx + ctrl.info.x < _Ygl->rwidth) {
-            ctrl.info.vertices[0] = xx; ctrl.info.vertices[1] = yy;
-            ctrl.info.vertices[2] = (xx + ctrl.info.cellw); ctrl.info.vertices[3] = yy;
-            ctrl.info.vertices[4] = (xx + ctrl.info.cellw); ctrl.info.vertices[5] = (yy + cellh);
-            ctrl.info.vertices[6] = xx; ctrl.info.vertices[7] = (yy + cellh);
-            if (isCached == 0) {
+          while (xx < _Ygl->rwidth) {
+            ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
+            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
+            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
+            ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
+            
+            if (isCachedLocal == 0) {
               YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
               if (ctrl.info.islinescroll)
                 Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
               else
                 requestDrawCell(&ctrl);
-              isCached = 1;
+              isCachedLocal = 1;
             }
             else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
             xx += ctrl.info.cellw;
@@ -1375,25 +1363,28 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs) {
   }
   else
   {
+    // Mode Tilemap (inchangé mais corrigé pour SCXIN0)
     if (ctrl.info.islinescroll) {
-      int screenH = _Ygl->rheight;
+      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
       ctrl.info.x = 0; ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = screenH;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = screenH;
+      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+      ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
+
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
-      infotmp.cellh = _Ygl->rheight;
+      infotmp.cellh = screenY2 - screenY1;
       infotmp.flipfunction = 0;
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawMapPerLine(&ctrl);
     }
     else {
       int delayed = 0;
-      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
+      if (((ptn_access & 0x1) == 0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
         delayed = 1;
       ctrl.info.x = ctrl.regs->SCXIN0 & 0x7FF;
       ctrl.info.y = ctrl.regs->SCYIN0 & 0x7FF;
@@ -2468,7 +2459,7 @@ LOG_ASYN("===================================\n");
   Vdp2DrawNBG3(&Vdp2Lines[VDP2_DRAW_LINE]);
   Vdp2DrawNBG2(&Vdp2Lines[VDP2_DRAW_LINE]);
   Vdp2DrawNBG1(&Vdp2Lines[VDP2_DRAW_LINE]);
-  Vdp2DrawNBG0(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawNBG0_zones();
   Vdp2DrawRBG1();
 
 LOG_ASYN("*********************************\n");
@@ -3749,7 +3740,12 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
 	float inch_f = (1.0f / ctrl->info.coordincx) * 256.0f;
 	int incv = (int)(incv_f + 0.5f); // arrondi au lieu de troncature
 	int inch = (int)(inch_f + 0.5f);
-  for (i = 0; i < _Ygl->rheight; i ++)
+	  int screenY1 = (_Ygl->rheight * ctrl->info.startLine) / yabsys.VBlankLineCount;
+	  int screenY2 = (_Ygl->rheight * ctrl->info.endLine)   / yabsys.VBlankLineCount;
+	  if (screenY1 < 0) screenY1 = 0;
+	  if (screenY2 > _Ygl->rheight) screenY2 = _Ygl->rheight;
+
+	  for (i = screenY1; i < screenY2; i++)
   {
     int sh, sv;
     int v;
@@ -4880,13 +4876,29 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   return 1;
 }
 
+static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
+{
+  if ((a->ZMXN0.all & 0x7FF00) != (b->ZMXN0.all & 0x7FF00)) return 0;
+  if ((a->ZMYN0.all & 0x7FF00) != (b->ZMYN0.all & 0x7FF00)) return 0;
+  if ((a->SCXIN0 & 0x7FF) != (b->SCXIN0 & 0x7FF)) return 0;
+  if ((a->SCYIN0 & 0x7FF) != (b->SCYIN0 & 0x7FF)) return 0;
+  if ((a->CRAOFA & 0x7) != (b->CRAOFA & 0x7)) return 0;
+  if ((a->BGON & 0x31) != (b->BGON & 0x31)) return 0;
+  if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
+  if ((a->CCRNA & 0x1F) != (b->CCRNA & 0x1F)) return 0;
+  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
+  if ((a->MPOFN & 0x7) != (b->MPOFN & 0x7)) return 0;
+  if ((a->BMPNA & 0x77) != (b->BMPNA & 0x77)) return 0;
+  return 1;
+}
+
 static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b)
 {
   switch (id) {
     case RBG0: return sameVDP2RegRBG0(a, b);
     case RBG1: return sameVDP2RegRBG1(a, b);
-    default:
-    break;
+    case NBG0: return sameVDP2RegNBG0(a, b);
+    default: break;
   }
   return 1;
 }
