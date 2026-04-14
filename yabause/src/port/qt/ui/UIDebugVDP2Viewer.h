@@ -41,6 +41,7 @@ private:
     void updateVramHex();
 
 protected:
+	void wheelEvent(QWheelEvent *event) override;
     pixel_t *vdp2texture = NULL;
     int width = 0, height = 0;
 
