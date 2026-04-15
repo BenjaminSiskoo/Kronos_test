@@ -42,8 +42,6 @@
 #define LOG_AREA
 #define LOG_CMD
 
-
-extern unsigned char Vdp2Ram_Updated;
 static int renderer_started = 0;
 static Vdp2 baseVdp2Regs;
 static int drawcell_run = 0;
@@ -1144,9 +1142,6 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   int i;
 
   ctrl.regs = varVdp2Regs;
-  ctrl.info.startLine = startLine;
-  ctrl.info.endLine   = endLine;
-  
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
@@ -1156,7 +1151,8 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   ctrl.info.cob = 0;
   
   ctrl.info.enable = 0;
-
+  ctrl.info.startLine = startLine;
+  ctrl.info.endLine   = endLine;
   ctrl.info.cellh = 256;
   if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl.info.cellh = ctrl.info.cellh << 1;
   ctrl.info.specialcolorfunction = 0;
@@ -1337,29 +1333,30 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
         int isCachedLocal = 0;
 
         yy = ctrl.info.y;
-       // Correction de la boucle de clipping pour ne pas sauter le dessin
-		while (yy < screenY1 && yy < _Ygl->rheight) yy += cellh;
-		while (yy < screenY2) {
-		  ctrl.info.draw_line = yy;
-		  xx = ctrl.info.x;
-		  while (xx < _Ygl->rwidth) {
-			ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
-			ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
-			ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
-			ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
+        // Correction de la boucle de clipping pour ne pas sauter le dessin
+        while (yy < screenY1 && yy < _Ygl->rheight) yy += cellh;
 
-			if (isCachedLocal == 0) {
-			  YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
-			  if (ctrl.info.islinescroll)
-				Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
-			  else
-				requestDrawCell(&ctrl);
-			  isCachedLocal = 1;
-			}
-			else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
-			xx += ctrl.info.cellw;
-		  }
-		  yy += cellh;
+        while (yy < screenY2) {
+          ctrl.info.draw_line = yy;
+          xx = ctrl.info.x;
+          while (xx < _Ygl->rwidth) {
+            ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
+            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
+            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
+            ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
+            
+            if (isCachedLocal == 0) {
+              YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
+              if (ctrl.info.islinescroll)
+                Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
+              else
+                requestDrawCell(&ctrl);
+              isCachedLocal = 1;
+            }
+            else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
+            xx += ctrl.info.cellw;
+          }
+          yy += cellh;
         }
       }
     }
@@ -1401,15 +1398,12 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
+static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 {
   YglCache tmpc;
   u32 char_access = 0;
   u32 ptn_access = 0;
   Vdp2Ctrl ctrl;
-  ctrl.info.startLine = startLine;
-  ctrl.info.endLine   = endLine;
-  
   ctrl.regs = varVdp2Regs;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
@@ -1418,7 +1412,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
-
+  ctrl.info.startLine = 0;
+  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
 
   /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
   ctrl.info.bitmap_base      = 0;
@@ -1671,12 +1666,10 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
+static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
-  ctrl.info.startLine = startLine;
-  ctrl.info.endLine   = endLine;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG2;
   ctrl.info.cor = 0;
@@ -1684,6 +1677,8 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
+  ctrl.info.startLine = 0;
+  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
 
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG2, &Vdp2Lines[i]);
@@ -1780,13 +1775,10 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
+static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
-  ctrl.info.startLine = startLine;
-  ctrl.info.endLine   = endLine;
-  
   ctrl.info.idScreen = NBG3;
   ctrl.info.dst = 0;
   ctrl.info.cor = 0;
@@ -1794,6 +1786,8 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
+  ctrl.info.startLine = 0;
+  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
 
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG3, &Vdp2Lines[i]);
@@ -2440,50 +2434,37 @@ void VIDCSVdp2Draw(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+#define VDP2_DRAW_LINE 0
+extern u8 Vdp2Ram_Updated;
 static void VIDCSVdp2DrawScreens(void)
 {
-    int line;
-    int startLine = 0;
-    int maxLine = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+  u64 before;
+  u64 now;
+  u32 difftime;
+  char str[64];
+LOG_ASYN("===================================\n");
 
-    LOG_ASYN("===================================\n");
+  _Ygl->useLineColorOffset[0] = 0;
+  _Ygl->useLineColorOffset[1] = 0;
 
-    _Ygl->useLineColorOffset[0] = 0;
-    _Ygl->useLineColorOffset[1] = 0;
+  Vdp2GenerateWindowInfo(&Vdp2Lines[VDP2_DRAW_LINE]);
 
-    Vdp2GenerateWindowInfo(&Vdp2Lines[0]);
+  if (Vdp1Regs->TVMR & 0x02) {
+    Vdp2ReadRotationTable(0, &Vdp1ParaA, &Vdp2Lines[VDP2_DRAW_LINE], Vdp2Ram);
+  }
+  Vdp2DrawBackScreen(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawLineColorScreen(&Vdp2Lines[VDP2_DRAW_LINE]);
 
-    if (Vdp1Regs->TVMR & 0x02) {
-        Vdp2ReadRotationTable(0, &Vdp1ParaA, &Vdp2Lines[0], Vdp2Ram);
-    }
-    
-    Vdp2DrawBackScreen(&Vdp2Lines[0]);
-    Vdp2DrawLineColorScreen(&Vdp2Lines[0]);
+  Vdp2DrawRBG0();
+  Vdp2DrawNBG3(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawNBG2(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawNBG1(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawNBG0_zones();
+  Vdp2DrawRBG1();
 
-    // Boucle de rendu scanline-accurate
-    for (line = 0; line < maxLine; line++)
-    {
-        // Découpage toutes les 16 lignes
-        if ((line > 0 && (line % 16 == 0)) || (line == maxLine - 1))
-        {
-            int currentEndLine = line + 1;
+LOG_ASYN("*********************************\n");
 
-            // On dessine toutes les couches NBG pour ce segment de 16 lignes
-            Vdp2DrawNBG3(&Vdp2Lines[startLine], startLine, currentEndLine);
-            Vdp2DrawNBG2(&Vdp2Lines[startLine], startLine, currentEndLine);
-            Vdp2DrawNBG1(&Vdp2Lines[startLine], startLine, currentEndLine);
-            Vdp2DrawNBG0(&Vdp2Lines[startLine], startLine, currentEndLine);
-            
-            startLine = currentEndLine;
-        }
-    }
-
-    // NBG0 ne doit plus être appelé ici de manière globale
-    Vdp2DrawRBG0();
-    Vdp2DrawRBG1();
-
-    LOG_ASYN("*********************************\n");
-    Vdp2Ram_Updated = 0;
+  Vdp2Ram_Updated = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
