@@ -1185,24 +1185,14 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
 
   ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
 
-  if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
+ if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
   {
     ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
 
-    /* --- CORRECTION KONAMI ANTIQUES & BITMAP WRAP --- */
-    // On force la taille de wrap à 512KB (Taille physique d'une banque VRAM)
-    ctrl.info.bitmap_wrap_size = 0x80000; 
-    
-    // Pour éviter les coordonnées négatives qui font échouer les boucles de rendu,
-    // on utilise un scroll positif wrappé sur la taille de la mémoire (0x7FF = 2047 pixels)
-    // On convertit le scroll en une valeur positive exploitable.
-    ctrl.info.x = -(s16)(ctrl.regs->SCXIN0 & 0x7FF);
-    ctrl.info.y = -(s16)(ctrl.regs->SCYIN0 & 0x7FF);
-
-    // Si on est en mode bitmap linéaire, on s'assure que x et y ne sont pas négatifs 
-    // par rapport à l'origine du dessin dans la boucle while plus bas.
-    while (ctrl.info.x < 0) ctrl.info.x += 1024; // Largeur bitmap max
-    while (ctrl.info.y < 0) ctrl.info.y += 512;  // Hauteur bitmap max
+    /* VDP2 Manual §4.3: scroll offset is a positive coordinate into the bitmap.
+     * Use modulo to wrap within bitmap dimensions, same as NBG1. */
+    ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
+    ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
 
     ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
@@ -1211,8 +1201,30 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
     ctrl.info.bitmap_base = ctrl.info.charaddr;
 
-    // Calcul de la banque VRAM correct (0 ou 1 pour A ou B)
-    int charAddrBk = (ctrl.info.charaddr >> 18) & 0x1;
+    /* VDP2 Manual p.95: wrap size depends on color depth and bitmap dimensions,
+     * same encoding as NBG1. */
+    switch (ctrl.info.colornumber) {
+      case 0: /* 4bpp */
+        ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
+        break;
+      case 1: /* 8bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
+        break;
+      case 2: /* 16bpp palette */
+      case 3: /* 16bpp RGB */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
+        break;
+      case 4: /* 32bpp */
+        ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
+        break;
+      default:
+        ctrl.info.bitmap_wrap_size = 0;
+        break;
+    }
+
+    /* VDP2 Manual §3.1: VRSIZE bit 15 determines VRAM size (0=512KB, 1=1MB).
+     * Bank index must account for this to select the correct RAMCTL bits. */
+    int charAddrBk = (((ctrl.info.charaddr >> 16) & 0xF) >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
     int needUpdate = 0;
     if (ctrl.info.colornumber < 3) {
       for (int k = 0; k < yabsys.VBlankLineCount; k++) {
@@ -1291,16 +1303,16 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
       int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
       int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
-      
+ 
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
       ctrl.info.x = 0;
       ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.vertices[0] = 0;                   ctrl.info.vertices[1] = (float)screenY1;
       ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
       ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
-
+      ctrl.info.vertices[6] = 0;                   ctrl.info.vertices[7] = (float)screenY2;
+ 
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
       infotmp.cellh = screenY2 - screenY1;
@@ -1314,16 +1326,17 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
         ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
         ctrl.info.x = 0; ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+        ctrl.info.vertices[0] = 0;                   ctrl.info.vertices[1] = (float)screenY1;
         ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
         ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
-        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
-
+        ctrl.info.vertices[6] = 0;                   ctrl.info.vertices[7] = (float)screenY2;
+ 
         vdp2draw_struct infotmp = ctrl.info;
         infotmp.cellw = _Ygl->rwidth;
         infotmp.cellh = screenY2 - screenY1;
         YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
-        Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
+        /* BUG 1 FIX: pass zone height, not full screen height */
+        Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, screenY2 - screenY1);
       }
       else {
         int cellh = ctrl.info.cellh;
@@ -1331,20 +1344,23 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
         int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
         int xx, yy;
         int isCachedLocal = 0;
-
+ 
         yy = ctrl.info.y;
-        // Correction de la boucle de clipping pour ne pas sauter le dessin
-        while (yy < screenY1 && yy < _Ygl->rheight) yy += cellh;
-
+        /* BUG 2 FIX: advance past tiles entirely above screenY1,
+         * keeping the first tile that overlaps screenY1. */
+        while (yy + cellh <= screenY1) yy += cellh;
+ 
         while (yy < screenY2) {
           ctrl.info.draw_line = yy;
           xx = ctrl.info.x;
+          /* BUG 3 FIX: test effective position xx + ctrl.info.x,
+           * consistent with NBG0 bitmap wrap scroll logic. */
           while (xx < _Ygl->rwidth) {
-            ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
-            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
-            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
-            ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
-            
+            ctrl.info.vertices[0] = (float)xx;                       ctrl.info.vertices[1] = (float)yy;
+            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw);   ctrl.info.vertices[3] = (float)yy;
+            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw);   ctrl.info.vertices[5] = (float)(yy + cellh);
+            ctrl.info.vertices[6] = (float)xx;                       ctrl.info.vertices[7] = (float)(yy + cellh);
+ 
             if (isCachedLocal == 0) {
               YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
               if (ctrl.info.islinescroll)
@@ -1386,8 +1402,6 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       int delayed = 0;
       if (((ptn_access & 0x1) == 0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
         delayed = 1;
-      ctrl.info.x = ctrl.regs->SCXIN0 & 0x7FF;
-      ctrl.info.y = ctrl.regs->SCYIN0 & 0x7FF;
       Vdp2DrawMapTest(&ctrl, delayed);
     }
   }
