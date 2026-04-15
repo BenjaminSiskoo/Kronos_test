@@ -1194,15 +1194,19 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
 
     /* --- CORRECTION KONAMI ANTIQUES & BITMAP WRAP --- */
+    // On force la taille de wrap à 512KB (Taille physique d'une banque VRAM)
     ctrl.info.bitmap_wrap_size = 0x80000; 
     
-    // Correction du scroll : on cast en s16 pour préserver le signe avant le wrapping
+    // Pour éviter les coordonnées négatives qui font échouer les boucles de rendu,
+    // on utilise un scroll positif wrappé sur la taille de la mémoire (0x7FF = 2047 pixels)
+    // On convertit le scroll en une valeur positive exploitable.
     ctrl.info.x = -(s16)(ctrl.regs->SCXIN0 & 0x7FF);
     ctrl.info.y = -(s16)(ctrl.regs->SCYIN0 & 0x7FF);
 
-    // Ajustement des offsets pour rester dans les limites visibles (basé sur la taille de cellule)
-    if (ctrl.info.cellw > 0) while (ctrl.info.x + ctrl.info.cellw <= 0) ctrl.info.x += ctrl.info.cellw;
-    if (ctrl.info.cellh > 0) while (ctrl.info.y + ctrl.info.cellh <= 0) ctrl.info.y += ctrl.info.cellh;
+    // Si on est en mode bitmap linéaire, on s'assure que x et y ne sont pas négatifs 
+    // par rapport à l'origine du dessin dans la boucle while plus bas.
+    while (ctrl.info.x < 0) ctrl.info.x += 1024; // Largeur bitmap max
+    while (ctrl.info.y < 0) ctrl.info.y += 512;  // Hauteur bitmap max
 
     ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
@@ -1211,6 +1215,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
     ctrl.info.bitmap_base = ctrl.info.charaddr;
 
+    // Calcul de la banque VRAM correct (0 ou 1 pour A ou B)
     int charAddrBk = (ctrl.info.charaddr >> 18) & 0x1;
     int needUpdate = 0;
     if (ctrl.info.colornumber < 3) {
@@ -1287,12 +1292,14 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
 
   if (ctrl.info.isbitmap)
   {
-    int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
-    int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
-
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
+      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+      
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
+      ctrl.info.x = 0;
+      ctrl.info.y = 0;
       ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
       ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
       ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
@@ -1306,8 +1313,11 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     }
     else {
       if (ctrl.info.islinescroll) {
+        int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+        int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
         ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
+        ctrl.info.x = 0; ctrl.info.y = 0;
         ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
         ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
         ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
@@ -1321,36 +1331,42 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       }
       else {
         int cellh = ctrl.info.cellh;
+        int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+        int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
         int xx, yy;
         int isCachedLocal = 0;
 
         yy = ctrl.info.y;
-        while (yy + cellh <= screenY1) yy += cellh; // Sauter les cellules hors champ haut
+       // Correction de la boucle de clipping pour ne pas sauter le dessin
+		while (yy < screenY1 && yy < _Ygl->rheight) yy += cellh;
+		while (yy < screenY2) {
+		  ctrl.info.draw_line = yy;
+		  xx = ctrl.info.x;
+		  while (xx < _Ygl->rwidth) {
+			ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
+			ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
+			ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
+			ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
 
-        while (yy < screenY2) {
-          ctrl.info.draw_line = yy;
-          xx = ctrl.info.x;
-          while (xx < _Ygl->rwidth) {
-            ctrl.info.vertices[0] = (float)xx; ctrl.info.vertices[1] = (float)yy;
-            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
-            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
-            ctrl.info.vertices[6] = (float)xx; ctrl.info.vertices[7] = (float)(yy + cellh);
-            
-            if (isCachedLocal == 0) {
-              YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
-              requestDrawCell(&ctrl);
-              isCachedLocal = 1;
-            }
-            else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
-            xx += ctrl.info.cellw;
-          }
-          yy += cellh;
+			if (isCachedLocal == 0) {
+			  YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
+			  if (ctrl.info.islinescroll)
+				Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
+			  else
+				requestDrawCell(&ctrl);
+			  isCachedLocal = 1;
+			}
+			else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
+			xx += ctrl.info.cellw;
+		  }
+		  yy += cellh;
         }
       }
     }
   }
   else
   {
+    // Mode Tilemap (inchangé mais corrigé pour SCXIN0)
     if (ctrl.info.islinescroll) {
       int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
       int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
