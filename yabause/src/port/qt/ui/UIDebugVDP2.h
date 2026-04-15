@@ -16,6 +16,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+
 #ifndef UIDEBUGVDP2_H
 #define UIDEBUGVDP2_H
 
@@ -26,20 +27,22 @@
 
 class UIDebugVDP2 : public QDialog, public Ui::UIDebugVDP2
 {
-	Q_OBJECT
+    Q_OBJECT
 public:
-	UIDebugVDP2( QWidget* parent = 0 , YabauseLocker *lock = 0);
+    explicit UIDebugVDP2(QWidget* parent = 0, YabauseLocker *lock = 0);
+    ~UIDebugVDP2(); // Ajout du destructeur pour la propreté
 
 protected:
-   bool updateInfoDisplay(void (*debugStats)(char *, int *), QGroupBox *cb, QPlainTextEdit *pte);
-	 UIDebugVDP2Viewer *viewer;
+    bool updateInfoDisplay(void (*debugStats)(char *, int *), QGroupBox *cb, QPlainTextEdit *pte);
+    UIDebugVDP2Viewer *viewer;
+
 protected slots:
-   void on_pbViewer_clicked();
- 	 void on_pbNextButton_clicked ();
+    void on_pbViewer_clicked();
+    void on_pbNextButton_clicked();
 
 private:
-	YabauseLocker* mLock;
-	void updateScreenInfos();
+    YabauseLocker* mLock;
+    void updateScreenInfos();
 };
 
 #endif // UIDEBUGVDP2_H
