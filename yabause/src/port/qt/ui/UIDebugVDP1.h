@@ -22,32 +22,36 @@
 #include "ui_UIDebugVDP1.h"
 #include "../QtYabause.h"
 #include "UIYabause.h"
+#include <QImage>
 
 class UIDebugVDP1 : public QDialog, public Ui::UIDebugVDP1
 {
     Q_OBJECT
 public:
-    UIDebugVDP1( QWidget* parent = 0, YabauseLocker* lock = 0);
+    explicit UIDebugVDP1(QWidget* parent = 0, YabauseLocker* lock = 0);
     ~UIDebugVDP1();
 
 protected:
     u32 *vdp1texture = NULL;
     u8  *vdp1RawTexture = NULL;
-    int  vdp1RawNumBytes;
-    int  vdp1texturew, vdp1textureh;
+    int  vdp1RawNumBytes = 0;
+    int  vdp1texturew = 1, vdp1textureh = 1;
     YabauseLocker* mLock;
 
-protected slots:
-    void on_lwCommandList_itemSelectionChanged();
-    void on_lwCommandRaw_itemSelectionChanged();
-    void on_pbSaveBitmap_clicked();
-    void on_pbSaveRawSprite_clicked();
-    void syncOnVdp1Entry(int cursel);
-    void on_pbNextButton_clicked();
-
-private:
     void fillCommandList();
     void updateVdp1Registers();
+    void syncOnVdp1Entry(int cursel);
+    void clearVdp1Display(); // <--- Correctement déclaré ici
+
+protected slots:
+    void on_pbSaveBitmap_clicked();
+    void on_pbSaveRawSprite_clicked();
+    void on_pbNextButton_clicked();
+    void on_lwCommandRaw_itemSelectionChanged();
+    void on_lwCommandList_itemSelectionChanged();
+
+private:
+    void clearTextures();
 };
 
 #endif // UIDEBUGVDP1_H
