@@ -18,12 +18,19 @@
 */
 #include "UICheatAR.h"
 #include "../QtYabause.h"
+#include <QRegularExpressionValidator>
 
 UICheatAR::UICheatAR( QWidget* p )
 	: QDialog( p )
 {
-	// setup dialog
 	setupUi( this );
-	// retranslate widgets
 	QtYabause::retranslateWidget( this );
+
+	// CORRECTION : Validation de la saisie (Format Action Replay : XXXXXXXX XXXXX)
+	// Autorise 8 hex, un espace optionnel, puis 4 hex
+	QRegularExpression arRegex("^[0-9A-Fa-f]{8}\\s?[0-9A-Fa-f]{4}$");
+	leCode->setValidator(new QRegularExpressionValidator(arRegex, this));
+    
+	// UI : Met le focus sur le champ de code au démarrage
+	leCode->setFocus();
 }
