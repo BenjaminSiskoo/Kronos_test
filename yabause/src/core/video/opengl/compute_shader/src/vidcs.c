@@ -1398,7 +1398,87 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
+static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
+{
+    /* BGON: N1ON = bit 1. Also check RBG enable bits that suppress NBG1
+     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
+    if ((a->BGON & 0x32) != (b->BGON & 0x32)) return 0;
+ 
+    /* CHCTLA bits 15-9: N1CHSZ(15-14), N1BMEN(9), N1CHCN(13-12).
+     * Color depth, bitmap mode and bitmap size for NBG1. */
+    if ((a->CHCTLA & 0xFE00) != (b->CHCTLA & 0xFE00)) return 0;
+ 
+    /* PRINA bits 10-8: NBG1 priority number (3-bit). */
+    if ((a->PRINA & 0x0700) != (b->PRINA & 0x0700)) return 0;
+ 
+    /* CCRNA bits 12-8: N1CCRT[4:0] — NBG1 color calculation ratio. */
+    if ((a->CCRNA & 0x1F00) != (b->CCRNA & 0x1F00)) return 0;
+ 
+    /* SCXIN1 bits 10-0: NBG1 horizontal scroll integer part.
+     * Note: fractional part (SCXDN1) is rarely changed mid-frame;
+     * include if games use sub-pixel scrolling changes. */
+    if ((a->SCXIN1 & 0x7FF) != (b->SCXIN1 & 0x7FF)) return 0;
+ 
+    /* SCYIN1 bits 10-0: NBG1 vertical scroll integer part. */
+    if ((a->SCYIN1 & 0x7FF) != (b->SCYIN1 & 0x7FF)) return 0;
+ 
+    /* ZMXN1 bits 18-8: NBG1 horizontal coordinate increment (zoom). */
+    if ((a->ZMXN1.all & 0x7FF00) != (b->ZMXN1.all & 0x7FF00)) return 0;
+ 
+    /* ZMYN1 bits 18-8: NBG1 vertical coordinate increment (zoom). */
+    if ((a->ZMYN1.all & 0x7FF00) != (b->ZMYN1.all & 0x7FF00)) return 0;
+ 
+    /* CRAOFA bits 6-4: N1CAOS[2:0] — NBG1 color RAM address offset. */
+    if ((a->CRAOFA & 0x0070) != (b->CRAOFA & 0x0070)) return 0;
+ 
+    /* MPOFN bits 6-4: NBG1 map offset (affects which VRAM area holds the map). */
+    if ((a->MPOFN & 0x0070) != (b->MPOFN & 0x0070)) return 0;
+ 
+    /* BMPNA bits 10-8: NBG1 bitmap palette address (bitmap mode only).
+     * Also bits 12,13: N1BMCC, N1BMPR. */
+    if ((a->BMPNA & 0x3700) != (b->BMPNA & 0x3700)) return 0;
+ 
+    /* SCRCTL bits 15-8: NBG1 line scroll / vertical cell scroll control.
+     * N1LSS[1:0](13:12), N1LZMX(11), N1LSCY(10), N1LSCX(9), N1VCSC(8). */
+    if ((a->SCRCTL & 0xFF00) != (b->SCRCTL & 0xFF00)) return 0;
+ 
+    /* PNCN1: NBG1 pattern name control — affects character address decoding. */
+    if ((a->PNCN1 & 0xFFFF) != (b->PNCN1 & 0xFFFF)) return 0;
+ 
+    /* PLSZ bits 3-2: NBG1 plane size (H and V). Affects map wrapping. */
+    if ((a->PLSZ & 0x000C) != (b->PLSZ & 0x000C)) return 0;
+ 
+    /* SFPRMD bits 3-2: NBG1 special priority mode. */
+    if ((a->SFPRMD & 0x000C) != (b->SFPRMD & 0x000C)) return 0;
+ 
+    /* SFCCMD bits 3-2: NBG1 special color calculation mode. */
+    if ((a->SFCCMD & 0x000C) != (b->SFCCMD & 0x000C)) return 0;
+ 
+    /* LNCLEN bit 1: N1LCEN — line color insertion enable for NBG1. */
+    if ((a->LNCLEN & 0x0002) != (b->LNCLEN & 0x0002)) return 0;
+ 
+    /* CLOFSL bit 1: N1COSL — color offset A/B select for NBG1. */
+    if ((a->CLOFSL & 0x0002) != (b->CLOFSL & 0x0002)) return 0;
+ 
+    return 1;
+}
+
+static void Vdp2DrawNBG1_zones(void)
+{
+    int lastLine = 0;
+    int line;
+    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+ 
+    for (line = 1; line < max; line++) {
+        if (!sameVDP2RegNBG1(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+            Vdp2DrawNBG1(&Vdp2Lines[lastLine], lastLine, line);
+            lastLine = line;
+        }
+    }
+    Vdp2DrawNBG1(&Vdp2Lines[lastLine], lastLine, max);
+}
+
+static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   YglCache tmpc;
   u32 char_access = 0;
@@ -1412,8 +1492,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
-  ctrl.info.startLine = 0;
-  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
+  /* Segmented line rendering: restrict this draw call to [startLine, endLine).
+   * VDP2 Manual §5.1 p.125: registers can change mid-frame via H-blank writes.
+   * Each zone covers the screen rows where the register snapshot is constant. */
+  ctrl.info.startLine = startLine;
+  ctrl.info.endLine   = endLine;
 
   /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
   ctrl.info.bitmap_base      = 0;
@@ -1572,19 +1655,31 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   }
   else ctrl.info.isverticalscroll = 0;
 
+  /* Precompute the screen pixel rows for this zone.
+   * All bitmap and linescroll paths below must draw only within
+   * [screenY1, screenY2) so zones don't overwrite each other.
+   * VDP2 Manual §5.1: the display area is split into segments where
+   * each segment uses the register snapshot of its first scanline. */
+  const int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+  const int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+
   if (ctrl.info.isbitmap)
   {
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
+      /* Bitmap + CoordinateInc (zoom) or line-zoom path.
+       * Was: hardcoded vertices [0, rheight]. Now: zone slice [screenY1, screenY2].
+       * Vdp2DrawBitmapCoordinateInc() reads ctrl.info.startLine/endLine to
+       * restrict its pixel-by-pixel loop to the same vertical range. */
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
       ctrl.info.x = 0; ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
+      ctrl.info.vertices[0] = 0;                  ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+      ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+      ctrl.info.vertices[6] = 0;                  ctrl.info.vertices[7] = (float)screenY2;
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
-      infotmp.cellh = _Ygl->rheight;
+      infotmp.cellh = screenY2 - screenY1;
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
@@ -1592,36 +1687,45 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
       int xx, yy;
       int isCached = 0;
       if (ctrl.info.islinescroll) {
+        /* Bitmap + linescroll path.
+         * Was: hardcoded vertices [0, rheight] and Vdp2DrawBitmapLineScroll
+         * over the full screen. Now: zone slice [screenY1, screenY2].
+         * Vdp2DrawBitmapLineScroll iterates 'height' rows starting from
+         * vertex[1]; passing (screenY2 - screenY1) restricts it to the zone. */
         ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
         ctrl.info.x = 0; ctrl.info.y = 0;
-        ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-        ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-        ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = _Ygl->rheight;
-        ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = _Ygl->rheight;
+        ctrl.info.vertices[0] = 0;                  ctrl.info.vertices[1] = (float)screenY1;
+        ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+        ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+        ctrl.info.vertices[6] = 0;                  ctrl.info.vertices[7] = (float)screenY2;
         vdp2draw_struct infotmp = ctrl.info;
         infotmp.cellw = _Ygl->rwidth;
-        infotmp.cellh = _Ygl->rheight;
+        infotmp.cellh = screenY2 - screenY1;
         YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
-        Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, _Ygl->rheight);
+        Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, screenY2 - screenY1);
       }
       else {
+        /* Bitmap tile path (no zoom, no linescroll).
+         * Clamp the tile iteration to [screenY1, screenY2).
+         * ctrl.info.y is the negative scroll offset (always <= 0 here).
+         * We start yy at the first tile row that overlaps screenY1,
+         * and stop as soon as yy >= screenY2. */
         int cellh = ctrl.info.cellh;
         yy = ctrl.info.y;
-        while (yy + ctrl.info.y < _Ygl->rheight) {
+        /* Advance past tile rows that are entirely above screenY1. */
+        while (yy + cellh <= screenY1) yy += cellh;
+        while (yy < screenY2) {
           ctrl.info.draw_line = yy;
           xx = ctrl.info.x;
           while (xx + ctrl.info.x < _Ygl->rwidth) {
-            ctrl.info.vertices[0] = xx; ctrl.info.vertices[1] = yy;
-            ctrl.info.vertices[2] = (xx + ctrl.info.cellw); ctrl.info.vertices[3] = yy;
-            ctrl.info.vertices[4] = (xx + ctrl.info.cellw); ctrl.info.vertices[5] = (yy + cellh);
-            ctrl.info.vertices[6] = xx; ctrl.info.vertices[7] = (yy + cellh);
+            ctrl.info.vertices[0] = xx;                       ctrl.info.vertices[1] = (float)yy;
+            ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
+            ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh);
+            ctrl.info.vertices[6] = xx;                       ctrl.info.vertices[7] = (float)(yy + cellh);
             if (isCached == 0) {
               YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
-              if (ctrl.info.islinescroll)
-                Vdp2DrawBitmapLineScroll(&ctrl, ctrl.info.cellw, cellh);
-              else
-                requestDrawCell(&ctrl);
+              requestDrawCell(&ctrl);
               isCached = 1;
             }
             else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
@@ -1634,23 +1738,35 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
   }
   else {
     if (ctrl.info.islinescroll) {
+      /* Tile + linescroll path.
+       * Was: hardcoded [0, rheight]. Now: zone slice [screenY1, screenY2].
+       * Vdp2DrawMapPerLine iterates _Ygl->rheight rows in its inner loop;
+       * the tile/pixel culling in Vdp2DrawPatternPos (vertex screen-cull)
+       * discards tiles outside the visible range, but we also bound the
+       * quad geometry to the zone so the GPU doesn't sample outside it. */
       if (char_access == 0) return;
-      int screenH = _Ygl->rheight;
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
       ctrl.info.x = 0; ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = 0;
-      ctrl.info.vertices[2] = _Ygl->rwidth; ctrl.info.vertices[3] = 0;
-      ctrl.info.vertices[4] = _Ygl->rwidth; ctrl.info.vertices[5] = screenH;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = screenH;
+      ctrl.info.vertices[0] = 0;                  ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
+      ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
+      ctrl.info.vertices[6] = 0;                  ctrl.info.vertices[7] = (float)screenY2;
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
-      infotmp.cellh = _Ygl->rheight;
+      infotmp.cellh = screenY2 - screenY1;
       infotmp.flipfunction = 0;
       YglQuad(&infotmp, &ctrl.texture, &tmpc, YglTM_vdp2);
       Vdp2DrawMapPerLine(&ctrl);
     }
     else {
+      /* Tile + standard scroll path.
+       * Vdp2DrawMapTest iterates tiles over the full logical scroll space;
+       * Vdp2DrawPatternPos screen-culls via vertex bounds, so tiles outside
+       * [screenY1, screenY2) are naturally discarded. No geometry change
+       * needed here — the tile positions are computed from scroll registers
+       * and the screen culling in Vdp2DrawPatternPos handles the rest.
+       * ctrl.info.startLine/endLine are set above for getPriority() lookups. */
       int delayed = 0;
       if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
         delayed = 1;
@@ -1666,10 +1782,81 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
+/*
+ * sameVDP2RegNBG2 — compare NBG2-relevant registers between two scan lines.
+ *
+ * NBG2 has no zoom (coordincx = coordincy = 1 always), no bitmap mode,
+ * no line scroll. Relevant registers are fewer than NBG0/NBG1.
+ * (VDP2 Manual §4.1 Table 4.1, §4 CHCTLB)
+ */
+static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
+{
+    /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5. */
+    if ((a->BGON & 0x34) != (b->BGON & 0x34)) return 0;
+ 
+    /* CHCTLB bits 2-0: N2CHCN(1)=colornumber, N2PNB(0)=pattern name size.
+     * Also check N0CHCN(6-4) for NBG2 disable condition (§4.1 Table 4.1). */
+    if ((a->CHCTLB & 0x0003) != (b->CHCTLB & 0x0003)) return 0;
+    /* Disable condition check: if NBG0 colornumber >= 2, NBG2 is off.
+     * A change in CHCTLA bits 6-4 that crosses the >=2 threshold matters. */
+    if (((a->CHCTLA & 0x0070) >> 4) != ((b->CHCTLA & 0x0070) >> 4)) return 0;
+ 
+    /* PRINB bits 2-0: NBG2 priority number. */
+    if ((a->PRINB & 0x0007) != (b->PRINB & 0x0007)) return 0;
+ 
+    /* CCRNB bits 4-0: N2CCRT[4:0] — NBG2 color calculation ratio. */
+    if ((a->CCRNB & 0x001F) != (b->CCRNB & 0x001F)) return 0;
+ 
+    /* SCXN2 bits 10-0: NBG2 horizontal scroll (integer only, no fractional). */
+    if ((a->SCXN2 & 0x07FF) != (b->SCXN2 & 0x07FF)) return 0;
+ 
+    /* SCYN2 bits 10-0: NBG2 vertical scroll. */
+    if ((a->SCYN2 & 0x07FF) != (b->SCYN2 & 0x07FF)) return 0;
+ 
+    /* CRAOFA bits 10-8: N2CAOS[2:0] — NBG2 color RAM address offset. */
+    if ((a->CRAOFA & 0x0700) != (b->CRAOFA & 0x0700)) return 0;
+ 
+    /* PLSZ bits 7-4: NBG2 plane size. Affects map wrapping calculations. */
+    if ((a->PLSZ & 0x00F0) != (b->PLSZ & 0x00F0)) return 0;
+ 
+    /* PNCN2: NBG2 pattern name control. */
+    if ((a->PNCN2 & 0xFFFF) != (b->PNCN2 & 0xFFFF)) return 0;
+ 
+    /* SFPRMD bits 5-4: NBG2 special priority mode. */
+    if ((a->SFPRMD & 0x0030) != (b->SFPRMD & 0x0030)) return 0;
+ 
+    /* SFCCMD bits 5-4: NBG2 special color calculation mode. */
+    if ((a->SFCCMD & 0x0030) != (b->SFCCMD & 0x0030)) return 0;
+ 
+    /* LNCLEN bit 2: N2LCEN. */
+    if ((a->LNCLEN & 0x0004) != (b->LNCLEN & 0x0004)) return 0;
+ 
+    /* CLOFSL bit 2: N2COSL. */
+    if ((a->CLOFSL & 0x0004) != (b->CLOFSL & 0x0004)) return 0;
+ 
+    return 1;
+}
+static void Vdp2DrawNBG2_zones(void)
+{
+    int lastLine = 0;
+    int line;
+    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+ 
+    for (line = 1; line < max; line++) {
+        if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+            Vdp2DrawNBG2(&Vdp2Lines[lastLine], lastLine, line);
+            lastLine = line;
+        }
+    }
+    Vdp2DrawNBG2(&Vdp2Lines[lastLine], lastLine, max);
+}
+
+static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
+  ctrl.info.startLine = startLine;
+  ctrl.info.endLine = endLine;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG2;
   ctrl.info.cor = 0;
@@ -1677,8 +1864,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
-  ctrl.info.startLine = 0;
-  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
+
 
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG2, &Vdp2Lines[i]);
@@ -1767,7 +1953,21 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
 
   ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
   ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
-  Vdp2DrawMapTest(&ctrl, delayed);
+
+   {
+     int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
+     int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+     ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
+     ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
+     // Shift the draw origin so Vdp2DrawMapTest starts at the zone top.
+     // The map draws from (info.y + v) where v iterates in tile steps;
+     // we adjust info.y by subtracting the pixel rows above this zone.
+     // The screen Y of each tile is (v - charx_equiv); we pass startLine
+     // via ctrl.info.startLine so Vdp2DrawPatternPos can screen-cull tiles
+     // outside [screenY1, screenY2).
+     Vdp2DrawMapTest(&ctrl, delayed);
+   }
+
 #ifdef CELL_ASYNC
     YabThreadYield();
 #endif
@@ -1775,7 +1975,78 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
+/*
+ * sameVDP2RegNBG3 — compare NBG3-relevant registers between two scan lines.
+ *
+ * NBG3 has no zoom, no bitmap mode, no line scroll (same as NBG2).
+ * Disabled when NBG0 >= 2048 colors OR NBG1 >= 2048 colors (§4.1 Table 4.1).
+ */
+static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
+{
+    /* BGON: N3ON = bit 3. Also RBG suppression bits. */
+    if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
+ 
+    /* CHCTLB bits 5,4: N3CHCN(5)=colornumber, N3PNB(4)=pattern name size. */
+    if ((a->CHCTLB & 0x0030) != (b->CHCTLB & 0x0030)) return 0;
+    /* Disable conditions from §4.1 Table 4.1:
+     *   NBG0 colornumber >= 2 disables NBG3. */
+    if (((a->CHCTLA & 0x0070) >> 4) != ((b->CHCTLA & 0x0070) >> 4)) return 0;
+    /*   NBG1 colornumber >= 2 disables NBG3. */
+    if (((a->CHCTLA & 0x3000) >> 12) != ((b->CHCTLA & 0x3000) >> 12)) return 0;
+ 
+    /* PRINB bits 10-8: NBG3 priority number. */
+    if ((a->PRINB & 0x0700) != (b->PRINB & 0x0700)) return 0;
+ 
+    /* CCRNB bits 12-8: N3CCRT[4:0] — NBG3 color calculation ratio. */
+    if ((a->CCRNB & 0x1F00) != (b->CCRNB & 0x1F00)) return 0;
+ 
+    /* SCXN3 bits 10-0: NBG3 horizontal scroll. */
+    if ((a->SCXN3 & 0x07FF) != (b->SCXN3 & 0x07FF)) return 0;
+ 
+    /* SCYN3 bits 10-0: NBG3 vertical scroll. */
+    if ((a->SCYN3 & 0x07FF) != (b->SCYN3 & 0x07FF)) return 0;
+ 
+    /* CRAOFA bits 14-12: N3CAOS[2:0] — NBG3 color RAM address offset. */
+    if ((a->CRAOFA & 0x7000) != (b->CRAOFA & 0x7000)) return 0;
+ 
+    /* PLSZ bits 15-6: NBG3 plane size (bits 15-12 V, bits 11-8 not used by NBG3;
+     * VDP2 §4 PLSZ: N3PLSH(7-6), N3PLSV not present — NBG3 uses bits 7-6). */
+    if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
+ 
+    /* PNCN3: NBG3 pattern name control. */
+    if ((a->PNCN3 & 0xFFFF) != (b->PNCN3 & 0xFFFF)) return 0;
+ 
+    /* SFPRMD bits 7-6: NBG3 special priority mode. */
+    if ((a->SFPRMD & 0x00C0) != (b->SFPRMD & 0x00C0)) return 0;
+ 
+    /* SFCCMD bits 7-6: NBG3 special color calculation mode. */
+    if ((a->SFCCMD & 0x00C0) != (b->SFCCMD & 0x00C0)) return 0;
+ 
+    /* LNCLEN bit 3: N3LCEN. */
+    if ((a->LNCLEN & 0x0008) != (b->LNCLEN & 0x0008)) return 0;
+ 
+    /* CLOFSL bit 3: N3COSL. */
+    if ((a->CLOFSL & 0x0008) != (b->CLOFSL & 0x0008)) return 0;
+ 
+    return 1;
+}
+
+static void Vdp2DrawNBG3_zones(void)
+{
+    int lastLine = 0;
+    int line;
+    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+ 
+    for (line = 1; line < max; line++) {
+        if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+            Vdp2DrawNBG3(&Vdp2Lines[lastLine], lastLine, line);
+            lastLine = line;
+        }
+    }
+    Vdp2DrawNBG3(&Vdp2Lines[lastLine], lastLine, max);
+}
+
+static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
@@ -1786,9 +2057,10 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
   ctrl.info.cob = 0;
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
-  ctrl.info.startLine = 0;
-  ctrl.info.endLine = (yabsys.VBlankLineCount < 270)?yabsys.VBlankLineCount:270;
-
+  /* Segmented line rendering — zone [startLine, endLine). */
+  ctrl.info.startLine = startLine;
+  ctrl.info.endLine   = endLine;
+ 
   for (int i=0; i<yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG3, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
@@ -1796,97 +2068,79 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs)
      * Same encoding as NBG2. Shift right 8 to isolate, full 0-255 mapping. */
     ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNB >> 8) & 0x1F) * 255) / 31);
   }
-  
+ 
   if (!ctrl.info.enable) {
     return;
   }
   ctrl.info.transparencyenable = !(ctrl.regs->BGON & 0x800);
   ctrl.info.specialprimode = (ctrl.regs->SFPRMD >> 6) & 0x3;
-
+ 
   ctrl.info.colornumber = (ctrl.regs->CHCTLB & 0x20) >> 5;
-
+ 
   ctrl.info.mapwh = 2;
-
+ 
   ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 6);
   ctrl.info.x = -((ctrl.regs->SCXN3 & 0x7FF) % (512 * ctrl.info.planew));
   ctrl.info.y = -((ctrl.regs->SCYN3 & 0x7FF) % (512 * ctrl.info.planeh));
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN3, ctrl.regs->CHCTLB & 0x10);
-
+ 
   ReadMosaicData(&ctrl.info, 0x8, ctrl.regs);
-
+ 
   ctrl.info.specialcolormode = (ctrl.regs->SFCCMD >> 6) & 0x03;
   if (ctrl.regs->SFSEL & 0x8)
     ctrl.info.specialcode = ctrl.regs->SFCODE >> 8;
   else
     ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
-
-
+ 
   ctrl.info.coloroffset = ((ctrl.regs->CRAOFA & 0x7000) >> 4);
-
+ 
   ctrl.info.linecheck_mask = 0x08;
   ctrl.info.coordincx = ctrl.info.coordincy = 1;
-
+ 
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
-
-	// APRÈS — spec §4.1 : NBG3 désactivé si NBG0 >= mode 2048 couleurs (colornumber >= 2)
-	// VDP2 Manual §4.1: NBG3 is disabled when:
-	// - NBG0 has >= 2048 colors (colornumber >= 2)
-	// - NBG1 has >= 2048 colors (colornumber >= 2, i.e. mode 2)
-	// NBG1 max is 2048 colors (colornumber=2), so >=2 is equivalent to ==2 for NBG1
-	if ((ctrl.info.priority == 0) ||
-		(ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
-	// VDP2 Manual §4.1 Table 4.1: NBG3 is disabled when NBG1 uses
-	// 2048 colors or more. For NBG1, CHCTLA bits 13-12 max value is 2
-	// (2048 colors — 32768 colors is not available for NBG1).
-	// Use >= 2 for correctness even if == 2 is currently equivalent.
-		(ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
-	{
-	  // NBG1 can only reach colornumber==2 (2048 colors) as its maximum
-	  return;
-	}
-
+ 
+  /* VDP2 Manual §4.1: NBG3 disabled when NBG0 >= 2048 colors or NBG1 >= 2048 colors. */
+  if ((ctrl.info.priority == 0) ||
+      (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
+      (ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
+  {
+    return;
+  }
+ 
   ctrl.info.islinescroll = 0;
   ctrl.info.linescrolltbl = 0;
   ctrl.info.lineinc = 0;
   ctrl.info.isverticalscroll = 0;
-
-
+ 
   int delayed = 0;
-{
-  int char_access = 0;
-  int ptn_access = 0;
-  for (int i = 0; i < 4; i++) {
-    ctrl.info.char_bank[i] = 0;
-    ctrl.info.pname_bank[i] = 0;
-    for (int j = 0; j < 8; j++) {
-      if (Vdp2External.AC_VRAM[i][j] == 0x07) {
-        ctrl.info.char_bank[i] = 1;
-        char_access |= (1 << j);
-      }
-      if (Vdp2External.AC_VRAM[i][j] == 0x03) {
-        ctrl.info.pname_bank[i] = 1;
-        ptn_access |= (1 << j);
+  {
+    int char_access = 0;
+    int ptn_access = 0;
+    for (int i = 0; i < 4; i++) {
+      ctrl.info.char_bank[i] = 0;
+      ctrl.info.pname_bank[i] = 0;
+      for (int j = 0; j < 8; j++) {
+        if (Vdp2External.AC_VRAM[i][j] == 0x07) {
+          ctrl.info.char_bank[i] = 1;
+          char_access |= (1 << j);
+        }
+        if (Vdp2External.AC_VRAM[i][j] == 0x03) {
+          ctrl.info.pname_bank[i] = 1;
+          ptn_access |= (1 << j);
+        }
       }
     }
+    if (char_access == 0) return;
+    if (ptn_access == 0) return;
+    if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) delayed = 1;
   }
-  if (char_access == 0) {
-    return;
-  }
-  if (ptn_access == 0) {
-    return;
-  }
-  // Setting miss of cycle patten need to plus 8 dot vertical
-  if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
-    delayed = 1;
-  }
-}
-
+ 
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
   ctrl.info.y = ctrl.regs->SCYN3 & 0x7FF;
   Vdp2DrawMapTest(&ctrl, delayed);
 #ifdef CELL_ASYNC
-    YabThreadYield();
+  YabThreadYield();
 #endif
 }
 
@@ -2456,9 +2710,9 @@ LOG_ASYN("===================================\n");
   Vdp2DrawLineColorScreen(&Vdp2Lines[VDP2_DRAW_LINE]);
 
   Vdp2DrawRBG0();
-  Vdp2DrawNBG3(&Vdp2Lines[VDP2_DRAW_LINE]);
-  Vdp2DrawNBG2(&Vdp2Lines[VDP2_DRAW_LINE]);
-  Vdp2DrawNBG1(&Vdp2Lines[VDP2_DRAW_LINE]);
+  Vdp2DrawNBG3_zones();
+  Vdp2DrawNBG2_zones();
+  Vdp2DrawNBG1_zones();
   Vdp2DrawNBG0_zones();
   Vdp2DrawRBG1();
 
@@ -4892,17 +5146,6 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
   return 1;
 }
 
-static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b)
-{
-  switch (id) {
-    case RBG0: return sameVDP2RegRBG0(a, b);
-    case RBG1: return sameVDP2RegRBG1(a, b);
-    case NBG0: return sameVDP2RegNBG0(a, b);
-    default: break;
-  }
-  return 1;
-}
-
 static void Vdp2DrawRBG1()
 {
   int nbZone = 1;
@@ -4929,6 +5172,20 @@ static void Vdp2DrawRBG1()
   rbg->ctrl.regs = &Vdp2Lines[rbg->ctrl.info.startLine];
   LOG_AREA("RBG1 Draw from %d to %d %x\n", rbg->ctrl.info.startLine, rbg->ctrl.info.endLine, rbg->ctrl.regs->BGON);
   Vdp2DrawRBG1_part(rbg);
+}
+
+static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b)
+{
+    switch (id) {
+    case RBG0: return sameVDP2RegRBG0(a, b);
+    case RBG1: return sameVDP2RegRBG1(a, b);
+    case NBG0: return sameVDP2RegNBG0(a, b);
+    case NBG1: return sameVDP2RegNBG1(a, b);
+    case NBG2: return sameVDP2RegNBG2(a, b);
+    case NBG3: return sameVDP2RegNBG3(a, b);
+    default:   break;
+    }
+    return 1;
 }
 
 static int isEnabled(int id, Vdp2* varVdp2Regs) {
