@@ -639,58 +639,51 @@ void FASTCALL Vdp1WriteByte(SH2_struct *context, u8* mem, u32 addr, UNUSED u8 va
 //////////////////////////////////////////////////////////////////////////////
 
 static u8 FBCRChangeUpdated = 0;
+/* VDP1 Manual §4.2 Table 4.3 p.41-42: frame buffer mode from
+ * (VBE=TVMR[3], FCT=FBCR[1], FCM=FBCR[0]). Returns a bitfield:
+ *   bit 0 = useVBlankErase
+ *   bit 1 = manualchange
+ *   bit 2 = onecyclechange
+ *   bit 3 = manualerase
+ *   bit 4 = onecycleerase
+ * Prohibited combinations (VBE=1 without FCT=FCM=1) are treated
+ * as if all three were 1 — matches hardware observed behaviour. */
+static u8 decodeFBCRMode(void) {
+    int vbe = (Vdp1Regs->TVMR >> 3) & 0x1;
+    int fc  =  Vdp1Regs->FBCR       & 0x3;
+    if (vbe) {
+        /* VBE set: only FCT=FCM=1 is legal; anything else treated
+         * as if all three were 1 (erase + manual change). */
+        return 0x01 /*useVBlankErase*/ | 0x02 /*manualchange*/;
+   }
+    u8 m = 0;
+    if (fc == 0 || fc == 1) m |= 0x04; /* onecyclechange */
+    if (fc == 3)            m |= 0x02; /* manualchange  */
+    if (fc == 2)            m |= 0x08; /* manualerase   */
+    if (fc == 0 || fc == 1) m |= 0x10; /* onecycleerase */
+    return m;
+}
+
 static void updateFBCRChange() {
   if (FBCRChangeUpdated == 0) return;
-  Vdp1External.manualchange = 0;
-  Vdp1External.onecyclechange = 0;
-  if (((Vdp1Regs->TVMR >> 3) & 0x01) == 1){ //VBE is set
-    if ((Vdp1Regs->FBCR & 3) == 3) {
-      Vdp1External.manualchange = 1;
-    } else {
-      //VBE can be one only when FCM and FCT are 1
-      LOG("Prohibited FBCR/TVMR values\n");
-      // Assume prohibited modes behave like if VBE/FCT/FCM were all 1
-      Vdp1External.manualchange = 1;
-    }
-  } else {
-    //Manual erase shall not be reseted but need to save its current value
-    // Only at frame change the order is executed.
-    //This allows to have both a manual clear and a manual change at the same frame without continuously clearing the VDP1
-    //The mechanism is used by the official bios animation
-    Vdp1External.onecyclechange = ((Vdp1Regs->FBCR & 3) == 0) || ((Vdp1Regs->FBCR & 3) == 1);
-    Vdp1External.manualchange = ((Vdp1Regs->FBCR & 3) == 3);
-  }
+  u8 m = decodeFBCRMode();
+  Vdp1External.manualchange   = (m >> 1) & 0x1;
+  Vdp1External.onecyclechange = (m >> 2) & 0x1;
   FBCRChangeUpdated = 0;
 }
 
 static u8 FBCREraseUpdated = 0;
 static void updateFBCRErase() {
   if (FBCREraseUpdated == 0) return;
-  Vdp1External.onecycleerase = 0;
-  Vdp1External.manualerase = 0;
-  if (((Vdp1Regs->TVMR >> 3) & 0x01) != 1){ //VBE is not set
-    //Manual erase shall not be reseted but need to save its current value
-    // Only at frame change the order is executed.
-    //This allows to have both a manual clear and a manual change at the same frame without continuously clearing the VDP1
-    //The mechanism is used by the official bios animation
-    Vdp1External.onecycleerase = ((Vdp1Regs->FBCR & 3) == 0) || ((Vdp1Regs->FBCR & 3) == 1) || Vdp1External.onelasterase;
-    Vdp1External.onelasterase = 0;
-    Vdp1External.manualerase = ((Vdp1Regs->FBCR & 3) == 2);
-  }
+  u8 m = decodeFBCRMode();
+  /* onelasterase is a sticky flag across one frame — fold it in. */
+  Vdp1External.onecycleerase = ((m >> 4) & 0x1) | Vdp1External.onelasterase;
+  Vdp1External.onelasterase = 0;
+  Vdp1External.manualerase   = (m >> 3) & 0x1;
   FBCREraseUpdated = 0;
 }
 static void updateFBCRVBE() {
-  Vdp1External.useVBlankErase = 0;
-  if (((Vdp1Regs->TVMR >> 3) & 0x01) == 1){ //VBE is set
-    if ((Vdp1Regs->FBCR & 3) == 3) {
-      Vdp1External.useVBlankErase = 1;
-    } else {
-      //VBE can be one only when FCM and FCT are 1
-      LOG("Prohibited FBCR/TVMR values\n");
-      // Assume prohibited modes behave like if VBE/FCT/FCM were all 1
-      Vdp1External.useVBlankErase = 1;
-    }
-  }
+	Vdp1External.useVBlankErase = decodeFBCRMode() & 0x1;
 }
 
 static void Vdp1TryDraw(void) {
