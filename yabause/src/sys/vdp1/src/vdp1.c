@@ -1815,7 +1815,17 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
       case 1: // ASSIGN, jump to CMDLINK
         {
           u32 oldAddr = regs->addr;
-          regs->addr = T1ReadWord(ram, regs->addr + 2) * 8;
+          u32 target = T1ReadWord(ram, regs->addr + 2) * 8;
+          /* VDP1 Manual §6.1: LINK target must be 32-byte aligned and
+           * within VRAM. Out-of-range link terminates the list. */
+          if (target > 0x7FFE0) {
+            FRAMELOG("VDP1 ASSIGN target out of range: 0x%x\n", target);
+            Vdp1External.status &= ~VDP1_STATUS_MASK;
+            Vdp1External.status |= VDP1_STATUS_IDLE;
+            if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
+            return;
+          }
+          regs->addr = target;
           if (((regs->addr == oldAddr) && (command & 0x4000)) || (regs->addr == 0))   {
             //The next adress is the same as the old adress and the command is skipped => Exit
             //The next adress is the start of the command list. It means the list has an infinte loop => Exit (used by Burning Rangers)
@@ -1832,18 +1842,30 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
       case 2: // CALL, call a subroutine
          if (returnAddr == 0xFFFFFFFF)
             returnAddr = regs->addr + 0x20;
-
-         regs->addr = T1ReadWord(ram, regs->addr + 2) * 8;
-         break;
-      case 3: // RETURN, return from subroutine
-         if (returnAddr != 0xFFFFFFFF) {
-            regs->addr = returnAddr;
-            returnAddr = 0xFFFFFFFF;
+         {
+            u32 target = T1ReadWord(ram, regs->addr + 2) * 8;
+            if (target > 0x7FFE0) {
+               FRAMELOG("VDP1 CALL target out of range: 0x%x\n", target);
+               Vdp1External.status &= ~VDP1_STATUS_MASK;
+               Vdp1External.status |= VDP1_STATUS_IDLE;
+               if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
+               return;
+            }
+            regs->addr = target;
          }
-         else
-            regs->addr += 0x20;
          break;
-      }
+		case 3: // RETURN, return from subroutine
+		   if (returnAddr != 0xFFFFFFFF) {
+			  regs->addr = returnAddr;
+			  returnAddr = 0xFFFFFFFF;
+		   }
+		   else {
+			  /* VDP1 Manual §6.1: RETURN without matching CALL is
+			   * undefined. Fall back to NEXT behaviour and log. */
+			  FRAMELOG("VDP1 RETURN without CALL at 0x%x\n", regs->addr);
+			  regs->addr += 0x20;
+		   }
+		   break;
 
       command = Vdp1RamReadWord(NULL,ram, regs->addr);
       FRAMELOG_CMD("Command is 0x%x @ 0x%x\n", command, regs->addr);
