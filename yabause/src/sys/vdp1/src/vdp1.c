@@ -1636,7 +1636,14 @@ static int sameCmd(vdp1cmd_struct* a, vdp1cmd_struct* b) {
   if (a == NULL) return 0;
   if (b == NULL) return 0;
   if (emptyCmd(a)) return 0;
-  int cmp = memcmp(a, b, 15*sizeof(int));
+  /* Compare only the 15 CMDxxxx raw command-table u16 fields, not
+   * the derived cmd->w/h/flip/G[]/hss/eos values. Using offsetof
+   * prevents drift if the struct layout changes and avoids reading
+   * uninitialised padding bytes (UB in pre-C11). */
+  const size_t cmd_fields_size = offsetof(vdp1cmd_struct, CMDGRDA)
+                               + sizeof(a->CMDGRDA)
+                               - offsetof(vdp1cmd_struct, CMDCTRL);
+  int cmp = memcmp(&a->CMDCTRL, &b->CMDCTRL, cmd_fields_size);
   if (cmp == 0) {
     return 1;
   }
