@@ -1866,6 +1866,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
 			  regs->addr += 0x20;
 		   }
 		   break;
+      }
 
       command = Vdp1RamReadWord(NULL,ram, regs->addr);
       FRAMELOG_CMD("Command is 0x%x @ 0x%x\n", command, regs->addr);
