@@ -269,14 +269,18 @@ u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) 
 u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 4;
    if (context != NULL) context->cycles += 4;
-   u16 val1 = T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF;
-   u16 val2 = T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFFFF;
+   /* Validate each pixel independently — a long access near the
+    * bottom edge of the FB can have pixIdx valid but pixIdx+1 out
+    * of bounds. Return 0 for OOB sub-pixels instead of reading
+    * unmapped memory. */
+   u16 val1 = (pixIdx  /512 < fb_height)
+              ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFFFF) : 0;
+   u16 val2 = ((pixIdx+1)/512 < fb_height)
+              ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFFFF) : 0;
    return (val1<<16) | val2;
 }
 
@@ -355,13 +359,15 @@ u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
+
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
    PRINT_FB("R W 0x%x@0x%x (%d, %d)\n", T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF, addr, yabsys.LineCount, yabsys.DecilineCount);
-   u8 val1 = T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
-   u8 val2 = T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF;
+   /* Per-pixel bounds check: a word straddling the FB bottom edge
+    * must not read past the buffer. */
+   u8 val1 = ((pixIdx  )/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
+   u8 val2 = ((pixIdx+1)/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
    return (val1<<8) | val2;
 }
 
@@ -371,14 +377,13 @@ u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 4;
    if (context != NULL) context->cycles += 4;
-   u8 val1 = T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
-   u8 val2 = T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF;
-   u8 val3 = T1ReadLong((u8*)buf, (pixIdx+2)*4) & 0xFF;
-   u8 val4 = T1ReadLong((u8*)buf, (pixIdx+3)*4) & 0xFF;
+   u8 val1 = ((pixIdx  )/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
+   u8 val2 = ((pixIdx+1)/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
+   u8 val3 = ((pixIdx+2)/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+2)*4) & 0xFF) : 0;
+   u8 val4 = ((pixIdx+3)/512 < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+3)*4) & 0xFF) : 0;
    PRINT_FB("R L 0x%x@0x%x\n", (val1<<24) | (val2<<16) | (val3<<8) | (val4),addr);
    return (val1<<24) | (val2<<16) | (val3<<8) | (val4) ;
 }
