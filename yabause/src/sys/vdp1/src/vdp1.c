@@ -3173,14 +3173,15 @@ static int getVdp1ErasePixelLine() {
     int area_w = x3 - x1 + 1;
     int area_h = y3 - y1 + 1;
 
-    /* VDP1 Manual §4.3 p.49:
-     * 16bpp: pixels_needed = area_w × area_h × 8  (8 bus words per pixel)
-     *  8bpp: pixels_needed = area_w × area_h × 4  (4 bus words per pixel)
-     * Each bus word takes 1 cycle at 28MHz → total_cycles = pixels_needed / 2
-     * (2 pixels written per cycle in 16bpp; 4 in 8bpp per bus width) */
-    int bus_pixels = area_w * area_h * (is8bpp ? 4 : 8);
+    /* VDP1 Manual §4.3 p.49: "erase/write is performed 2 pixels at a
+     * time" in 16bpp FB, 4 pixels at a time in 8bpp FB. So:
+     *   16bpp: cycles = area_pixels / 2
+     *    8bpp: cycles = area_pixels / 4
+     * VDP1 Manual §2.5 p.20: 1 cycle = 1 bus word at 28MHz. */
+    int area_pixels = area_w * area_h;
     int pixels_per_cycle = is8bpp ? 4 : 2;
-    int total_cycles = area_w * area_h * (is8bpp ? 4 : 8);
+    int total_cycles = (area_pixels + pixels_per_cycle - 1)
+                       / pixels_per_cycle;
 
     /* VDP1 Manual Table 4.4: cycles available per raster = pixels/raster - 200
      * (200 reserved for H-blank overhead per raster) */
