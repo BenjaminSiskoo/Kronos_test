@@ -1124,7 +1124,7 @@ static void Vdp2DrawNBG0_zones(void)
   int lastLine = 0;
   int line;
   int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
-
+ 
   for (line = 1; line < max; line++) {
     if (!sameVDP2Reg(NBG0, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
       Vdp2DrawNBG0(&Vdp2Lines[lastLine], lastLine, line);
@@ -1133,14 +1133,15 @@ static void Vdp2DrawNBG0_zones(void)
   }
   Vdp2DrawNBG0(&Vdp2Lines[lastLine], lastLine, max);
 }
-
-static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
+ 
+static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
+{
   YglCache tmpc;
   u32 char_access = 0;
   u32 ptn_access = 0;
   Vdp2Ctrl ctrl;
   int i;
-
+ 
   ctrl.regs = varVdp2Regs;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
@@ -1149,8 +1150,11 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   ctrl.info.cor = 0;
   ctrl.info.cog = 0;
   ctrl.info.cob = 0;
-  
+ 
   ctrl.info.enable = 0;
+  /* Segmented line rendering (§5.1 p.125) : scroll registers can change
+   * mid-frame via H-blank writes. Each zone covers the screen rows where
+   * the register snapshot is constant. */
   ctrl.info.startLine = startLine;
   ctrl.info.endLine   = endLine;
   ctrl.info.cellh = 256;
@@ -1158,14 +1162,14 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
-
+ 
   for (i = 0; i < yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
   }
   if (!ctrl.info.enable) return;
-
+ 
   for (int b = 0; b < 4; b++) {
     ctrl.info.char_bank[b] = 0;
     ctrl.info.pname_bank[b] = 0;
@@ -1180,70 +1184,83 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       }
     }
   }
-
+ 
   if (char_access == 0) return;
-
+ 
+  /* VDP2 Manual §4.2 CHCTLA bits 6-4 : NBG0 color number. */
   ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
-
- if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
+ 
+  if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
   {
+    /* ------ Bitmap mode (§4.9 p.93-95) ------ */
     ReadBitmapSize(&ctrl.info, ctrl.regs->CHCTLA >> 2, 0x3);
-
-    /* VDP2 Manual §4.3: scroll offset is a positive coordinate into the bitmap.
-     * Use modulo to wrap within bitmap dimensions, same as NBG1. */
+ 
+    /* §5.1 : scroll is a positive coordinate into the bitmap; the display
+     * area wraps when exceeded. Modulo by bitmap dimensions. */
     ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % ctrl.info.cellw);
     ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % ctrl.info.cellh);
-
+ 
+    /* charaddr must be assigned BEFORE bitmap_base. */
     ctrl.info.charaddr = (ctrl.regs->MPOFN & 0x7) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x7) << 4;
     ctrl.info.flipfunction = 0;
     ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x10) >> 4;
     ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 5) & 0x01;
-    ctrl.info.bitmap_base = ctrl.info.charaddr;
-
-    /* VDP2 Manual p.95: wrap size depends on color depth and bitmap dimensions,
-     * same encoding as NBG1. */
+ 
+    /* [FIX 3] VDP2 Manual p.95 Table 4.11 — wrap size depends on color depth
+     * AND bitmap dimensions. Compute wrap FIRST, then assign bitmap_base,
+     * same ordering as Vdp2DrawNBG1 for consistency and so that any
+     * downstream reader sees both fields set atomically. */
     switch (ctrl.info.colornumber) {
-      case 0: /* 4bpp */
+      case 0: /* 4bpp, 16 colors */
         ctrl.info.bitmap_wrap_size = (ctrl.info.cellw * ctrl.info.cellh) / 2;
         break;
-      case 1: /* 8bpp */
+      case 1: /* 8bpp, 256 colors */
         ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh;
         break;
-      case 2: /* 16bpp palette */
-      case 3: /* 16bpp RGB */
+      case 2: /* 16bpp palette (2048 colors) */
+      case 3: /* 16bpp RGB (32768 colors) */
         ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 2;
         break;
-      case 4: /* 32bpp */
+      case 4: /* 32bpp RGB (16.7M colors) */
         ctrl.info.bitmap_wrap_size = ctrl.info.cellw * ctrl.info.cellh * 4;
         break;
       default:
         ctrl.info.bitmap_wrap_size = 0;
         break;
     }
-
-    /* VDP2 Manual §3.1: VRSIZE bit 15 determines VRAM size (0=512KB, 1=1MB).
-     * Bank index must account for this to select the correct RAMCTL bits. */
-    int charAddrBk = (((ctrl.info.charaddr >> 16) & 0xF) >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
+    ctrl.info.bitmap_base = ctrl.info.charaddr;
+ 
+    /* VDP2 Manual §3.1 : VRSIZE bit 15 determines VRAM size
+     *   0 = 4 Mbit (512 KB), 1 = 8 Mbit (1 MB).
+     * The bank index must account for this to select the correct RAMCTL
+     * cycle pattern bits.
+     *
+     * [FIX 5] Apply the restriction to ALL color numbers, like NBG1
+     * (l.1619-1627). §3.1 does not limit this check to colornumber < 3 ;
+     * any bitmap mode can be disabled by a RAMCTL cycle-pattern conflict. */
+    int charAddrBk = (((ctrl.info.charaddr >> 16) & 0xF)
+                      >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
     int needUpdate = 0;
-    if (ctrl.info.colornumber < 3) {
-      for (int k = 0; k < yabsys.VBlankLineCount; k++) {
-        if ((Vdp2Lines[k].BGON & 0x10) != 0) {
-          if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
-            needUpdate = 1;
-            ctrl.info.display[k] = 0;
-          }
+    for (int k = 0; k < yabsys.VBlankLineCount; k++) {
+      if ((Vdp2Lines[k].BGON & 0x10) != 0) {
+        if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
+          needUpdate = 1;
+          ctrl.info.display[k] = 0;
         }
       }
     }
     if (needUpdate != 0) {
       ctrl.info.enable = 0;
-      for (int k = 0; k < yabsys.VBlankLineCount; k++) ctrl.info.enable |= ctrl.info.display[k];
+      for (int k = 0; k < yabsys.VBlankLineCount; k++) {
+        ctrl.info.enable |= ctrl.info.display[k];
+      }
       if (!ctrl.info.enable) return;
     }
   }
   else
   {
+    /* ------ Tile / cell mode ------ */
     if (ptn_access == 0) return;
     ctrl.info.mapwh = 2;
     ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ);
@@ -1251,14 +1268,24 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
     ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % (512 * ctrl.info.planeh));
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
   }
-
-  // Zoom
+ 
+  /* ------ Zoom (§5.2 p.126-130) ------ */
+  /* Coordinate Increment Register : integer bits 18-8, fractional 7-0.
+   * Mask 0x7FF00 extracts the 11-bit integer + upper fractional portion used
+   * to form the 16.16 reciprocal. A value of 0 disables the screen. */
   if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
-  else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
-
+  ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
+ 
+  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0.
+   *   00 = no reduction           (coordincx in [0, 1])
+   *   01 = up to 1/2              (coordincx in [0, 2], clamp at 0.5)
+   *   10/11 = up to 1/4           (coordincx in [0, 4], clamp at 0.25)
+   */
   switch (ctrl.regs->ZMCTL & 0x03)
   {
-    case 0: ctrl.info.maxzoom = 1.0f; break;
+    case 0:
+      ctrl.info.maxzoom = 1.0f;
+      break;
     case 1:
       ctrl.info.maxzoom = 0.5f;
       if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
@@ -1269,51 +1296,61 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
       break;
   }
-
+ 
   if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
-  else ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
-
+  ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
+ 
   ctrl.info.PlaneAddr = (void (FASTCALL*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
-
+ 
   ReadMosaicData(&ctrl.info, 0x1, ctrl.regs);
-
+ 
   ctrl.info.transparencyenable = !(ctrl.regs->BGON & 0x100);
-  ctrl.info.specialprimode = ctrl.regs->SFPRMD & 0x3;
+  ctrl.info.specialprimode   = ctrl.regs->SFPRMD & 0x3;
   ctrl.info.specialcolormode = ctrl.regs->SFCCMD & 0x3;
-  ctrl.info.specialcode = (ctrl.regs->SFSEL & 0x1) ? (ctrl.regs->SFCODE >> 8) : (ctrl.regs->SFCODE & 0xFF);
-  ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x7) << 8;
-  ctrl.info.linecheck_mask = 0x01;
-  ctrl.info.priority = ctrl.regs->PRINA & 0x7;
-
+  ctrl.info.specialcode      = (ctrl.regs->SFSEL & 0x1)
+                                ? (ctrl.regs->SFCODE >> 8)
+                                : (ctrl.regs->SFCODE & 0xFF);
+  ctrl.info.coloroffset      = (ctrl.regs->CRAOFA & 0x7) << 8;
+  ctrl.info.linecheck_mask   = 0x01;
+  ctrl.info.priority         = ctrl.regs->PRINA & 0x7;
+ 
   if (ctrl.info.priority == 0) return;
-
+ 
   ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL & 0xFF, ctrl.regs->LSTA0.all);
   ctrl.info.lineinfo = lineNBG0;
   Vdp2GenLineinfo(&ctrl.info);
-
+ 
   if (ctrl.regs->SCRCTL & 1) {
     ctrl.info.isverticalscroll = 1;
     ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
     ctrl.info.verticalscrollinc = (ctrl.regs->SCRCTL & 0x100) ? 8 : 4;
   }
-  else ctrl.info.isverticalscroll = 0;
-
+  else {
+    ctrl.info.isverticalscroll = 0;
+  }
+ 
+  /* Precompute the screen pixel rows for this zone. All bitmap and
+   * linescroll paths below must draw only within [screenY1, screenY2)
+   * so zones don't overwrite each other. */
+  const int screenY1 = (_Ygl->rheight * ctrl.info.startLine) / yabsys.VBlankLineCount;
+  const int screenY2 = (_Ygl->rheight * ctrl.info.endLine)   / yabsys.VBlankLineCount;
+ 
   if (ctrl.info.isbitmap)
   {
-    int is_full_screen_zone =
+    const int is_full_screen_zone =
         (ctrl.info.startLine == 0) &&
         (ctrl.info.endLine   >= yabsys.VBlankLineCount);
  
-    int has_coord_inc =
+    /* [FIX 2] has_coord_inc covers zoom ONLY. Linescroll is handled by its
+     * own branch below (previously dead code because VDPLINE_SZ was folded
+     * into has_coord_inc). */
+    const int has_coord_inc =
         (ctrl.info.coordincx != 1.0f) ||
-        (ctrl.info.coordincy != 1.0f) ||
-        VDPLINE_SZ(ctrl.info.islinescroll);
+        (ctrl.info.coordincy != 1.0f);
  
     if (has_coord_inc) {
-      /* Chemin zoom / line-zoom : gère déjà zone-relative après PATCH 3. */
-      int screenY1 = (_Ygl->rheight * ctrl.info.startLine) / yabsys.VBlankLineCount;
-      int screenY2 = (_Ygl->rheight * ctrl.info.endLine)   / yabsys.VBlankLineCount;
- 
+      /* Zoom / line-zoom path — handles zone-relative rendering via
+       * ctrl.info.startLine/endLine inside Vdp2DrawBitmapCoordinateInc. */
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
       ctrl.info.x = 0;
@@ -1330,12 +1367,11 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
     else if (ctrl.info.islinescroll) {
-      /* Chemin linescroll pur — déjà zone-aware dans la version originale. */
-      int screenY1 = (_Ygl->rheight * ctrl.info.startLine) / yabsys.VBlankLineCount;
-      int screenY2 = (_Ygl->rheight * ctrl.info.endLine)   / yabsys.VBlankLineCount;
+      /* Pure linescroll path (no zoom). */
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-      ctrl.info.x = 0; ctrl.info.y = 0;
+      ctrl.info.x = 0;
+      ctrl.info.y = 0;
       ctrl.info.vertices[0] = 0;                   ctrl.info.vertices[1] = (float)screenY1;
       ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
       ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
@@ -1348,22 +1384,17 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, screenY2 - screenY1);
     }
     else if (!is_full_screen_zone) {
-      /* NEW : la zone ne couvre pas tout l'écran mais pas de zoom/linescroll.
-       * Le chemin tile-local original ne gère pas bien les zones qui ne
-       * commencent pas à 0. On route vers Vdp2DrawBitmapCoordinateInc avec
-       * un coord inc = 1.0 — ce chemin honore startLine/endLine via
-       * screenY1/screenY2 (cf. PATCH 3).
-       *
-       * Le surcoût est minime (une multiplication par pixel au lieu d'un
-       * YglCachedQuad) et la correction visuelle est garantie. */
-      int screenY1 = (_Ygl->rheight * ctrl.info.startLine) / yabsys.VBlankLineCount;
-      int screenY2 = (_Ygl->rheight * ctrl.info.endLine)   / yabsys.VBlankLineCount;
- 
+      /* Partial zone, no zoom, no linescroll.
+       * The tile-local loop below would draw from y=0 and miss the zone
+       * start; route through Vdp2DrawBitmapCoordinateInc with
+       * coordinc = 1.0 which honors startLine/endLine via the vertex rect.
+       * Minor per-pixel overhead, guaranteed correctness. */
       ctrl.info.coordincx = 1.0f;
       ctrl.info.coordincy = 1.0f;
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-      ctrl.info.x = 0; ctrl.info.y = 0;
+      ctrl.info.x = 0;
+      ctrl.info.y = 0;
       ctrl.info.vertices[0] = 0;                   ctrl.info.vertices[1] = (float)screenY1;
       ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
       ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
@@ -1376,32 +1407,32 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       Vdp2DrawBitmapCoordinateInc(&ctrl);
     }
     else {
-      /* Chemin original : zone = écran entier, pas de zoom, pas de
-       * linescroll. Boucle tile locale, pas de changement. */
+      /* Full-screen zone, no zoom, no linescroll → tile-local loop. */
       int cellh_local = ctrl.info.cellh;
-      int screenY1 = 0;
-      int screenY2 = _Ygl->rheight;
       int xx, yy;
       int isCachedLocal = 0;
  
       yy = ctrl.info.y;
-      while (yy + cellh_local <= screenY1) yy += cellh_local;
+      /* Skip tile rows entirely above screenY1 (== 0 here). */
+      while (yy + cellh_local <= 0) yy += cellh_local;
  
-      while (yy < screenY2) {
+      while (yy < _Ygl->rheight) {
         ctrl.info.draw_line = yy;
         xx = ctrl.info.x;
         while (xx < _Ygl->rwidth) {
-          ctrl.info.vertices[0] = (float)xx;                          ctrl.info.vertices[1] = (float)yy;
-          ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw);      ctrl.info.vertices[3] = (float)yy;
-          ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw);      ctrl.info.vertices[5] = (float)(yy + cellh_local);
-          ctrl.info.vertices[6] = (float)xx;                          ctrl.info.vertices[7] = (float)(yy + cellh_local);
+          ctrl.info.vertices[0] = (float)xx;                     ctrl.info.vertices[1] = (float)yy;
+          ctrl.info.vertices[2] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[3] = (float)yy;
+          ctrl.info.vertices[4] = (float)(xx + ctrl.info.cellw); ctrl.info.vertices[5] = (float)(yy + cellh_local);
+          ctrl.info.vertices[6] = (float)xx;                     ctrl.info.vertices[7] = (float)(yy + cellh_local);
  
           if (isCachedLocal == 0) {
             YglQuad(&ctrl.info, &ctrl.texture, &tmpc, YglTM_vdp2);
             requestDrawCell(&ctrl);
             isCachedLocal = 1;
           }
-          else YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
+          else {
+            YglCachedQuad(&ctrl.info, &tmpc, YglTM_vdp2);
+          }
           xx += ctrl.info.cellw;
         }
         yy += cellh_local;
@@ -1410,18 +1441,18 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
   }
   else
   {
-    // Mode Tilemap (inchangé mais corrigé pour SCXIN0)
+    /* ------ Tilemap mode ------ */
     if (ctrl.info.islinescroll) {
-      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
-      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+      /* Tile + linescroll : zone-clipped quad, per-line draw. */
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
-      ctrl.info.x = 0; ctrl.info.y = 0;
-      ctrl.info.vertices[0] = 0; ctrl.info.vertices[1] = (float)screenY1;
+      ctrl.info.x = 0;
+      ctrl.info.y = 0;
+      ctrl.info.vertices[0] = 0;                   ctrl.info.vertices[1] = (float)screenY1;
       ctrl.info.vertices[2] = (float)_Ygl->rwidth; ctrl.info.vertices[3] = (float)screenY1;
       ctrl.info.vertices[4] = (float)_Ygl->rwidth; ctrl.info.vertices[5] = (float)screenY2;
-      ctrl.info.vertices[6] = 0; ctrl.info.vertices[7] = (float)screenY2;
-
+      ctrl.info.vertices[6] = 0;                   ctrl.info.vertices[7] = (float)screenY2;
+ 
       vdp2draw_struct infotmp = ctrl.info;
       infotmp.cellw = _Ygl->rwidth;
       infotmp.cellh = screenY2 - screenY1;
@@ -1430,9 +1461,21 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine) {
       Vdp2DrawMapPerLine(&ctrl);
     }
     else {
+      /* Tile + standard scroll. Vdp2DrawPatternPos does vertex-based
+       * screen culling inside the zone using ctrl.info.startLine/endLine. */
       int delayed = 0;
-      if (((ptn_access & 0x1) == 0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
+      if (((ptn_access & 0x1) == 0) &&
+          Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
         delayed = 1;
+      }
+ 
+      /* [FIX 1] Vdp2DrawMapTest expects the POSITIVE scroll coordinates
+       * (§5.2 formula : display = coordinate_increment × counter + scroll).
+       * NBG1 (l.1818-1820) and NBG3 (l.2184-2186) do the same re-assignment
+       * here. The negative offset computed earlier was only useful for the
+       * bitmap tile-local loop. */
+      ctrl.info.x = ctrl.regs->SCXIN0 & 0x7FF;
+      ctrl.info.y = ctrl.regs->SCYIN0 & 0x7FF;
       Vdp2DrawMapTest(&ctrl, delayed);
     }
   }
