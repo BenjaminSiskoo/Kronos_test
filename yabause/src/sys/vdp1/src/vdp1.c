@@ -1970,8 +1970,11 @@ static void Vdp1NoDraw(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 static void FASTCALL Vdp1ReadCommand(vdp1cmd_struct *cmd, u32 addr, u8* ram) {
-    // Avant de lire la commande, on s'assure que l'adresse est bien alignée
-    addr &= 0x7FFF0; // <--- AJOUT : Masque les 4 derniers bits (alignement 16-octets manuel §6.2)
+    /* VDP1 Manual §6.2 p.71: "command table is defined on a 20H-byte
+     * boundary, the lower 5 bits of the address are fixed at 00000B".
+     * Align to 32 bytes (not 16) so LINK chains that cross tables do
+     * not read half of one command + half of the next. */
+   addr &= 0x7FFE0;
    cmd->CMDCTRL = T1ReadWord(ram, addr);
    cmd->CMDLINK = T1ReadWord(ram, addr + 0x2);
    cmd->CMDPMOD = T1ReadWord(ram, addr + 0x4);
