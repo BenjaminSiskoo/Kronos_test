@@ -985,20 +985,25 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
      * Note: CMDPMOD color mode bits are irrelevant for non-textured
      * commands — there is no texture to read. Color is flat from CMDCOLR.
      */
-    int lx = -1024, ly = -1024, hx = 1023, hy = 1023;
+    int ax = cmd->CMDXA, ay = cmd->CMDYA;
+    int bx = cmd->CMDXB, by = cmd->CMDYB;
+    int cx = cmd->CMDXC, cy = cmd->CMDYC;
+    int dx = cmd->CMDXD, dy = cmd->CMDYD;
     if (!(cmd->CMDPMOD & 0x800)) { /* pre-clipping enabled */
-        lx = Vdp1Regs->userclipX1; hx = Vdp1Regs->userclipX2;
-        ly = Vdp1Regs->userclipY1; hy = Vdp1Regs->userclipY2;
+        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
+        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+        ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
+        cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
+        ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
+        cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
     }
     /* Average horizontal width over the quadrilateral */
-    int rw = (abs(cmd->CMDXB - cmd->CMDXA)
-            + abs(cmd->CMDXC - cmd->CMDXD)) / 2;
+	int rw = (abs(bx - ax) + abs(cx - dx)) / 2;
     /* VDP1 Manual §4.3: 8bpp FB → 2 pixels per bus write cycle */
     if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
     /* VDP1 Manual §6.2 p.83 Pre-clipping note: "up to 5 CPU clock cycles
      * per line" overhead for detection, but no texture read penalty. */
-    int rh = MAX(abs(cmd->CMDYA - cmd->CMDYD),
-                 abs(cmd->CMDYC - cmd->CMDYB));
+	int rh = MAX(abs(ay - dy), abs(cy - by));
     return MAX(rw, 1) * MAX(rh, 1);
 }
 
