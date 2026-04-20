@@ -324,15 +324,19 @@ void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr
 void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, addr, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
-  buf[pixIdx] = ((val>>16)&0xFFFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx);
-  buf[pixIdx+1] = ((val)&0xFFFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx+1);
+  /* Validate each pixel: a long write straddling the FB bottom
+   * edge must not corrupt memory past the buffer end. */
+  if ((pixIdx  )/512 < fb_height) {
+    buf[pixIdx  ] = ((val>>16)&0xFFFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx  );
+  }
+  if ((pixIdx+1)/512 < fb_height) {
+    buf[pixIdx+1] = ((val    )&0xFFFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx+1);
+  }
   vdp1_clock -= 4;
   if (context != NULL) context->cycles += 4;
   _Ygl->FBDirty[_Ygl->drawframe] = 1;
@@ -410,15 +414,17 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr,
 void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr; 
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
-  buf[pixIdx] = ((val>>8)&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx);
-  buf[pixIdx+1] = (val&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx+1);
+  if ((pixIdx  )/512 < fb_height) {
+    buf[pixIdx  ] = ((val>>8)&0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx  );
+  }
+  if ((pixIdx+1)/512 < fb_height) {
+    buf[pixIdx+1] = ( val    &0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx+1);
+  }
   vdp1_clock -= 2;
   if (context != NULL) context->cycles += 2;
   _Ygl->FBDirty[_Ygl->drawframe] = 1;
@@ -430,19 +436,26 @@ void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr,
 void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr; 
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
    u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-   if (pixIdx/512 >= fb_height) return;
   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
   PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
-  buf[pixIdx] = ((val>>24)&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx);
-  buf[pixIdx+1] = ((val>>16)&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx+1);
-  buf[pixIdx+2] = ((val>>8)&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx+2);
-  buf[pixIdx+3] = (val&0xFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx+3);
+  /* Per-pixel bounds check for each of the 4 bytes. */
+  if ((pixIdx  )/512 < fb_height) {
+    buf[pixIdx  ] = ((val>>24)&0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx  );
+  }
+  if ((pixIdx+1)/512 < fb_height) {
+    buf[pixIdx+1] = ((val>>16)&0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx+1);
+  }
+  if ((pixIdx+2)/512 < fb_height) {
+    buf[pixIdx+2] = ((val>> 8)&0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx+2);
+  }
+  if ((pixIdx+3)/512 < fb_height) {
+    buf[pixIdx+3] = ( val     &0xFF)|0xFF000000;
+    syncVdp1FBBuffer(pixIdx+3);
+  }
   vdp1_clock -= 4;
   if (context != NULL) context->cycles += 4;
   _Ygl->FBDirty[_Ygl->drawframe] = 1;
