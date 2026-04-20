@@ -736,7 +736,13 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       if (val == 0x3) val = 0x2;
       Vdp1Regs->PTMR = val;
       if (val == 1){
-        Vdp1Regs->EDSR |= 0x0002; // <--- AJOUT : Force le bit BUSY (BE) immédiatement
+        /* VDP1 Manual §4.4 p.54: EDSR.CEF (bit 1) is set by the
+         * hardware when drawing FINISHES, not when it starts.
+         * On a fresh draw trigger we clear CEF so that polling
+         * code correctly sees "not finished" until the draw-end
+         * command is fetched. BEF (bit 0) is unaffected — it's
+         * a one-frame-delayed copy of CEF, shifted at frame change. */
+        Vdp1Regs->EDSR &= ~0x0002;
         checkFBSync();
         abortVdp1();
         vdp1_clock += getVdp1CyclesPerLine();
