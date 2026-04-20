@@ -1125,12 +1125,9 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
 
-  /* VDP1 Manual §10: When HSS=1, end codes are ignored whether the sprite
-   * is enlarged or reduced. Force ECD=1 (bit 7) to prevent end code
-   * processing in the shader. */
-  if (cmd->CMDPMOD & 0x1000) { /* HSS = bit 12 */
-      cmd->CMDPMOD |= 0x0080;  /* ECD = bit 7 = 1 (end code disabled) */
-  }
+  /* VDP1 Manual §10 p.155: when HSS=1 the hardware internally ignores
+   * end codes but does NOT rewrite CMDPMOD. The downstream renderer
+   * uses cmd->hss (set below) to skip end-code processing. */
 
   switch ((cmd->CMDCTRL & 0xF00) >> 8)
   {
@@ -1288,12 +1285,8 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
 
-  /* VDP1 Manual §10: When HSS=1, end codes are ignored whether the sprite
-   * is enlarged or reduced. Force ECD=1 (bit 7) to prevent end code
-   * processing in the shader. */
-  if (cmd->CMDPMOD & 0x1000) { /* HSS = bit 12 */
-      cmd->CMDPMOD |= 0x0080;  /* ECD = bit 7 = 1 (end code disabled) */
-  }
+  /* See Vdp1ScaledSpriteDraw: HSS implies hardware ignores end codes,
+   * but CMDPMOD is not mutated. */
 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
