@@ -62,10 +62,10 @@ int VIDCSEraseWriteVdp1(int id) {
   int shift = ((Vdp1Regs->TVMR & 0x1) == 1)?4:3;
   int limits[4] = {0};
   limits[0] = ((Vdp1Regs->EWLR>>9)&0x3F)<<shift;
-  limits[1] = ((Vdp1Regs->EWLR)&0x1FF); //TODO: manage double interlace
+  limits[1] = ((Vdp1Regs->EWLR)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
 
   limits[2] = (((Vdp1Regs->EWRR>>9)&0x7F)<<shift) - 1;
-  limits[3] = ((Vdp1Regs->EWRR)&0x1FF); //TODO: manage double interlace
+  limits[3] = ((Vdp1Regs->EWRR)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
 
   //Prohibited value - Example Quake first screens
   if ((limits[2] == -1)||(limits[3] == 0)) return 0;
@@ -381,13 +381,21 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   glDisable(GL_BLEND);
   int id = 0;
 
-  lncl[0] = (varVdp2Regs->LNCLEN >> 0)&0x1; //NBG0
-  lncl[1] = (varVdp2Regs->LNCLEN >> 1)&0x1; //NBG1
-  lncl[2] = (varVdp2Regs->LNCLEN >> 2)&0x1; //NBG2
-  lncl[3] = (varVdp2Regs->LNCLEN >> 3)&0x1; //NBG3
-  lncl[4] = (varVdp2Regs->LNCLEN >> 4)&0x1; //RBG0
-  lncl[5] = (varVdp2Regs->LNCLEN >> 0)&0x1; //RBG1
-  lncl[6] = (varVdp2Regs->LNCLEN >> 5)&0x1; //SPRITE
+  /* VDP2 Manual §10 p.195 (LNCLEN register 1800E8H):
+   *   bit 0 = N0LCEN (NBG0, shared with RBG1)
+   *   bit 1 = N1LCEN (NBG1, shared with EXBG)
+   *   bit 2 = N2LCEN (NBG2)
+   *   bit 3 = N3LCEN (NBG3)
+   *   bit 4 = R0LCEN (RBG0)
+   *   bit 5 = SPLCEN (Sprite)                                     
+   */
+  lncl[0] = (varVdp2Regs->LNCLEN >> 0) & 0x1; /* NBG0 */
+  lncl[1] = (varVdp2Regs->LNCLEN >> 1) & 0x1; /* NBG1 */
+  lncl[2] = (varVdp2Regs->LNCLEN >> 2) & 0x1; /* NBG2 */
+  lncl[3] = (varVdp2Regs->LNCLEN >> 3) & 0x1; /* NBG3 */
+  lncl[4] = (varVdp2Regs->LNCLEN >> 4) & 0x1; /* RBG0 */
+  lncl[5] = lncl[0];                          /* RBG1 shares N0LCEN with NBG0 */
+  lncl[6] = (varVdp2Regs->LNCLEN >> 5) & 0x1; /* SPRITE */
 
   for (int j=0; j<6; j++) {
     if (drawScreen[vdp2screens[j]] != 0) {
@@ -422,15 +430,21 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   isPerline[6] = 6;
   isPerline[7] = 7;
 
-  for (int i = 6; i < 8; i++) {
-    //Update dedicated sprite window and Color calculation window
-    winS_draw |= WinS[i]<<i;
-    winS_mode_draw |= WinS_mode[i]<<i;
-    win0_draw |= _Ygl->Win0[i]<<i;
-    win0_mode_draw |= _Ygl->Win0_mode[i]<<i;
-    win1_draw |= _Ygl->Win1[i]<<i;
-    win1_mode_draw |= _Ygl->Win1_mode[i]<<i;
-    win_op_draw |= _Ygl->Win_op[i]<<i;
+  /* The WinS / Win0 / Win1 arrays are sized enBGMAX+1 (=8) so
+   * slots SPRITE (6) and CCWIN (7) exist. Slot 7 represents the
+   * Color Calculation Window defined in VDP2 Manual §11.6 — it
+   * gates color-calc across all layers and is distinct from the
+   * per-layer sprite window covered by slot SPRITE.
+   * Reference: VDP2 User's Manual ST-058-R2-060194 §11.5-11.6 */
+  enum { SLOT_CCWIN = enBGMAX };   /* slot 7 */
+  for (int i = SPRITE; i <= SLOT_CCWIN; i++) {
+    winS_draw      |= WinS[i]            << i;
+    winS_mode_draw |= WinS_mode[i]       << i;
+    win0_draw      |= _Ygl->Win0[i]      << i;
+    win0_mode_draw |= _Ygl->Win0_mode[i] << i;
+    win1_draw      |= _Ygl->Win1[i]      << i;
+    win1_mode_draw |= _Ygl->Win1_mode[i] << i;
+    win_op_draw    |= _Ygl->Win_op[i]    << i;
   }
 
   isShadow[6] = setupShadow(varVdp2Regs, SPRITE); //Use sprite index for background suuport
