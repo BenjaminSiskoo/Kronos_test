@@ -77,6 +77,7 @@ void YglCacheAdd(YglTextureManager * tm, u64 addr, YglCache * c) {
 
   if (tm->HashTable[hashkey] == NULL){
 	add = YglgetNewCash(tm);
+	if (add == NULL) return; /* cache full — skip add, texture will be rebuilt */
     add->addr = addr;
     add->x = c->x;
     add->y = c->y;
@@ -87,7 +88,7 @@ void YglCacheAdd(YglTextureManager * tm, u64 addr, YglCache * c) {
 	  YglCacheHash *at = tm->HashTable[hashkey];
     while (at != NULL) {
       if (at->addr == addr  ) {
-        at->addr = addr;
+        /* already present — update cached (x,y) only */
         at->x = c->x;
         at->y = c->y;
         return;
@@ -96,6 +97,7 @@ void YglCacheAdd(YglTextureManager * tm, u64 addr, YglCache * c) {
     }
 
 	add = YglgetNewCash(tm);
+	if (add == NULL) return; /* cache full — skip add, texture will be rebuilt */
     add->addr = addr;
     add->x = c->x;
     add->y = c->y;
