@@ -1124,6 +1124,11 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbTotalLines, int nbLines, u3
 	glUniform1i(12, nbTotalLines);
 	for (int i = 0; i<nbLines; i+=NB_LINE_MAX_PER_DRAW) {
 		int drawNbLines = MIN(NB_LINE_MAX_PER_DRAW,(nbLines - i));
+		/* OpenGL 4.3 §2.2.2: the previous dispatch may still be reading
+		 * ssbo_cmd_line_list_. Wait for it to complete before the CPU
+		 * overwrites the buffer with the next batch. Skip on the first
+		 * iteration when the buffer has no pending readers. */
+		if (i > 0) glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmd_line_list_);
 		glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, drawNbLines*sizeof(cmd_poly), (void*)&cmd_pol[i]);
 		glUniform1i(13, drawNbLines);
