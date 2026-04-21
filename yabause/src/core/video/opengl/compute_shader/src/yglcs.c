@@ -248,6 +248,13 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
    glDisable(GL_BLEND);
 
    glBindVertexArray(_Ygl->vao);
+   /* Guard against the window between Vdp1Reset() and the first VDP2
+    * register write that defines the render resolution. Dividing by
+    * zero below would produce +Inf and then UB on the int cast. */
+   if (_Ygl->rwidth <= 0 || _Ygl->rheight <= 0) {
+     finishCSRender();
+     return;
+   }
 #ifndef __LIBRETRO__
    switch(modeScreen) {
      case STRETCH_RATIO:
@@ -273,7 +280,8 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
      default:
         break;
     }
-    scale = MAX(w/_Ygl->rwidth, h/_Ygl->rheight);
+    scale = MAX(w / (double)_Ygl->rwidth,
+                h / (double)_Ygl->rheight);
 #else
   //Libretro is taking care to the resize
   w = width;
