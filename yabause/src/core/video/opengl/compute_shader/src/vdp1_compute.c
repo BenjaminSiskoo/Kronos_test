@@ -749,7 +749,9 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 			{
 				float dl = (float)((idl)+0.5)/(float)(li);
 				float dr = (float)((idr)+0.5)/(float)(ri);
-				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 9;
+				/* VDP1 §4.2 FBCR bit 4 = EOS. Must match shift used in
+				 * drawLine() and the li>ri branch above: bit 10. */
+				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
 
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
