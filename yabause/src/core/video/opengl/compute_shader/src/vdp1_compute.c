@@ -1858,15 +1858,15 @@ void vdp1_compute_init(int width, int height, float ratio)
   tex_width = width;
   tex_height = height;
 	tex_ratio = (int)ratio;
-  struct_size = sizeof(vdp1cmd_struct);
-  if (am != 0) {
-    struct_size += 16 - am;
+  {
+    /* std430 SSBO rule: each struct stride is rounded up to 16.
+     * Compute separately for each struct so one change to
+     * vdp1cmd_struct does not silently corrupt cmd_poly layout. */
+    int am_cmd  = sizeof(vdp1cmd_struct) % 16;
+    int am_poly = sizeof(cmd_poly)       % 16;
+    struct_size      = sizeof(vdp1cmd_struct) + (am_cmd  ? 16 - am_cmd  : 0);
+    struct_line_size = sizeof(cmd_poly)       + (am_poly ? 16 - am_poly : 0);
   }
-
-	struct_line_size = sizeof(cmd_poly);
-	if (am != 0) {
-		struct_line_size += 16 - am;
-	}
 
   work_groups_x = _Ygl->vdp1width / local_size_x;
   work_groups_y = _Ygl->vdp1height / local_size_y;
