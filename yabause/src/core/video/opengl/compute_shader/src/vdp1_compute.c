@@ -46,6 +46,46 @@ static int struct_size;
 static int struct_line_size;
 static void drawPolygonLine(cmd_poly* cmd_pol, int nbMaxLines, int nbLines, u32 type, int overlap, point A, point B);
 static int getProgramLine(cmd_poly* cmd_pol, int type);
+static void apply_wireframe_type(vdp1cmd_struct* cmd);
+
+/* Wireframe debug mode: force sprite-type quads and polygons to
+ * render as POLYLINE so only outlines are drawn. Central-pixel
+ * VRAM offset computation included for completeness (used elsewhere
+ * for color sampling). Shared by vdp1_add() and vdp1_add_upscale()
+ * to avoid drift. */
+static void apply_wireframe_type(vdp1cmd_struct* cmd) {
+    int pos = (cmd->CMDSRCA * 8) & 0x7FFFF;
+    switch (cmd->type) {
+        case DISTORTED:
+            switch ((cmd->CMDPMOD >> 3) & 0x7) {
+                case 0: /* 4bpp: see patch 05 for parens */
+                case 1:
+                    pos += (cmd->h/2) * (cmd->w/2) + cmd->w/4;
+                    break;
+                case 2: case 3: case 4: /* 8bpp */
+                    pos += (cmd->h/2) * cmd->w + cmd->w/2;
+                    break;
+                case 5: /* 16bpp */
+                    pos += (cmd->h/2) * cmd->w * 2 + cmd->w;
+                    break;
+            }
+            cmd->type = POLYLINE;
+            break;
+        case POLYGON:
+            cmd->type = POLYLINE;
+            break;
+        case QUAD:
+        case QUAD_POLY:
+            if ((abs(cmd->CMDXA - cmd->CMDXB) <= ((2*_Ygl->rwidth)/3))
+             && (abs(cmd->CMDYA - cmd->CMDYD) <= ((_Ygl->rheight)/2))) {
+                cmd->type = POLYLINE;
+            }
+            break;
+        default: break;
+    }
+    (void)pos; /* currently not exported — retained for future use */
+}
+
 
 static int work_groups_x;
 static int work_groups_y;
@@ -637,7 +677,10 @@ static int generateComputeBuffer(int w, int h) {
 
 
 	float col[4] = {0.0};
-	int limits[4] = {0, h, w, 0};
+	/* {X1, Y1, X2, Y2} with Y1 <= Y2. Swapped Y triggers the
+	 * "1-dot erase" rule (§4.3) and leaves the texture uninitialised
+	 * on drivers that don't zero texture storage on alloc. */
+	int limits[4] = {0, 0, w, h};
   glGenTextures(2, &compute_tex[0]);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, compute_tex[0]);
@@ -763,8 +806,10 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 			 &&((dataL[idl].y >= 0)
 			 || (dataR[idr].y >= 0)))
 			{
-				float dl = (float)((idl)+0.5)/(float)(li);
-				float dr = (float)((idr)+0.5)/(float)(ri);
+				/* Match the guarded, float-explicit form used in the
+				 * li>ri branch for symmetry and future-proofing. */
+				float dl = (li > 1) ? ((float)(idl) + 0.5f) / (float)(li) : 0.5f;
+				float dr = (ri > 1) ? ((float)(idr) + 0.5f) / (float)(ri) : 0.5f;
 				/* VDP1 §4.2 FBCR bit 4 = EOS. Must match shift used in
 				 * drawLine() and the li>ri branch above: bit 10. */
 				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
@@ -869,39 +914,7 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	}
 	if ((clipcmd != 0) && (VIDCore->startVdp1Render)) VIDCore->startVdp1Render();
 
-	if (_Ygl->wireframe_mode != 0) {
-		int pos = (cmd->CMDSRCA * 8) & 0x7FFFF;
-		switch(cmd->type ) {
-			case DISTORTED:
-			//By default use the central pixel code
-			switch ((cmd->CMDPMOD >> 3) & 0x7) {
-				case 0:
-				case 1:
-				  pos += (cmd->h/2) * cmd->w/2 + cmd->w/4;
-					break;
-				case 2:
-				case 3:
-				case 4:
-					pos += (cmd->h/2) * cmd->w + cmd->w/2;
-					break;
-				case 5:
-					pos += (cmd->h/2) * cmd->w*2 + cmd->w;
-					break;
-			}
-			cmd->type = POLYLINE;
-			break;
-			case POLYGON:
-				cmd->type = POLYLINE;
-			break;
-			case QUAD:
-			case QUAD_POLY:
-				if ((abs(cmd->CMDXA - cmd->CMDXB) <= ((2*_Ygl->rwidth)/3)) && (abs(cmd->CMDYA - cmd->CMDYD) <= ((_Ygl->rheight)/2)))
-					cmd->type = POLYLINE;
-			break;
-			default:
-				break;
-		}
-	}
+	if (_Ygl->wireframe_mode != 0) apply_wireframe_type(cmd);
 
 		if (clipcmd == 0) {
 			// VDP2 Manual §9.1 + VDP1 Manual §6.3:
@@ -961,20 +974,17 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 		B.x *= tex_ratio;
 		B.y *= tex_ratio;
 
-		point tl = (point){
-			.x = MIN(A.x, B.x),
-			.y = MIN(A.y, B.y)
-		};
+		/* A and B are built as corner-wise MIN/MAX of the four vertices
+		 * (see above), and clipping preserves the ordering — so
+		 * tl == A and br == B. No MIN/MAX needed here. */
+		point tl = A;
 		if ((tl.x == Vdp1Regs->systemclipX2*tex_ratio) || (tl.y == Vdp1Regs->systemclipY2*tex_ratio))
 		{
 			//Top left point is at limit, so quad will not be displayed, do not compute
 			return 0;
 		}
 
-		point br = (point){
-			.x = MAX(A.x, B.x),
-			.y = MAX(A.y, B.y)
-		};
+		point br = B;
 
 		vdp1_compute(cmd, tl, br);
 	}
@@ -1147,40 +1157,7 @@ int vdp1_add(vdp1cmd_struct* cmd, int clipcmd) {
 
 	if ((clipcmd != 0) && (VIDCore->startVdp1Render)) VIDCore->startVdp1Render();
 
-	if (_Ygl->wireframe_mode != 0) {
-		int pos = (cmd->CMDSRCA * 8) & 0x7FFFF;
-		switch(cmd->type ) {
-			case DISTORTED:
-			//By default use the central pixel code
-			switch ((cmd->CMDPMOD >> 3) & 0x7) {
-				case 0:
-				case 1:
-				  pos += (cmd->h/2) * cmd->w/2 + cmd->w/4;
-					break;
-				case 2:
-				case 3:
-				case 4:
-					pos += (cmd->h/2) * cmd->w + cmd->w/2;
-					break;
-				case 5:
-					pos += (cmd->h/2) * cmd->w*2 + cmd->w;
-					break;
-			}
-			// cmd->COLOR[0] = cmdBuffer[_Ygl->drawframe][pos];
-			cmd->type = POLYLINE;
-			break;
-			case POLYGON:
-				cmd->type = POLYLINE;
-			break;
-			case QUAD:
-			case QUAD_POLY:
-				  if ((abs(cmd->CMDXA - cmd->CMDXB) <= ((2*_Ygl->rwidth)/3)) && (abs(cmd->CMDYA - cmd->CMDYD) <= ((_Ygl->rheight)/2)))
-					cmd->type = POLYLINE;
-			break;
-			default:
-				break;
-		}
-	}
+	if (_Ygl->wireframe_mode != 0) apply_wireframe_type(cmd);
 	//POLYLINE
 	// if (clipcmd == 0) {
 	// 	cmd->type = POLYLINE;
