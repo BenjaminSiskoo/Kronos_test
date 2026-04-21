@@ -35,7 +35,7 @@ static YglCacheHash * YglgetNewCash(YglTextureManager * tm) {
 
   YglCacheHash * rtn;
 
-  if (tm->CashLink_index >= HASHSIZE * 2){
+  if (tm->CashLink_index >= HASHSIZE * 2 + 1){
     printf("not enough cash");
     return NULL;
   }
@@ -63,8 +63,6 @@ int YglIsCached(YglTextureManager * tm, u64 addr, YglCache * c) {
     }
     return 0;  /* Not found */
   }
-
-  return 1;
 }
 
 //////////////////////////////////////////////////////////////////////////////
