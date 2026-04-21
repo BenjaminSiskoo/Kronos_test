@@ -70,8 +70,12 @@ int VIDCSEraseWriteVdp1(int id) {
   //Prohibited value - Example Quake first screens
   if ((limits[2] == -1)||(limits[3] == 0)) return 0;
 
-  if ((limits[0]>=limits[2])||(limits[1]>limits[3])) {
-    return 0; //No erase write when invalid area - Should be done only for one dot but no idea of which dot it shall be
+  if ((limits[0] >= limits[2]) || (limits[1] > limits[3])) {
+    /* VDP1 Manual §4.3 p.49: "erase/write is performed for 1 dot
+     * only" when X1 >= X3 or Y1 > Y3. Collapse the rect to a
+     * 1×1 erase at (X1, Y1) rather than skipping entirely. */
+    limits[2] = limits[0];
+    limits[3] = limits[1];
   }
 
 
@@ -94,7 +98,11 @@ int VIDCSEraseWriteVdp1(int id) {
 
   //Get back to drawframe
   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
-  return ((limits[2]-limits[0])*(limits[3]-limits[1]))>>(Vdp1Regs->TVMR & 0x1);
+  /* VDP1 Manual §4.3 p.49: erase rect is inclusive on both axes.
+   * Return pixel count, not cycles — the caller knows the FB mode
+   * and can divide by pixels-per-cycle (2 for 16bpp, 4 for 8bpp)
+   * if it needs cycle budget. */
+  return (limits[2] - limits[0] + 1) * (limits[3] - limits[1] + 1);
 }
 
 void VIDCSFinsihDraw(void) {
