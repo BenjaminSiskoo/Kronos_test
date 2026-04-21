@@ -467,7 +467,11 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
     glClearBufferfv(GL_COLOR, 0, _Ygl->last_back_color);
     //draw back screen where other pixels are not drawn
     glViewport(0, y, GlWidth, h);
-    glScissor(0, y, GlWidth, h-scali);
+    /* See final blit below: only clip a pixel in integer-ratio
+     * modes where the integer source step leaves a visible seam. */
+    int border_clip = (modeScreen == INTEGER_RATIO
+                    || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
+    glScissor(0, y, GlWidth, h - border_clip);
     //Take care of border
     YglFillWithBackScreen();
   } else {
@@ -477,7 +481,15 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
     glClearBufferfv(GL_COLOR, 0, black);
   }
    glViewport(x, y, w, h);
-   glScissor(x, y, w-scali, h-scali);
+   /* Only clip the last row/column in integer scaling modes where
+    * the integer source step leaves a visible seam. In STRETCH /
+    * ORIGINAL modes the filter covers the edge cleanly, and the
+    * subtraction produces a persistent 1-pixel black border. */
+   {
+     int border_clip = (modeScreen == INTEGER_RATIO
+                     || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
+     glScissor(x, y, w - border_clip, h - border_clip);
+   }
 #endif
    YglBlitFramebuffer(srcTexture, _Ygl->width, _Ygl->height, w, h);
 
