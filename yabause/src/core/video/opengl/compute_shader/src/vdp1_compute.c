@@ -103,19 +103,7 @@ static GLuint prg_vdp1[NB_PRG] = {0};
 
 static GLuint ssbo_cmd_line_list_ = 0;
 
-/* VDP1 §4.3 p.49: FB is 256 lines (standard) or 512 lines
- * (double-interlace, FBCR bit 3 = 1). Size for the worst case. */
-static u32 write_fb[2][512*512];
-
-
-/* VDP1 §4.3 p.49: FB is 256 lines (standard) or 512 lines
- * (double-interlace, FBCR bit 3 = 1). This helper is defensive
- * against being called before Vdp1Regs is initialised (happens
- * during generateComputeBuffer → vdp1_clear at init time). */
-static inline int vdp1_fb_height(void) {
-    if (Vdp1Regs == NULL) return 256;
-    return (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
-}
+static u32 write_fb[2][512*256];
 
 
 static const GLchar * a_prg_vdp1[NB_PRG][6] = {
@@ -671,9 +659,7 @@ static int generateComputeBuffer(int w, int h) {
 
 	glGenBuffers(1, &ssbo_vdp1access_);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_vdp1access_);
-	/* Allocate for the worst case (512x512) — FBCR may flip to
-	 * double-interlace at runtime. */
-	glBufferData(GL_SHADER_STORAGE_BUFFER, 512*512*4, NULL, GL_DYNAMIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, 512*256*4, NULL, GL_DYNAMIC_DRAW);
 
 
 	float col[4] = {0.0};
@@ -1748,14 +1734,13 @@ void vdp1_clear(int id, float *col, int* lim) {
 	if (prg_vdp1[progId] == 0) {
 		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
 	}
-    /* VDP1 §4.3: FB native size is 512 x (256 or 512 in double-interlace).
-     * Only the Y divisor is dynamic — the SSBO / write_fb storage is
-     * sized for 256 lines so this alone is safe. */
-    int fb_h = vdp1_fb_height();
+    /* VDP1 §4.4: scale erase area from VDP1 FB coordinates to texture pixels.
+     * Use ceiling division for the right/bottom edges to avoid missing pixels.
+     * limits[0]/[1] = top-left (floor OK), limits[2]/[3] = bottom-right (ceil). */
     limits[0] = (limits[0] * _Ygl->vdp1width)  / 512;
-    limits[1] = (limits[1] * _Ygl->vdp1height) / fb_h;
-    limits[2] = (limits[2] * _Ygl->vdp1width   + 511)     / 512  + tex_ratio - 1;
-    limits[3] = (limits[3] * _Ygl->vdp1height  + fb_h-1)  / fb_h + tex_ratio - 1;
+    limits[1] = (limits[1] * _Ygl->vdp1height) / 256;
+    limits[2] = (limits[2] * _Ygl->vdp1width  + 511) / 512 + tex_ratio - 1;
+    limits[3] = (limits[3] * _Ygl->vdp1height + 255) / 256 + tex_ratio - 1;
   glUseProgram(prg_vdp1[progId]);
 	glBindImageTexture(0, get_vdp1_tex(id), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glBindImageTexture(1, get_vdp1_mesh(id), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -1803,12 +1788,7 @@ u32* vdp1_read(int frame) {
 	glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
 
 #ifdef _OGL3_
-	/* Read at most what write_fb can hold. If double-interlace is
-	 * active, the lower 256 lines are truncated (known limitation —
-	 * buffer is statically sized). */
-	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0x0,
-	                   512 * 256 * 4,
-	                   (void*)(&write_fb[frame][0]));
+	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0x0, 512*256*4, (void*)(&write_fb[frame][0]));
 #endif
 
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
