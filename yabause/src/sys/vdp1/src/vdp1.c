@@ -1070,6 +1070,17 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h)-1;
 
   yabsys.vdp1cycles+= getNormalCycles(cmd);
+  
+  /* VDP1 Manual §6.3 p.81 (HSS bit 12) and §4.2 p.37 (FBCR bit 4 EOS):
+   * HSS must be propagated to the renderer regardless of sprite flavor;
+   * Vdp1ScaledSpriteDraw did it, but normal-sprite path omitted it,
+   * causing HSS=1 scaled-to-same-size sprites (common UI optimization)
+   * to render end codes as transparent pixels. §10 p.155: the hardware
+   * internally ignores end codes when HSS=1 but does NOT rewrite
+   * CMDPMOD; the renderer relies on cmd->hss to know this. */
+  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+  cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
+
 
   memset(cmd->G, 0, sizeof(float)*12);
 // Spec §6.3 Pre-Clipping: reject only if the entire bounding box is outside
@@ -1306,7 +1317,15 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getDistortedCycles(cmd);
 
+  /* VDP1 Manual §6.3 HSS (bit 12) and §4.2 EOS (FBCR bit 4):
+   * Same rationale as Vdp1NormalSpriteDraw -- distorted sprites also
+   * honor HSS per §6.2 (distorted shares the scaled sprite pipeline)
+   * and the renderer relies on cmd->hss/cmd->eos to skip end-code
+   * processing per §10 p.155. */
+  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+  cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
   memset(cmd->G, 0, sizeof(float)*12);
+
 	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
 	if ((cmd->CMDPMOD & 4))
 	{
