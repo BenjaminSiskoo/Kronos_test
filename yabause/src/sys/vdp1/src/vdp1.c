@@ -1142,6 +1142,15 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     yabsys.vdp1cycles += 70;
     return -1;
   }
+  
+  /* VDP1 Manual §6.3 p.89-92 Color Mode: only bits 5:3 values 000..101
+   * are defined; 110 and 111 are reserved. Reject like normal-sprite
+   * path to avoid reading texture bytes at an undefined bit depth. */
+  if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
+    /* §4.5 p.57: malformed commands abort with the 70-cycle penalty. */
+    yabsys.vdp1cycles += 70;
+    return -1;
+  }
 
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
@@ -1303,6 +1312,15 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     // damaged data
     yabsys.vdp1cycles += 70;
     return 0;
+  }
+  
+  /* VDP1 Manual §6.3 p.89-92 Color Mode: reserved values 110/111.
+   * Distorted sprite shares the scaled-sprite pipeline (§6.2 p.83)
+   * and must reject the same malformed input. */
+  if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
+    /* §4.5 p.57: 70-cycle malformed-command penalty. */
+    yabsys.vdp1cycles += 70;
+    return -1;
   }
 
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
