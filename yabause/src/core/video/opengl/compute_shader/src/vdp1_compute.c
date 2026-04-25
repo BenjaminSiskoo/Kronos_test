@@ -867,8 +867,14 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 		.CMDXB = B.x,
 		.CMDYB = B.y,
 		.CMDCOLR = cmd->CMDCOLR,
-		.misc = (cmd->flip & 0x3) | ((s & 0xF) << 6) | ((s & 0xF) << 2) | eos_bit_line,
-		.idx = 0
+		/* VDP1 Manual §6.4 Line Drawing: line orientation is encoded
+		 * ONCE. Bits 1:0 = flip; bits 9:6 = s orientation descriptor;
+		 * bit 10 = EOS. The previous (s<<2) term duplicated the
+		 * orientation at bits 5:2 and collided with reserved bits.
+		 * Remove the duplicate to match drawQuad() misc layout. */
+		.misc = (cmd->flip & 0x3) | ((s & 0xF) << 6) | eos_bit_line,
+ 		.idx = 0
+
 	};
 	cmd_pol[0].G[0] = MIX(cmd->G[0], cmd->G[9], dl);
 	cmd_pol[0].G[1] = MIX(cmd->G[1], cmd->G[10], dl);
