@@ -1042,11 +1042,15 @@ void VIDCSVdp1DistortedSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * r
 {
   LOG_CMD("%d\n", __LINE__);
 
-  if (((cmd->CMDPMOD >> 3) & 0x7u) == 5) {
-    // hard/vdp2/hon/p09_20.htm#no9_21
-    u32 *cclist = (u32 *)&(Vdp2Lines[0].CCRSA);
-    cclist[0] &= 0x1Fu;
-  }
+  /* VDP2 Manual §9.2 p.204-206 / §12.3 p.272-276:
+   * CCRSA is a global VDP2 color-calculation-ratio register indexed by
+   * priority register (0 or 1). Mutating Vdp2Lines[0].CCRSA here
+   * corrupts per-line register state and biases the CC ratio for every
+   * subsequent sprite that uses the same priority register.
+   *
+   * Priority-register selection for RGB sprite data (color mode 5) is
+   * already handled by the shader via cmd type. The non-upscale paths
+   * and the other upscale paths dropped this mutation; align distorted. */
 
   addCSCommands(cmd, DISTORTED);
 
