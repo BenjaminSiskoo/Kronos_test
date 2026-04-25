@@ -997,7 +997,13 @@ void VIDCSVdp1ScaledSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
   {
     case 0x0: // Only two coordinates
       if ((s16)cmd->CMDXC > (s16)cmd->CMDXA){ cmd->CMDXB += 1; cmd->CMDXC += 1;} else { cmd->CMDXA += 1; cmd->CMDXD += 1;}
-      if ((s16)cmd->CMDYC > (s16)cmd->CMDYA){ cmd->CMDYC += 1; cmd->CMDYD += 1;} else { cmd->CMDYA += 1; cmd->CMDYD += 1;}
+      /* VDP1 Manual §4.4 p.53: A=top-left, B=top-right, C=bottom-right,
+       * D=bottom-left. Symmetric to the X case above:
+       *   YC > YA (normal): bottom edge = {C,D} -> YC+=1, YD+=1
+       *   else (flipped V): top edge    = {A,B} -> YA+=1, YB+=1
+       * Previous code incremented YD in both branches (copy-paste
+       * from first branch), breaking vertically-flipped scaled sprites. */
+      if ((s16)cmd->CMDYC > (s16)cmd->CMDYA){ cmd->CMDYC += 1; cmd->CMDYD += 1;} else { cmd->CMDYA += 1; cmd->CMDYB += 1;}
       break;
     case 0x5: // Upper-left
     case 0x6: // Upper-Center
