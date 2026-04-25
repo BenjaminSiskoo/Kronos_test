@@ -1269,6 +1269,24 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getScaledCycles(cmd);
+  
+  /* VDP1 Manual §6.3 p.83 Pre-Clipping Disable (Pclp bit 11):
+   * when Pclp=0 (pre-clipping enabled), reject if the bounding box
+   * of the final 4-corner polygon lies entirely outside the system
+   * clip rectangle. Matches the test already present in
+   * Vdp1NormalSpriteDraw for consistency across sprite flavors.
+   * §6.3: "For lines that are completely separated from the drawing
+   * area [...] drawing efficiency can be raised by specifying the
+   * drawing not be started." */
+  if (!(cmd->CMDPMOD & 0x800)) {
+    s16 scx2 = (s16)regs->systemclipX2;
+    s16 scy2 = (s16)regs->systemclipY2;
+    s16 bx1 = (s16)MIN(MIN(cmd->CMDXA,cmd->CMDXB), MIN(cmd->CMDXC,cmd->CMDXD));
+    s16 by1 = (s16)MIN(MIN(cmd->CMDYA,cmd->CMDYB), MIN(cmd->CMDYC,cmd->CMDYD));
+    s16 bx2 = (s16)MAX(MAX(cmd->CMDXA,cmd->CMDXB), MAX(cmd->CMDXC,cmd->CMDXD));
+    s16 by2 = (s16)MAX(MAX(cmd->CMDYA,cmd->CMDYB), MAX(cmd->CMDYC,cmd->CMDYD));
+    if (bx1 > scx2 || by1 > scy2 || bx2 < 0 || by2 < 0) return 0;
+  }
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
@@ -1372,6 +1390,20 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getDistortedCycles(cmd);
+  
+  /* VDP1 Manual §6.3 p.83 Pre-Clipping Disable (Pclp bit 11):
+   * same rationale as Vdp1NormalSpriteDraw -- reject when bounding box
+   * lies entirely outside system clip. Applies to distorted sprites
+   * per §6.2 p.83 (shared pipeline with scaled sprites). */
+  if (!(cmd->CMDPMOD & 0x800)) {
+    s16 scx2 = (s16)regs->systemclipX2;
+    s16 scy2 = (s16)regs->systemclipY2;
+    s16 bx1 = (s16)MIN(MIN(cmd->CMDXA,cmd->CMDXB), MIN(cmd->CMDXC,cmd->CMDXD));
+    s16 by1 = (s16)MIN(MIN(cmd->CMDYA,cmd->CMDYB), MIN(cmd->CMDYC,cmd->CMDYD));
+    s16 bx2 = (s16)MAX(MAX(cmd->CMDXA,cmd->CMDXB), MAX(cmd->CMDXC,cmd->CMDXD));
+    s16 by2 = (s16)MAX(MAX(cmd->CMDYA,cmd->CMDYB), MAX(cmd->CMDYC,cmd->CMDYD));
+    if (bx1 > scx2 || by1 > scy2 || bx2 < 0 || by2 < 0) return 0;
+  }
 
   /* VDP1 Manual §6.3 HSS (bit 12) and §4.2 EOS (FBCR bit 4):
    * Same rationale as Vdp1NormalSpriteDraw -- distorted sprites also
