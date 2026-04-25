@@ -1290,8 +1290,16 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
-	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
-	if ((cmd->CMDPMOD & 4))
+	/* VDP1 Manual §5.3 p.65: "Gouraud shading [...] is only effective on
+	 * RGB color codes. The color cannot be guaranteed when Gouraud
+	 * shading is specified for color bank color codes."
+	 * Skip the Gouraud table read entirely for palette-bank color modes
+	 * (0, 2, 3, 4) -- they would produce garbage palette-index shifts.
+	 * Mode 1 (LUT) and mode 5 (RGB) may legitimately use Gouraud;
+	 * mode 1 is further per-pixel-gated in the shader (RGB only when
+	 * LUT entry MSB=1). Table 5.3: correction = value - 0x10, range [-16,+15]. */
+	u32 _scm = (cmd->CMDPMOD >> 3) & 0x7u;
+	if ((cmd->CMDPMOD & 4) && (_scm == 1 || _scm == 5))
 	{
 		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
 		for (int i = 0; i < 4; i++){
@@ -1414,8 +1422,11 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
   memset(cmd->G, 0, sizeof(float)*12);
 
-	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
-	if ((cmd->CMDPMOD & 4))
+	/* VDP1 §5.3 p.65: Gouraud only effective on RGB codes (see
+	 * Vdp1ScaledSpriteDraw for full rationale). Gate on color mode
+	 * to avoid corrupting palette-bank sprites. */
+	u32 _dcm = (cmd->CMDPMOD >> 3) & 0x7u;
+	if ((cmd->CMDPMOD & 4) && (_dcm == 1 || _dcm == 5))
 	{
 		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
 		for (int i = 0; i < 4; i++){
