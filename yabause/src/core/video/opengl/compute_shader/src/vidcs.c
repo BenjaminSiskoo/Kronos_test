@@ -2741,8 +2741,19 @@ for (int id = 0; id < enBGMAX+1; id++) {
 
 void VIDCSVdp1LocalCoordinate(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-  regs->localX = cmd->CMDXA;
-  regs->localY = cmd->CMDYA;
+  /* VDP1 Manual §6.7 p.105: local coordinate values are 11-bit signed;
+   * bits 15-11 of CMDXA/CMDYA are sign-extension of bit 10, and the
+   * hardware ignores them, sign-extending from bit 10 regardless.
+   *
+   * CMDXA/YA were read from VRAM as u16 (Vdp1ReadCommand) and stored
+   * in the s32 struct field without sign extension. For negative
+   * origins (e.g. -16 = 0xFFF0 in VRAM) the raw value becomes
+   * +65520 here, and every downstream sprite coordinate is pushed
+   * far off-screen. Sign-extend from bit 10 to recover the value. */
+  s32 lx = cmd->CMDXA & 0x7FF;
+  s32 ly = cmd->CMDYA & 0x7FF;
+  regs->localX = (lx & 0x400) ? (lx | ~0x7FF) : lx;
+  regs->localY = (ly & 0x400) ? (ly | ~0x7FF) : ly;
 }
 
 //////////////////////////////////////////////////////////////////////////////
