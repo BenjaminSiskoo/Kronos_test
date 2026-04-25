@@ -1309,13 +1309,22 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   int ret = 1;
 
   if (emptyCmd(cmd)) {
-    // damaged data
+    /* VDP1 §4.5 p.57: malformed-command 70-cycle penalty; return -1
+     * per normal/scaled sprite convention (malformed, not no-op). */
     yabsys.vdp1cycles += 70;
-    return 0;
+    return -1;
   }
   
   /* VDP1 Manual §6.3 p.89-92 Color Mode: reserved values 110/111.
    * Distorted sprite shares the scaled-sprite pipeline (§6.2 p.83)
+   * and must reject the same malformed input. */
+  if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
+    /* §4.5 p.57: 70-cycle malformed-command penalty. */
+    yabsys.vdp1cycles += 70;
+    return -1;
+  }
+  
+   /* Distorted sprite shares the scaled-sprite pipeline (§6.2 p.83)
    * and must reject the same malformed input. */
   if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
     /* §4.5 p.57: 70-cycle malformed-command penalty. */
@@ -1343,9 +1352,10 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
        CONVERTCMD(&cmd->CMDYC) ||
        CONVERTCMD(&cmd->CMDXD) ||
        CONVERTCMD(&cmd->CMDYD)) {
-         // damaged data
+         /* §6.7 p.105: out-of-range coordinates -- -1 per convention
+          * (matches Vdp1NormalSpriteDraw / Vdp1ScaledSpriteDraw). */
          yabsys.vdp1cycles += 70;
-         return 0;
+         return -1;
        }
 
   cmd->CMDXA += regs->localX;
