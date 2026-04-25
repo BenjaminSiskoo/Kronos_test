@@ -1747,15 +1747,28 @@ static int sameCmd(vdp1cmd_struct* a, vdp1cmd_struct* b) {
   if (a == NULL) return 0;
   if (b == NULL) return 0;
   if (emptyCmd(a)) return 0;
-  /* Compare only the 15 CMDxxxx raw command-table u16 fields, not
-   * the derived cmd->w/h/flip/G[]/hss/eos values. Using offsetof
-   * prevents drift if the struct layout changes and avoids reading
-   * uninitialised padding bytes (UB in pre-C11). */
-  const size_t cmd_fields_size = offsetof(vdp1cmd_struct, CMDGRDA)
-                               + sizeof(a->CMDGRDA)
-                               - offsetof(vdp1cmd_struct, CMDCTRL);
-  int cmp = memcmp(&a->CMDCTRL, &b->CMDCTRL, cmd_fields_size);
-  if (cmp == 0) {
+  /* VDP1 Manual §6.1 p.71: the command table contains 15 u16 fields at
+   * offsets +0x00..+0x1C.  Our in-memory struct widens the coordinate
+   * fields (CMDXA..CMDYD) to s32 after sign-extension (see CONVERTCMD
+   * §6.7 p.105), which may introduce alignment padding when the
+   * struct mixes u16 and s32 members.  Using memcmp across a mixed-
+   * width region reads uninitialised padding bytes (ISO C11 §6.2.6.1
+   * -- undefined per standard).
+   *
+   * Compare each CMDxxxx field explicitly. Slightly more lines, but
+   * unambiguous and padding-proof. Derived fields (w/h/flip/G/hss/eos)
+   * are intentionally NOT compared -- they're recomputed per frame. */
+  if (a->CMDCTRL == b->CMDCTRL
+   && a->CMDLINK == b->CMDLINK
+   && a->CMDPMOD == b->CMDPMOD
+   && a->CMDCOLR == b->CMDCOLR
+   && a->CMDSRCA == b->CMDSRCA
+   && a->CMDSIZE == b->CMDSIZE
+   && a->CMDXA   == b->CMDXA && a->CMDYA == b->CMDYA
+   && a->CMDXB   == b->CMDXB && a->CMDYB == b->CMDYB
+   && a->CMDXC   == b->CMDXC && a->CMDYC == b->CMDYC
+   && a->CMDXD   == b->CMDXD && a->CMDYD == b->CMDYD
+   && a->CMDGRDA == b->CMDGRDA) {
     return 1;
   }
   return 0;
