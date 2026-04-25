@@ -1335,27 +1335,17 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   int ret = 1;
 
   if (emptyCmd(cmd)) {
-    /* VDP1 §4.5 p.57: malformed-command 70-cycle penalty; return -1
-     * per normal/scaled sprite convention (malformed, not no-op). */
+    /* §4.5: malformed command. Keep return 0 (original behavior) for
+     * compatibility — the dispatcher resets vdp1_clock either way. */
     yabsys.vdp1cycles += 70;
-    return -1;
+    return 0;
   }
-  
-  /* VDP1 Manual §6.3 p.89-92 Color Mode: reserved values 110/111.
-   * Distorted sprite shares the scaled-sprite pipeline (§6.2 p.83)
-   * and must reject the same malformed input. */
+
+  /* §6.3 p.89-92: color mode bits 5:3 values 110/111 are reserved.
+   * Keep return 0 to match original Vdp1DistortedSpriteDraw convention. */
   if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
-    /* §4.5 p.57: 70-cycle malformed-command penalty. */
     yabsys.vdp1cycles += 70;
-    return -1;
-  }
-  
-   /* Distorted sprite shares the scaled-sprite pipeline (§6.2 p.83)
-   * and must reject the same malformed input. */
-  if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
-    /* §4.5 p.57: 70-cycle malformed-command penalty. */
-    yabsys.vdp1cycles += 70;
-    return -1;
+    return 0;
   }
 
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
@@ -1378,10 +1368,8 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
        CONVERTCMD(&cmd->CMDYC) ||
        CONVERTCMD(&cmd->CMDXD) ||
        CONVERTCMD(&cmd->CMDYD)) {
-         /* §6.7 p.105: out-of-range coordinates -- -1 per convention
-          * (matches Vdp1NormalSpriteDraw / Vdp1ScaledSpriteDraw). */
          yabsys.vdp1cycles += 70;
-         return -1;
+         return 0;
        }
 
   cmd->CMDXA += regs->localX;
@@ -1392,61 +1380,23 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-  
-  /* §6.3 p.87: guard against prohibited ECD=0 + SPD=1 combination. */
-  fixProhibitedEcdSpd(cmd);
 
   //mission 1 of burning rangers is loading a lot the vdp1.
-  yabsys.vdp1cycles+= getDistortedCycles(cmd);
-  
-  /* VDP1 Manual §6.3 p.83 Pre-Clipping Disable (Pclp bit 11):
-   * same rationale as Vdp1NormalSpriteDraw -- reject when bounding box
-   * lies entirely outside system clip. Applies to distorted sprites
-   * per §6.2 p.83 (shared pipeline with scaled sprites). */
-  if (!(cmd->CMDPMOD & 0x800)) {
-    s16 scx2 = (s16)regs->systemclipX2;
-    s16 scy2 = (s16)regs->systemclipY2;
-    s16 bx1 = (s16)MIN(MIN(cmd->CMDXA,cmd->CMDXB), MIN(cmd->CMDXC,cmd->CMDXD));
-    s16 by1 = (s16)MIN(MIN(cmd->CMDYA,cmd->CMDYB), MIN(cmd->CMDYC,cmd->CMDYD));
-    s16 bx2 = (s16)MAX(MAX(cmd->CMDXA,cmd->CMDXB), MAX(cmd->CMDXC,cmd->CMDXD));
-    s16 by2 = (s16)MAX(MAX(cmd->CMDYA,cmd->CMDYB), MAX(cmd->CMDYC,cmd->CMDYD));
-    if (bx1 > scx2 || by1 > scy2 || bx2 < 0 || by2 < 0) return 0;
-  }
+  yabsys.vdp1cycles += getDistortedCycles(cmd);
 
-  /* VDP1 Manual §6.3 HSS (bit 12) and §4.2 EOS (FBCR bit 4):
-   * Same rationale as Vdp1NormalSpriteDraw -- distorted sprites also
-   * honor HSS per §6.2 (distorted shares the scaled sprite pipeline)
-   * and the renderer relies on cmd->hss/cmd->eos to skip end-code
-   * processing per §10 p.155. */
-  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
-  cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
   memset(cmd->G, 0, sizeof(float)*12);
-
-	/* VDP1 §5.3 p.65: Gouraud only effective on RGB codes (see
-	 * Vdp1ScaledSpriteDraw for full rationale). Gate on color mode
-	 * to avoid corrupting palette-bank sprites. */
-	u32 _dcm = (cmd->CMDPMOD >> 3) & 0x7u;
-	if ((cmd->CMDPMOD & 4) && (_dcm == 1 || _dcm == 5))
-	{
-		u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
-		for (int i = 0; i < 4; i++){
-			u16 color2 = Vdp1RamReadWord(NULL, ram,
-				(gouraud_base + (i << 1)) & 0x7FFFF);
-			/* VDP1 Manual §5.3 Table 5.3:
-			 * correction = table_value - 0x10
-			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
-			 * Normalize to [-1,+1] for shader: divide by 16.0f
-			 * (not 31.0f — range is asymmetric [-16,+15]) */
-			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
-		}
-	}
-	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
-	 if ((cmd->CMDPMOD & 0x7) == 5) {
-	   yabsys.vdp1cycles += 70;
-	   return -1;
-	 }
+  /* (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) */
+  if ((cmd->CMDPMOD & 4))
+  {
+    u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+    for (int i = 0; i < 4; i++) {
+      u16 color2 = Vdp1RamReadWord(NULL, ram,
+        (gouraud_base + (i << 1)) & 0x7FFFF);
+      cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+      cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+      cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+    }
+  }
 
   VIDCore->Vdp1DistortedSpriteDraw(cmd, ram, regs);
   return ret;
@@ -1463,9 +1413,9 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
        CONVERTCMD(&cmd->CMDYC) ||
        CONVERTCMD(&cmd->CMDXD) ||
        CONVERTCMD(&cmd->CMDYD)) {
-         // damaged data
+   /* §6.7 p.105: out-of-range coordinates -- -1 per convention. */
          yabsys.vdp1cycles += 70;
-         return 0;
+         return -1;
        }
 
   cmd->CMDXA += regs->localX;
