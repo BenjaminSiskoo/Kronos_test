@@ -1149,6 +1149,16 @@ int vdp1_add(vdp1cmd_struct* cmd, int clipcmd) {
 
 	if ((clipcmd != 0) && (VIDCore->startVdp1Render)) VIDCore->startVdp1Render();
 
+    /* VDP1 Manual §6.3 p.84 + §7.2 p.113 — User clipping is gated
+     * PER-DRAW via the Clip bit (CMDPMOD bit 10).  When Clip=0 the
+     * user-clip rectangle is ignored (system clip only). When Clip=1
+     * the Cmod bit (CMDPMOD bit 9) selects inside (0) or outside (1)
+     * drawing mode — see §7.2 inside/outside diagrams. */
+    if (clipcmd == 0) {
+        int clip_enable = (cmd->CMDPMOD >> 10) & 0x1;
+        Vdp1Regs->userclipMode = clip_enable ? ((cmd->CMDPMOD >> 9) & 0x1) : 2; /* 2 = no user clip */
+    }
+
 	if (_Ygl->wireframe_mode != 0) apply_wireframe_type(cmd);
 	//POLYLINE
 	// if (clipcmd == 0) {
