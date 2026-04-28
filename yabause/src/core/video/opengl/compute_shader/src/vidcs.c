@@ -965,12 +965,19 @@ void VIDCSVdp1NormalSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
    * Color calculation only valid when LUT entry is RGB (MSB=1).
    * Prohibited to use RGB LUT entries in 8-bit/pixel frame buffer mode. */
 
-  cmd->CMDXB = cmd->CMDXA + MAX(1,cmd->w);
+  /* VDP1 Manual §4.4 p.53 + §7.4 p.118 (Normal Sprite Draw):
+   * The four vertices A,B,C,D describe a w×h pixel rectangle where
+   * B = A + (w-1, 0), C = A + (w-1, h-1), D = A + (0, h-1).
+   * Using +cmd->w (without -1) creates a (w+1)×(h+1) rectangle, which
+   * makes upscaled sprites overlap by one pixel against the non-upscale
+   * draw path (vdp1.c Vdp1NormalSpriteDraw uses MAX(1,w)-1) and breaks
+   * exact 1:1 tiled UI sprites (Sega Rally HUD, Panzer Dragoon menus). */
+  cmd->CMDXB = cmd->CMDXA + MAX(1,cmd->w) - 1;
   cmd->CMDYB = cmd->CMDYA;
-  cmd->CMDXC = cmd->CMDXA + MAX(1,cmd->w);
-  cmd->CMDYC = cmd->CMDYA + MAX(1,cmd->h);
+  cmd->CMDXC = cmd->CMDXA + MAX(1,cmd->w) - 1;
+  cmd->CMDYC = cmd->CMDYA + MAX(1,cmd->h) - 1;
   cmd->CMDXD = cmd->CMDXA;
-  cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h);
+  cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h) - 1;
 
   /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
    * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
