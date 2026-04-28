@@ -244,7 +244,11 @@ static INLINE u32 vdp1FBWidth(void) {
 u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
+   /* VDP1 Manual §1.2 Table 1.2 p.13 + §4.1 Table 4.2 p.42:
+    * FB height depends on TVMR.TVM, NOT on FBCR.DIE.  §4.2 p.41
+    * explicit note: "even and odd fields are rendered in different
+    * frame buffers" — DIE=1 does NOT enlarge the FB.  Use the same
+    * helper as every other reader to avoid drift. */
    u32 fb_height = vdp1FBHeight();
    if (pixIdx/512 >= fb_height) return 0;
    u32* buf = getVDP1ReadFramebuffer();
@@ -2017,13 +2021,25 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
          regs->addr += 0x20;
          break;
       case 1: // ASSIGN, jump to CMDLINK
-         regs->addr = T1ReadWord(ram, regs->addr + 2) * 8;
+         /* VDP1 Manual §6.1 p.71: LINK target = CMDLINK*8H, must lie
+          * within VRAM (0x00000..0x7FFE0).  Out-of-range link is
+          * undefined hardware behaviour — terminate the fake walk
+          * to mirror the real Vdp1DrawCommands logic above. */
+         {
+            u32 t = T1ReadWord(ram, regs->addr + 2) * 8;
+            if (t > 0x7FFE0) { regs->EDSR |= 2; return; }
+            regs->addr = t;
+         }
          break;
       case 2: // CALL, call a subroutine
          if (returnAddr == 0xFFFFFFFF)
             returnAddr = regs->addr + 0x20;
 
-         regs->addr = T1ReadWord(ram, regs->addr + 2) * 8;
+         {
+            u32 t = T1ReadWord(ram, regs->addr + 2) * 8;
+            if (t > 0x7FFE0) { regs->EDSR |= 2; return; }
+            regs->addr = t;
+         }
          break;
       case 3: // RETURN, return from subroutine
          if (returnAddr != 0xFFFFFFFF) {
