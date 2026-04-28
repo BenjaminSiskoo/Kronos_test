@@ -915,6 +915,11 @@ void VIDCSVdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 
 void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
+    /* VDP1 Manual §7.2 p.112-113: this command sets the user clip
+     * RECTANGLE only.  Per §7.2 p.113: "whether the inside or the
+     * outside of the area is clipped is determined by the draw mode
+     * of the draw command for the part" — i.e. Clip (CMDPMOD bit 10)
+     * and Cmod (CMDPMOD bit 9) are read PER-DRAW, not here. */
     // VDP1 Manual §7.2: "Operation cannot be guaranteed if XC < XA or YC < YA"
     // The hardware does NOT reset localX/Y — it simply produces undefined results.
     // We skip the command silently to avoid rendering artifacts.
@@ -929,11 +934,8 @@ void VIDCSVdp1UserClipping(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
     regs->userclipY1 = cmd->CMDYA;
     regs->userclipX2 = cmd->CMDXC;
     regs->userclipY2 = cmd->CMDYC;
-    // VDP1 Manual §6.3: Clip=bit10, Cmod=bit9
-    // Cmod=0: inside drawing mode (draw within user clip rect)
-    // Cmod=1: outside drawing mode (draw outside user clip rect)
-    // Store Cmod so startVdp1Render() can forward it to the shader.
-    regs->userclipMode = (cmd->CMDPMOD >> 9) & 0x1;
+    /* userclipMode is now refreshed in vdp1_add() from the draw cmd
+     * itself — see Patch 04. */
     vdp1_add(cmd, 1);
 }
 
