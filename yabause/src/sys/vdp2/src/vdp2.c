@@ -681,19 +681,26 @@ void Vdp2VBlankOUT_It(void) {
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
-    switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
-    /* VDP2 Manual §2.4 TVMD VRESO bits 5~4 :
-     * 00=224, 01=240(NTSC)/256(PAL), 10=256, 11=interdit */
-    switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
+  /* VDP2 Manual §2.4 p.17 Table TVMD VRESO bits 5~4:
+   *   00 = 224 lines  (NTSC or PAL)
+   *   01 = 240 lines  (NTSC or PAL)   ← NOT pal-dependent per manual
+   *   10 = 256 lines  (PAL only — undefined on NTSC)
+   *   11 = "Not Allowed" (reserved)
+   * The previous code wrapped a valid inner switch inside an empty
+   * outer switch with no case labels of its own, making the whole
+   * block dead code: VBlankLineCount was never refreshed at VBlankOUT.
+   * Effect: VRESO changes were deferred by one frame, cropping the
+   * top/bottom border on intro screens (NiGHTS, Burning Rangers).
+   *
+   * Per manual §2.4: VRESO=10 on NTSC is "not allowed" — fall back
+   * to 224 lines as the safest no-op (matches real hardware boot). */
+  switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
     case 0: yabsys.VBlankLineCount = 224; break;
-    case 1: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240; break;
-    case 2: yabsys.VBlankLineCount = 256; break;
+    case 1: yabsys.VBlankLineCount = 240; break;
+    case 2: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
     case 3:
-    default: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
-    }
-    if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
-        break;
-    }
+    default: yabsys.VBlankLineCount = 224; break; /* reserved */
+  }
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
