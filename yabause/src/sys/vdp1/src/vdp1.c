@@ -78,38 +78,17 @@ static void checkFBSync();
 #define DEBUG_BAD_COORD //YuiMsg
 
 int CONVERTCMD(s32 *A) {
-  s32 toto = (*A);
-  /* VDP1 Manual §6.7 p.105: coordinates are 11-bit signed. Bits 15-11
-   * SHOULD be sign-extension of bit 10 (programmer requirement), but
-   * the hardware reads only bits [10:0] and sign-extends from bit 10
-   * regardless. Do NOT reject commands with malformed upper bits —
-   * the real VDP1 accepts them. Log for diagnostics only. */
+  /* VDP1 Manual §6.7 p.105: vertex coordinates are 11-bit signed.
+   * Hardware reads only bits [10:0] and sign-extends from bit 10,
+   * ignoring bits 15:11 entirely. Do NOT reject commands with
+   * non-canonical upper bits — the real VDP1 accepts them. */
   s32 sign_bit = ((*A) >> 10) & 0x1;
-  s32 ext_bits = ((*A) >> 11) & 0x1F;
-  s32 expected = sign_bit ? 0x1F : 0x0;
-  if (ext_bits != expected) {
-    DEBUG_BAD_COORD("Non-canonical sign-ext %x (%d, 0x%x) — hardware ignores bits 15-11\n",
-                    (*A), (*A), toto);
-    /* Fall through: sign-extend from bit 10 like the hardware does. */
-  }
-  /* Sign-extend from bit 10 to 32 bits */
+  /* Sign-extend from bit 10 to 32 bits. After this, the value is
+   * mathematically guaranteed to be in [-1024, +1023]. */
   if (sign_bit) (*A) |= 0xFFFFF800;
   else          (*A) &=  0x000007FF;
-  /* Post-condition: *A is now in [-1024, +1023]. The bounds check
-   * below is therefore always satisfied; keep it as a safety net
-   * in case the sign-extension logic above is ever changed. */
-  if ((*A) < -1024) {
-    DEBUG_BAD_COORD("Bad(-1024) %x (%d, 0x%x)\n", (*A), (*A), toto);
-    return 1;
-  }
-  if ((*A) > 1023) {
-    DEBUG_BAD_COORD("Bad(1023) %x (%d, 0x%x)\n", (*A), (*A), toto);
-    return 1;
-  }
   return 0;
 }
-
-
 
 static void RequestVdp1ToDraw() {
   if (needVdp1draw == 0){
