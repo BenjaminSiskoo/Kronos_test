@@ -1011,14 +1011,6 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
  * what reference VDP1 test ROMs produce. Called from every sprite
  * draw path before forwarding CMDPMOD to the renderer. */
  
-static INLINE void fixProhibitedEcdSpd(vdp1cmd_struct *cmd) {
-    u16 ecd = (cmd->CMDPMOD >> 7) & 0x1;
-    u16 spd = (cmd->CMDPMOD >> 6) & 0x1;
-    if (ecd == 0 && spd == 1) cmd->CMDPMOD &= ~0x0040u; /* force SPD=0 */
-}
-
-
-
 static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   int ret = 1;
@@ -1088,9 +1080,6 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   cmd->CMDXD = cmd->CMDXA;
   cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h)-1;
   
-  /* §6.3 p.87: guard against prohibited ECD=0 + SPD=1 combination
-   * before the renderer processes the color mode. */
-  fixProhibitedEcdSpd(cmd);
 
   yabsys.vdp1cycles+= getNormalCycles(cmd);
   
@@ -1263,9 +1252,6 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-  
-  /* §6.3 p.87: guard against prohibited ECD=0 + SPD=1 combination. */
-  fixProhibitedEcdSpd(cmd);
 
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getScaledCycles(cmd);
