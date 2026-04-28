@@ -580,12 +580,15 @@ void Vdp2VBlankIN(void) {
   /* VDP2 Manual §2.4: update VBlankLineCount from TVMD VRESO BEFORE Vdp2Draw(),
    * so Vdp2DrawNBGx() endLine uses the correct value for this field.
    * Vdp2VBlankOUT() would update it too late — after the render. */
+  /* VDP2 Manual §2.4 p.17 Table: VRESO=01 is 240 lines on BOTH NTSC
+   * and PAL ("NTSC or PAL format TV"). Only VRESO=10 (256 lines) is
+   * PAL-only; on NTSC VRESO=10 is "Not Allowed" → fall back to 224. */
   switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
   case 0: yabsys.VBlankLineCount = 224; break;
-  case 1: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240; break;
-  case 2: yabsys.VBlankLineCount = 256; break;
+  case 1: yabsys.VBlankLineCount = 240; break;
+  case 2: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
   case 3:
-  default: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
+  default: yabsys.VBlankLineCount = 224; break; /* reserved */
   }
 
   //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
