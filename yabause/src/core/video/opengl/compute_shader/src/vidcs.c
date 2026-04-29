@@ -1739,9 +1739,24 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
 
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
-  /* VDP2 Manual §4.1 Table 4.1: NBG1 désactivé si NBG0 >= 32768 couleurs */
+  /* VDP2 Manual §4.1 p.61 (Note after color count tables):
+   *   "When NBG0 is set at 16,770,000 colors, NBG1 to NBG3 can no longer
+   *    be displayed."
+   *
+   * Only the 16,770,000 color mode (CHCTLA N0CHCN[2:0] = 100B = 4) suppresses
+   * NBG1.  The 32,768 color mode (colornumber == 3 = RGB-15) does NOT
+   * suppress NBG1 — the spec is explicit: NBG1 vanishes only at colornumber
+   * == 4 ("32K Direct Color Mode" / 16,770,000 colors).
+   *
+   * The previous threshold ">= 3" wrongly killed NBG1 whenever NBG0 ran in
+   * the standard 32K RGB mode (very common: Saturn games using NBG0 as a
+   * full-color background plus NBG1 for HUD/text).  Symptom: NBG1 layer
+   * (typically the score / HUD on RGB backgrounds) silently disappears.
+   *
+   * Correct threshold: == 4  (only the 16.7M color mode disables NBG1). */
+
   if ((ctrl.info.priority == 0) ||
-      (ctrl.regs->BGON & 0x1 && ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 3)) {
+      ((ctrl.regs->BGON & 0x1) && (((ctrl.regs->CHCTLA & 0x70) >> 4) == 4))) {
     return;
   }
 
