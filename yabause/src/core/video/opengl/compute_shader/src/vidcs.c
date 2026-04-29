@@ -1964,7 +1964,16 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
  
     /* CRAOFA bits 10-8: N2CAOS[2:0] — NBG2 color RAM address offset. */
     if ((a->CRAOFA & 0x0700) != (b->CRAOFA & 0x0700)) return 0;
- 
+
+    /* MPOFN bits 10-8: N2MP[8:6] — NBG2 map offset.
+     * VDP2 Manual §4 'Map Offset Register' p.85.  Without this comparison,
+     * a mid-frame change to the NBG2 map offset (rare but legal — some
+     * games swap layer banks at a horizontal split point) would not
+     * trigger a new render zone, and the layer would render with the
+     * wrong character base address until the next register-change event
+     * picked up by another field. */
+    if ((a->MPOFN & 0x0700) != (b->MPOFN & 0x0700)) return 0;
+
     /* PLSZ bits 7-4: NBG2 plane size. Affects map wrapping calculations. */
     if ((a->PLSZ & 0x00F0) != (b->PLSZ & 0x00F0)) return 0;
  
@@ -2157,7 +2166,13 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* CRAOFA bits 14-12: N3CAOS[2:0] — NBG3 color RAM address offset. */
     if ((a->CRAOFA & 0x7000) != (b->CRAOFA & 0x7000)) return 0;
- 
+
+    /* MPOFN bits 14-12: N3MP[8:6] — NBG3 map offset.
+     * VDP2 Manual §4 'Map Offset Register' p.85.  Same rationale as the
+     * NBG2 MPOFN check — required to keep render zones in sync with
+     * mid-frame bank swaps. */
+    if ((a->MPOFN & 0x7000) != (b->MPOFN & 0x7000)) return 0;
+
     /* PLSZ bits 15-6: NBG3 plane size (bits 15-12 V, bits 11-8 not used by NBG3;
      * VDP2 §4 PLSZ: N3PLSH(7-6), N3PLSV not present — NBG3 uses bits 7-6). */
     if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
