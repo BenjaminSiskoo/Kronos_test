@@ -5565,28 +5565,51 @@ static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b)
 
 static int isEnabled(int id, Vdp2* varVdp2Regs) {
   int display = 1;
+
+  /* VDP2 User's Manual ST-058-R2 §4.1 'Screen display enable bit':
+   *   "When R0ON is 0, do not set R1ON at 1."
+   *   "When both R0ON and R1ON are 1, the normal scroll screen can no
+   *    longer be displayed.  At this time, VRAM-B0 is fixed in RAM used
+   *    for RBG1 character pattern tables; and VRAM-B1 is fixed in RAM
+   *    used for RBG1 pattern name tables."
+   *
+   * Two derived rules used below:
+   *   rule_a: R0ON=1 AND R1ON=1  ->  NBG0..NBG3 forced off
+   *   rule_b: R0ON=0 AND R1ON=1  ->  prohibited combination; the spec
+   *           does not specify behaviour, but RBG1 cannot run without
+   *           RBG0 supplying the rotation parameter resources, so we
+   *           force RBG1 off and let NBG draws proceed normally.  This
+   *           matches what the original Saturn hardware does in
+   *           practice (RBG1 silently drops) and prevents an attempt
+   *           to render with undefined parameter tables. */
+  const int r0on = (varVdp2Regs->BGON & 0x10) != 0;
+  const int r1on = (varVdp2Regs->BGON & 0x20) != 0;
+  const int rule_a = (r0on && r1on);  /* both rotation screens active */
+  const int rule_b = (!r0on && r1on); /* prohibited config */
   switch(id) {
     case NBG0:
       display = ((varVdp2Regs->BGON & 0x1)!=0);
-      if ((varVdp2Regs->BGON & 0x20) && (varVdp2Regs->BGON & 0x10)) display = 0; //When both R0ON and R1ON are 1, the normal scroll screen can no longer be displayed vdp2 pdf, section 4.1 Screen Display Control
+      if (rule_a) display = 0; /* §4.1: NBG disabled when R0ON+R1ON=1 */
       break;
     case NBG1:
       display = ((varVdp2Regs->BGON & 0x2)!=0);
-      if ((varVdp2Regs->BGON & 0x20) && (varVdp2Regs->BGON & 0x10)) display = 0; //When both R0ON and R1ON are 1, the normal scroll screen can no longer be displayed vdp2 pdf, section 4.1 Screen Display Control
-      break;
+     if (rule_a) display = 0;
+	  break;
     case NBG2:
       display = ((varVdp2Regs->BGON & 0x4)!=0);
-      if ((varVdp2Regs->BGON & 0x20) && (varVdp2Regs->BGON & 0x10)) display = 0; //When both R0ON and R1ON are 1, the normal scroll screen can no longer be displayed vdp2 pdf, section 4.1 Screen Display Control
+	 if (rule_a) display = 0;
       break;
     case NBG3:
       display = ((varVdp2Regs->BGON & 0x8)!=0);
-      if ((varVdp2Regs->BGON & 0x20) && (varVdp2Regs->BGON & 0x10)) display = 0; //When both R0ON and R1ON are 1, the normal scroll screen can no longer be displayed vdp2 pdf, section 4.1 Screen Display Control
+	 if (rule_a) display = 0;
       break;
     case RBG0:
-      display = ((varVdp2Regs->BGON & 0x10)!=0);
+      display = r0on;
       break;
     case RBG1:
-      display = ((varVdp2Regs->BGON & 0x20)!=0);
+      /* §4.1: if R0ON=0, R1ON=1 is prohibited - drop RBG1 silently
+       * rather than rendering against undefined parameter tables. */
+      display = r1on && !rule_b;
       break;
     default:
       display = 1;
