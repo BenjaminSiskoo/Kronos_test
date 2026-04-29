@@ -3198,20 +3198,31 @@ static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
   return Vdp2ColorRamGetLineColorOffset(colorindex, alpha,0);
 }
 
-	/* VDP2 Manual §14.1 Figure 14.3:
-	 * Normal Shadow = all DC bits at 1 except LSB (DC0=0).
-	 * The shadow palette address depends on the sprite type's DC bit count.
-	 * We detect by checking if the raw CRAM index (dot color data portion)
-	 * has all bits set except bit 0.
-	 * sptype must be passed to determine the DC bit mask. */
-	static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
-		/* DC bit masks per sprite type (Figure 14.3):
-		 * Types 0,1,2,3,5 : 11 DC bits → shadow mask = 0x7FE (bits 10~1=1, bit0=0)
-		 * Types 4,6       : 10 DC bits → shadow mask = 0x3FE
-		 * Type 7          :  9 DC bits → shadow mask = 0x1FE
-		 * Type 8          :  7 DC bits → shadow mask = 0x7E
-		 * Types 9,A,B     :  6 DC bits → shadow mask = 0x3E
-		 * Types C~F       :  7 DC bits shared → shadow mask = 0x3E */
+	/* VDP2 Manual §14.1 Figure 14.3 (Normal Shadow):
+	 * The Normal Shadow code is the value where every DC (Dot Color)
+	 * bit is set to 1 except bit 0.  Each sprite type exposes a
+	 * different number of DC bits in the frame-buffer word — see
+	 * Figure 9.1 in §9.1 'Sprite Data':
+	 *
+	 *   Type 0,1,2,3,5  : 11 DC bits (DC10..DC0)  -> shadow = 0x7FE
+	 *   Type 4,6        : 10 DC bits (DC9..DC0)   -> shadow = 0x3FE
+	 *   Type 7          :  9 DC bits (DC8..DC0)   -> shadow = 0x1FE
+	 *   Type 8          :  7 DC bits (DC6..DC0)   -> shadow = 0x07E
+	 *   Type 9,A,B      :  6 DC bits (DC5..DC0)   -> shadow = 0x03E
+	 *   Type C,D,E,F    :  6 DC bits (DC5..DC0) on the FB itself.
+	 *                     DC6..DC7 exist as 'shared' bits that re-use
+	 *                     the priority/CC slots; they DO NOT count for
+	 *                     Normal Shadow detection because the FB only
+	 *                     stores 6 DC bits for these types (the shared
+	 *                     bits live in CRAM, not in the per-pixel FB).
+	 *                     -> shadow = 0x03E
+	 *
+	 * So the dc_mask is the FB-resident DC width, not the maximum
+	 * theoretical DC width via shared bits — only the bits actually
+	 * stored in the frame buffer participate in Normal Shadow detection.
+	 */
+
+static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
 		u32 dc_mask;
 		u32 dc_bits = cramindex; /* cramindex IS the dot color data for palette types */
 
@@ -3228,8 +3239,8 @@ static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
 		case 8: /* type 8: 7 DC bits */
 			dc_mask = 0x7F;
 			break;
-		case 9: case 10: case 11: /* A, B */
-		case 12: case 13: case 14: case 15: /* C~F */
+		case 9: case 10: case 11: /* 9, A, B : 6 DC bits */
+		case 12: case 13: case 14: case 15: /* C, D, E, F : 6 DC bits in FB */
 			dc_mask = 0x3F; /* 6 DC bits */
 			break;
 		default:
