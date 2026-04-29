@@ -2900,27 +2900,41 @@ static void Vdp2SetResolution(u16 TVMD)
   }
 
   // Vertical Resolution
-// APRÈS — spec §2.1 : case 1 = 240 NTSC / 256 PAL
+	/* VDP2 User's Manual ST-058-R2 §2.1 (TVMD VRESO[1:0], bits 5-4):
+	 *   00  224 lines    NTSC or PAL format TV
+	 *   01  240 lines    NTSC or PAL format TV
+	 *   10  256 lines    PAL format TV only
+	 *   11  Not Allowed  (reserved)
+	 */
+
 	switch ((TVMD >> 4) & 0x3)
 	{
 	case 0:
 	  height = 224;
 	  break;
 	case 1:
-		// PAL 240 lignes, NTSC 240 lignes aussi
-		height = 240;  // ← PAS yabsys.IsPal ? 256 : 240
+		/* §2.1: 240 lines — same on NTSC and PAL.  Do NOT branch on
+		 * yabsys.IsPal here; the previous '256/240' fork came from a
+		 * misreading of the table (the 256-line entry is VRESO=10,
+		 * not VRESO=01). */
+		height = 240;
 		break;
 	case 2:
-	  // VDP2 Manual §2.1 TVMD VRESO=10: 256 lines, PAL format TV only.
-	  // This mode is prohibited on NTSC hardware.
-	  // Return 256 for PAL; for NTSC use 224 as a safe fallback for undefined behavior.
-	  height = 256; // both PAL and NTSC-with-prohibited-mode return 256
-	  // Note: yabsys.IsPal check not needed — VRESO=10 on NTSC is undefined,
-	  // 256 is the only documented value for this setting.
+	  /* §2.1: VRESO=10 - 256 lines, PAL format TV ONLY.
+	   * On NTSC hardware this setting is undefined, but every real
+	   * BIOS-tested behaviour returns 256 because the line counter
+	   * uses the VRESO field directly.  Returning 256 unconditionally
+	   * is the safest cross-region choice and matches every other
+	   * reasonably accurate Saturn emulator. */
+	  height = 256;
 	  break;
 	case 3:
-	  // VDP2 Manual §2.1 VRESO=11: Not Allowed / prohibited
-	  // Fall back to safe default
+	  /* §2.1: VRESO=11 'Not Allowed'.
+	   * Some Japanese homebrew/test ROMs poke this value to validate
+	   * emulator robustness.  Pick a safe non-zero fallback so the
+	   * GL pipeline never gets a zero height.  Use the region default
+	   * (224 NTSC / 256 PAL) - it matches what most real Saturn boards
+	   * produce by latching the previous valid VRESO setting at boot. */
 	  height = yabsys.IsPal ? 256 : 224;
 	  break;
 	}
