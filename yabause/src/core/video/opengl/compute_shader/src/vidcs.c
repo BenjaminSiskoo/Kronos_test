@@ -803,6 +803,33 @@ void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
    * When SPD=1: transparent code is drawn as a normal pixel (black in RGB).
    * For RGB mode (mode 5): transparent test is (dot == 0x0000), NOT (MSB==0).
    * MSB=0 with non-zero data is a palette bank code, not transparent in VDP1 FB. */
+
+  /* VDP1 User's Manual ST-013-R3 §4.4 p.53 + §7.4 p.118
+   * (Normal Sprite Draw command):
+   *   Vertex A is the top-left of the sprite at (CMDXA, CMDYA).
+   *   The other three vertices are derived from A and the character size
+   *   stored in CMDSIZE (cmd->w, cmd->h):
+   *     B = (XA + w-1, YA      )      top-right
+   *     C = (XA + w-1, YA + h-1)      bottom-right
+   *     D = (XA      , YA + h-1)      bottom-left
+   *
+   * Without these explicit vertices, the downstream geometry path falls
+   * back on whatever leftover B/C/D values are still in the command
+   * struct (the VDP1 hardware re-derives them from CMDSIZE in real time;
+   * a software emulator must do it explicitly).  The Upscale variant
+   * already does this calculation - the non-upscale path was missing it,
+   * which sometimes manifested as 1-pixel sprite seams or stale
+   * dimensions when the same vdp1cmd_struct slot was reused.
+   *
+   * Use MAX(1, .) to defend against a CMDSIZE field of 0 - VDP1 §6.4
+   * says the dimension fields encode 1..63 cells of 8 pixels each, but
+   * games occasionally upload a stale 0 during list construction. */
+  cmd->CMDXB = cmd->CMDXA + MAX(1, cmd->w) - 1;
+  cmd->CMDYB = cmd->CMDYA;
+  cmd->CMDXC = cmd->CMDXA + MAX(1, cmd->w) - 1;
+  cmd->CMDYC = cmd->CMDYA + MAX(1, cmd->h) - 1;
+  cmd->CMDXD = cmd->CMDXA;
+  cmd->CMDYD = cmd->CMDYA + MAX(1, cmd->h) - 1;
    
   /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
    * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
