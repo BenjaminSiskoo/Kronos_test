@@ -3908,18 +3908,58 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   }
 }
 
-// APRÈS — VDP2 Manual §4.3: RGB format dot, bits 4-0 = red palette index equivalent.
-// Vdp2GetCCOn uses 'dot' lower nibble for special color mode 2. For RGB format,
-// the lower 4 bits of the 16-bit word are the red LSBs — pass them as dot proxy.
-// specialcolormode 3 checks CRAM MSB but cramindex is 0 (not applicable for RGB),
-// so cc will always be 1 in mode 3 with cramindex=0. Behavior is unchanged for
-// modes 0/1/2, but the dot value is now meaningful for mode 2 nibble checking.
+/* Vdp2GetPixel16bppbmp - 16-bit RGB-555 bitmap pixel fetch
+ *
+ * VDP2 User's Manual ST-058-R2:
+ *   §4.3 Table 4.3 - RGB format dot bit layout:
+ *      bit 15      = transparent / opaque flag (0 = transparent dot,
+ *                    1 = displayed dot when SPD-equivalent is active)
+ *      bits 14-10  = 5-bit Blue
+ *      bits  9- 5  = 5-bit Green
+ *      bits  4- 0  = 5-bit Red
+ *   §12.3  Special Color Calculation Function, mode 3:
+ *      "the most significant bit of color RAM data becomes the color
+ *       calculation enable bit"
+ *      For RGB-format pixels there is no CRAM lookup, but the spec
+ *      generalises this to "the most significant bit of the COLOR
+ *      DATA" - i.e. dot bit 15.  This is exactly the same physical
+ *      bit as the transparency flag, used for a different purpose
+ *      depending on whether the pixel is transparent.
+ *
+ * Special Color Calculation mode 2 inspects the lower nibble of the
+ * dot value (specialcode bitmap).  For RGB pixels the lower 4 bits
+ * are the red LSBs; passing them through preserves the documented
+ * mode-2 behaviour (and matches the previous implementation).
+ */
+
+
 static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
   u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-  /* VDP2 Manual §4.3 Table 4.3: RGB format transparent when bit 15 = 0 */
+
+  /* VDP2 §4.3 Table 4.3: RGB format transparent when bit 15 = 0 */
+
   if (!(dot & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
-  int cc = Vdp2GetCCOn(ctrl, (u8)(dot & 0xF), 0);
+
+  /* §12.3 mode 3: for RGB pixels the CC-enable flag is dot bit 15 itself.
+   * Vdp2GetCCOn() takes a 'cramindex' argument and feeds it to
+   * Vdp2ColorRamGetColorRaw() in mode 3.  We can't supply a meaningful
+   * CRAM index for an RGB pixel, but the previous code passed 0, which
+   * makes mode 3 always read CRAM[0] (a value unrelated to the actual
+   * pixel).  Short-circuit the result here using the dot's own MSB:
+   *
+   *   - mode 0/1/2 : Vdp2GetCCOn handles correctly via the 'dot' arg
+   *   - mode 3     : we override with the bit 15 of dot
+   *
+   * Color number passed unchanged to Vdp2GetCCOn so its colornumber-based
+   * path discriminates correctly. */
+  int cc;
+  if (ctrl->info.specialcolormode == 3) {
+    /* Direct bit-15 test - matches §12.3 wording 'MSB of color data' */
+    cc = (dot & 0x8000) ? 1 : 0;
+  } else {
+    cc = Vdp2GetCCOn(ctrl, (u8)(dot & 0xF), 0);
+  }
   color = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha,
                     ctrl->info.priority, cc, RGB555_TO_RGB24(dot));
   return color;
