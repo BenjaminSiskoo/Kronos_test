@@ -3859,55 +3859,68 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
     int index = 0;
     if (info->lineinc == 0 || info->islinescroll == 0) return;
 
-    /* VDP2 Manual §5.3 Figure 5.4: each active field = 4 bytes */
-    if (VDPLINE_SX(info->islinescroll)) bound += 4;  /* H-scroll: int(2) + frac(2) */
-    if (VDPLINE_SY(info->islinescroll)) bound += 4;  /* V-scroll: int(2) + frac(2) */
-    if (VDPLINE_SZ(info->islinescroll)) bound += 4;  /* H-coord-inc: int(2) + frac(2) */
+    /* §5.3 Figure 5.4: each active field = 4 bytes (2 + 2) */
+    if (VDPLINE_SX(info->islinescroll)) bound += 4;
+    if (VDPLINE_SY(info->islinescroll)) bound += 4;
+    if (VDPLINE_SZ(info->islinescroll)) bound += 4;
 
     int height = _Ygl->rheight;
 
     for (i = 0; i < height; i++) {
-        /* VDP2 Manual §5.3: table entry index advances once per lineinc lines */
-        int table_entry = i / info->lineinc;  /* screen line → table entry index */
+        /* §5.3 Figure 5.5: table entry index advances once per lineinc lines */
+        int table_entry = i / info->lineinc;
         int byte_offset = table_entry * bound;
         int field_off = 0;
         index = 0;
 
         if (VDPLINE_SX(info->islinescroll)) {
-            /* VDP2 Manual §5.3: H-scroll value, 11-bit signed integer + fractional */
-            info->lineinfo[i].LineScrollValH =
-                Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-            if (info->lineinfo[i].LineScrollValH & 0x400)
-                info->lineinfo[i].LineScrollValH |= 0xF800;
-            else
-                info->lineinfo[i].LineScrollValH &= 0x07FF;
+            /* §5.3 H-scroll: 11-bit integer (+0H) + 8-bit fractional (+2H).
+             * Read both, sign-extend the integer at bit 10, apply the
+             * fractional part as a half-pixel rounding bias (see header
+             * comment for rationale). */
+             val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+             val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
+             s32 ival = (s32)(val1 & 0x07FF);
+
+             if (val1 & 0x0400) ival -= 0x0800;     /* sign-extend bit 10 */
+            /* val2 bits 15-8 = fractional; round half-up in the direction
+             * of the sign so positive 0.5 -> +1, negative 0.5 -> -1. */
+             if ((val2 & 0xFF00) >= 0x8000) ival += (ival >= 0) ? 1 : -1;
+             info->lineinfo[i].LineScrollValH = (s16)ival;
             field_off += 4;
         } else {
             info->lineinfo[i].LineScrollValH = 0;
         }
 
         if (VDPLINE_SY(info->islinescroll)) {
-            /* VDP2 Manual §5.3: V-scroll value, 11-bit signed integer + fractional */
-            info->lineinfo[i].LineScrollValV =
-                Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-            if (info->lineinfo[i].LineScrollValV & 0x400)
-                info->lineinfo[i].LineScrollValV |= 0xF800;
-            else
-                info->lineinfo[i].LineScrollValV &= 0x07FF;
+            /* §5.3 V-scroll: same layout as H-scroll, read+round identically. */
+            val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+            val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
+            s32 ival = (s32)(val1 & 0x07FF);
+            if (val1 & 0x0400) ival -= 0x0800;     /* sign-extend bit 10 */
+            if ((val2 & 0xFF00) >= 0x8000) ival += (ival >= 0) ? 1 : -1;
+            info->lineinfo[i].LineScrollValV = (s16)ival;
             field_off += 4;
         } else {
             info->lineinfo[i].LineScrollValV = 0;
         }
 
         if (VDPLINE_SZ(info->islinescroll)) {
-            /* VDP2 Manual §5.3 Figure 5.4: H-coord-inc = 8.8 fixed point
-             * stored as integer word + fractional word */
+            /* §5.3 H coord-increment: 3-bit integer (+0H bits 2-0) plus
+             * 8-bit fractional (+2H bits 15-8) packed as 3.8 fixed-point.
+             * raw 0x0100 = 1.0 = no zoom; raw > 0x0100 = reduction;
+             * raw < 0x0100 = expansion. Used downstream as
+             *   coordincx = 1.0 / (raw / 256.0)
+             * to invert into the renderer's "UV-per-screen-pixel" form. */
             val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
             val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
             info->lineinfo[i].CoordinateIncH = (((int)(val1 & 0x07) << 8) | (int)(val2 >> 8));
+
+
             field_off += 4;
         } else {
             info->lineinfo[i].CoordinateIncH = 0x0100;
+			info->lineinfo[i].CoordinateIncH = 0x0100;  /* 1.0 = no zoom */
         }
     }
 }
