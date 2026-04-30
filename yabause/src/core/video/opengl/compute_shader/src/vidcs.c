@@ -1773,8 +1773,28 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   if ((ctrl.regs->ZMXN1.all & 0x7FF00) == 0) return;
   else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN1.all & 0x7FF00);
 
+  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 9-8 for NBG1
+   * (N1ZMQT/N1ZMHF — same encoding as bits 1-0 for NBG0).
+   *   00 = no reduction              (maxzoom = 1.0)
+   *   01 = up to 1/2                 (maxzoom = 0.5)
+   *   10/11 = up to 1/4              (maxzoom = 0.25)
+   *
+   * The previous switch lacked a 'case 0' branch, leaving maxzoom
+   * uninitialised on the local Vdp2Ctrl whenever NBG1 had no
+   * reduction enabled — which is the most common case.  The down-
+   * stream clamp `coordincx = max(coordincx, maxzoom)` then read a
+   * stack-garbage value, occasionally producing visible zoom
+   * artefacts on NBG1 backgrounds (especially in titles that share
+   * the bitmap path between zones because the clamp ran on every
+   * pixel via Vdp2DrawBitmapCoordinateInc).
+   *
+   * Mirror NBG0's switch which already handles case 0 explicitly. */
+
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
+  case 0:
+    ctrl.info.maxzoom = 1.0f;
+    break;
   case 1:
     ctrl.info.maxzoom = 0.5f;
     if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
