@@ -1991,7 +1991,16 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 2: N2COSL. */
     if ((a->CLOFSL & 0x0004) != (b->CLOFSL & 0x0004)) return 0;
- 
+
+    /* ZMCTL bits 1-0: N0ZMQT/N0ZMHF — NBG0 horizontal reduction.
+     * VDP2 Manual §5.2 Table 5.2: NBG0 reduction settings can disable
+     * NBG2 (16 colors + 1/4 reduction, 256 colors + any reduction).
+     * If a title rewrites ZMCTL mid-frame (e.g. an effect that
+     * progressively zooms NBG0), the NBG2 disable threshold can flip,
+     * so NBG2 must be re-rendered at that boundary.  Without this
+     * check the zonal optimiser keeps the previous decision and the
+     * lower zone renders against the wrong policy. */
+    if ((a->ZMCTL & 0x0003) != (b->ZMCTL & 0x0003)) return 0;
     return 1;
 }
 static void Vdp2DrawNBG2_zones(void)
@@ -2221,7 +2230,13 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 3: N3COSL. */
     if ((a->CLOFSL & 0x0008) != (b->CLOFSL & 0x0008)) return 0;
- 
+
+    /* ZMCTL bits 9-8: N1ZMQT/N1ZMHF — NBG1 horizontal reduction.
+     * VDP2 Manual §5.2 Table 5.2: NBG1 reduction settings can disable
+     * NBG3 (16 colors + 1/4 reduction, 256 colors + any reduction).
+     * Mirror of the NBG2/NBG0 ZMCTL check — keep the zonal optimiser
+     * in sync with mid-frame ZMCTL writes. */
+    if ((a->ZMCTL & 0x0300) != (b->ZMCTL & 0x0300)) return 0;
     return 1;
 }
 
