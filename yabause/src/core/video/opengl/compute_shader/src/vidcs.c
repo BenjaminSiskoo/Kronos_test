@@ -1609,7 +1609,14 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 1: N1COSL — color offset A/B select for NBG1. */
     if ((a->CLOFSL & 0x0002) != (b->CLOFSL & 0x0002)) return 0;
- 
+
+   /* MZCTL bits 15-8 + bit 1: VDP2 Manual §6.6 Mosaic Function p.196.
+     *   bits 15-12 = MZSZV (vertical mosaic size, shared across layers)
+     *   bits 11-8  = MZSZH (horizontal mosaic size, shared)
+     *   bit  1     = N1MZE (NBG1 mosaic enable)
+     * Re-emit a draw zone if any of these flips mid-frame. */
+    if ((a->MZCTL & 0xFF02) != (b->MZCTL & 0xFF02)) return 0;
+
     return 1;
 }
 
@@ -2021,6 +2028,12 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
      * check the zonal optimiser keeps the previous decision and the
      * lower zone renders against the wrong policy. */
     if ((a->ZMCTL & 0x0003) != (b->ZMCTL & 0x0003)) return 0;
+
+    /* MZCTL bits 15-8 + bit 2: VDP2 §6.6.
+     *   bit 2 = N2MZE (NBG2 mosaic enable)
+     *   bits 15-8 = shared mosaic size. */
+    if ((a->MZCTL & 0xFF04) != (b->MZCTL & 0xFF04)) return 0;
+
     return 1;
 }
 static void Vdp2DrawNBG2_zones(void)
@@ -2257,6 +2270,12 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * Mirror of the NBG2/NBG0 ZMCTL check — keep the zonal optimiser
      * in sync with mid-frame ZMCTL writes. */
     if ((a->ZMCTL & 0x0300) != (b->ZMCTL & 0x0300)) return 0;
+
+    /* MZCTL bits 15-8 + bit 3: VDP2 §6.6.
+     *   bit 3 = N3MZE (NBG3 mosaic enable)
+     *   bits 15-8 = shared mosaic size. */
+    if ((a->MZCTL & 0xFF08) != (b->MZCTL & 0xFF08)) return 0;
+
     return 1;
 }
 
