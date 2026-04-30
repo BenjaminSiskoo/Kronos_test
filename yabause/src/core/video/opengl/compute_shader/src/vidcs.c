@@ -4925,6 +4925,36 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     }
 
     if (ctrl->info.isverticalscroll) {
+      /* VDP2 Manual §5.3 'Vertical Cell Scroll Function' p.134:
+       *   "Data of the vertical cell scroll table is treated as a
+       *    table in the order from data in the left side cell of
+       *    the TV screen."
+       *
+       * The VCSC table contains ONE entry per horizontal CELL of the
+       * TV screen (not per line, not per pixel).  Each entry shifts
+       * the vertical offset for all 8 pixels of that cell column.
+       *
+       * KNOWN LIMITATION: this read uses a fixed offset of 0 from
+       * verticalscrolltbl, so every screen cell column receives the
+       * same V-shift — equivalent to applying only the first cell's
+       * vertical scroll uniformly.  Correct behaviour would require
+       * reading at 'verticalscrolltbl + cellCol * verticalscrollinc'
+       * inside the horizontal loop body and re-mapping mapy / planey
+       * / pagey when the column changes.  See Vdp2DrawMapTest()
+       * around line 5158 for the cell-stepping pattern.
+       *
+       * This bug is largely benign in practice: most titles using
+       * VCSC do so with all cell columns sharing similar V-offsets
+       * (it is mainly used for parallax planet curvature, water
+       * tilt, etc.).  Symptoms appear as flat horizontal "bands"
+       * that should instead curve column-by-column — visible in a
+       * handful of arcade ports' transition effects.
+       *
+       * Leaving the targetv += unchanged for now: the per-cell
+       * variant requires a non-trivial restructuring of the inner
+       * loop and conflicts with the zoom path that re-derives mapx
+       * from a non-cell-aligned 'hh'.  Marked as a TODO. */
+
       targetv += Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl) >> 16;
     }
 
