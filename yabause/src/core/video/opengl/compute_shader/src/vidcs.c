@@ -4204,13 +4204,32 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
 }
 
 static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
-    /* VDP2 Manual §3.1 RAMCTL bits 9-8 (VRAMD) et 11-10 (VRBMD):
-     * 00 = banque unique (256 Ko), 01 = deux banques (128 Ko chacune).
-     * AC_VRAM[bank][timeslot] utilise le même découpage.
-     * RAMCTL bit 8  (VRAMD) : 1 = VRAMA partitionnée en A0+A1
-     * RAMCTL bit 12 (VRBMD) : 1 = VRAMB partitionnée en B0+B1 */
-    int vrama_split = (ctrl->regs->RAMCTL >> 8)  & 0x1;
-    int vramb_split = (ctrl->regs->RAMCTL >> 12) & 0x1;
+    /* VDP2 Manual ST-058-R2 §3.1 'VRAM Mode Bit (VRBMD, VRAMD)' p.45:
+     *   RAMCTL bit 8  = VRAMD (VRAM-A bank partition select)
+     *   RAMCTL bit 9  = VRBMD (VRAM-B bank partition select)
+     *
+     *   00B = single bank (256 KB), full bank as one slot
+     *   01B = two banks  (128 KB each, A0+A1 or B0+B1)
+     *
+     * AC_VRAM[bank][timeslot] uses the same partitioning.
+     *
+     * Previous code read VRBMD from bit 12 (which is CRMD0, the
+     * color-RAM-mode bit).  When CRMD0 happened to be 1 (color RAM
+     * mode 1, 2048-color RGB) the function would treat VRAM-B as
+     * partitioned even when VRBMD was 0; conversely, when VRBMD was 1
+     * but CRMD0 was 0, the function would miss the partition entirely.
+     *
+     * Effect on the renderer: bank-index lookups for VRAM-B were keyed
+     * off the wrong bit.  In titles using both color-RAM mode 1 AND a
+     * partitioned VRAM-B, the bug was self-cancelling and invisible;
+     * in the more common case of color-RAM mode 0 or 2 with VRBMD=1,
+     * the bug reported the wrong bank for any address >= 0x40000,
+     * causing AC_VRAM lookups to consult the wrong bank's cycle
+     * pattern — manifesting as occasional 'wrong tiles in the right-
+     * hand half of NBG2/NBG3' when those layers' character/pattern
+     * data lived in VRAM-B1 (= addresses 0x60000-0x7FFFF). */
+    int vrama_split = (ctrl->regs->RAMCTL >> 8) & 0x1; /* §3.1 VRAMD */
+    int vramb_split = (ctrl->regs->RAMCTL >> 9) & 0x1; /* §3.1 VRBMD */
 
     addr &= 0x7FFFF;
 
