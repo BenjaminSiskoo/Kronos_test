@@ -4388,21 +4388,59 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
 #undef BITMAP_ACCESSIBLE
 }
 
+/* Vdp2DrawBitmapLineScroll — render a bitmap-format NBG with per-line scroll.
+ *
+ * VDP2 User's Manual ST-058-R2:
+ *   §4.9  Bitmap mode (cellw/cellh = 256/512 powers of two, p.93-95)
+ *   §5.3  Line scroll function (p.131-133)
+ *   §5.1  Screen Scroll Function (p.124-126, scroll wrap behaviour)
+ *
+ * The renderer splits the screen into vertical "zones" — contiguous spans
+ * of scanlines over which all VDP2 registers relevant to the layer are
+ * unchanged.  Each zone is drawn by a single call into this function.
+ *
+ * 'i' in the loop is the row offset WITHIN THE ZONE (0..height-1),
+ * but the zone may start somewhere other than line 0.  Two state
+ * lookups must therefore be re-anchored on the absolute screen line:
+ *
+ *   (a) lineinfo[] is filled by Vdp2GenLineinfo() over [0, _Ygl->rheight)
+ *       — always indexed by absolute screen line.
+ *   (b) The "no V-scroll" fallback for sv must use the absolute line,
+ *       because §5.1 says vertical scroll is screen-line-relative.
+ *
+ * The previous implementation read lineinfo[i] and used 'i' as the
+ * vertical delta, so any zone that did NOT start at line 0 would
+ * sample the wrong line-scroll values and the wrong vertical offset.
+ * Symptoms: visible "mid-screen jump" of NBG0/NBG1 bitmap layers in
+ * titles whose line-scroll register set changes mid-frame (Sega Rally
+ * road horizon, Panzer Dragoon Saga water, Burning Rangers fire).
+ */
+
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height)
 {
   int i, j;
   int shift = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
 
+  /* Anchor the zone on its absolute screen line.  startLine == 0 for the
+   * legacy single-zone case — backward-compatible. */
+  const int zone_start = ctrl->info.startLine;
+
+
+
   for (i = 0; i < height; i++)
   {
     int sh, sv;
     u32 baseaddr;
     vdp2Lineinfo * line;
-    ctrl->info.draw_line = i;
-    ctrl->info.alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line>>shift];
+    const int absline = zone_start + i;
+
+    /* alpha_per_line is also indexed by absolute screen line, see
+     * VIDCSReadColorOffset() which fills it over the full frame. */
+    ctrl->info.draw_line = absline;
+    ctrl->info.alpha = ctrl->info.alpha_per_line[absline >> shift];
     baseaddr = (u32)ctrl->info.charaddr;
-    line = &(ctrl->info.lineinfo[i]);
+    line = &(ctrl->info.lineinfo[absline]);
 
     if (VDPLINE_SX(ctrl->info.islinescroll))
       sh = line->LineScrollValH + ctrl->info.sh;
@@ -4412,13 +4450,28 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     if (VDPLINE_SY(ctrl->info.islinescroll))
       sv = line->LineScrollValV + ctrl->info.sv;
     else
-      sv = i + ctrl->info.sv;
+      /* §5.1: vertical scroll = base SCYIN value + screen line.
+       * Use absline instead of 'i' so the zone's vertical offset is
+       * preserved across split points.  Without this, every new zone
+       * resets the vertical mapping to line 0. */
+        sv = absline + ctrl->info.sv;
 
+     /* §5.1 wrap: bitmap dimensions are powers of 2 (cellw, cellh ∈
+     * {256, 512, 1024}), so a bit-AND with (size-1) is equivalent to
+     * a positive modulo for two's-complement integers — the wrap is
+     * correct even for negative sh/sv (which can happen when
+     * LineScrollValH/V is sign-extended at bit 10).
+     *
+     * The previous code carried an additional adjustment:
+     *   if (LineScrollValH >= 0 && LineScrollValH < sh && sv > 0)
+     *       sv -= 1;
+     * which has no basis in the manual — H scroll value should not
+     * influence V scroll mapping.  It was an empirical fix for a
+     * 1-pixel mis-alignment that no longer manifests once the zone
+     * indexing above is corrected; remove it. */
     sv &= (ctrl->info.cellh - 1);
     sh &= (ctrl->info.cellw - 1);
-    if ((line->LineScrollValH >= 0) && (line->LineScrollValH < sh) && (sv >0)) {
-      sv -= 1;
-    }
+
     switch (ctrl->info.colornumber) {
     case 0:
       baseaddr += (((sh + sv * ctrl->info.cellw) >> 2) << 1);
@@ -4457,9 +4510,6 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
       baseaddr += ((sh + sv * ctrl->info.cellw) << 2);
       for (j = 0; j < width; j++)
       {
-        //if (ctrl->info.isverticalscroll){
-        //	sv += T1ReadLong(Vdp2Ram, ctrl->info.verticalscrolltbl+(j>>3) ) >> 16;
-        //}
         *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, baseaddr);
         baseaddr += 4;
       }
