@@ -2294,12 +2294,42 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
  
-  /* VDP2 Manual §4.1: NBG3 disabled when NBG0 >= 2048 colors or NBG1 >= 2048 colors. */
-  if ((ctrl.info.priority == 0) ||
-      (ctrl.regs->BGON & 0x1 && (ctrl.regs->CHCTLA & 0x70) >> 4 >= 2) ||
-      (ctrl.regs->BGON & 0x2 && (ctrl.regs->CHCTLA & 0x3000) >> 12 >= 2))
-  {
-    return;
+  /* VDP2 Manual ST-058-R2:
+   *   §4.1 Table 4.1 — NBG3 hidden when NBG0 colornumber >= 2 OR
+   *                                     NBG1 colornumber >= 2
+   *   §5.2 Table 5.2 — NBG3 also hidden by NBG1 reduction settings:
+   *     NBG1 16  colors  + reduction 1/4   -> NBG3 cannot display
+   *     NBG1 256 colors  + reduction 1/2   -> NBG3 cannot display
+   *     NBG1 256 colors  + reduction 1/4   -> NBG3 cannot display
+   *
+   *   ZMCTL bit 8 = N1ZMHF (NBG1 horizontal half),
+   *   ZMCTL bit 9 = N1ZMQT (NBG1 horizontal quarter).
+   *
+   * The previous check enforced the colornumber>=2 rules from Table 4.1
+   * but ignored Table 5.2.  Mirror the NBG2 fix exactly, but on the
+   * NBG1 side:
+   *   - 16-color NBG1 with N1ZMQT=1  -> kill NBG3
+   *   - 256-color NBG1 with any reduction -> kill NBG3 */
+  if (ctrl.info.priority == 0) return;
+
+  if (ctrl.regs->BGON & 0x1) {
+    /* NBG0 >= 2048 colors disables NBG3 (Table 4.1) */
+    if (((ctrl.regs->CHCTLA & 0x70) >> 4) >= 2) return;
+  }
+
+  if (ctrl.regs->BGON & 0x2) {
+    const int n1_color = (ctrl.regs->CHCTLA & 0x3000) >> 12;
+    const int n1_zmhf  = (ctrl.regs->ZMCTL >> 8) & 1;
+    const int n1_zmqt  = (ctrl.regs->ZMCTL >> 9) & 1;
+
+    /* Table 4.1: NBG1 >= 2048 colors disables NBG3 */
+    if (n1_color >= 2) return;
+
+    /* Table 5.2: 256 colors + any reduction disables NBG3 */
+    if (n1_color == 1 && (n1_zmhf || n1_zmqt)) return;
+
+    /* Table 5.2: 16 colors + 1/4 reduction disables NBG3 */
+    if (n1_color == 0 && n1_zmqt) return;
   }
  
   ctrl.info.islinescroll = 0;
