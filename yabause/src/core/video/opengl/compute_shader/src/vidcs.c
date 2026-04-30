@@ -4564,11 +4564,25 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     int inch = inch_base;
  
     baseaddr = (u32)ctrl->info.charaddr;
-    int index = i;
-    if (ctrl->info.lineinc > 0) index /= ctrl->info.lineinc;
-    line = &(ctrl->info.lineinfo[index]);
- 
-    ctrl->info.draw_line = i;
+    /* VDP2 Manual §5.3 Figure 5.5 'Line Scroll Table' (p.133):
+     * Vdp2GenLineinfo() fills lineinfo[] over [0, _Ygl->rheight),
+     * indexed by ABSOLUTE screen line, and applies the per-line
+     * /lineinc grouping internally (line at absline reads
+     * table_entry = absline / lineinc).
+     *
+     * The previous code divided 'i' by lineinc here too, producing
+     * a DOUBLE division and reading lineinfo[i/lineinc] — i.e. the
+     * data that lineinfo[i/lineinc] was supposed to mirror, not the
+     * data for screen line i.  For lineinc > 1 the read was off by
+     * up to (lineinc-1)*N lines and could even go out of bounds for
+     * upscaled rheights (e.g. i=400 with lineinc=2 -> index 200,
+     * which is fine for 240-line rheight but indexable only because
+     * lineinfo is dimensioned generously; on shorter heights this
+     * would be reading past the array).
+     *
+     * Fix: read lineinfo[i] directly. */
+     line = &(ctrl->info.lineinfo[i]);
+     ctrl->info.draw_line = i;
  
     /* Mode ABSOLU conservé : v est l'offset vertical écran absolu, converti
      * en rangée source via incv. SCYIN0 du snapshot de zone s'ajoute
