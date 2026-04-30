@@ -1289,7 +1289,23 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
                       >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
     int needUpdate = 0;
     for (int k = 0; k < yabsys.VBlankLineCount; k++) {
-      if ((Vdp2Lines[k].BGON & 0x10) != 0) {
+      /* VDP2 Manual §4.1 BGON p.49: bits map to scroll screens as:
+       *   bit 0 = N0ON (NBG0)
+       *   bit 1 = N1ON (NBG1)
+       *   bit 4 = R0ON (RBG0)
+       *
+       * The previous code tested BGON & 0x10 (R0ON / RBG0) inside the
+       * NBG0 disable scan — a copy-paste bug from a path that was
+       * checking the rotation screen.  In NBG0 the per-line BGON test
+       * must match N0ON (bit 0).
+       *
+       * Symptom of the original bug: when NBG0 was disabled but RBG0
+       * was active on a given line, the loop incorrectly applied the
+       * RAMCTL-conflict mask to NBG0's display[k] flag — and conversely,
+       * when NBG0 was active but RBG0 was not, the conflict was missed
+       * and the layer rendered against an unsafe RAMCTL cycle pattern.
+       * Either way the per-line decision was keyed off the wrong layer. */
+      if ((Vdp2Lines[k].BGON & 0x1) != 0) {
         if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
           needUpdate = 1;
           ctrl.info.display[k] = 0;
@@ -1707,7 +1723,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
     int needUpdate = 0;
     for (int i=0; i<yabsys.VBlankLineCount; i++) {
-      if ((Vdp2Lines[i].BGON & 0x10)!=0) {
+      /* VDP2 Manual §4.1 BGON p.49: NBG1 enable bit is N1ON = BGON bit 1
+       * (mask 0x02), NOT R0ON (mask 0x10).  Same copy-paste bug fixed in
+       * NBG0; the per-line RAMCTL-conflict scan must key off the layer
+       * actually being drawn. */
+      if ((Vdp2Lines[i].BGON & 0x2)!=0) {
         if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
           needUpdate = 1;
           ctrl.info.display[i] = 0;
