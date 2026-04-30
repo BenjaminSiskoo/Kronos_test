@@ -4891,16 +4891,34 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
   for (v = 0; v < screenH; v++) {
     int targetv = 0;
+	
+    /* VDP2 Manual §5.3 Figure 5.5: lineinfo[] is filled by
+     * Vdp2GenLineinfo() indexed by ABSOLUTE screen line.  Adjacent
+     * entries within the same NxLSS interval already share identical
+     * data (the per-table_entry grouping is applied inside
+     * Vdp2GenLineinfo when populating).
+     *
+     * The previous code indexed by 'lineindex<<res_shift', where
+     * 'lineindex' is the loop's table_entry counter (incremented
+     * once per linescroll_spacing lines).  That is a valid index
+     * only if lineinfo[] is indexed by table_entry — it is NOT.
+     * Reading lineinfo[lineindex] for line 'v' returns the values
+     * stored at array index lineindex, which Vdp2GenLineinfo filled
+     * with table_entry = lineindex / lineinc — i.e. wrong by a
+     * factor of lineinc.
+     *
+     * Fix: read lineinfo[v] directly, mirroring the corrected
+     * Vdp2DrawBitmapLineScroll / Vdp2DrawBitmapCoordinateInc paths. */
 
     if (VDPLINE_SX(ctrl->info.islinescroll)) {
-      sx = ctrl->info.sh + ctrl->info.lineinfo[lineindex<<res_shift].LineScrollValH;
+      sx = ctrl->info.sh + ctrl->info.lineinfo[v].LineScrollValH;
     }
     else {
       sx = ctrl->info.sh;
     }
 
     if (VDPLINE_SY(ctrl->info.islinescroll)) {
-      targetv = ctrl->info.sv + (v&linemask) + ctrl->info.lineinfo[lineindex<<res_shift].LineScrollValV;
+       targetv = ctrl->info.sv + (v&linemask) + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
       targetv = ctrl->info.sv + ((v*incv)>>8);
@@ -4918,7 +4936,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 	 * VDP2 Manual §5.3: "coordinate increment must not exceed reduction setting."
 	 */
 	if (VDPLINE_SZ(ctrl->info.islinescroll)) {
-		u16 raw_inc = ctrl->info.lineinfo[lineindex].CoordinateIncH;
+		u16 raw_inc = ctrl->info.lineinfo[v].CoordinateIncH;
 		if (raw_inc == 0) {
 			/* VDP2 Manual §5.3: 0 is undefined — treat as 1.0 (no zoom) */
 			ctrl->info.coordincx = 1.0f;
