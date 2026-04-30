@@ -4051,6 +4051,31 @@ static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   return color;
 }
 
+/* Vdp2GetPixel32bppbmp - 32-bit RGB-888 bitmap pixel fetch.
+ *
+ * VDP2 User's Manual ST-058-R2 §4.4 RGB Format Dot Data:
+ *   "16,770,000 colors are designated by RGB 8-bit; 32 bits are used
+ *    (only the MSB and the lower 24 bits are used)."
+ *
+ * 32-bit dot layout (the two consecutive u16 words 'dot1' / 'dot2'):
+ *   word @ +0 (dot1):  bit 15      = transparent flag (0=transparent dot)
+ *                      bits 14- 8  = reserved (don't care)
+ *                      bits  7- 0  = R (8 bits)
+ *   word @ +2 (dot2):  bits 15- 8  = G (8 bits)
+ *                      bits  7- 0  = B (8 bits)
+ *
+ * Special Color Calculation mode 3 (§12.3):
+ *   For palette pixels the CC-enable flag is the MSB of CRAM data.
+ *   For RGB pixels there is no CRAM lookup; the spec generalises to
+ *   "MSB of color data" — for 32-bit RGB that is dot1 bit 15 (the
+ *   same physical bit as the transparency flag, used differently).
+ *
+ * Mode 0/1/2 Vdp2GetCCOn() expects a meaningful 'dot' nibble for its
+ * mode-2 specialcode bitmap test.  For RGB-888 there is no useful
+ * nibble; pass the LSBs of B (dot2 & 0xF) which preserves the
+ * documented mode-2 semantics on the LSBs of the color code.
+ */
+
 static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
   u16 dot1, dot2;
@@ -4059,10 +4084,23 @@ static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   dot2 = Vdp2RamReadWord(NULL, Vdp2Ram, addr+2);
 
   cc = Vdp2GetCCOn(ctrl, 0, 0);
+  
+  /* §4.4: transparent when dot1 bit 15 = 0 */
+  if (!(dot1 & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
 
-  if (!(dot1 & 0x8000) && ctrl->info.transparencyenable) color = 0x00000000;
-  else color = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, ctrl->info.priority, cc, (((dot1 & 0xFF) << 16) | (dot2 & 0xFF00) | (dot2 & 0xFF)));
-  return color;
+  /* §12.3 mode 3: short-circuit using dot1 bit 15.  Modes 0/1/2 use
+   * the standard Vdp2GetCCOn() path with the B LSB nibble as the
+   * specialcode-test dot value (mirrors the 16bpp helper). */
+  if (ctrl->info.specialcolormode == 3) {
+    cc = (dot1 & 0x8000) ? 1 : 0;
+  } else {
+    cc = Vdp2GetCCOn(ctrl, (u8)(dot2 & 0xF), 0);
+  }
+
+  color = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, ctrl->info.priority,
+                    cc,
+                    (((u32)(dot1 & 0xFF) << 16) | ((u32)dot2 & 0xFF00) | ((u32)dot2 & 0xFF)));
+	return color;
 }
 
 static u32 getAlpha(vdp2draw_struct *info, int id) {
