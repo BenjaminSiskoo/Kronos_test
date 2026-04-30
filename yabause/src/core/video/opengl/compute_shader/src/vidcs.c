@@ -2064,12 +2064,42 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.priority = ctrl.regs->PRINB & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG2PlaneAddr;
 
-	// VDP2 Manual §4.1 Table 4.1: NBG2 is disabled when NBG0 uses
-	// 2048 colors or more (colornumber >= 2, i.e. CHCTLA bits 6-4 >= 010B).
-	if ((ctrl.info.priority == 0) ||
-		(ctrl.regs->BGON & 0x1 &&
-		 ((ctrl.regs->CHCTLA & 0x70) >> 4) >= 2)) {
-		return;
+	/* VDP2 Manual §4.1 Table 4.1 (color count) and §5.2 Table 5.2
+	 * (reduction enable) jointly govern when NBG2 is hidden:
+	 *
+	 * Table 4.1 — NBG0 colornumber >= 010B (>= 2048 colors) -> NBG2 off
+	 * Table 4.1 — NBG0 colornumber == 100B (16,770,000 colors) -> NBG1..NBG3 off
+	 * Table 5.2 — reduction setting on NBG0 also restricts NBG2:
+	 *
+	 *   NBG0 16  colors  + NBG0 reduction up to 1/4   -> NBG2 cannot display
+	 *   NBG0 256 colors  + NBG0 reduction up to 1/2   -> NBG2 cannot display
+	 *   NBG0 256 colors  + NBG0 reduction up to 1/4   -> NBG2 cannot display
+	 *
+	 * ZMCTL bits 0/1 (N0ZMHF / N0ZMQT) encode the NBG0 reduction:
+	 *   00 = none (no restriction)
+	 *   01 = up to 1/2  -> kills NBG2 only when NBG0 has 256 colors
+	 *   1x = up to 1/4  -> kills NBG2 for both 16- and 256-color NBG0
+	 *
+	 * The previous check only handled the colornumber>=2 case from Table
+	 * 4.1.  Games that drove NBG0 in 16-color mode with N0ZMQT=1 (heavy
+	 * horizontal reduction) would still see NBG2 rendered, which is
+	 * forbidden by Table 5.2 and produces visual conflicts on real
+	 * hardware (NBG2 is supposed to vanish when NBG0 reduces past these
+	 * thresholds because of the VRAM access bandwidth budget). */
+	if (ctrl.info.priority == 0) return;
+	if (ctrl.regs->BGON & 0x1) {
+		const int n0_color = (ctrl.regs->CHCTLA & 0x70) >> 4;
+		const int n0_zmhf  = (ctrl.regs->ZMCTL >> 0) & 1; /* up to 1/2 */
+		const int n0_zmqt  = (ctrl.regs->ZMCTL >> 1) & 1; /* up to 1/4 */
+
+		/* Table 4.1: NBG0 >= 2048 colors disables NBG2 */
+		if (n0_color >= 2) return;
+
+		/* Table 5.2: 256 colors + any reduction disables NBG2 */
+		if (n0_color == 1 && (n0_zmhf || n0_zmqt)) return;
+
+		/* Table 5.2: 16 colors + 1/4 reduction disables NBG2 */
+		if (n0_color == 0 && n0_zmqt) return;
 	}
 
   ctrl.info.islinescroll = 0;
