@@ -513,7 +513,7 @@ static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg)
   /*------------------------------------------------------------------------------
    Rotate Screen drawing
    ------------------------------------------------------------------------------*/
-  static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg)
+static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg)
   {
     vdp2draw_struct *info = &rbg->ctrl.info;
     YglTexture *texture = &rbg->ctrl.texture;
@@ -542,9 +542,12 @@ static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg)
     info->cor = 0x00;
     info->cog = 0x00;
     info->cob = 0x00;
-
+	
+    /* VDP2 §6.2: only RPMD bits 1-0 are defined; mask them explicitly
+     * so the 'use parameter B' fast-path is robust against undefined
+     * upper bits returned by the host on register reads. */
+    if ((rbg->ctrl.regs->RPMD & 0x3) != 0) rbg->useb = 1;
     if (rbg->ctrl.regs->RPMD != 0) rbg->useb = 1;
-    if (rbg->rbg_type == 0x04) rbg->useb = 1;
 
     if (!info->isbitmap)
     {
@@ -2509,7 +2512,21 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
   ReadPlaneSizeR(&rbg->paraA, rbg->ctrl.regs->PLSZ >> 8);
   ReadPlaneSizeR(&rbg->paraB, rbg->ctrl.regs->PLSZ >> 12);
 
-if (rbg->ctrl.regs->RPMD == 0x03)
+  /* VDP2 Manual ST-058-R2 §6.2 'Rotation Parameter Mode Register'
+   * (RPMD @ 1800B0H, p.166):
+   *   bits 1-0 = RPMD[1:0]   ;  bits 15-2 are reserved (read-undefined)
+   *   00B  Mode 0 - parameter A only
+   *   01B  Mode 1 - parameter B only
+   *   10B  Mode 2 - A/B selected by coefficient data MSB
+   *   11B  Mode 3 - A/B selected by rotation parameter window
+   *
+   * Always mask 0x3 — the upper bits are reserved, and on real Saturn
+   * hardware their value is undefined.  The previous direct equality
+   * 'RPMD == 0x03' would silently miss mode 3 if any reserved bit
+   * happened to read as 1.  Same reasoning applies to the
+   * 'RPMD != 0' fast-path elsewhere — both have been switched to the
+   * masked form. */
+  if ((rbg->ctrl.regs->RPMD & 0x3) == 0x03)
   {
     //printf("RPMD 0x3\n");
     // Enable Window0(RPW0E)?
