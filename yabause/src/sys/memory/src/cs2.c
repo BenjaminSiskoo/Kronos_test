@@ -2331,8 +2331,9 @@ void Cs2GetActualSize(void) {
 void Cs2GetSectorInfo(void) {
   u32 gsisctnum;
   u32 gsibufno;
-
-  gsisctnum = Cs2Area->reg.CR2 & 0xFF;
+	// ST-040-R4-051795, §6.12 « Get Sector Info (command 0x54) » :
+	// CR2[15:0] = Sector Number in partition
+  gsisctnum = Cs2Area->reg.CR2;   // word entier, était: & 0xFF
   gsibufno = Cs2Area->reg.CR3 >> 8;
   if (gsibufno < MAX_SELECTORS) {
      if (gsisctnum < Cs2Area->partition[gsibufno].numblocks) {
