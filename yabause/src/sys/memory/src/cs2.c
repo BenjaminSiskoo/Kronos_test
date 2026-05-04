@@ -1157,11 +1157,13 @@ void Cs2Execute(void) {
       CDLOG("cs2\t: Command: setCDDeviceConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       Cs2SetCDDeviceConnection();
       break;
-    case 0x31:
-      CDLOG("cs2\t: Command: Get CD Device Connection\n");
-      Cs2SetCDDeviceConnection();
-      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
-      break;
+	case 0x31:
+    CDLOG("cs2\t: Command: Get CD Device Connection\n");
+    Cs2GetCDDeviceConnection();   // était: Cs2SetCDDeviceConnection()
+    CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n",
+          Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2,
+          Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+    break;
     case 0x32:
       CDLOG("cs2\t: Command: getLastBufferDestination %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       Cs2GetLastBufferDestination();
