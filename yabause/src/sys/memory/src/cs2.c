@@ -2296,17 +2296,22 @@ void Cs2CalculateActualSize(void) {
   {
      Cs2Area->calcsize = 0;
 
+     // FIXED BUG 12: cassectoffset était constant dans la boucle
+     // → on additionnait casnumsect fois la taille du même bloc
+     // FIXED: utiliser idx = cassectoffset + i pour parcourir les bons blocs
+     // Ref: ST-040-R4-051795 §6.11 "Calculate Actual Size (command 0x52)"
+     // CR2 = sector offset, CR4 = number of sectors, retour en mots (taille / 2)
      for (i = 0; i < casnumsect; i++)
      {
-        if (Cs2Area->partition[casbufno].block[cassectoffset])
-           Cs2Area->calcsize += (Cs2Area->partition[casbufno].block[cassectoffset]->size / 2);
+        u32 idx = cassectoffset + i;
+        if (idx < MAX_BLOCKS && Cs2Area->partition[casbufno].block[idx])
+           Cs2Area->calcsize += (Cs2Area->partition[casbufno].block[idx]->size / 2);
      }
   }
   else
      Cs2Area->calcsize = 0;
 
   CDLOG("Cs2Area->calcsize = %d", Cs2Area->calcsize);
-
   doCDReport(Cs2Area->status);
   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
 }
