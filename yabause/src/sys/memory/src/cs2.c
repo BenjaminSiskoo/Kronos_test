@@ -1829,7 +1829,9 @@ void Cs2SeekDisc(void) {
     int i;
 
      sdFAD = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
-     sdFAD = (sdFAD & 0xFFFFF);
+	//ST-040-R4-051795, §6.3 « Seek Disc (command 0x11) » :
+	// SP[23:0]. Bit 23 = 1 → SP[22:0] = FAD
+     sdFAD = (sdFAD & 0x7FFFFF);   // était: 0xFFFFF (20 bits)
     setStatus(CDB_STAT_PAUSE);
     for (i = 0; i < 99; i++){
        u32 tfad = Cs2Area->TOC[i] & 0x00FFFFFF;
