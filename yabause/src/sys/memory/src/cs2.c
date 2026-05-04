@@ -1725,8 +1725,9 @@ void Cs2PlayDisc(void) {
   }
   else if (pdepos & 0x800000)
   {
-     // FAD Mode
-     Cs2Area->playendFAD = Cs2Area->playFAD+(pdepos & 0xFFFFF);
+     // FAD Mode -ST-040-R4-051795, §6.2 « Play Disc (command 0x20) », champ EP : EP [23:0] 
+	 // End FAD or Track/Index. Bit 23 = 1 → EP[22:0] = relative FAD offset
+     Cs2Area->playendFAD = Cs2Area->playFAD+(pdepos & 0x7FFFFF); // était: (pdepos & 0xFFFFF) — masquait à tort les bits 20-22
   }
   else if (pdepos != 0)
   {
