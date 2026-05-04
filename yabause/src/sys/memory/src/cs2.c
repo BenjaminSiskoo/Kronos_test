@@ -3463,16 +3463,29 @@ partition_struct * Cs2FilterData(filter_struct * curfilter, int isaudio)
   // convert raw sector to type specified in getsectsize
   switch(Cs2Area->workblock.size)
   {
-     case 2048: // user data only
-                if (Cs2Area->workblock.data[0xF] == 0x02)
-                   // m2f1
-                   memcpy(fltpartition->block[fltpartition->numblocks]->data,
-                          Cs2Area->workblock.data + 24, Cs2Area->workblock.size);
-                else
-                   // m1
-                   memcpy(fltpartition->block[fltpartition->numblocks]->data,
-                             Cs2Area->workblock.data + 16, Cs2Area->workblock.size);
-                break;
+	case 2048:
+		if (Cs2Area->workblock.data[0xF] == 0x02)
+		{
+			if (!(Cs2Area->workblock.data[0x12] & 0x20))
+			{
+				// Mode 2 Form 1 — 2048 bytes user data at offset +24
+				memcpy(fltpartition->block[fltpartition->numblocks]->data,
+					   Cs2Area->workblock.data + 24, 2048);
+			}
+			else
+			{
+				// Mode 2 Form 2 — truncate to 2048 bytes (pas 2324)
+				memcpy(fltpartition->block[fltpartition->numblocks]->data,
+					   Cs2Area->workblock.data + 24, 2048);
+			}
+		}
+		else
+		{
+			// Mode 1
+			memcpy(fltpartition->block[fltpartition->numblocks]->data,
+				   Cs2Area->workblock.data + 16, 2048);
+		}
+		break;
      case 2324: // m2f2 user data only
                 memcpy(fltpartition->block[fltpartition->numblocks]->data,
                        Cs2Area->workblock.data + 24, Cs2Area->workblock.size);
