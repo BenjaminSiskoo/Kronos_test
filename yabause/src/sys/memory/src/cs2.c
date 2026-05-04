@@ -773,7 +773,8 @@ void Cs2Reset(void) {
      Cs2Area->block[i].size = -1;
      memset(Cs2Area->block[i].data, 0, 2352);
   }
-
+	//ST-040-R4-051795, §5.3 « Reset Selector (command 0x48) », tableau des flags :
+	//bit 2 = 1 → reset buffer data, all blocks freed, freespace = MAX
   Cs2Area->blockfreespace = MAX_BLOCKS;
 
   // initialize TOC
@@ -2058,7 +2059,10 @@ void Cs2SetFilterMode(void) {
      // Initialize filter conditions
      Cs2Area->filter[sfmfilternum].mode = 0;
      Cs2Area->filter[sfmfilternum].FAD = 0;
-     Cs2Area->filter[sfmfilternum].range = 0;
+	//ST-040-R4-051795, §5.5.3 « Set Filter Mode (command 0x44) » :
+	//When bit 7 = 1 : initialize filter. Default range = 0xFFFFFFFF (no restriction)
+	//§5.5.2 « Reset Selector (command 0x48) » confirme la même valeur par défaut.
+     Cs2Area->filter[sfmfilternum].range = 0xFFFFFFFF;  // était: 0
      Cs2Area->filter[sfmfilternum].chan = 0;
      Cs2Area->filter[sfmfilternum].smmask = 0;
      Cs2Area->filter[sfmfilternum].cimask = 0;
