@@ -2745,7 +2745,9 @@ void Cs2ReadDirectory(void) {
   }
   else if (rdfilternum < 0x24)
   {
-     if (Cs2ReadFileSystem(Cs2Area->filter + rdfilternum, ((Cs2Area->reg.CR3 & 0xFF) << 8) | Cs2Area->reg.CR4, 1) != 0)
+		// ST-040-R4-051795, §6.9 « Read Directory (command 0x71) » :
+		// CR3[7:0] = FAD[23:16], CR4[15:0] = FAD[15:0]
+     if (Cs2ReadFileSystem(Cs2Area->filter + rdfilternum, ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4, 1) != 0) // était: << 8
      {
         CDLOG("cs2\t: ReadFileSystem failed\n");
         doCDReport(CDB_STAT_REJECT);
