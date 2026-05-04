@@ -2837,15 +2837,20 @@ void Cs2ReadFile(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2AbortFile(void) {
-  if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN &&
-      (Cs2Area->status & 0xF) != CDB_STAT_NODISC) {
+    if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN &&
+        (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
         setStatus(CDB_STAT_PAUSE);
-      }
-  Cs2Area->isonesectorstored = 0;
-  Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
-  Cs2Area->cdwnum = 0;
-  doCDReport(Cs2Area->status);
-  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+
+    Cs2Area->isonesectorstored = 0;
+    Cs2Area->datatranstype     = CDB_DATATRANSTYPE_INVALID;
+    Cs2Area->cdwnum            = 0;
+	// ST-040-R4-051795, §6.15 « Abort File (command 0x75) » :
+	// The drive returns to Pause state ; all pending sector transfers are cancelled.
+    Cs2Area->_periodiccycles   = 0;
+    Cs2Area->_periodictiming   = 0;
+
+    doCDReport(Cs2Area->status);
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
 }
 
 //////////////////////////////////////////////////////////////////////////////
