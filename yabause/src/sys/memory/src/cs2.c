@@ -1003,18 +1003,14 @@ static void Cs2Exec_unit(u32 timing) {
 
             break;
          }
-         case CDB_STAT_SEEK:
-    		 {
-    			 if (!Cs2Area->isbufferfull){
-    				 setStatus(CDB_STAT_PLAY);
-             Cs2Area->_periodiccycles = 0;
-                // Cs2Area->_periodictiming = 100000;
-				// ST-040-R4-051795, §3.1 « Drive Speed » : une fois la tête positionnée (fin du seek),
-				// le timing inter-secteur redevient le timing de lecture (1x = ~13,3 ms, 2x = ~6,6 ms).
-					 Cs2SetTiming(1); 
-    				 Cs2Area->options = 0x8;
-    			 }
-    			 break;
+		 case CDB_STAT_SEEK:{
+			if (!Cs2Area->isbufferfull) {
+				setStatus(CDB_STAT_PLAY);
+				Cs2Area->_periodiccycles = 0;
+				Cs2SetTiming(1);          // ← AJOUT : timing lecture, pas seek
+				Cs2Area->options = 0x8;
+			}
+			break;
     		 }
          case CDB_STAT_SCAN:
             break;
@@ -2818,12 +2814,12 @@ void Cs2GetFileInfo(void) {
 void Cs2ReadFile(void) {
   u32 rfoffset, rffilternum, rffid, rfsize;
 
-  // FIXED: CR1[7:0] = File ID, CR2[15:0] = Sector Offset
-  // CR3[15:8] = Filter Number (CR3[7:0] et CR4 réservés)
+  // FIXED: rfoffset = CR2 seul (Sector Offset)
+  // CR1[7:0] est réservé pour cette commande, pas partie de l'offset
   // Ref: ST-040-R4-051795 §6.14 "Read File (command 0x74)"
-  rffid       = Cs2Area->reg.CR1 & 0xFF;   // était: assemblé depuis CR1+CR2 (FAUX)
-  rfoffset    = Cs2Area->reg.CR2;           // était: mélangeait CR1[7:0]<<8 | CR2 (FAUX)
-  rffilternum = Cs2Area->reg.CR3 >> 8;     // inchangé, correct
+  rfoffset    = Cs2Area->reg.CR2;                              // FIXED: était (CR1&0xFF)<<8 | CR2
+  rffilternum = Cs2Area->reg.CR3 >> 8;                        // correct, inchangé
+  rffid       = ((Cs2Area->reg.CR3 & 0xFF) << 8) | Cs2Area->reg.CR4;  // correct, inchangé
 
   rfsize = ((Cs2Area->fileinfo[rffid].size + Cs2Area->getsectsize - 1) /
            Cs2Area->getsectsize) - rfoffset;
@@ -2833,7 +2829,7 @@ void Cs2ReadFile(void) {
   Cs2Area->playFAD = Cs2Area->FAD = Cs2Area->fileinfo[rffid].lba + rfoffset;
   Cs2Area->playendFAD = Cs2Area->playFAD + rfsize;
   Cs2Area->options = 0x8;
-  Cs2SetTiming(1);                          // FIXED: était commenté — nécessaire pour timing lecture
+  Cs2SetTiming(1);                   // FIXED: décommenté
   Cs2Area->outconcddev = Cs2Area->filter + rffilternum;
   setStatus(CDB_STAT_PLAY);
   Cs2Area->_periodiccycles = 0;
@@ -3683,7 +3679,7 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
          if (Cs2Area->curdirsect == 0)
             return -1;
 
-         curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].lba;
+         curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].lba - 150;
          Cs2Area->curdirsize = (Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].size / blocksectsize) - 1;
          numsectorsleft = (u8)Cs2Area->curdirsize;
          Cs2Area->curdirfidoffset = 0;
@@ -3694,7 +3690,7 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
    memset(Cs2Area->fileinfo, 0, sizeof(dirrec_struct) * MAX_FILES);
 
    // now read in first sector of directory record
-  if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba)) == NULL)
+   if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba+150)) == NULL)
       return -2;
 
    curdirlba++;
