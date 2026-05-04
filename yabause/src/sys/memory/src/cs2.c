@@ -1428,17 +1428,20 @@ void Cs2GetHardwareInfo(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2GetToc(void) {
-  Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+    Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+	// ST-040-R4-051795, §6.4 « Get TOC (command 0x02) » :
+	// À l'issue de la commande, le flag Disc Changed doit être effacé si la lecture TOC réussit.
+    Cs2Area->isdiskchanged = 0;
 
-  Cs2Area->transfercount = 0;
-  Cs2Area->infotranstype = 0;
+    Cs2Area->transfercount = 0;
+    Cs2Area->infotranstype = 0;
 
-  Cs2Area->reg.CR1 = Cs2Area->status << 8;
-  Cs2Area->reg.CR2 = 0xCC;
-  Cs2Area->reg.CR3 = 0x0;
-  Cs2Area->reg.CR4 = 0x0;
-  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
-  setBusyStatus(CDB_STAT_PAUSE);
+    Cs2Area->reg.CR1 = Cs2Area->status << 8;
+    Cs2Area->reg.CR2 = 0xCC;
+    Cs2Area->reg.CR3 = 0x0;
+    Cs2Area->reg.CR4 = 0x0;
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+    setBusyStatus(CDB_STAT_PAUSE);
 }
 
 //////////////////////////////////////////////////////////////////////////////
