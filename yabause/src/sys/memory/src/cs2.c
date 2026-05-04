@@ -2818,29 +2818,27 @@ void Cs2GetFileInfo(void) {
 void Cs2ReadFile(void) {
   u32 rfoffset, rffilternum, rffid, rfsize;
 
-  rfoffset = ((Cs2Area->reg.CR1 & 0xFF) << 8) | Cs2Area->reg.CR2;
-  rffilternum = Cs2Area->reg.CR3 >> 8;
-  rffid = ((Cs2Area->reg.CR3 & 0xFF) << 8) | Cs2Area->reg.CR4;
+  // FIXED: CR1[7:0] = File ID, CR2[15:0] = Sector Offset
+  // CR3[15:8] = Filter Number (CR3[7:0] et CR4 réservés)
+  // Ref: ST-040-R4-051795 §6.14 "Read File (command 0x74)"
+  rffid       = Cs2Area->reg.CR1 & 0xFF;   // était: assemblé depuis CR1+CR2 (FAUX)
+  rfoffset    = Cs2Area->reg.CR2;           // était: mélangeait CR1[7:0]<<8 | CR2 (FAUX)
+  rffilternum = Cs2Area->reg.CR3 >> 8;     // inchangé, correct
+
   rfsize = ((Cs2Area->fileinfo[rffid].size + Cs2Area->getsectsize - 1) /
            Cs2Area->getsectsize) - rfoffset;
 
   Cs2SetupDefaultPlayStats(Cs2FADToTrack(Cs2Area->fileinfo[rffid].lba + rfoffset), 0);
   Cs2Area->maxrepeat = 0;
-
   Cs2Area->playFAD = Cs2Area->FAD = Cs2Area->fileinfo[rffid].lba + rfoffset;
   Cs2Area->playendFAD = Cs2Area->playFAD + rfsize;
-
   Cs2Area->options = 0x8;
-
-  // Cs2SetTiming(1);
-
+  Cs2SetTiming(1);                          // FIXED: était commenté — nécessaire pour timing lecture
   Cs2Area->outconcddev = Cs2Area->filter + rffilternum;
-
   setStatus(CDB_STAT_PLAY);
   Cs2Area->_periodiccycles = 0;
   Cs2Area->playtype = CDB_PLAYTYPE_FILE;
   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
-
   doCDReport(Cs2Area->status);
   Cs2SetIRQ(CDB_HIRQ_CMOK);
 }
