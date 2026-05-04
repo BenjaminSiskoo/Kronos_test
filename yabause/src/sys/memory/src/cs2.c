@@ -506,47 +506,39 @@ void FASTCALL Cs2WriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 ad
 
    switch (addr)
    {
-      case 0x00:
-         // transfer data
-         if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_PUTSECTOR)
-         {
-            // put sector
-           //LOG("[CS2] put addr=%d, val=%08X", Cs2Area->datatransoffset, val );
+	case 0x00:
+	   if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_PUTSECTOR)
+	   {
+		  if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
+		  {
+			 // FIXED BUG 8: suppression du calcul d'offset négatif (size/offset inutilisés)
+			 // FIXED: suppression du double incrément cdwnum/datatransoffset
+			 // Ref: ST-040-R4-051795 §6.13 "Put Sector Data (command 0x64)"
 
-            // Make sure we still have sectors to transfer
-            if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
-            {
-              int size = (Cs2Area->putsectsize - Cs2Area->getsectsize) / 24;
+			 if (Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans] == NULL)
+			 {
+				CDLOG("cs2\t: PutSector block NULL\n");
+				return;
+			 }
 
-              int offset = Cs2Area->datatransoffset - size;
+			 u8 *ptr = &Cs2Area->datatranspartition->block[
+				Cs2Area->datanumsecttrans]->data[Cs2Area->datatransoffset];
+			 T1WriteLong(ptr, 0, val);
 
-              if (offset >= 0) {
-                // Transfer Data
-                u8 *ptr = &Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans]->data[offset];
+			 Cs2Area->cdwnum          += 4;
+			 Cs2Area->datatransoffset += 4;
 
-                if (Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans] == NULL)
-                {
-                  CDLOG("cs2\t: datatranspartition->block[Cs2Area->datanumsecttrans] was NULL");
-                  return;
-                }
-                T1WriteLong(ptr, 0, val);
-              }
-
-               // increment datatransoffset/cdwnum
-               Cs2Area->cdwnum += 4;
-               Cs2Area->datatransoffset += 4;
-
-               // Make sure we're not beyond the sector size boundary
-               if (Cs2Area->datatransoffset >= Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans]->size)
-               {
-                  Cs2Area->datatransoffset = 0;
-                  Cs2Area->datanumsecttrans++;
-                  if (Cs2Area->datanumsecttrans >= Cs2Area->datasectstotrans)
-                      Cs2SetIRQ(CDB_HIRQ_EHST);
-               }
-            }
-         }
-         break;
+			 if (Cs2Area->datatransoffset >=
+				Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans]->size)
+			 {
+				Cs2Area->datatransoffset = 0;
+				Cs2Area->datanumsecttrans++;
+				if (Cs2Area->datanumsecttrans >= Cs2Area->datasectstotrans)
+				   Cs2SetIRQ(CDB_HIRQ_EHST);
+			 }
+		  }
+	   }
+	   break;
       default:
 		   LOG("cs2\t: Undocumented register write %08X\n", addr);
 //         T3WriteLong(Cs2Area->mem, addr, val);
