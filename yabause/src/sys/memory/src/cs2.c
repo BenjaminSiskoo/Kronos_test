@@ -275,15 +275,16 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                                  // Make sure we still have sectors to transfer
                                  if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
                                  {
-                                   u8 *ptr = &Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans]->data[Cs2Area->datatransoffset];
-                                   if (Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans] == NULL)
-                                    {
-                                       CDLOG("cs2\t: datatranspartition->block[Cs2Area->datanumsecttrans] was NULL");
-                                       return 0;
-                                    }
-
-                                    val = T1ReadWord(ptr, 0);
-
+									block_struct *blk = Cs2Area->datatranspartition->block[
+										Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans];
+									if (blk == NULL)
+									{
+										CDLOG("cs2\t: block was NULL at datanumsecttrans=%d\n",
+											  Cs2Area->datanumsecttrans);
+										return 0;
+									}
+									u8 *ptr = &blk->data[Cs2Area->datatransoffset];
+									val = T1ReadWord(ptr, 0);
                                     //LOG("[CS2] get addr = %d,val = %08X", Cs2Area->datatransoffset, val);
 
                                     // increment datatransoffset/cdwnum
@@ -433,14 +434,16 @@ u32 FASTCALL Cs2ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                      // Make sure we still have sectors to transfer
                      if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
                      {
-			u8 *ptr = &Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans]->data[Cs2Area->datatransoffset];
-			if (Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans] == NULL)
-                        {
-                           CDLOG("cs2\t: datatranspartition->block[Cs2Area->datanumsecttrans] was NULL");
-                           return 0;
-                        }
-
-                        val = T1ReadLong(ptr, 0);
+						block_struct *blk = Cs2Area->datatranspartition->block[
+							Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans];
+						if (blk == NULL)
+						{
+							CDLOG("cs2\t: block was NULL at datanumsecttrans=%d\n",
+								  Cs2Area->datanumsecttrans);
+							return 0;
+						}
+						u8 *ptr = &blk->data[Cs2Area->datatransoffset];
+						val = T1ReadLong(ptr, 0);
                         // CDLOG("[CS2] get addr = %d,val = %08X\n", Cs2Area->datatransoffset, val);
 
                         // increment datatransoffset/cdwnum
