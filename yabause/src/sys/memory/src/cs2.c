@@ -3682,7 +3682,7 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
          if (Cs2Area->curdirsect == 0)
             return -1;
 
-         curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].lba - 150;
+         curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].lba;
          Cs2Area->curdirsize = (Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].size / blocksectsize) - 1;
          numsectorsleft = (u8)Cs2Area->curdirsize;
          Cs2Area->curdirfidoffset = 0;
@@ -3693,7 +3693,7 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
    memset(Cs2Area->fileinfo, 0, sizeof(dirrec_struct) * MAX_FILES);
 
    // now read in first sector of directory record
-   if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba+150)) == NULL)
+  if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba)) == NULL)
       return -2;
 
    curdirlba++;
