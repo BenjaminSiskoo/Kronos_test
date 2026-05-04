@@ -319,7 +319,12 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                                        Cs2SortBlocks(Cs2Area->datatranspartition);
 
                                        Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
-                                       Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+									   // ST-040-R4-051795, §5.4.1 « Buffer Partition Structure » :
+										// numblocks indique le nombre de blocs valides ; ne doit jamais dépasser ni être inférieur à 0.
+										if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+											Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+										else
+											Cs2Area->datatranspartition->numblocks = 0;
 
                                        CDLOG("cs2\t: datatranspartition->size = %x\n", Cs2Area->datatranspartition->size);
                                     }
