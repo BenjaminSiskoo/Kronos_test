@@ -1009,6 +1009,9 @@ static void Cs2Exec_unit(u32 timing) {
     				 setStatus(CDB_STAT_PLAY);
              Cs2Area->_periodiccycles = 0;
                 // Cs2Area->_periodictiming = 100000;
+				// ST-040-R4-051795, §3.1 « Drive Speed » : une fois la tête positionnée (fin du seek),
+				// le timing inter-secteur redevient le timing de lecture (1x = ~13,3 ms, 2x = ~6,6 ms).
+					 Cs2SetTiming(1); 
     				 Cs2Area->options = 0x8;
     			 }
     			 break;
