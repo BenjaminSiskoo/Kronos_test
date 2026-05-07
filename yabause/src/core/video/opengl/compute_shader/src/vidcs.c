@@ -2042,6 +2042,12 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
     /* CLOFSL bit 2: N2COSL. */
     if ((a->CLOFSL & 0x0004) != (b->CLOFSL & 0x0004)) return 0;
 
+    /* CLOFEN bit 2: N2COEN — color offset enable for NBG2.
+     * VDP2 Manual ST-58-R2 p.250 (180110H).
+     * Mirror of the NBG3 fix : zonal optimiser must invalidate
+     * when N2COEN flips mid-frame. */
+    if ((a->CLOFEN & 0x0004) != (b->CLOFEN & 0x0004)) return 0;
+
     /* ZMCTL bits 1-0: N0ZMQT/N0ZMHF — NBG0 horizontal reduction.
      * VDP2 Manual §5.2 Table 5.2: NBG0 reduction settings can disable
      * NBG2 (16 colors + 1/4 reduction, 256 colors + any reduction).
@@ -2286,6 +2292,14 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 3: N3COSL. */
     if ((a->CLOFSL & 0x0008) != (b->CLOFSL & 0x0008)) return 0;
+	
+    /* CLOFEN bit 3: N3COEN — color offset enable for NBG3.
+     * VDP2 Manual ST-58-R2 p.250-251 (180110H).
+     * Without comparing CLOFEN, a mid-frame toggle of color offset
+     * (used for fades / scene transitions) is silently dropped by
+     * the zonal optimiser. */
+    if ((a->CLOFEN & 0x0008) != (b->CLOFEN & 0x0008)) return 0;
+
 
     /* ZMCTL bits 9-8: N1ZMQT/N1ZMHF — NBG1 horizontal reduction.
      * VDP2 Manual §5.2 Table 5.2: NBG1 reduction settings can disable
