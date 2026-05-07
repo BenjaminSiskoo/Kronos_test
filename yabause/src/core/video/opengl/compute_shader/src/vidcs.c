@@ -1580,6 +1580,13 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* ZMYN1 bits 18-8: NBG1 vertical coordinate increment (zoom). */
     if ((a->ZMYN1.all & 0x7FF00) != (b->ZMYN1.all & 0x7FF00)) return 0;
+
+    /* ZMCTL bits 9-8: N1ZMQT, N1ZMHF — NBG1 reduction limit.
+     * VDP2 Manual ST-58-R2 §5.2 p.129 (180098H).  Vdp2DrawNBG1
+     * reads these to clamp coordincx ; mid-frame rewrite must
+     * trigger a new zone (mirror of the NBG0 ZMCTL & 0x0003
+     * comparison done in sameVDP2RegNBG0). */
+    if ((a->ZMCTL & 0x0300) != (b->ZMCTL & 0x0300)) return 0;
  
     /* CRAOFA bits 6-4: N1CAOS[2:0] — NBG1 color RAM address offset. */
     if ((a->CRAOFA & 0x0070) != (b->CRAOFA & 0x0070)) return 0;
