@@ -1627,6 +1627,10 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 1: N1COSL — color offset A/B select for NBG1. */
     if ((a->CLOFSL & 0x0002) != (b->CLOFSL & 0x0002)) return 0;
+
+    /* WCTLA byte 1 (bits 15-8): N1LOG, N1SWE, N1SWA, N1W1E, N1W1A,
+     * N1W0E, N1W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D0H). */
+    if ((a->WCTLA & 0xFF00) != (b->WCTLA & 0xFF00)) return 0;
 	
     /* CLOFEN bit 1: N1COEN — color offset enable for NBG1.
      * VDP2 Manual ST-58-R2 p.250 (180110H). */
@@ -2060,6 +2064,10 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 2: N2COSL. */
     if ((a->CLOFSL & 0x0004) != (b->CLOFSL & 0x0004)) return 0;
+	
+    /* WCTLB byte 0 (bits 7-0): N2LOG, N2SWE, N2SWA, N2W1E, N2W1A,
+     * N2W0E, N2W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D2H). */
+    if ((a->WCTLB & 0x00FF) != (b->WCTLB & 0x00FF)) return 0;
 
     /* CLOFEN bit 2: N2COEN — color offset enable for NBG2.
      * VDP2 Manual ST-58-R2 p.250 (180110H).
@@ -2324,6 +2332,10 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 3: N3COSL. */
     if ((a->CLOFSL & 0x0008) != (b->CLOFSL & 0x0008)) return 0;
+
+    /* WCTLB byte 1 (bits 15-8): N3LOG, N3SWE, N3SWA, N3W1E, N3W1A,
+     * N3W0E, N3W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D2H). */
+    if ((a->WCTLB & 0xFF00) != (b->WCTLB & 0xFF00)) return 0;
 	
     /* CLOFEN bit 3: N3COEN — color offset enable for NBG3.
      * VDP2 Manual ST-58-R2 p.250-251 (180110H).
@@ -5929,6 +5941,11 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 0: N0COSL. */
     if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0;
+
+    /* WCTLA byte 0 (bits 7-0): N0LOG, N0SWE, N0SWA, N0W1E, N0W1A,
+     * N0W0E, N0W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D0H).
+     * Mid-frame window changes affect NBG0 visibility. */
+    if ((a->WCTLA & 0x00FF) != (b->WCTLA & 0x00FF)) return 0;
 
     /* CLOFEN bit 0: N0COEN — color offset enable for NBG0.
      * VDP2 Manual ST-58-R2 p.250 (180110H).  The blending stage
