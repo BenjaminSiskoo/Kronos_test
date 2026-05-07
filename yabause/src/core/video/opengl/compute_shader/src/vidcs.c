@@ -1560,6 +1560,14 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
     /* CHCTLA bits 15-9: N1CHSZ(15-14), N1BMEN(9), N1CHCN(13-12).
      * Color depth, bitmap mode and bitmap size for NBG1. */
     if ((a->CHCTLA & 0xFE00) != (b->CHCTLA & 0xFE00)) return 0;
+	
+    /* CHCTLA bits 6-4: N0CHCN — NBG0 color number.
+     * VDP2 Manual ST-58-R2 p.61 : when NBG0 = 16,770,000 colors
+     * (N0CHCN == 4), NBG1 cannot be displayed.  Vdp2DrawNBG1 honors
+     * this rule (l.1836) but the zonal optimiser must also detect
+     * the threshold crossing — otherwise NBG1 stays visible across
+     * a mid-frame switch into 16M-color mode on NBG0. */
+    if ((a->CHCTLA & 0x0070) != (b->CHCTLA & 0x0070)) return 0;
  
     /* PRINA bits 10-8: NBG1 priority number (3-bit). */
     if ((a->PRINA & 0x0700) != (b->PRINA & 0x0700)) return 0;
