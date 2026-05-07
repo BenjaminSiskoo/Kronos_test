@@ -2390,8 +2390,18 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   if (ctrl.info.priority == 0) return;
 
   if (ctrl.regs->BGON & 0x1) {
-    /* NBG0 >= 2048 colors disables NBG3 (Table 4.1) */
-    if (((ctrl.regs->CHCTLA & 0x70) >> 4) >= 2) return;
+    /* VDP2 Manual ST-58-R2 p.61 :
+     *   « When NBG0 is set at 16,770,000 colors, NBG1 to NBG3
+     *     can no longer be displayed. »
+     * CHCTLA bits 6-4 (N0CHCN) :
+     *   000b = 16    couleurs
+     *   001b = 256   couleurs
+     *   010b = 2048  couleurs   <-- désactive NBG2 seulement
+     *   011b = 32768 couleurs   <-- désactive NBG2 seulement
+     *   100b = 16,770,000       <-- désactive NBG1, NBG2 ET NBG3
+     * Le seuil correct pour NBG3 est donc N0CHCN >= 4, pas >= 2.
+     */
+    if (((ctrl.regs->CHCTLA & 0x70) >> 4) >= 4) return;
   }
 
   if (ctrl.regs->BGON & 0x2) {
