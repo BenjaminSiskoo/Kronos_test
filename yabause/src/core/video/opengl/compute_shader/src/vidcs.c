@@ -1612,6 +1612,10 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 1: N1COSL — color offset A/B select for NBG1. */
     if ((a->CLOFSL & 0x0002) != (b->CLOFSL & 0x0002)) return 0;
+	
+    /* CLOFEN bit 1: N1COEN — color offset enable for NBG1.
+     * VDP2 Manual ST-58-R2 p.250 (180110H). */
+    if ((a->CLOFEN & 0x0002) != (b->CLOFEN & 0x0002)) return 0;
 
    /* MZCTL bits 15-8 + bit 1: VDP2 Manual §6.6 Mosaic Function p.196.
      *   bits 15-12 = MZSZV (vertical mosaic size, shared across layers)
@@ -5910,8 +5914,15 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
  
     /* CLOFSL bit 0: N0COSL. */
     if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0;
+
+    /* CLOFEN bit 0: N0COEN — color offset enable for NBG0.
+     * VDP2 Manual ST-58-R2 p.250 (180110H).  The blending stage
+     * (vidcs.c l.2930) keys off CLOFEN first; without comparing it
+     * here, mid-frame fade ON/OFF is silently dropped. */
+    if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;
+
  
-    /* NEW: MZCTL bit 8 (N0MZE enable) + size bits 15-8 that apply to NBG0
+    /* MZCTL bit 8 (N0MZE enable) + size bits 15-8 that apply to NBG0
      * when mosaic is on. If mosaic is toggled mid-frame, we need a new zone. */
     if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0;
  
