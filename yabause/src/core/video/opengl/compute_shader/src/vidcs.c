@@ -1609,6 +1609,14 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
     /* SCRCTL bits 15-8: NBG1 line scroll / vertical cell scroll control.
      * N1LSS[1:0](13:12), N1LZMX(11), N1LSCY(10), N1LSCX(9), N1VCSC(8). */
     if ((a->SCRCTL & 0xFF00) != (b->SCRCTL & 0xFF00)) return 0;
+
+    /* LSTA1 (1800A4H..1800A6H): NBG1 line scroll table address.
+     * VDP2 Manual ST-58-R2 p.140. */
+    if (a->LSTA1.all != b->LSTA1.all) return 0;
+
+    /* VCSTA (18009CH..18009EH): shared with NBG0.
+     * VDP2 Manual ST-58-R2 p.141. */
+    if (a->VCSTA.all != b->VCSTA.all) return 0;
  
     /* PNCN1: NBG1 pattern name control — affects character address decoding. */
     if ((a->PNCN1 & 0xFFFF) != (b->PNCN1 & 0xFFFF)) return 0;
@@ -5929,6 +5937,15 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
  
     /* SCRCTL bits 7-0: NBG0 line/cell scroll control. */
     if ((a->SCRCTL & 0x00FF) != (b->SCRCTL & 0x00FF)) return 0;
+
+    /* LSTA0 (1800A0H..1800A2H): NBG0 line scroll table address.
+     * VDP2 Manual ST-58-R2 p.140.  Read by Vdp2DrawNBG0 (l.1384) ;
+     * mid-frame change must trigger a new zone. */
+    if (a->LSTA0.all != b->LSTA0.all) return 0;
+
+    /* VCSTA (18009CH..18009EH): vertical cell scroll table address.
+     * Shared by NBG0 and NBG1.  VDP2 Manual ST-58-R2 p.141. */
+    if (a->VCSTA.all != b->VCSTA.all) return 0;
  
     /* SFPRMD bits 1-0: NBG0 special priority mode. */
     if ((a->SFPRMD & 0x0003) != (b->SFPRMD & 0x0003)) return 0;
