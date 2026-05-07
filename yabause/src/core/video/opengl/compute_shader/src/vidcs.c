@@ -2245,12 +2245,22 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
     /* BGON: N3ON = bit 3. Also RBG suppression bits. */
     if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
  
-    /* CHCTLB bits 5,4: N3CHCN(5)=colornumber, N3PNB(4)=pattern name size. */
+    /* CHCTLB (18002AH) bits 5,4 :
+     *   bit 5 = N3CHCN (color number, 16 vs 256 colors)
+     *   bit 4 = N3CHSZ (character size, 1x1 vs 2x2 cells)
+     * VDP2 Manual ST-58-R2 p.60.
+     * (N3PNB is not here — it lives in PNCN3 bit 15, p.76.) */
+
     if ((a->CHCTLB & 0x0030) != (b->CHCTLB & 0x0030)) return 0;
-    /* Disable conditions from §4.1 Table 4.1:
-     *   NBG0 colornumber >= 2 disables NBG3. */
+    /* CHCTLA bits 6-4 (N0CHCN) — must be tracked because crossing
+     * the value 4 (16,770,000 colors) disables NBG3 entirely
+     * (ST-58-R2 p.61). Comparing the full 3-bit field also covers
+     * any reduction-driven recompute. */
+
     if (((a->CHCTLA & 0x0070) >> 4) != ((b->CHCTLA & 0x0070) >> 4)) return 0;
-    /*   NBG1 colornumber >= 2 disables NBG3. */
+    /* CHCTLA bits 13-12 (N1CHCN) — NBG1 >= 2048 colors disables
+     * NBG3 (ST-58-R2 p.61). */
+
     if (((a->CHCTLA & 0x3000) >> 12) != ((b->CHCTLA & 0x3000) >> 12)) return 0;
  
     /* PRINB bits 10-8: NBG3 priority number. */
@@ -2274,8 +2284,11 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * mid-frame bank swaps. */
     if ((a->MPOFN & 0x7000) != (b->MPOFN & 0x7000)) return 0;
 
-    /* PLSZ bits 15-6: NBG3 plane size (bits 15-12 V, bits 11-8 not used by NBG3;
-     * VDP2 §4 PLSZ: N3PLSH(7-6), N3PLSV not present — NBG3 uses bits 7-6). */
+    /* PLSZ (18003AH) bits 7-6 = N3PLSZ1, N3PLSZ0 — NBG3 plane size.
+     * VDP2 Manual ST-58-R2 p.83 : NBG3 has a single 2-bit field
+     * (1x1 / 2x1 / 2x2 pages). Bits 15-12 are RBPLSZ/RBOVR
+     * (rotation B), unrelated to NBG3. */
+
     if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
  
     /* PNCN3: NBG3 pattern name control. */
@@ -2385,22 +2398,23 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
  
-  /* VDP2 Manual ST-058-R2:
-   *   §4.1 Table 4.1 — NBG3 hidden when NBG0 colornumber >= 2 OR
-   *                                     NBG1 colornumber >= 2
-   *   §5.2 Table 5.2 — NBG3 also hidden by NBG1 reduction settings:
-   *     NBG1 16  colors  + reduction 1/4   -> NBG3 cannot display
-   *     NBG1 256 colors  + reduction 1/2   -> NBG3 cannot display
-   *     NBG1 256 colors  + reduction 1/4   -> NBG3 cannot display
+  /* NBG3 visibility rules — VDP2 Manual ST-58-R2 :
    *
-   *   ZMCTL bit 8 = N1ZMHF (NBG1 horizontal half),
-   *   ZMCTL bit 9 = N1ZMQT (NBG1 horizontal quarter).
+   *   • Texte p.61 (chapitre 4) :
+   *       « When NBG0 is set at 16,770,000 colors, NBG1 to NBG3
+   *         can no longer be displayed.  When NBG1 is set at
+   *         2048 or 32,768 colors, NBG3 can no longer be displayed. »
    *
-   * The previous check enforced the colornumber>=2 rules from Table 4.1
-   * but ignored Table 5.2.  Mirror the NBG2 fix exactly, but on the
-   * NBG1 side:
-   *   - 16-color NBG1 with N1ZMQT=1  -> kill NBG3
-   *   - 256-color NBG1 with any reduction -> kill NBG3 */
+   *   • §5.2 Table 5.2 p.130 (Reduction enable bit) :
+   *       NBG1 16  colors  + reduction 1/4   -> NBG3 hidden
+   *       NBG1 256 colors  + reduction 1/2   -> NBG3 hidden
+   *       NBG1 256 colors  + reduction 1/4   -> NBG3 hidden
+   *     (Aucune règle de réduction NBG0 ne désactive NBG3 — la
+   *     table 5.2 ne mentionne que NBG2 du côté NBG0.)
+   *
+   *   • ZMCTL (180098H) bit 9 = N1ZMQT (1/4), bit 8 = N1ZMHF (1/2).
+   *   • CHCTLA bits 6-4 = N0CHCN, bits 13-12 = N1CHCN.
+   */
   if (ctrl.info.priority == 0) return;
 
   if (ctrl.regs->BGON & 0x1) {
