@@ -6060,6 +6060,21 @@ static int isEnabled(int id, Vdp2* varVdp2Regs) {
   const int r1on = (varVdp2Regs->BGON & 0x20) != 0;
   const int rule_a = (r0on && r1on);  /* both rotation screens active */
   const int rule_b = (!r0on && r1on); /* prohibited config */
+
+  /* VDP2 Manual ST-58-R2 p.61 — color-count cross-disable rules.
+   * These are evaluated per-line so display[i] reflects the rule on
+   * each scan line, not just the zone snapshot. */
+  const int n0on    = (varVdp2Regs->BGON & 0x1) != 0;
+  const int n1on    = (varVdp2Regs->BGON & 0x2) != 0;
+  const int n0color = (varVdp2Regs->CHCTLA & 0x70) >> 4;     /* N0CHCN */
+  const int n1color = (varVdp2Regs->CHCTLA & 0x3000) >> 12;  /* N1CHCN */
+  /* NBG0 ≥ 2048 colors (n0color ≥ 2) ⇒ NBG2 off */
+  const int n0_kills_n2 = n0on && (n0color >= 2);
+  /* NBG0 = 16,770,000 colors (n0color == 4) ⇒ NBG1..NBG3 off */
+  const int n0_kills_n1n2n3 = n0on && (n0color >= 4);
+  /* NBG1 ≥ 2048 colors (n1color ≥ 2) ⇒ NBG3 off */
+  const int n1_kills_n3 = n1on && (n1color >= 2);
+
   switch(id) {
     case NBG0:
       display = ((varVdp2Regs->BGON & 0x1)!=0);
@@ -6068,14 +6083,19 @@ static int isEnabled(int id, Vdp2* varVdp2Regs) {
     case NBG1:
       display = ((varVdp2Regs->BGON & 0x2)!=0);
      if (rule_a) display = 0;
+	 if (n0_kills_n1n2n3) display = 0;   /* p.61 NBG0=16M */
 	  break;
     case NBG2:
       display = ((varVdp2Regs->BGON & 0x4)!=0);
 	 if (rule_a) display = 0;
+     if (n0_kills_n2) display = 0;       /* p.61 NBG0≥2048 */
+     if (n0_kills_n1n2n3) display = 0;   /* p.61 NBG0=16M */
       break;
     case NBG3:
       display = ((varVdp2Regs->BGON & 0x8)!=0);
 	 if (rule_a) display = 0;
+	 if (n0_kills_n1n2n3) display = 0;   /* p.61 NBG0=16M */
+     if (n1_kills_n3) display = 0;       /* p.61 NBG1≥2048 */
       break;
     case RBG0:
       display = r0on;
