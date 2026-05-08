@@ -2751,7 +2751,6 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
       rbg->paraB.MaxV = 512;
     }
 
-// APRÈS :
 // Sauvegarder les valeurs de ParaA et substituer celles de ParaB pour la boucle B
 int saved_planew = info->planew;
 int saved_planeh = info->planeh;
@@ -2803,7 +2802,12 @@ static void Vdp2DrawRBG0()
   int line;
   int max = (yabsys.VBlankLineCount >= 270)?270:yabsys.VBlankLineCount;
   RBGDrawInfo* rbg = NULL;
-  for (line = 2; line<max; line++) {
+   /* Detection starts at line 1 like NBG0..NBG3 — comparing
+    * Vdp2Lines[0] vs Vdp2Lines[1] catches register writes done
+    * during the first H-blank.  Previous start at line=2 silently
+    * dropped this boundary. */
+    for (line = 1; line<max; line++) {
+
     if (!sameVDP2Reg(RBG0, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
       rbg = popRBG();
       rbg->rbg_type = 0x0;
@@ -6012,7 +6016,7 @@ static void Vdp2DrawRBG1()
   int line;
   int max = (yabsys.VBlankLineCount >= 270)?270:yabsys.VBlankLineCount;
   RBGDrawInfo *rbg = NULL;
-  for (line = 2; line<max; line++) {
+  for (line = 1; line<max; line++) {
     if (!sameVDP2Reg(RBG1, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
       rbg = popRBG();
       rbg->rbg_type = 0x04;
