@@ -1222,7 +1222,10 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
   }
+  /* enable is the OR of display[i] over the same range as the
+   * fill loop above (clamped to 270 lines, see line_max). */
   if (!ctrl.info.enable) return;
+
  
   for (int b = 0; b < 4; b++) {
     ctrl.info.char_bank[b] = 0;
@@ -1717,6 +1720,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNA >> 8) & 0x1F) * 255) / 31);
   }
 
+  /* enable is the OR of display[i] over the same range as the
+   * fill loop above (clamped to 270 lines, see line_max). */
   if (!ctrl.info.enable) return;
 
   for (int i=0; i < 4; i++) {
