@@ -3089,7 +3089,12 @@ void VIDCSVdp2Draw(void)
   }
   YglTmPull(YglTM_vdp2, 0);
 
-  if (Vdp2Regs->TVMD & 0x8000) {
+  /* VDP2 Manual ST-58-R2 §2.4 p.16 — DISP bit must change in
+   * V-blank. Read it from the same per-frame snapshot used to
+   * configure the resolution, otherwise a late vblank rewrite
+   * causes the current frame to honor next-frame's DISP. */
+   if (Vdp2Lines[0].TVMD & 0x8000) {
+
     VIDCSVdp2DrawScreens();
     screenDirty = 1;
     vdp2busy = 1;
