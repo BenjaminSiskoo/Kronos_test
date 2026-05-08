@@ -1216,11 +1216,17 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
  
-  for (i = 0; i < yabsys.VBlankLineCount; i++) {
-    ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
-    ctrl.info.enable |= ctrl.info.display[i];
-    ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
-  }
+	const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+	for (i = 0; i < line_max; i++) {
+		ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
+		ctrl.info.enable |= ctrl.info.display[i];
+		ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
+	}
+	/* Initialiser le reste à 0 pour cohérence avec les zones de rendu. */
+	for (; i < 512; i++) {
+		ctrl.info.display[i] = 0;
+		ctrl.info.alpha_per_line[i] = 0;
+}
   /* enable is the OR of display[i] over the same range as the
    * fill loop above (clamped to 270 lines, see line_max). */
   if (!ctrl.info.enable) return;
