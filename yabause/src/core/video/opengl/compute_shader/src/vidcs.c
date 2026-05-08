@@ -6202,7 +6202,8 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     /* ZMXN0 bits 18-8: NBG0 horizontal coordinate increment (zoom integer).
      * Shellshock's ground zone is detected HERE — the game writes 0x20000
      * for zoom x2 when entering the ground area, 0x10000 for the cabin. */
-    if ((a->ZMXN0.all & 0x7FF00) != (b->ZMXN0.all & 0x7FF00)) return 0;
+	if ((a->ZMXN0.all & 0x7FFFF) != (b->ZMXN0.all & 0x7FFFF)) return 0;
+	if ((a->ZMYN0.all & 0x7FFFF) != (b->ZMYN0.all & 0x7FFFF)) return 0;
  
     /* ZMYN0 bits 18-8: NBG0 vertical coordinate increment. */
     if ((a->ZMYN0.all & 0x7FF00) != (b->ZMYN0.all & 0x7FF00)) return 0;
