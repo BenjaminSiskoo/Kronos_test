@@ -3214,6 +3214,16 @@ static void Vdp2SetResolution(u16 TVMD)
 	  break;
 	}
 
+  /* VDP2 Manual ST-58-R2 §2.1 Table 2.1 p.12 — Exclusive monitor
+   * mode (HRESO bit 2 = 1) forces vertical resolution to 480
+   * regardless of VRESO :
+   *   HRESO=100 / 101  Exclusive Normal      → 320/352 × 480
+   *   HRESO=110 / 111  Exclusive Hi-Res      → 640/704 × 480
+   * VRESO is silently ignored by the hardware in these modes. */
+  if (TVMD & 0x4) {
+    height = 480;
+  }
+
   hratio = 1;
 
   _Ygl->interlace = NORMAL_INTERLACE;
