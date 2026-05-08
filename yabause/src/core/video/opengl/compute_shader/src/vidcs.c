@@ -5573,7 +5573,10 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access) {
+/* char_size_2x2 : 1 si la couche utilise un character pattern 2x2,
+ *                  0 si 1x1. Doit être passé par l'appelant qui
+ *                  connaît CHCTLA/CHCTLB. */
+static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_size_2x2) {
   if (_Ygl->rwidth >= 640) {
     //if (char_access < ptn_access) {
     //  return -1;
@@ -5599,8 +5602,12 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access) {
     }
 
     if (ptn_access & 0x04) { // T2
-      // T0,T2,T3
-      if ((char_access & 0x0D) != 0) {
+      /* VDP2 Manual ST-58-R2 §3.3 Table 3.4 p.34, note *1 :
+       *   2x2 character pattern in hi-res restricts T2 PNT to
+       *   T2 and T3 character access (mask 0x0C) ;
+       *   default is T0,T2,T3 (mask 0x0D). */
+      const int mask = char_size_2x2 ? 0x0C : 0x0D;
+      if ((char_access & mask) != 0) {
         if (char_access < ptn_access) {
           return -1;
         }
@@ -5609,8 +5616,11 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access) {
     }
 
     if (ptn_access & 0x08) { // T3
-      // T0,T1,T3
-      if ((char_access & 0xB) != 0) {
+      /* Note *2 : 2x2 character pattern in hi-res restricts
+       * T3 PNT to T3 only (mask 0x08) ; default is T0,T1,T3
+       * (mask 0x0B). */
+      const int mask = char_size_2x2 ? 0x08 : 0x0B;
+      if ((char_access & mask) != 0) {
         if (char_access < ptn_access) {
           return -1;
         }
