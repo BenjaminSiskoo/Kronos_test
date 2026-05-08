@@ -5788,8 +5788,17 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->MPOFR & 0x77)    != (b->MPOFR & 0x77))     return 0; // map offset RBG0 A+B
   if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0; // R0PNB,R0CNSM,R0SPR,etc.
   if ((a->KTAOF & 0x0707) != (b->KTAOF & 0x0707)) return 0; // RAKTAOS+RBKTAOS
+
+   /* OVPNRA (1800B8H), OVPNRB (1800BAH) : over pattern name for
+    * Rotation Parameter A and B.  VDP2 Manual ST-58-R2 p.155.
+    * Used by Vdp2DrawRBG0_part when screenover == 1 (PLSZ
+    * bits 11-10 / 15-14).  Mid-frame rewrite of the border
+    * pattern must invalidate the zone. */
+   if ((a->OVPNRA & 0xFFFF) != (b->OVPNRA & 0xFFFF)) return 0;
+   if ((a->OVPNRB & 0xFFFF) != (b->OVPNRB & 0xFFFF)) return 0;
+
   /* ------------------------------------------------------------------
-   * [AJOUTÉ] SFPRMD 1800EAH bits 9~8 : R0SPRM1,R0SPRM0
+   * SFPRMD 1800EAH bits 9~8 : R0SPRM1,R0SPRM0
    * §11.2 : special priority mode RBG0 (par écran / par caractère /
    *          par dot). Change comment le LSB du numéro de priorité est
    *          sélectionné pour chaque dot → doit provoquer un split.
@@ -5797,7 +5806,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
    * ------------------------------------------------------------------ */
   if ((a->SFPRMD & 0x0300) != (b->SFPRMD & 0x0300)) return 0;
   /* ------------------------------------------------------------------
-   * [AJOUTÉ] WCTLC 1800D4H bits 7~0 : fenêtres RBG0
+   * WCTLC 1800D4H bits 7~0 : fenêtres RBG0
    * §8.1 : R0W0A,R0W0E,R0W1A,R0W1E,R0SWA,R0SWE + R0LOG(7).
    *          Un changement mid-frame active, désactive ou inverse
    *          la zone de fenêtre appliquée à RBG0.
@@ -5805,7 +5814,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
    * ------------------------------------------------------------------ */
   if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;;
   /* ------------------------------------------------------------------
-   * [AJOUTÉ] WCTLD 1800D6H bits 3~0 : rotation parameter window
+   * WCTLD 1800D6H bits 3~0 : rotation parameter window
    * §8.2 : RPW0A(0),RPW0E(1),RPW1A(2),RPW1E(3).
    *          Utilisé directement dans Vdp2DrawRBG0_part() pour
    *          info->RotWin (mode RPMD=3). Masque 0x000F.
