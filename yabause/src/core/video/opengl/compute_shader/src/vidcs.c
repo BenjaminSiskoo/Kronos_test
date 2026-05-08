@@ -5420,9 +5420,34 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
         else alpha8 = (alpha << 3) | (alpha >> 2);
     }
 
-    // --- BOUCLE DE RENDU ---
-    for (int i = 0; i < _Ygl->rheight; i++) {
-        u32 currentAddr = isPerLine ? (scrAddr + (2 * (i >> line_shift))) : scrAddr;
+    /* VDP2 Manual ST-58-R2 §7.2 + §12.1 — BKTAU/BKTAL/CCRLB are
+     * sampled per-line by the hardware. Map physical pixel rows
+     * to logical scan lines so the lookup is correct in
+     * double-interlace and in 480-line exclusive modes. */
+    const int phys_lines = _Ygl->rheight;
+    const int logical_lines = (yabsys.VBlankLineCount >= 270)
+                              ? 270 : yabsys.VBlankLineCount;
+    for (int i = 0; i < phys_lines; i++) {
+        const int li = (i * logical_lines) / phys_lines;
+        const Vdp2 *L = &Vdp2Lines[li];
+
+        /* Re-evaluate alpha per line (CCRNB/CCRLB may differ). */
+        u8 alpha8;
+        if (L->CCRNB & 0xC000) {
+            alpha8 = 0xFF;
+        } else {
+            u8 a = (u8)((L->CCRLB & 0x1F00) >> 8);
+            alpha8 = (a == 0) ? 0xFF : ((a << 3) | (a >> 2));
+        }
+
+        /* Re-evaluate base address per line — almost always
+         * identical to line 0, but guard against mid-frame
+         * BKTAU rewrite. */
+        u32 base = (L->VRSIZE & 0x8000)
+                 ? (((L->BKTAU & 0x7) << 16) | L->BKTAL) * 2
+                 : (((L->BKTAU & 0x3) << 16) | L->BKTAL) * 2;
+        const int isPerLineL = (L->BKTAU & 0x8000) != 0;
+        u32 currentAddr = isPerLineL ? (base + 2 * li) : base;
         
         // Masque de sécurité VRAM 512Ko
         u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr & 0x7FFFF);
@@ -5442,6 +5467,7 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
          * Vdp2ColorRamGetColorRaw / SAT2YAB1 deliver scroll-screen pixels —
          * which is what the back screen must blend with.  Keep `<< 3` to
          * stay consistent with the rest of the pipeline (§3.4 wording). */
+		 
         u8 r = (dot & 0x001F) << 3;
         u8 g = ((dot >> 5)  & 0x1F) << 3;
         u8 b = ((dot >> 10) & 0x1F) << 3;
