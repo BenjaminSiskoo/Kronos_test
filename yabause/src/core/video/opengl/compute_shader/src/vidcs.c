@@ -5926,8 +5926,10 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
      * area holding the bitmap base (charaddr). */
     if ((a->MPOFN & 0x7) != (b->MPOFN & 0x7)) return 0;
  
-    /* BMPNA bits 6-0: NBG0 bitmap palette address + special bits. */
-    if ((a->BMPNA & 0x77) != (b->BMPNA & 0x77)) return 0;
+    /* BMPNA bits 5,4,2,1,0 : N0BMPR (5), N0BMCC (4), N0BMP6..N0BMP4 (2-0).
+     * VDP2 Manual ST-58-R2 p.111-112 (18002CH). Bits 3, 6, 7 are
+     * reserved ('~') and must not be tracked. */
+    if ((a->BMPNA & 0x37) != (b->BMPNA & 0x37)) return 0;
  
     /* PLSZ bits 1-0: NBG0 plane size (tile mode only, harmless in bitmap). */
     if ((a->PLSZ & 0x0003) != (b->PLSZ & 0x0003)) return 0;
