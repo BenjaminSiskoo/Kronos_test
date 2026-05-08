@@ -4438,12 +4438,16 @@ static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
 }
 
 static u32 getAlpha(vdp2draw_struct *info, int id) {
-  int shift = 0;
-  if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
-  int idx = info->draw_line + id;
-  if (idx < 0) idx = 0;
-  if ((idx>>shift) > yabsys.VBlankLineCount) idx = yabsys.VBlankLineCount<<shift;
-  return info->alpha_per_line[idx>>shift];
+    int shift = 0;
+    if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
+    int idx = info->draw_line + id;
+    if (idx < 0) idx = 0;
+    /* alpha_per_line est rempli jusqu'à min(VBlankLineCount, 270).
+     * Clamper au même plafond pour rester dans la plage initialisée. */
+    const int alpha_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    int li = idx >> shift;
+    if (li >= alpha_max) li = alpha_max - 1;
+    return info->alpha_per_line[li];
 }
 
 static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
