@@ -1558,6 +1558,19 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
 {
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+	
     /* BGON: N1ON = bit 1. Also check RBG enable bits that suppress NBG1
      * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
     if ((a->BGON & 0x32) != (b->BGON & 0x32)) return 0;
@@ -2026,6 +2039,19 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
  */
 static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
 {
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+	
     /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5. */
     if ((a->BGON & 0x34) != (b->BGON & 0x34)) return 0;
  
@@ -2289,6 +2315,20 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
  */
 static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
 {
+
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+	
     /* BGON: N3ON = bit 3. Also RBG suppression bits. */
     if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
  
@@ -5844,6 +5884,20 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
 static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 {
+
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+	
   if ((a->BGON & 0x1010) != (b->BGON & 0x1010)) return 0;
   if ((a->PRIR & 0x7) != (b->PRIR & 0x7)) return 0;
   if ((a->RPTA.all) != (b->RPTA.all)) return 0;
@@ -5922,6 +5976,20 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 
 static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 {
+
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+	
   if ((a->BGON & 0x130) != (b->BGON & 0x130)) return 0;
   if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
   if ((a->CCRNA &0x1F) != (b->CCRNA &0x1F)) return 0;
@@ -5963,6 +6031,19 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 
 static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
 {
+    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
+     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
+     * Mid-frame moves of W0 (spotlight effect) must split zones. */
+    if (a->WPSX0 != b->WPSX0) return 0;
+    if (a->WPEX0 != b->WPEX0) return 0;
+    if (a->WPSY0 != b->WPSY0) return 0;
+    if (a->WPEY0 != b->WPEY0) return 0;
+    /* W1 : 180028H..18002EH */
+    if (a->WPSX1 != b->WPSX1) return 0;
+    if (a->WPEX1 != b->WPEX1) return 0;
+    if (a->WPSY1 != b->WPSY1) return 0;
+    if (a->WPEY1 != b->WPEY1) return 0;
+
     /* BGON: N0ON = bit 0. Also check RBG enable bits that suppress NBG0
      * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
     if ((a->BGON & 0x31) != (b->BGON & 0x31)) return 0;
