@@ -3028,16 +3028,19 @@ static inline int encodeColorOffset(int v) {
 
 void VIDCSReadColorOffset(void) {
     u8 offset[enBGMAX+1] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x1, 0x40, 0x20};
-    int line_shift = 0;
-    if (_Ygl->rheight > 256) {
-        line_shift = 1;
-    } else {
-        line_shift = 0;
-    }
-
+    /* Linear mapping physical pixel row → logical scan line.
+     * Replaces the `line >> line_shift` shortcut which only
+     * worked for exact 1×/2× ratios. Robust for 480-line
+     * exclusive (rheight=480, VBL=240), DDI (rheight=512,
+     * VBL=256), and any future mode. */
+    const int phys_h = _Ygl->rheight;
+    const int log_h  = (yabsys.VBlankLineCount >= 270)
+                       ? 270 : yabsys.VBlankLineCount;
     u32 * linebuf = YglGetPerlineBuf();
-    for (int line = 0; line < _Ygl->rheight; line++) {
-        Vdp2 * lVdp2Regs = &Vdp2Lines[line >> line_shift];
+    for (int line = 0; line < phys_h; line++) {
+        const int li = (line * log_h) / phys_h;
+        Vdp2 * lVdp2Regs = &Vdp2Lines[li];
+
 
 	// VDP2 Manual §13.1: Color offset registers are 9-bit two's complement,
 	// range -256 to +255, added directly to RGB components.
