@@ -2243,9 +2243,16 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
     if (ptn_access == 0) {
       return;
     }
-    // Setting miss of cycle patten need to plus 8 dot vertical
-    if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
-      delayed = 1;
+    /* VDP2 Manual ST-58-R2 §3.3 (Tables 3.2-3.4 p.33-34) :
+     * when the VRAM cycle pattern is set incorrectly with
+     * respect to the pattern-name / character-data dependency
+     * graph, character data read is delayed by 8 dots
+     * HORIZONTAL (= one character cell on the pixel grid).
+     * The downstream Vdp2DrawMapTest applies this as
+     * `x + delayed * 8`, i.e. on the horizontal axis. */
+     if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
+       delayed = 1;
+
     }
   }
 
