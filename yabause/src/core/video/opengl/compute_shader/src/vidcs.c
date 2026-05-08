@@ -824,9 +824,14 @@ void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
    * which sometimes manifested as 1-pixel sprite seams or stale
    * dimensions when the same vdp1cmd_struct slot was reused.
    *
-   * Use MAX(1, .) to defend against a CMDSIZE field of 0 - VDP1 §6.4
-   * says the dimension fields encode 1..63 cells of 8 pixels each, but
-   * games occasionally upload a stale 0 during list construction. */
+   * Use MAX(1, .) to defend against a CMDSIZE field of 0.
+   * VDP1 Manual ST-013-R3 §6.6 p.104 (CMDSIZE) :
+   *   bits 13-8 : Character size X / 8  (1..63 → 8..504 px,  0 prohibited)
+   *   bits  7-0 : Character size Y      (1..255 px,          0 prohibited)
+   * Games occasionally upload a stale 0 during list construction
+   * even though both axes prohibit it ; clamp to 1 to keep the
+   * geometry well-formed. */
+
   cmd->CMDXB = cmd->CMDXA + MAX(1, cmd->w) - 1;
   cmd->CMDYB = cmd->CMDYA;
   cmd->CMDXC = cmd->CMDXA + MAX(1, cmd->w) - 1;
