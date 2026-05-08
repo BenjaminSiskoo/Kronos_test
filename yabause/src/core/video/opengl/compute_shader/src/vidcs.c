@@ -1323,15 +1323,16 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
         }
       }
     }
-    if (needUpdate != 0) {
-      ctrl.info.enable = 0;
-    const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
-    for (int k = 0; k < line_max; k++) {
-
-        ctrl.info.enable |= ctrl.info.display[k];
-      }
-      if (!ctrl.info.enable) return;
-    }
+	if (needUpdate != 0) {
+		ctrl.info.enable = 0;
+		/* Re-évaluer 'enable' sur la même plage que le scan initial.
+		 * VDP2 Manual §3.1 + §4.1: garder la cohérence entre la boucle
+		 * de remplissage display[] (lignes ~1180) et la re-évaluation. */
+		for (int k = 0; k < line_max; k++) {
+			ctrl.info.enable |= ctrl.info.display[k];
+		}
+		if (!ctrl.info.enable) return;
+	}
   }
   else
   {
