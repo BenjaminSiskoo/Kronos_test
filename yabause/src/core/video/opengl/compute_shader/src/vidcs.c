@@ -5579,6 +5579,11 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
     return;
   }
 
+  /* Keep the original pointer for the YglSet call below — the
+   * loop increments line_pixel_data and would otherwise hand
+   * YglSetLineColorScreen the past-the-end pointer. */
+  u32 * const line_pixel_data_base = line_pixel_data;
+
   if ((varVdp2Regs->LCTA.part.U & 0x8000)) {
     inc = 0x02; // color per line
   }
@@ -5616,7 +5621,7 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
     *(line_pixel_data++) = Vdp2ColorRamGetLineColor(LineColorRamAddress, alpha);
   }
 
-  YglSetLineColorScreen(line_pixel_data, line_cnt);
+  YglSetLineColorScreen(line_pixel_data_base, line_cnt);
 
 }
 
