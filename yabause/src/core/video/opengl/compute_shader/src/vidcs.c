@@ -1579,6 +1579,12 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
+	/* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
+	
     /* BGON: N1ON = bit 1. Also check RBG enable bits that suppress NBG1
      * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
     if ((a->BGON & 0x32) != (b->BGON & 0x32)) return 0;
@@ -2068,6 +2074,12 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
+    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
+	
     /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5. */
     if ((a->BGON & 0x34) != (b->BGON & 0x34)) return 0;
  
@@ -2350,6 +2362,12 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * p.186. Mid-frame rewrite must split zones. */
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
+	
+    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
     /* BGON: N3ON = bit 3. Also RBG suppression bits. */
     if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
@@ -5931,6 +5949,12 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
+    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
+	
   if ((a->BGON & 0x1010) != (b->BGON & 0x1010)) return 0;
   if ((a->PRIR & 0x7) != (b->PRIR & 0x7)) return 0;
   if ((a->RPTA.all) != (b->RPTA.all)) return 0;
@@ -5997,7 +6021,6 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->CRAOFB & 0x0007) != (b->CRAOFB & 0x0007)) return 0;
   if ((a->CLOFSL & 0x0010) != (b->CLOFSL & 0x0010)) return 0;
 	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-	//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
 	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
 	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
 	//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
@@ -6029,6 +6052,12 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
+    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
+	
   if ((a->BGON & 0x130) != (b->BGON & 0x130)) return 0;
   if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
   if ((a->CCRNA &0x1F) != (b->CCRNA &0x1F)) return 0;
@@ -6054,7 +6083,6 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
   if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
 	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-	//  if ((a->RAMCTL & 0x80FF) != (b->RAMCTL & 0x80FF)) return 0;
 	//  if ((a->PLSZ & 0xFF00) != (b->PLSZ & 0xFF00)) return 0;
 	//  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
 	//  if ((a->WCTLA & 0xFF) != (b->WCTLA & 0xFF)) return 0;
@@ -6088,6 +6116,12 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
      * p.186. Mid-frame rewrite must split zones. */
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
+	
+    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
+     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
+     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
+     * RAMCTL ; mid-frame rewrites must invalidate zones. */
+    if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 
     /* BGON: N0ON = bit 0. Also check RBG enable bits that suppress NBG0
      * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
