@@ -5509,17 +5509,26 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
 	 *   Line color is only inserted on layers where LNCLEN bit is set.
 	 */
 
-	/* Correct alpha from CCRLB LCCCRT[4:0] */
-	u8 alpha = (u8)(((~varVdp2Regs->CCRLB & 0x1F) * 255) / 31);
-
-	addr = (varVdp2Regs->LCTA.all & 0x7FFFF) << 1;
-	for (i = 0; i < line_cnt; i++) {
-		u16 LineColorRamAdress = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-		/* VDP2 Manual §11.3: line color table entry is a color RAM index */
-		*(line_pixel_data) = Vdp2ColorRamGetLineColor(LineColorRamAdress, alpha);
-		line_pixel_data++;
-		addr += inc;
-	}
+  /* VDP2 Manual ST-58-R2 §11.3 + §12.1 — both LCTA (line color
+   * table address) and CCRLB (color calc ratio) are sampled
+   * per-line by the hardware. The previous code read both from
+   * line 0 only, freezing the alpha and the table address for
+   * the entire frame. */
+  const int phys_lines = _Ygl->rheight;
+  const int logical_lines = (yabsys.VBlankLineCount >= 270)
+                            ? 270 : yabsys.VBlankLineCount;
+  for (i = 0; i < phys_lines; i++) {
+    /* Map physical row → logical scan line (handles double-interlace). */
+    const int li = (i * logical_lines) / phys_lines;
+    const Vdp2 *L = &Vdp2Lines[li];
+    const u8 alpha = (u8)(((~L->CCRLB & 0x1F) * 255) / 31);
+    u32 lineAddr = (L->LCTA.all & 0x7FFFF) << 1;
+    /* When LCCLMD = 1 (per-line color), the table is indexed by
+     * scan line ; when = 0 the same word is read every line. */
+    if (L->LCTA.part.U & 0x8000) lineAddr += 2 * li;
+    u16 LineColorRamAddress = Vdp2RamReadWord(NULL, Vdp2Ram, lineAddr);
+    *(line_pixel_data++) = Vdp2ColorRamGetLineColor(LineColorRamAddress, alpha);
+  }
 
   YglSetLineColorScreen(line_pixel_data, line_cnt);
 
