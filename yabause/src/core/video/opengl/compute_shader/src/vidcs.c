@@ -3379,17 +3379,21 @@ static void Vdp1SetTextureRatio(int vdp2widthratio, int vdp2heightratio)
     break;
   }
 
-  /* VDP1 §4.2 FBCR DIE bit (FBCR & 0x8): double-density interlace.
-   * Per §4.1 Table 4.2 double-interlace is *only* permitted for
-   * TVM=000 and TVM=001 — when active in those modes the host display
-   * doubles the vertical density. */
-  if (Vdp1Regs->FBCR & 0x8) {
+  /* VDP1 Manual ST-013-R3 §4.1 Table 4.2 + §4.2 :
+   * Double-interlace (FBCR DIE bit) is only legal when
+   *   TVM = 000 (Normal) or TVM = 001 (High Resolution).
+   * For TVM = 010 / 011 (Rotation) the spec mandates "single only".
+   * For TVM = 100 (HDTV)              the spec mandates "no interlace".
+   * Hardware ignores DIE in these modes ; emulate that. */
+  const int tvm = Vdp1Regs->TVMR & 0x7;
+  const int die_legal = (tvm == 0) || (tvm == 1);
+  if (die_legal && (Vdp1Regs->FBCR & 0x8)) {
     vdp1h = 2;
     vdp1_interlace = (Vdp1Regs->FBCR & 0x4) ? 2 : 1;
-  }
-  else {
+  } else {
     vdp1_interlace = 0;
   }
+
   _Ygl->vdp1wdensity = vdp1w;
   _Ygl->vdp1hdensity = vdp1h;
 
