@@ -5981,9 +5981,10 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
      * here, mid-frame fade ON/OFF is silently dropped. */
     if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;
 
- 
-    /* MZCTL bit 8 (N0MZE enable) + size bits 15-8 that apply to NBG0
-     * when mosaic is on. If mosaic is toggled mid-frame, we need a new zone. */
+    /* MZCTL (180022H) bit 0 = N0MZE (NBG0 mosaic enable),
+     *               bits 11-8  = MZSZH (horizontal mosaic size, shared),
+     *               bits 15-12 = MZSZV (vertical mosaic size, shared).
+     * VDP2 Manual ST-58-R2 p.118-119. Mask 0xFF01 covers enable + size. */
     if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0;
  
     return 1;
