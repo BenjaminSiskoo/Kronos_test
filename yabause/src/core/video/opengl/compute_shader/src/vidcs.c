@@ -1216,9 +1216,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
  
-    const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
-    for (int k = 0; k < line_max; k++) {
-
+  for (i = 0; i < yabsys.VBlankLineCount; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
@@ -1300,7 +1298,8 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     int charAddrBk = (((ctrl.info.charaddr >> 16) & 0xF)
                       >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
     int needUpdate = 0;
-    for (int k = 0; k < yabsys.VBlankLineCount; k++) {
+    const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    for (int k = 0; k < line_max; k++) {
       /* VDP2 Manual §4.1 BGON p.49: bits map to scroll screens as:
        *   bit 0 = N0ON (NBG0)
        *   bit 1 = N1ON (NBG1)
@@ -1326,7 +1325,9 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
     if (needUpdate != 0) {
       ctrl.info.enable = 0;
-      for (int k = 0; k < yabsys.VBlankLineCount; k++) {
+    const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    for (int k = 0; k < line_max; k++) {
+
         ctrl.info.enable |= ctrl.info.display[k];
       }
       if (!ctrl.info.enable) return;
