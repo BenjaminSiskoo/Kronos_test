@@ -547,7 +547,6 @@ static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg)
      * so the 'use parameter B' fast-path is robust against undefined
      * upper bits returned by the host on register reads. */
     if ((rbg->ctrl.regs->RPMD & 0x3) != 0) rbg->useb = 1;
-    if (rbg->ctrl.regs->RPMD != 0) rbg->useb = 1;
 
     if (!info->isbitmap)
     {
