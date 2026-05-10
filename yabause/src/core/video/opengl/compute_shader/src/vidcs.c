@@ -1357,15 +1357,18 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
   }
  
-	/* VDP2 Manual §5.2 p.126: ZMXN0 is 19-bit (3.16 fixed-point).
-	 * Mask 0x7FFFF to include the full fractional part for sub-pixel zoom.
-	 * Some games use the lower 8 bits for smooth zoom interpolation
-	 * (e.g. Burning Rangers fire effect, Panzer Dragoon Saga water). */
-	u32 zmx = ctrl.regs->ZMXN0.all & 0x7FFFF;
-	if ((zmx & 0x7FF00) == 0) return;  /* integer+high-frac == 0 → screen off */
-	ctrl.info.coordincx = (float)(65536 * 256) / (float)zmx;
-	/* Note: keep the existing /65536 form if downstream code expects it,
-	 * otherwise scale appropriately. The key fix is reading the full 19 bits. */
+  /* ------ Zoom (§5.2 p.126-130) ------ */
+  /* Coordinate Increment Register : integer bits 18-8, fractional 7-0.
+   * Mask 0x7FF00 extracts the 11-bit integer + upper fractional portion used
+   * to form the 16.16 reciprocal. A value of 0 disables the screen. */
+  if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
+  ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
+ 
+  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0.
+   *   00 = no reduction           (coordincx in [0, 1])
+   *   01 = up to 1/2              (coordincx in [0, 2], clamp at 0.5)
+   *   10/11 = up to 1/4           (coordincx in [0, 4], clamp at 0.25)
+   */
  
   switch (ctrl.regs->ZMCTL & 0x03)
   {
