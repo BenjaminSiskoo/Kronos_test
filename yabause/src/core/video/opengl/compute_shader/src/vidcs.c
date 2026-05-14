@@ -4156,7 +4156,6 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
 
             field_off += 4;
         } else {
-            info->lineinfo[i].CoordinateIncH = 0x0100;
 			info->lineinfo[i].CoordinateIncH = 0x0100;  /* 1.0 = no zoom */
         }
     }
