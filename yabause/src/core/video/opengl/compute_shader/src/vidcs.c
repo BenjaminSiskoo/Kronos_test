@@ -4112,31 +4112,39 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
     u16 val1, val2;
     if (info->lineinc == 0 || info->islinescroll == 0) return;
 
-    /* §5.3 Figure 5.4: each active field = 4 bytes */
+    /* §5.3 Figure 5.4: each active field = 4 bytes (2 integer + 2 fractional) */
     if (VDPLINE_SX(info->islinescroll)) bound += 4;
     if (VDPLINE_SY(info->islinescroll)) bound += 4;
     if (VDPLINE_SZ(info->islinescroll)) bound += 4;
 
     int height = _Ygl->rheight;
 
-    /* §5.3 p.131: ∆Yst per sub-line in 11.8 fixed-point (same as V-scroll).
-     * coordincy = 1.0  →  delta_y_q8 = 256 (one whole line per sub-line).
-     * coordincy = 0.5  →  delta_y_q8 = 512 (zoomed-out: 2 source lines/sub). */
+    /* §5.3 p.131/137: for lines between sampled entries, the vertical scroll
+     * value is the last sampled value PLUS the vertical coordinate increment
+     * (delta-Yst) per sub-line. delta-Yst is in the same 11.8 fixed-point
+     * units as the line-scroll V value.
+     *
+     * Vdp2DrawNBGx() has already converted the ZMYNx register into
+     * info->coordincy via:  coordincy = 65536 / (ZMYNx & 0x7FF00).
+     * The inverse, expressed in 8-bit fractional, is delta_y_q8 = 256/coordincy.
+     *
+     * coordincy == 1.0  -> delta_y_q8 = 256  (one source line per sub-line)
+     * coordincy == 0.5  -> delta_y_q8 = 512  (zoomed out: 2 lines per sub-line) */
     int delta_y_q8 = 256;
     if (info->coordincy > 0.0f) {
         delta_y_q8 = (int)((1.0f / info->coordincy) * 256.0f + 0.5f);
     }
 
-    /* Cache last sampled values to apply the "hold" rule for X/Z and
-     * to seed the interpolation base for Y. */
+    /* Cached last-sampled values: H-scroll and H-coord-increment are HELD
+     * constant across the group (§5.3 p.137); V-scroll is interpolated. */
     s16 last_sh = 0, last_sv = 0;
     int last_inc = 0x0100;
 
     for (i = 0; i < height; i++) {
-        int sub_line   = i % info->lineinc;
-        int table_entry= i / info->lineinc;
-        int byte_offset= table_entry * bound;
-        int field_off  = 0;
+        int sub_line    = i % info->lineinc;
+        int table_entry = i / info->lineinc;
+        int byte_offset = table_entry * bound;
+        int field_off   = 0;
 
         if (sub_line == 0) {
             /* §5.3 fig.5.5: sample point — read all enabled fields fresh. */
@@ -4156,7 +4164,7 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
                 val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
                 val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
                 s32 ival = (s32)(val1 & 0x07FF);
-                if (val1 & 0x0400) ival -= 0x0800;
+                if (val1 & 0x0400) ival -= 0x0800;            /* sign-extend bit 10 */
                 if ((val2 & 0xFF00) >= 0x8000) ival += (ival >= 0) ? 1 : -1;
                 last_sv = (s16)ival;
                 field_off += 4;
@@ -4168,22 +4176,20 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
                 val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
                 val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
                 last_inc = ((int)(val1 & 0x07) << 8) | (int)(val2 >> 8);
-                /* field_off += 4; — not needed, last assignment */
             } else {
                 last_inc = 0x0100;
             }
         }
 
-        /* §5.3 p.137: write final per-line values, applying interp rules. */
+        /* §5.3 p.137: H-scroll and H-coord-increment held constant over group. */
         info->lineinfo[i].LineScrollValH = last_sh;
         info->lineinfo[i].CoordinateIncH = last_inc;
 
         if (VDPLINE_SY(info->islinescroll)) {
-            /* §5.3 p.131/137: V scroll interpolation between sampled entries.
-             * Result must remain inside s16 range; the original sampled
-             * value is bounded to ±1024 by §5.3 fig.5.4 (11-bit signed),
-             * and sub_line × delta_y_q8 / 256 stays under ±2048 for any
-             * reasonable lineinc∈{1,2,4,8,16}, so the sum fits s16. */
+            /* §5.3 p.131/137: V-scroll interpolated between sampled entries.
+             * Sampled value is bounded to +/-1024 (11-bit signed, fig.5.4);
+             * sub_line * delta_y_q8 / 256 stays small for lineinc in
+             * {1,2,4,8,16}; clamp to s16 range as a safety net. */
             s32 v = (s32)last_sv + ((sub_line * delta_y_q8) >> 8);
             if (v >  32767) v =  32767;
             if (v < -32768) v = -32768;
@@ -5191,7 +5197,10 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     }
 
     if (VDPLINE_SY(ctrl->info.islinescroll)) {
-       targetv = ctrl->info.sv + (v&linemask) + ctrl->info.lineinfo[v].LineScrollValV;
+       /* §5.3 p.131/137: lineinfo[v].LineScrollValV is already interpolated
+        * with delta-Yst per sub-line inside Vdp2GenLineinfo(). Adding
+        * (v&linemask) here would double-count the sub-line offset. */
+       targetv = ctrl->info.sv + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
       targetv = ctrl->info.sv + ((v*incv)>>8);
