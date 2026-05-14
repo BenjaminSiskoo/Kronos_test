@@ -91,7 +91,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl);
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height);
 static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl);
 static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed);
-static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access);
+static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_size_2x2);
 static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b);
 
 static void Vdp2GenLineinfo(vdp2draw_struct *info);
@@ -105,8 +105,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine);
 static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine);
 static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine);
 
-static void finishRbgQueue(void);
-
+/* Correction : prototype 'finishRbgQueue' supprimé — la fonction
+ * n'était ni définie ni appelée nulle part (déclaration morte). */
 
 static pixel_t *VIDCSGetVdp2ScreenExtract(u32 screen, int * w, int * h);
 
@@ -125,7 +125,10 @@ void VIDCSGetScale(float *, float *, int *, int *);
 int VIDCSIsFullscreen(void);
 int VIDCSVdp1Reset(void);
 
-extern vdp2rotationparameter_struct  Vdp1ParaA;
+/* Correction : déclaration 'extern Vdp1ParaA' redondante supprimée ici.
+ * La variable est déjà définie dans ce même fichier (voir plus haut :
+ * 'vdp2rotationparameter_struct Vdp1ParaA;'). Un 'extern' local au
+ * fichier de définition est trompeur et inutile. */
 
 void VIDCSVdp1Draw();
 void VIDCSVdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs);
@@ -1561,7 +1564,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
        * screen culling inside the zone using ctrl.info.startLine/endLine. */
       int delayed = 0;
       if (((ptn_access & 0x1) == 0) &&
-          Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
+          Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) {
         delayed = 1;
       }
  
@@ -2062,7 +2065,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
        * and the screen culling in Vdp2DrawPatternPos handles the rest.
        * ctrl.info.startLine/endLine are set above for getPriority() lookups. */
       int delayed = 0;
-      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0)
+      if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0)
         delayed = 1;
       ctrl.info.x = ctrl.regs->SCXIN1 & 0x7FF;
       ctrl.info.y = ctrl.regs->SCYIN1 & 0x7FF;
@@ -2340,7 +2343,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
      * HORIZONTAL (= one character cell on the pixel grid).
      * The downstream Vdp2DrawMapTest applies this as
      * `x + delayed * 8`, i.e. on the horizontal axis. */
-     if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) {
+     if (Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) {
        delayed = 1;
 
     }
@@ -2645,7 +2648,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
     if (char_access == 0) return;
     if (ptn_access == 0) return;
-    if (Vdp2CheckCharAccessPenalty(char_access, ptn_access) != 0) delayed = 1;
+    if (Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) delayed = 1;
   }
  
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
@@ -6484,5 +6487,3 @@ static pixel_t *VIDCSGetVdp2ScreenExtract(u32 screen, int * w, int * h)
 }
 
 #endif
-
-
