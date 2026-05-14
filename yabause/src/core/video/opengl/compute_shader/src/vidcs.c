@@ -6243,13 +6243,11 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     /* NEW: SCYDN0 bits 15-8: NBG0 vertical scroll FRACTIONAL part. */
     if ((a->SCYDN0 & 0xFF00) != (b->SCYDN0 & 0xFF00)) return 0;
  
-    /* ZMXN0 bits 18-8: NBG0 horizontal coordinate increment (zoom integer).
-     * Shellshock's ground zone is detected HERE — the game writes 0x20000
-     * for zoom x2 when entering the ground area, 0x10000 for the cabin. */
-	if ((a->ZMXN0.all & 0x7FFFF) != (b->ZMXN0.all & 0x7FFFF)) return 0;
-	if ((a->ZMYN0.all & 0x7FFFF) != (b->ZMYN0.all & 0x7FFFF)) return 0;
- 
-    /* ZMYN0 bits 18-8: NBG0 vertical coordinate increment. */
+    /* ZMXN0 / ZMYN0 : NBG0 coordinate increment (zoom).
+     * VDP2 §5.2 p.127: integer part = bits 18-16, fractional = bits 15-8.
+     * Mask 0x7FF00 covers exactly those; bits 7-0 and 19+ are reserved
+     * and must not be compared (host-dependent noise → spurious zone splits). */
+    if ((a->ZMXN0.all & 0x7FF00) != (b->ZMXN0.all & 0x7FF00)) return 0;
     if ((a->ZMYN0.all & 0x7FF00) != (b->ZMYN0.all & 0x7FF00)) return 0;
  
     /* NEW: ZMCTL bits 1-0: N0ZMQT,N0ZMHF — NBG0 reduction limit.
