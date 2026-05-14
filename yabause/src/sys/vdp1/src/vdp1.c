@@ -1621,7 +1621,13 @@ static int getVdp1CyclesPerLine(void)
     return yabsys.IsPal ? rasterValuePAL : rasterValueNTSC;
 }
 
-static u32 returnAddr = 0xffffffff;
+/* État persistant entre appels de Vdp1DrawCommands : le rendu VDP1
+ * peut être interrompu puis repris (émulation cycle-accurate), donc
+ * l'adresse de retour CALL/RETURN doit survivre entre deux appels.
+ * Renommée depuis 'returnAddr' qui masquait les variables locales
+ * homonymes de EvaluateCmdListHash / Vdp1FakeDrawCommands /
+ * Vdp1DebugGetCommandNumberAddr (-Wshadow). */
+static u32 g_vdp1DrawReturnAddr = 0xffffffff;
 
 #ifdef DEBUG_CMD_LIST
 void debugCmdList() {
@@ -1752,7 +1758,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
     debugCmdList();
     #endif
 
-    returnAddr = 0xffffffff;
+    g_vdp1DrawReturnAddr = 0xffffffff;
     nbCmdToProcess = 0;
 
      // Vdp1Regs->EDSR >>= 1;
@@ -1926,8 +1932,8 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
         }
          break;
       case 2: // CALL, call a subroutine
-         if (returnAddr == 0xFFFFFFFF)
-            returnAddr = regs->addr + 0x20;
+         if (g_vdp1DrawReturnAddr == 0xFFFFFFFF)
+            g_vdp1DrawReturnAddr = regs->addr + 0x20;
          {
             u32 target = T1ReadWord(ram, regs->addr + 2) * 8;
             if (target > 0x7FFE0) {
@@ -1941,9 +1947,9 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
          }
          break;
 		case 3: // RETURN, return from subroutine
-		   if (returnAddr != 0xFFFFFFFF) {
-			  regs->addr = returnAddr;
-			  returnAddr = 0xFFFFFFFF;
+		   if (g_vdp1DrawReturnAddr != 0xFFFFFFFF) {
+			  regs->addr = g_vdp1DrawReturnAddr;
+			  g_vdp1DrawReturnAddr = 0xFFFFFFFF;
 		   }
 		   else {
 			  /* VDP1 Manual §6.1: RETURN without matching CALL is
