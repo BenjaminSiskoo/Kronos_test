@@ -537,12 +537,21 @@ static INLINE void ReadLineScrollData(vdp2draw_struct *info, u16 mask, u32 tbl)
    {
       info->islinescroll = (mask >> 1) & 0x7;
       info->linescrolltbl = (tbl & 0x7FFFE) << 1;
-	   info->lineinc = 1 << ((mask >> 4) & 0x03);
+      /* VDP2 §5.3 p.137 Table 5.4: the line-scroll sampling interval
+       * depends on the TV interlace mode (TVMD bits 7-6, "LSMD"):
+       *   00B = non-interlace       -> interval = 2^NxLSS
+       *   10B = single-density int. -> interval = 2 x 2^NxLSS
+       *   11B = double-density int. -> interval = 2^NxLSS         */
+      int base = 1 << ((mask >> 4) & 0x03);
+      if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0x2)
+         info->lineinc = base * 2;   /* single-density interlace */
+      else
+         info->lineinc = base;
    }
    else
    {
       info->islinescroll = 0;
-	  info->lineinc = 0;
+      info->lineinc = 0;
    }
 }
 
