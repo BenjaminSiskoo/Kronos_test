@@ -660,20 +660,27 @@ static u8 FBCRChangeUpdated = 0;
  *   bit 4 = onecycleerase
  * Prohibited combinations (VBE=1 without FCT=FCM=1) are treated
  * as if all three were 1 — matches hardware observed behaviour. */
+ 
 static u8 decodeFBCRMode(void) {
     int vbe = (Vdp1Regs->TVMR >> 3) & 0x1;
-    int fc  =  Vdp1Regs->FBCR       & 0x3;
-    if (vbe) {
-        /* VBE set: only FCT=FCM=1 is legal; anything else treated
-         * as if all three were 1 (erase + manual change). */
-        return 0x01 /*useVBlankErase*/ | 0x02 /*manualchange*/;
-   }
-    u8 m = 0;
-    if (fc == 0 || fc == 1) m |= 0x04; /* onecyclechange */
-    if (fc == 3)            m |= 0x02; /* manualchange  */
-    if (fc == 2)            m |= 0x08; /* manualerase   */
-    if (fc == 0 || fc == 1) m |= 0x10; /* onecycleerase */
-    return m;
+    int fcm = (Vdp1Regs->FBCR >> 1) & 0x1;
+    int fct =  Vdp1Regs->FBCR       & 0x1;
+
+    /* VDP1 §4.2 p.38 Table 4.3: only 4 of the 8 VBE/FCM/FCT combos are legal.
+     * Returned bitfield (unchanged from callers' expectations):
+     *   bit 0 = useVBlankErase
+     *   bit 1 = manualchange
+     *   bit 2 = onecyclechange
+     *   bit 3 = manualerase
+     *   bit 4 = onecycleerase */
+    if (vbe == 0 && fcm == 0 && fct == 0) return 0x14; /* 1-cycle erase+change */
+    if (vbe == 0 && fcm == 1 && fct == 0) return 0x08; /* manual erase  */
+    if (vbe == 0 && fcm == 1 && fct == 1) return 0x02; /* manual change */
+    if (vbe == 1 && fcm == 1 && fct == 1) return 0x03; /* VBE erase + manual change */
+
+    /* Prohibited per §4.2 p.38. Hardware behaviour is undocumented;
+     * safest emulation is a no-op (no erase, no change). */
+    return 0;
 }
 
 static void updateFBCRChange() {
