@@ -1232,10 +1232,7 @@ static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
         ((u32)regs->CYCB0U << 16) | regs->CYCB0L,
         ((u32)regs->CYCB1U << 16) | regs->CYCB1L,
     };
-
-    /* B1 — §3.2 : bit 8 = VRAMD, bit 9 = VRBMD (1 = bank partitionnee).
-     * Si non partitionnee, A1/B1 n'existent pas : leurs registres de
-     * cycle pattern sont ignores (§3.3 p.31). */
+    /* §3.2 : bit 9 = VRBMD, bit 8 = VRAMD (1 = partitionnee) */
     const int a_split = (regs->RAMCTL >> 8) & 0x1;
     const int b_split = (regs->RAMCTL >> 9) & 0x1;
     const int bank_used[4] = { 1, a_split, 1, b_split };
@@ -1244,40 +1241,32 @@ static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
     const int maxT = (nbg == NBG0) ? 2 : 3;   /* T0-T1 / T0-T2 */
 
     for (int b = 0; b < 4; b++) {
-        if (!bank_used[b]) continue;                  /* B1 : A1/B1 si non split */
-        if (Vdp2BankOwnedByRBG0(regs, b)) continue;   /* E1 : cycle pattern ignore */
-
+        if (!bank_used[b]) continue;          /* A1/B1 ignores si non split */
         for (int t = 0; t < maxT; t++) {
-            if (((cyc[b] >> (28 - t * 4)) & 0xF) != want)
-                continue;
-
-            /* B1 — §3.3 p.35 : si NBG1 demande aussi la VCSC, elle doit
-             * etre dans la MEME bank que NBG0 et a un timing posterieur
-             * (NBG0 access selected first). */
-            if (nbg == NBG1) {
-                /* NBG0 fait-il de la VCSC quelque part ? */
-                int n0_anywhere = 0;
-                for (int bb = 0; bb < 4 && !n0_anywhere; bb++) {
-                    if (!bank_used[bb]) continue;
-                    if (Vdp2BankOwnedByRBG0(regs, bb)) continue;
-                    for (int tt = 0; tt < 2; tt++)   /* NBG0 : T0-T1 */
-                        if (((cyc[bb] >> (28 - tt * 4)) & 0xF) == 0xC)
-                            n0_anywhere = 1;
-                }
-                if (n0_anywhere) {
-                    /* NBG0 doit etre dans CETTE bank, a un timing < t */
-                    int n0_before = 0;
+            if (((cyc[b] >> (28 - t * 4)) & 0xF) == want) {
+                /* §3.3 p.35 : si NBG1 demande aussi la VCSC, elle doit
+                 * etre dans la MEME bank et NBG0 doit venir AVANT. */
+                if (nbg == NBG1) {
+                    int n0t = -1;
                     for (int tt = 0; tt < t; tt++)
-                        if (((cyc[b] >> (28 - tt * 4)) & 0xF) == 0xC)
-                            n0_before = 1;
-                    if (!n0_before) continue;   /* mauvaise bank ou ordre */
+                        if (((cyc[b] >> (28 - tt*4)) & 0xF) == 0xC) { n0t = tt; break; }
+                    /* si NBG0 fait de la VCSC, elle doit etre dans cette
+                     * bank et a un timing < t ; sinon NBG1 invalide. */
+                    int n0_anywhere = 0;
+                    for (int bb = 0; bb < 4 && !n0_anywhere; bb++) {
+                        if (!bank_used[bb]) continue;
+                        for (int tt = 0; tt < 2; tt++)
+                            if (((cyc[bb] >> (28 - tt*4)) & 0xF) == 0xC) n0_anywhere = 1;
+                    }
+                    if (n0_anywhere && n0t < 0) continue; /* mauvaise bank/ordre */
                 }
+                return 1;
             }
-            return 1;
         }
     }
     return 0;
 }
+
 static void Vdp2DrawNBG0_zones(void)
 {
   int lastLine = 0;
