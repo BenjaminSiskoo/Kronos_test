@@ -3302,9 +3302,16 @@ LOG_ASYN("===================================\n");
 
   Vdp2GenerateWindowInfo(&Vdp2Lines[VDP2_DRAW_LINE]);
 
-  if (Vdp1Regs->TVMR & 0x02) {
-    Vdp2ReadRotationTable(0, &Vdp1ParaA, &Vdp2Lines[VDP2_DRAW_LINE], Vdp2Ram);
-  }
+	/* vidcs.c — VIDCSVdp2DrawScreens
+	 * VDP1 §4.1 p.36 : seul TVM = 010b (Rotation 16bpp) ou 011b
+	 * (Rotation 8bpp) active la lecture en rotation du frame buffer.
+	 * Le frame buffer VDP1 est alors transformé par le VDP2 via
+	 * Rotation Parameter A (§6.3). Tester (TVM == 2 || TVM == 3),
+	 * pas seulement le bit 1, qui inclurait les TVM 6/7 non définis. */
+	const int vdp1_tvm = Vdp1Regs->TVMR & 0x7;
+	if (vdp1_tvm == 2 || vdp1_tvm == 3) {
+		Vdp2ReadRotationTable(0, &Vdp1ParaA, &Vdp2Lines[VDP2_DRAW_LINE], Vdp2Ram);
+	}
   Vdp2DrawBackScreen(&Vdp2Lines[VDP2_DRAW_LINE]);
   Vdp2DrawLineColorScreen(&Vdp2Lines[VDP2_DRAW_LINE]);
 
