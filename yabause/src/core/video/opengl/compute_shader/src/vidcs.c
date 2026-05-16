@@ -1203,6 +1203,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
   ctrl.info.coordincy = 1.0f;
+  ctrl.info.coordincy_raw = 0x100;   /* 1.0 en point fixe .8 - defaut sur */
   ctrl.info.cor = 0;
   ctrl.info.cog = 0;
   ctrl.info.cob = 0;
@@ -1390,6 +1391,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
  
   if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
+  ctrl.info.coordincy_raw = ctrl.regs->ZMYN0.all & 0x7FF00;
   ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN0.all & 0x7FF00);
  
   ctrl.info.PlaneAddr = (void (FASTCALL*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
@@ -1490,6 +1492,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
        * Minor per-pixel overhead, guaranteed correctness. */
       ctrl.info.coordincx = 1.0f;
       ctrl.info.coordincy = 1.0f;
+      ctrl.info.coordincy_raw = 0x100;
       ctrl.info.sh = (ctrl.regs->SCXIN0 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN0 & 0x7FF);
       ctrl.info.x = 0;
@@ -1908,7 +1911,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
 
   if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) return;
-  else ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN1.all & 0x7FF00);
+  ctrl.info.coordincy_raw = ctrl.regs->ZMYN1.all & 0x7FF00;
+  ctrl.info.coordincy = (float)65536 / (ctrl.regs->ZMYN1.all & 0x7FF00);
 
   ctrl.info.priority = (ctrl.regs->PRINA >> 8) & 0x7;
 
@@ -2265,6 +2269,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
   ctrl.info.linecheck_mask = 0x04;
   ctrl.info.coordincx = ctrl.info.coordincy = 1;
+  ctrl.info.coordincy_raw = 0x100;
   ctrl.info.priority = ctrl.regs->PRINB & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG2PlaneAddr;
 
@@ -2570,6 +2575,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   ctrl.info.linecheck_mask = 0x08;
   ctrl.info.coordincx = ctrl.info.coordincy = 1;
+  ctrl.info.coordincy_raw = 0x100;
  
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
@@ -2715,6 +2721,7 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
   info->islinescroll = 0;
   info->linescrolltbl = 0;
   info->lineinc = 0;
+  info->coordincy_raw = 0x100;
 
   Vdp2ReadRotationTable(0, &rbg->paraA, rbg->ctrl.regs, Vdp2Ram);
   Vdp2ReadRotationTable(1, &rbg->paraB, rbg->ctrl.regs, Vdp2Ram);
@@ -2922,6 +2929,7 @@ info->mapwh  = saved_mapwh;
 
   info->linecheck_mask = 0x10;
   info->coordincx = info->coordincy = 1;
+  info->coordincy_raw = 0x100;
 
   Vdp2DrawRotation(rbg);
 }
@@ -4112,7 +4120,7 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
 {
     int bound = 0;
     int i;
-    u16 val1, val2;
+    u16 val1;
     if (info->lineinc == 0 || info->islinescroll == 0) return;
 
     /* §5.3 Figure 5.4: each active field = 4 bytes (2 integer + 2 fractional) */
@@ -4122,21 +4130,25 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
 
     int height = _Ygl->rheight;
 
-    /* §5.3 p.131/137: for lines between sampled entries, the vertical scroll
-     * value is the last sampled value PLUS the vertical coordinate increment
-     * (delta-Yst) per sub-line. delta-Yst is in the same 11.8 fixed-point
-     * units as the line-scroll V value.
+    /* PATCH 1.1 : lineNBG0[]/lineNBG1[] sont dimensionnes a 512.
+     * rheight peut depasser cette valeur sur les chemins upscale ;
+     * on clampe pour eviter un debordement de tableau. */
+    if (height > 512) height = 512;
+
+    /* PATCH 2.2 — §5.3 p.131/137 : pour les lignes entre deux entrees
+     * echantillonnees, la V-scroll = derniere valeur lue + increment
+     * vertical (delta-Yst) par sous-ligne.
      *
-     * Vdp2DrawNBGx() has already converted the ZMYNx register into
-     * info->coordincy via:  coordincy = 65536 / (ZMYNx & 0x7FF00).
-     * The inverse, expressed in 8-bit fractional, is delta_y_q8 = 256/coordincy.
-     *
-     * coordincy == 1.0  -> delta_y_q8 = 256  (one source line per sub-line)
-     * coordincy == 0.5  -> delta_y_q8 = 512  (zoomed out: 2 lines per sub-line) */
-    int delta_y_q8 = 256;
-    if (info->coordincy > 0.0f) {
-        delta_y_q8 = (int)((1.0f / info->coordincy) * 256.0f + 0.5f);
-    }
+     * delta-Yst vient directement du registre ZMYNx, deja masque par
+     * Vdp2DrawNBGx en info->coordincy_raw = (ZMYNx.all & 0x7FF00).
+     * Cette valeur est un point fixe 11.8 aligne sur le bit 8 ;
+     * un >> 8 la ramene en .8 pur, ce qu'attend delta_y_q8.
+     * On n'utilise PLUS le float coordincy : le round-trip
+     * (65536/x puis 256/coordincy) accumulait de l'erreur d'arrondi
+     * sur les groupes longs (NxLSS = 8 / 16). */
+    int delta_y_q8 = 0x100;   /* 1.0 par defaut */
+    if (info->coordincy_raw != 0)
+        delta_y_q8 = (int)(info->coordincy_raw >> 8);
 
     /* Cached last-sampled values: H-scroll and H-coord-increment are HELD
      * constant across the group (§5.3 p.137); V-scroll is interpolated. */
@@ -4151,12 +4163,18 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
 
         if (sub_line == 0) {
             /* §5.3 fig.5.5: sample point — read all enabled fields fresh. */
+
+            /* PATCH 1.2 — §5.3 p.132 fig.5.4 : le scroll value est un
+             * point fixe 11.8 signe (entier 11 bits + fraction 8 bits).
+             * Le hardware TRONQUE vers la partie entiere, il n'arrondit
+             * PAS selon le MSB de la fraction. L'ancien terme d'arrondi
+             * "demi vers l'infini" introduisait un biais d'1 px sur la
+             * moitie des lignes -> tremblement vertical/horizontal.
+             * On lit donc uniquement la partie entiere 11 bits. */
             if (VDPLINE_SX(info->islinescroll)) {
                 val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-                val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
                 s32 ival = (s32)(val1 & 0x07FF);
-                if (val1 & 0x0400) ival -= 0x0800;            /* sign-extend bit 10 */
-                if ((val2 & 0xFF00) >= 0x8000) ival += (ival >= 0) ? 1 : -1;
+                if (val1 & 0x0400) ival -= 0x0800;   /* sign-extend bit 10 */
                 last_sh = (s16)ival;
                 field_off += 4;
             } else {
@@ -4165,10 +4183,8 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
 
             if (VDPLINE_SY(info->islinescroll)) {
                 val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-                val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
                 s32 ival = (s32)(val1 & 0x07FF);
-                if (val1 & 0x0400) ival -= 0x0800;            /* sign-extend bit 10 */
-                if ((val2 & 0xFF00) >= 0x8000) ival += (ival >= 0) ? 1 : -1;
+                if (val1 & 0x0400) ival -= 0x0800;   /* sign-extend bit 10 */
                 last_sv = (s16)ival;
                 field_off += 4;
             } else {
@@ -4176,9 +4192,9 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
             }
 
             if (VDPLINE_SZ(info->islinescroll)) {
-                val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-                val2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
-                last_inc = ((int)(val1 & 0x07) << 8) | (int)(val2 >> 8);
+                u16 z1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+                u16 z2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
+                last_inc = ((int)(z1 & 0x07) << 8) | (int)(z2 >> 8);
             } else {
                 last_inc = 0x0100;
             }
@@ -4189,10 +4205,7 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
         info->lineinfo[i].CoordinateIncH = last_inc;
 
         if (VDPLINE_SY(info->islinescroll)) {
-            /* §5.3 p.131/137: V-scroll interpolated between sampled entries.
-             * Sampled value is bounded to +/-1024 (11-bit signed, fig.5.4);
-             * sub_line * delta_y_q8 / 256 stays small for lineinc in
-             * {1,2,4,8,16}; clamp to s16 range as a safety net. */
+            /* §5.3 p.131/137: V-scroll interpolated between sampled entries. */
             s32 v = (s32)last_sv + ((sub_line * delta_y_q8) >> 8);
             if (v >  32767) v =  32767;
             if (v < -32768) v = -32768;
