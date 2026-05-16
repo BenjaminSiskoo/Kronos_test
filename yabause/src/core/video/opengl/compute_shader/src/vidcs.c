@@ -2973,6 +2973,31 @@ info->mapwh  = saved_mapwh;
   Vdp2DrawRotation(rbg);
 }
 
+/* VDP2 §6.2 p.148 RAMCTL RDBS
+ * En mode rotation, le type d'usage de chaque bank VRAM pour RBG0
+ * est donné UNIQUEMENT par RDBSx1/RDBSx0 du RAM control register :
+ *   00 = non utilisé par RBG0
+ *   01 = coefficient table
+ *   10 = pattern name table
+ *   11 = character pattern / bitmap pattern
+ * Le VRAM cycle pattern register de la bank est ignoré (§3.3 p.31). */
+enum { RDBS_UNUSED = 0, RDBS_COEF = 1, RDBS_PNAME = 2, RDBS_CHAR = 3 };
+
+static int Vdp2RBG0BankType(Vdp2 *regs, int bank)   /* bank : 0=A0 1=A1 2=B0 3=B1 */
+{
+    return (regs->RAMCTL >> (bank * 2)) & 0x3;
+}
+
+/* Validation : l'adresse character/pattern de RBG0 doit tomber dans
+ * une bank dont le RDBS correspond. Sinon le hardware ne lit rien
+ * d'utile (§3.3 p.31 "access won't be done and the correct screen
+ * will not be displayed"). */
+static int Vdp2RBG0CharBankValid(Vdp2 *regs, u32 charaddr)
+{
+    int bank = Vdp2GetBank(regs, charaddr);
+    int t = Vdp2RBG0BankType(regs, bank);
+    return (t == RDBS_CHAR);
+}
 
 static void Vdp2DrawRBG0()
 {
