@@ -5205,39 +5205,13 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       targetv = ctrl->info.sv + ((v*incv)>>8);
     }
 
-    if (ctrl->info.isverticalscroll) {
-      /* VDP2 Manual §5.3 'Vertical Cell Scroll Function' p.134:
-       *   "Data of the vertical cell scroll table is treated as a
-       *    table in the order from data in the left side cell of
-       *    the TV screen."
-       *
-       * The VCSC table contains ONE entry per horizontal CELL of the
-       * TV screen (not per line, not per pixel).  Each entry shifts
-       * the vertical offset for all 8 pixels of that cell column.
-       *
-       * KNOWN LIMITATION: this read uses a fixed offset of 0 from
-       * verticalscrolltbl, so every screen cell column receives the
-       * same V-shift — equivalent to applying only the first cell's
-       * vertical scroll uniformly.  Correct behaviour would require
-       * reading at 'verticalscrolltbl + cellCol * verticalscrollinc'
-       * inside the horizontal loop body and re-mapping mapy / planey
-       * / pagey when the column changes.  See Vdp2DrawMapTest()
-       * around line 5158 for the cell-stepping pattern.
-       *
-       * This bug is largely benign in practice: most titles using
-       * VCSC do so with all cell columns sharing similar V-offsets
-       * (it is mainly used for parallax planet curvature, water
-       * tilt, etc.).  Symptoms appear as flat horizontal "bands"
-       * that should instead curve column-by-column — visible in a
-       * handful of arcade ports' transition effects.
-       *
-       * Leaving the targetv += unchanged for now: the per-cell
-       * variant requires a non-trivial restructuring of the inner
-       * loop and conflicts with the zoom path that re-derives mapx
-       * from a non-cell-aligned 'hh'.  Marked as a TODO. */
-
-      targetv += Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl) >> 16;
-    }
+    /* §5.3 p.134 + Figure 5.8 : la table VCSC contient une
+     * entree par COLONNE DE CELLULE (8 dots) de l'ecran, lue de gauche
+     * a droite. Le V-shift doit donc etre re-echantillonne quand la
+     * colonne de cellule change, dans la boucle horizontale (voir plus
+     * bas). Ici on ne fait que memoriser le targetv de base de la
+     * ligne ; le V-shift VCSC sera ajoute par colonne. */
+    const int base_targetv = targetv;
 
 	/* vidcs.c — Vdp2DrawMapPerLine() line zoom update
 	 * VDP2 Manual §5.3 SCRCTL N0LZMX/N1LZMX: when set, horizontal coordinate
@@ -5260,21 +5234,59 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 	if (ctrl->info.coordincx < ctrl->info.maxzoom)
 		ctrl->info.coordincx = ctrl->info.maxzoom;
 
-    mapy = (targetv) >> planeh_shift;
-    dot_on_planey = (targetv)-(mapy << planeh_shift);
-    mapy = mapy & 0x01;
-    planey = dot_on_planey >> plane_shift;
-    dot_on_pagey = dot_on_planey & plane_mask;
-    planey = planey & (ctrl->info.planeh - 1);
-    pagey = dot_on_pagey >> page_shift;
-    chary = dot_on_pagey & page_mask;
-    if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
+/* PATCH 3.1 — quand la VCSC n'est PAS active, le V-shift est
+     * constant sur toute la ligne : on calcule mapy/.../chary une
+     * seule fois, comme avant. Quand la VCSC EST active, ces valeurs
+     * dependent de la colonne de cellule et sont (re)calculees dans
+     * la boucle j ci-dessous. */
+    if (!ctrl->info.isverticalscroll) {
+      mapy = (base_targetv) >> planeh_shift;
+      dot_on_planey = (base_targetv) - (mapy << planeh_shift);
+      mapy = mapy & 0x01;
+      planey = dot_on_planey >> plane_shift;
+      dot_on_pagey = dot_on_planey & plane_mask;
+      planey = planey & (ctrl->info.planeh - 1);
+      pagey = dot_on_pagey >> page_shift;
+      chary = dot_on_pagey & page_mask;
+      if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
+    }
 
     int inch = (int)(1.0f / ctrl->info.coordincx * 256.0f);
+
+    /* Colonne de cellule VCSC courante ; -1 = non initialisee.
+     * §5.3 p.134 : verticalscrollinc vaut 4 (un seul NBG en VCSC) ou
+     * 8 (les deux NBG -> entrees alternees). verticalscrolltbl pointe
+     * deja sur la 1re entree du bon NBG (le +4 pour NBG1 est applique
+     * dans Vdp2DrawNBG1). cellCol * verticalscrollinc parcourt donc
+     * la table correctement dans les deux cas. */
+    int vcsc_cell = -1;
 
     for (int j = 0; j < ctrl->info.draww; j += 1) {
 
       int hh = ((j*inch) >> 8);
+
+      /* PATCH 3.1 — re-echantillonnage VCSC par colonne de cellule.
+       * La position horizontale dans le plan est (hh + sx) ; la
+       * colonne de cellule est cette position divisee par 8. */
+      if (ctrl->info.isverticalscroll) {
+        int cellCol = (hh + sx) >> 3;
+        if (cellCol != vcsc_cell) {
+          vcsc_cell = cellCol;
+          s32 vshift = (s32)Vdp2RamReadLong(NULL, Vdp2Ram,
+                          ctrl->info.verticalscrolltbl
+                          + cellCol * ctrl->info.verticalscrollinc) >> 16;
+          int tv = base_targetv + vshift;
+          mapy = tv >> planeh_shift;
+          dot_on_planey = tv - (mapy << planeh_shift);
+          mapy = mapy & 0x01;
+          planey = dot_on_planey >> plane_shift;
+          dot_on_pagey = dot_on_planey & plane_mask;
+          planey = planey & (ctrl->info.planeh - 1);
+          pagey = dot_on_pagey >> page_shift;
+          chary = dot_on_pagey & page_mask;
+          if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
+        }
+      }
 
       mapx = (hh + sx) >> planew_shift;
       dot_on_planex = (hh + sx) - (mapx << planew_shift);
