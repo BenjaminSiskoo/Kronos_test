@@ -1175,6 +1175,39 @@ void VIDCSVdp1DrawFB(void) {
   vdp1_write();
 }
 
+/* VDP2 §3.3 p.35 : l'acces a la table Vertical Cell Scroll
+ * n'est reellement effectue que si un access command "Vertical Cell
+ * Scroll Table Data Read" est present dans le VRAM cycle pattern
+ * register, dans un timing autorise :
+ *   - NBG0 : T0 ou T1
+ *   - NBG1 : T0, T1 ou T2
+ * Access command VCSC (§3.3) : NBG0 = 1100b (0xC), NBG1 = 1101b (0xD).
+ *
+ * Les registres de cycle pattern sont des u16 simples (cf. vdp2.h) :
+ *   CYCA0L/U, CYCA1L/U, CYCB0L/U, CYCB1L/U.
+ * On compose (U << 16) | L ; le mot U porte T0-T3 (T0 en bits 31-28),
+ * le mot L porte T4-T7. §3.3 fig.3.2 : l'acces commence a T0.
+ *
+ * NB : en Hi-Res / Exclusive monitor seuls T0-T3 sont valides
+ * (§3.3 p.32) ; ici maxT vaut au plus 3, donc pas d'impact, mais
+ * tout parseur de cycle pattern plus general doit borner a T0-T3. */
+static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
+{
+    const u32 cyc[4] = {
+        ((u32)regs->CYCA0U << 16) | regs->CYCA0L,
+        ((u32)regs->CYCA1U << 16) | regs->CYCA1L,
+        ((u32)regs->CYCB0U << 16) | regs->CYCB0L,
+        ((u32)regs->CYCB1U << 16) | regs->CYCB1L,
+    };
+    const u8 want = (nbg == NBG0) ? 0xC : 0xD;
+    const int maxT = (nbg == NBG0) ? 2 : 3;   /* T0-T1 / T0-T2 */
+    for (int b = 0; b < 4; b++)
+        for (int t = 0; t < maxT; t++)
+            if (((cyc[b] >> (28 - t * 4)) & 0xF) == want)
+                return 1;
+    return 0;
+}
+
 static void Vdp2DrawNBG0_zones(void)
 {
   int lastLine = 0;
@@ -1421,7 +1454,11 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.lineinfo = lineNBG0;
   Vdp2GenLineinfo(&ctrl.info);
  
-  if (ctrl.regs->SCRCTL & 1) {
+  /* §3.3 p.35 : la VCSC n'est active que si SCRCTL le
+   * demande ET qu'un access command VCSC est reserve dans un timing
+   * valide du cycle pattern register. Sinon le hardware ne lit pas
+   * la table -> ne pas appliquer de V-shift fantome. */
+  if ((ctrl.regs->SCRCTL & 1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
     ctrl.info.isverticalscroll = 1;
     ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
     ctrl.info.verticalscrollinc = (ctrl.regs->SCRCTL & 0x100) ? 8 : 4;
@@ -1943,7 +1980,9 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.lineinfo = lineNBG1;
   Vdp2GenLineinfo(&ctrl.info);
 
-  if (ctrl.regs->SCRCTL & 0x100) {
+  /* §3.3 p.35 : VCSC NBG1 active seulement si le cycle
+   * pattern reserve un access command VCSC NBG1 (0xD) en T0-T2. */
+  if ((ctrl.regs->SCRCTL & 0x100) && Vdp2VCSCAccessValid(ctrl.regs, NBG1)) {
     ctrl.info.isverticalscroll = 1;
     if (ctrl.regs->SCRCTL & 0x1) {
       ctrl.info.verticalscrolltbl = 4 + ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1);
