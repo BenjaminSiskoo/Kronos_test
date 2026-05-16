@@ -532,20 +532,19 @@ static INLINE void ReadMosaicData(vdp2draw_struct *info, u16 mask, Vdp2* regs)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static INLINE void ReadLineScrollData(vdp2draw_struct *info, u16 mask, u32 tbl)
+static INLINE void ReadLineScrollData(vdp2draw_struct *info, u16 mask, u32 tbl, Vdp2 *regs)
 {
    if (mask & 0xE)
    {
       info->islinescroll = (mask >> 1) & 0x7;
       info->linescrolltbl = (tbl & 0x7FFFE) << 1;
-      /* VDP2 §5.3 p.137 Table 5.4: the line-scroll sampling interval
-       * depends on the TV interlace mode (TVMD bits 7-6, "LSMD"):
-       *   00B = non-interlace       -> interval = 2^NxLSS
-       *   10B = single-density int. -> interval = 2 x 2^NxLSS
-       *   11B = double-density int. -> interval = 2^NxLSS         */
+      /* VDP2 §5.3 p.137 : intervalle de base = 2^NxLSS.
+       * LSMD (TVMD bits 7-6) : 00=NI, 10=single-density, 11=double-density.
+       * Table p.137 : seul le single-density double l'intervalle ;
+       * double-density est identique au non-interlace. */
       int base = 1 << ((mask >> 4) & 0x03);
-      if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0x2)
-         info->lineinc = base * 2;   /* single-density interlace */
+      if (((regs->TVMD >> 6) & 0x3) == 0x2)
+         info->lineinc = base * 2;
       else
          info->lineinc = base;
    }
