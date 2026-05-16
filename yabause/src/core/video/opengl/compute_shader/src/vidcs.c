@@ -1175,6 +1175,31 @@ void VIDCSVdp1DrawFB(void) {
   vdp1_write();
 }
 
+/* VDP2 §6.2 p.149 : si le rotation scroll screen est
+ * affiche et qu'une bank est attribuee a RBG0 (RDBS != 00b),
+ * son VRAM cycle pattern est ignore par le hardware. */
+static INLINE int Vdp2BankOwnedByRBG0(Vdp2 *regs, int bank)
+{
+    if (((regs->BGON >> 4) & 0x1) == 0) return 0;   /* R0ON */
+    int rdbs = (regs->RAMCTL >> (bank * 2)) & 0x3;
+    return (rdbs != 0);
+}
+
+/* §3.3 p.32 + §6.2 p.149 : un timeslot T0..T7 d'une bank
+ * n'est exploitable par un NBG que si :
+ *   - la bank existe (partition active, §3.2)
+ *   - la bank n'est pas reservee a RBG0 (cycle pattern ignore, §6.2 p.149)
+ * Une access command pointant une bank sans donnee ne lit rien (§3.3 p.32). */
+static INLINE int Vdp2TimeslotUsable(Vdp2 *regs, int bank)
+{
+    const int a_split = (regs->RAMCTL >> 8) & 0x1;   /* VRAMD */
+    const int b_split = (regs->RAMCTL >> 9) & 0x1;   /* VRBMD */
+    const int bank_used[4] = { 1, a_split, 1, b_split };
+    if (!bank_used[bank]) return 0;
+    if (Vdp2BankOwnedByRBG0(regs, bank)) return 0;
+    return 1;
+}
+
 /* VDP2 §3.3 p.35 : l'acces a la table Vertical Cell Scroll
  * n'est reellement effectue que si un access command "Vertical Cell
  * Scroll Table Data Read" est present dans le VRAM cycle pattern
@@ -1191,6 +1216,14 @@ void VIDCSVdp1DrawFB(void) {
  * NB : en Hi-Res / Exclusive monitor seuls T0-T3 sont valides
  * (§3.3 p.32) ; ici maxT vaut au plus 3, donc pas d'impact, mais
  * tout parseur de cycle pattern plus general doit borner a T0-T3. */
+/* VDP2 §3.3 p.35 : l'acces a la table Vertical Cell Scroll n'est
+ * reellement effectue que si un access command VCSC est present dans
+ * un timing autorise (NBG0 : T0-T1 ; NBG1 : T0-T2), dans une bank
+ * exploitable :
+ *   - B1 : bank existante (A1/B1 ignorees si VRAM non partitionnee)
+ *          + meme bank pour NBG0/NBG1, NBG0 avant NBG1
+ *   - E1 : bank non reservee a RBG0 (cycle pattern ignore, §6.2 p.149)
+ * Access command VCSC : NBG0 = 1100b (0xC), NBG1 = 1101b (0xD). */
 static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
 {
     const u32 cyc[4] = {
@@ -1199,15 +1232,52 @@ static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
         ((u32)regs->CYCB0U << 16) | regs->CYCB0L,
         ((u32)regs->CYCB1U << 16) | regs->CYCB1L,
     };
+
+    /* B1 — §3.2 : bit 8 = VRAMD, bit 9 = VRBMD (1 = bank partitionnee).
+     * Si non partitionnee, A1/B1 n'existent pas : leurs registres de
+     * cycle pattern sont ignores (§3.3 p.31). */
+    const int a_split = (regs->RAMCTL >> 8) & 0x1;
+    const int b_split = (regs->RAMCTL >> 9) & 0x1;
+    const int bank_used[4] = { 1, a_split, 1, b_split };
+
     const u8 want = (nbg == NBG0) ? 0xC : 0xD;
     const int maxT = (nbg == NBG0) ? 2 : 3;   /* T0-T1 / T0-T2 */
-    for (int b = 0; b < 4; b++)
-        for (int t = 0; t < maxT; t++)
-            if (((cyc[b] >> (28 - t * 4)) & 0xF) == want)
-                return 1;
+
+    for (int b = 0; b < 4; b++) {
+        if (!bank_used[b]) continue;                  /* B1 : A1/B1 si non split */
+        if (Vdp2BankOwnedByRBG0(regs, b)) continue;   /* E1 : cycle pattern ignore */
+
+        for (int t = 0; t < maxT; t++) {
+            if (((cyc[b] >> (28 - t * 4)) & 0xF) != want)
+                continue;
+
+            /* B1 — §3.3 p.35 : si NBG1 demande aussi la VCSC, elle doit
+             * etre dans la MEME bank que NBG0 et a un timing posterieur
+             * (NBG0 access selected first). */
+            if (nbg == NBG1) {
+                /* NBG0 fait-il de la VCSC quelque part ? */
+                int n0_anywhere = 0;
+                for (int bb = 0; bb < 4 && !n0_anywhere; bb++) {
+                    if (!bank_used[bb]) continue;
+                    if (Vdp2BankOwnedByRBG0(regs, bb)) continue;
+                    for (int tt = 0; tt < 2; tt++)   /* NBG0 : T0-T1 */
+                        if (((cyc[bb] >> (28 - tt * 4)) & 0xF) == 0xC)
+                            n0_anywhere = 1;
+                }
+                if (n0_anywhere) {
+                    /* NBG0 doit etre dans CETTE bank, a un timing < t */
+                    int n0_before = 0;
+                    for (int tt = 0; tt < t; tt++)
+                        if (((cyc[b] >> (28 - tt * 4)) & 0xF) == 0xC)
+                            n0_before = 1;
+                    if (!n0_before) continue;   /* mauvaise bank ou ordre */
+                }
+            }
+            return 1;
+        }
+    }
     return 0;
 }
-
 static void Vdp2DrawNBG0_zones(void)
 {
   int lastLine = 0;
@@ -1870,7 +1940,9 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
        * NBG0; the per-line RAMCTL-conflict scan must key off the layer
        * actually being drawn. */
       if ((Vdp2Lines[i].BGON & 0x2)!=0) {
-        if(((Vdp2Lines[i].RAMCTL>>(charAddrBk<<1))&0x3) != 0x0){
+        /* §6.2 p.149 : bank du character pattern de NBG1
+         * reservee a RBG0 -> cycle pattern ignore, calque invalide. */
+        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[i], charAddrBk)) {
           needUpdate = 1;
           ctrl.info.display[i] = 0;
         }
