@@ -1417,7 +1417,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   if (ctrl.info.priority == 0) return;
  
-  ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL & 0xFF, ctrl.regs->LSTA0.all);
+  ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL & 0xFF, ctrl.regs->LSTA0.all, ctrl.regs);
   ctrl.info.lineinfo = lineNBG0;
   Vdp2GenLineinfo(&ctrl.info);
  
@@ -1939,7 +1939,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     return;
   }
 
-  ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL >> 8, ctrl.regs->LSTA1.all);
+  ReadLineScrollData(&ctrl.info, ctrl.regs->SCRCTL >> 8, ctrl.regs->LSTA1.all, ctrl.regs);
   ctrl.info.lineinfo = lineNBG1;
   Vdp2GenLineinfo(&ctrl.info);
 
@@ -6013,7 +6013,7 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
     return;
   }
 
-  ReadLineScrollData(info, rbg->ctrl.regs->SCRCTL & 0xFF, rbg->ctrl.regs->LSTA0.all);
+  ReadLineScrollData(info, rbg->ctrl.regs->SCRCTL & 0xFF, rbg->ctrl.regs->LSTA0.all, rbg->ctrl.regs);
   info->lineinfo = lineNBG0;
   Vdp2GenLineinfo(info);
 
