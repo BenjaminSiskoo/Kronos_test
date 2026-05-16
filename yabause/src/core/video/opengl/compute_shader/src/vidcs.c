@@ -5126,8 +5126,6 @@ static int getPriority(int id, Vdp2 *a) {
 
 static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
-  int lineindex = 0;
-
   int sx;
   int mapx, mapy;
   int planex, planey;
@@ -5158,30 +5156,15 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
-  /* VDP2 Manual §5.3 SCRCTL NxLSS bits: line scroll table read interval.
-   * Table (p.137):
-   *   NxLSS=00 → every line (NI), every 2 lines (SI), every line  (DDI)
-   *   NxLSS=01 → every 2 lines (NI), every 4 lines (SI), every 2  (DDI)
-   *   NxLSS=10 → every 4 lines (NI), every 8 lines (SI), every 4  (DDI)
-   *   NxLSS=11 → every 8 lines (NI), every 16 lines(SI), every 8  (DDI)
-   * SCRCTL (1800 9AH): NBG0 NxLSS = bits 5-4, NBG1 NxLSS = bits 13-12.
-   * In single-density interlace both fields share one table entry,
-   * so effective spacing doubles. DDI is identical to non-interlace.
-   */
-  int linescroll_spacing = 1;
-  if (ctrl->info.islinescroll) {
-    int lss = 0;
-    if (ctrl->info.idScreen == NBG0)
-      lss = (ctrl->regs->SCRCTL >> 4) & 0x3;
-    else if (ctrl->info.idScreen == NBG1)
-      lss = (ctrl->regs->SCRCTL >> 12) & 0x3;
-    linescroll_spacing = 1 << lss;
-    if (_Ygl->interlace == SINGLE_INTERLACE)
-      linescroll_spacing <<= 1;   /* SI: both fields → one entry */
-    /* DDI: no adjustment, same as non-interlace */
-  }
-  int linemask = linescroll_spacing - 1;
 
+  /* §5.3 p.137 : l'intervalle de relecture du line scroll
+   * (NxLSS) est deja calcule par ReadLineScrollData() dans
+   * info->lineinc, a partir du snapshot par-ligne. Vdp2GenLineinfo()
+   * remplit ensuite lineinfo[] indexe par ligne ecran absolue, avec
+   * la V-scroll deja interpolee sur l'intervalle. Il suffit donc de
+   * lire lineinfo[v] ; aucun recalcul local de spacing/mask n'est
+   * necessaire (l'ancien linescroll_spacing relisait en plus le
+   * registre live ctrl->regs->SCRCTL au lieu du snapshot). */
   int screenH = _Ygl->rheight;
 
   for (v = 0; v < screenH; v++) {
@@ -5213,9 +5196,9 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     }
 
     if (VDPLINE_SY(ctrl->info.islinescroll)) {
-       /* §5.3 p.131/137: lineinfo[v].LineScrollValV is already interpolated
-        * with delta-Yst per sub-line inside Vdp2GenLineinfo(). Adding
-        * (v&linemask) here would double-count the sub-line offset. */
+       /* §5.3 p.131/137 : lineinfo[v].LineScrollValV est deja interpole
+        * avec delta-Yst par sous-ligne dans Vdp2GenLineinfo(). On lit
+        * directement la valeur de la ligne absolue v. */
        targetv = ctrl->info.sv + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
@@ -5401,7 +5384,6 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       ctrl->info.priority = priority;
     }
 
-    if ((v & linemask) == linemask) lineindex++;
     ctrl->texture.textdata += ctrl->texture.w;
   }
 }
