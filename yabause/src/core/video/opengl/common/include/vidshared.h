@@ -152,6 +152,7 @@ typedef struct
    int titan_shadow_enabled;
 
    float coordincx, coordincy;
+   u32 coordincy_raw;   /* ZMYNx.all & 0x7FF00 - point fixe 11.8 aligne bit 8, VDP2*/
    void FASTCALL (* PlaneAddr)(void *, int, Vdp2*);
    u32 FASTCALL (*PostPixelFetchCalc)(void *, u32);
    int patternpixelwh;
