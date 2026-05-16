@@ -264,8 +264,13 @@ u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
 u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
-   u32 fb_height = (Vdp1Regs->FBCR & 0x8) ? 512 : 256;
+   /* PATCH 4.3 — §4.1 p.36 / §4.2 p.41 : la hauteur du frame buffer
+    * depend de TVMR.TVM, jamais de FBCR.DIE. En mode rotation (TVM
+    * 010b/011b) et HDTV (TVM 100b) le double interlace est interdit,
+    * DIE doit etre ignore. On utilise le helper vdp1FBHeight() comme
+    * toutes les autres fonctions d'acces au FB (cette occurrence
+    * etait la seule restee sur l'ancien calcul FBCR & 0x8). */
+   u32 fb_height = vdp1FBHeight();
    if (pixIdx/512 >= fb_height) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
