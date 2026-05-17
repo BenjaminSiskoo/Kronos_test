@@ -1520,7 +1520,12 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   if ((ctrl.regs->SCRCTL & 1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
     ctrl.info.isverticalscroll = 1;
     ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
-    ctrl.info.verticalscrollinc = (ctrl.regs->SCRCTL & 0x100) ? 8 : 4;
+	/* §5.3 Figure 5.8 p.136 : pas NBG0 = 8 UNIQUEMENT si
+	 * NBG1 fait reellement de la VCSC (enable + access command valide).
+	 * Sinon la table n'est pas entrelacee et le pas reste 4. */
+	int nbg1_vcs_real = (ctrl.regs->SCRCTL & 0x100)
+						&& Vdp2VCSCAccessValid(ctrl.regs, NBG1);
+	ctrl.info.verticalscrollinc = nbg1_vcs_real ? 8 : 4;
   }
   else {
     ctrl.info.isverticalscroll = 0;
@@ -4250,8 +4255,7 @@ static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, in
  
 static void Vdp2GenLineinfo(vdp2draw_struct *info)
 {
-    int bound = 0;
-    int i;
+    int bound = 0, i;
     u16 val1;
     if (info->lineinc == 0 || info->islinescroll == 0) return;
 
@@ -6235,7 +6239,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
    *          la zone de fenêtre appliquée à RBG0.
    * Masque 0x00FF = octet bas.
    * ------------------------------------------------------------------ */
-  if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;;
+  if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;
   /* ------------------------------------------------------------------
    * WCTLD 1800D6H bits 3~0 : rotation parameter window
    * §8.2 : RPW0A(0),RPW0E(1),RPW1A(2),RPW1E(3).
@@ -6356,8 +6360,11 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 
     /* BGON: N0ON = bit 0. Also check RBG enable bits that suppress NBG0
-     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
-    if ((a->BGON & 0x31) != (b->BGON & 0x31)) return 0;
+     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off),
+     * AND N0TPON = bit 8 (Transparent display enable, 180020H bit 8,
+     * VDP2 Manual ST-58-R2 p.81). Vdp2DrawNBG0 reads BGON & 0x100 into
+     * info.transparencyenable; a mid-frame N0TPON toggle must split zones. */
+    if ((a->BGON & 0x131) != (b->BGON & 0x131)) return 0;
  
     /* CHCTLA bits 6-0: N0CHSZ(3-2), N0BMEN(1), N0CHCN(6-4). */
     if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
