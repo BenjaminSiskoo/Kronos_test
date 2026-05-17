@@ -6200,8 +6200,12 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
    /* §12.1 : R0CCEN(4) active le color calc pour RBG0.
    *          CCMD(8) bascule mode ratio/add.
    *          CCRTMD(9) sélectionne top vs second screen pour le ratio.
-   *          EXCCEN(10) active le extended color calc (3e/4e plan). */
-  if ((a->CCCTL & 0x0710) != (b->CCCTL & 0x0710)) return 0;
+   *          EXCCEN(10) active le extended color calc (3e/4e plan).
+   *          BOKEN(15) + BOKN2..0(14-12) : §12.2 — la fonction gradation
+   *          peut désigner RBG0 (BOKN=001b -> RBG0). Le manuel précise que
+   *          si BOKEN=1, EXCCEN est ignoré : BOKEN change donc le mode de
+   *          color-calc et doit invalider la zone. Masque 0xF710. */
+  if ((a->CCCTL & 0xF710) != (b->CCCTL & 0xF710)) return 0;
   /* ------------------------------------------------------------------
    * §6.4 : tous les bits contrôlent le mode, la taille des données et
    *         la line-color-enable des tables coefficient A et B.
@@ -6256,6 +6260,11 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->LCTA.all) != (b->LCTA.all)) return 0;
   if ((a->CRAOFB & 0x0007) != (b->CRAOFB & 0x0007)) return 0;
   if ((a->CLOFSL & 0x0010) != (b->CLOFSL & 0x0010)) return 0;
+  /* CLOFEN bit 4 : R0COEN — color offset enable RBG0.
+   * VDP2 Manual ST-58-R2 p.251 (180110H). Comme pour NBG0..3, l'étape de
+   * blending teste CLOFEN en premier ; sans cette comparaison un fade
+   * ON/OFF mid-frame est silencieusement perdu. */
+  if ((a->CLOFEN & 0x0010) != (b->CLOFEN & 0x0010)) return 0;
 	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
 	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
 	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
