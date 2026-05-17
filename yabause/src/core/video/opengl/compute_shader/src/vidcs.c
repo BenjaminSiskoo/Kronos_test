@@ -6324,6 +6324,10 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->LCTA.all) != (b->LCTA.all)) return 0; // adresse table ligne couleur source des couleurs line-color.
   if ((a->CRAOFA & 0x0007) != (b->CRAOFA & 0x0007)) return 0; // N0CAOS2..0 color RAM address offset NBG0/RBG1.
   if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0; // N0COSL color offset A vs B pour NBG0/RBG1.
+  /* CLOFEN bit 0 : N0COEN — color offset enable NBG0/RBG1.
+   * VDP2 Manual ST-58-R2 p.250-251 (180110H). RBG1 partage la voie
+   * color-offset de NBG0 ; cohérence avec sameVDP2RegNBG0. */
+  if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;  
   if ((a->LSTA0.all) != (b->LSTA0.all)) return 0; // adresse table line scroll NBG0/RBG1 scroll est actif (SCRCTL bits 5-0 != 0).
   if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
   if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
