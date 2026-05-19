@@ -1312,13 +1312,14 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
  
-  /* [P2] §2.1 Table 2.1: max useful vertical = 256 lines (PAL non-exclusive)
-   * or 480 (exclusive monitor). Clamp at 270 to match render zone clamps
-   * and prevent display[] / alpha_per_line[] overflow when VBlankLineCount
-   * is unexpectedly large during mode transitions. */
+  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser 270 pendant les
+   * transitions de mode vidéo. display[]/alpha_per_line[] (vdp2draw_struct)
+   * et Vdp2Lines[] (dimensionné [270], cf. vdp2.h) doivent être bornés à
+   * 270 pour éviter un débordement de tableau. Identique à Vdp2DrawNBG1. */
   const int line_max = (yabsys.VBlankLineCount >= 270)
                        ? 270 : yabsys.VBlankLineCount;
-  for (i = 0; i < line_max; i++) {
+
+  for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
@@ -1855,8 +1856,14 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   /* Initialiser bitmap_base et bitmap_wrap_size à 0 par défaut (mode tile) */
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
-
-  for (int i=0; i<yabsys.VBlankLineCount; i++) {
+  
+  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser 270 pendant les
+   * transitions de mode vidéo. display[]/alpha_per_line[] et Vdp2Lines[]
+   * (dimensionné [270], cf. vdp2.h) doivent être bornés. Identique à NBG0. */
+  const int line_max = (yabsys.VBlankLineCount >= 270)
+                       ? 270 : yabsys.VBlankLineCount;
+					   
+  for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG1, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
     ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNA >> 8) & 0x1F) * 255) / 31);
@@ -1928,7 +1935,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
 
     int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
     int needUpdate = 0;
-    for (int i=0; i<yabsys.VBlankLineCount; i++) {
+    for (int i = 0; i < line_max; i++) {
       /* VDP2 Manual §4.1 BGON p.49: NBG1 enable bit is N1ON = BGON bit 1
        * (mask 0x02), NOT R0ON (mask 0x10).  Same copy-paste bug fixed in
        * NBG0; the per-line RAMCTL-conflict scan must key off the layer
@@ -1944,7 +1951,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
     if (needUpdate != 0) {
       ctrl.info.enable = 0;
-      for (int i=0; i<yabsys.VBlankLineCount; i++) ctrl.info.enable |= ctrl.info.display[i];
+      for (int i = 0; i < line_max; i++) ctrl.info.enable |= ctrl.info.display[i];
       if (!ctrl.info.enable) return;
     }
   }
@@ -6379,8 +6386,9 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
      * info.transparencyenable; a mid-frame N0TPON toggle must split zones. */
     if ((a->BGON & 0x131) != (b->BGON & 0x131)) return 0;
  
-    /* CHCTLA bits 6-0: N0CHSZ(3-2), N0BMEN(1), N0CHCN(6-4). */
-    if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
+    /* CHCTLA byte 0 (bits 6-0) : N0CHCN(6-4), N0BMSZ(3-2), N0BMEN(1),
+     * N0CHSZ(0). VDP2 Manual ST-58-R2 p.60/p.82 (180028H). */
+     if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
  
     /* PRINA bits 2-0: NBG0 priority number. */
     if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
