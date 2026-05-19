@@ -1490,13 +1490,6 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.PlaneAddr = (void (FASTCALL*)(void *, int, Vdp2*))&Vdp2NBG0PlaneAddr;
  
   ReadMosaicData(&ctrl.info, 0x1, ctrl.regs);
-  /* VDP2 Manual ST-58-R2 §6.6 p.119 — vertical mosaic size
-   * is DOUBLED in interlace mode (single or double density).
-   * The mask covers 2× more rows per "mosaic line". */
-  if (_Ygl->interlace != NORMAL_INTERLACE) {
-    ctrl.info.mosaicymask = (ctrl.info.mosaicymask << 1) | 1;
-  }
-
  
   ctrl.info.transparencyenable = !(ctrl.regs->BGON & 0x100);
   ctrl.info.specialprimode   = ctrl.regs->SFPRMD & 0x3;
@@ -1978,12 +1971,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.specialcode = ctrl.regs->SFCODE & 0xFF;
 
   ReadMosaicData(&ctrl.info, 0x2, ctrl.regs);
-  /* VDP2 Manual ST-58-R2 §6.6 p.119 — vertical mosaic size
-   * is DOUBLED in interlace mode (single or double density).
-   * The mask covers 2× more rows per "mosaic line". */
-  if (_Ygl->interlace != NORMAL_INTERLACE) {
-    ctrl.info.mosaicymask = (ctrl.info.mosaicymask << 1) | 1;
-  }
+
 
   ctrl.info.coloroffset = (ctrl.regs->CRAOFA & 0x70) << 4;
   ctrl.info.linecheck_mask = 0x02;
@@ -2365,12 +2353,6 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN2, ctrl.regs->CHCTLB & 0x1);
 
   ReadMosaicData(&ctrl.info, 0x4, ctrl.regs);
-  /* VDP2 Manual ST-58-R2 §6.6 p.119 — vertical mosaic size
-   * is DOUBLED in interlace mode (single or double density).
-   * The mask covers 2× more rows per "mosaic line". */
-  if (_Ygl->interlace != NORMAL_INTERLACE) {
-    ctrl.info.mosaicymask = (ctrl.info.mosaicymask << 1) | 1;
-  }  
 
   ctrl.info.specialcolormode = (ctrl.regs->SFCCMD >> 4) & 0x3;
 
@@ -2673,12 +2655,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN3, ctrl.regs->CHCTLB & 0x10);
  
   ReadMosaicData(&ctrl.info, 0x8, ctrl.regs);
-  /* VDP2 Manual ST-58-R2 §6.6 p.119 — vertical mosaic size
-   * is DOUBLED in interlace mode (single or double density).
-   * The mask covers 2× more rows per "mosaic line". */
-  if (_Ygl->interlace != NORMAL_INTERLACE) {
-    ctrl.info.mosaicymask = (ctrl.info.mosaicymask << 1) | 1;
-  }
+
  
   ctrl.info.specialcolormode = (ctrl.regs->SFCCMD >> 6) & 0x03;
   if (ctrl.regs->SFSEL & 0x8)
