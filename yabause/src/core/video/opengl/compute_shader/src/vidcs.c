@@ -1908,7 +1908,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.charaddr = ((ctrl.regs->MPOFN & 0x70) >> 4) * 0x20000;
     ctrl.info.paladdr = (ctrl.regs->BMPNA & 0x700) >> 4;
     ctrl.info.flipfunction = 0;
-    ctrl.info.specialfunction = 0;
+    /* VDP2 Manual ST-58-R2 §11.2 p.228 : en mode bitmap, le bit de
+     * priorité spéciale (special priority mode 1/2) provient de BMPNA
+     * (N1BMPR = bit 13), PAS du pattern name data. NBG0 lit déjà
+     * N0BMPR (bit 5) dans sa branche bitmap. */
+    ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 13) & 0x01;
     ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x1000) >> 4;
 
     /* VDP2 Manual p.95 : wrap bitmap.
@@ -2337,12 +2341,11 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
 
-
-  for (int i=0; i<yabsys.VBlankLineCount; i++) {
+  const int line_max = (yabsys.VBlankLineCount >= 270)
+                       ? 270 : yabsys.VBlankLineCount;
+  for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG2, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    /* VDP2 Manual §12.1 CCRNB (18010AH) bits 4-0 = N2CCRT[4:0]:
-     * Same encoding as NBG0/NBG1. Full 0-255 mapping. */
     ctrl.info.alpha_per_line[i] = (u8)(((~Vdp2Lines[i].CCRNB & 0x1F) * 255) / 31);
   }
   
@@ -2646,11 +2649,11 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.startLine = startLine;
   ctrl.info.endLine   = endLine;
  
-  for (int i=0; i<yabsys.VBlankLineCount; i++) {
+  const int line_max = (yabsys.VBlankLineCount >= 270)
+                       ? 270 : yabsys.VBlankLineCount;
+  for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG3, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
-    /* VDP2 Manual §12.1 CCRNB (18010AH) bits 12-8 = N3CCRT[4:0]:
-     * Same encoding as NBG2. Shift right 8 to isolate, full 0-255 mapping. */
     ctrl.info.alpha_per_line[i] = (u8)(((~(Vdp2Lines[i].CCRNB >> 8) & 0x1F) * 255) / 31);
   }
  
@@ -5729,13 +5732,6 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     if (back_pixel_data == NULL) return;
 
     // --- CALCUL DE L'ADRESSE ---
-    u32 scrAddr;
-    if (varVdp2Regs->VRSIZE & 0x8000)
-        scrAddr = (((varVdp2Regs->BKTAU & 0x7) << 16) | varVdp2Regs->BKTAL) * 2;
-    else
-        scrAddr = (((varVdp2Regs->BKTAU & 0x3) << 16) | varVdp2Regs->BKTAL) * 2;
-
-    int isPerLine = (varVdp2Regs->BKTAU & 0x8000);
     int line_shift = (_Ygl->rheight > 256) ? 1 : 0;
 
     // --- LOGIQUE D'ALPHA (FIX DIE HARD / NBG3) ---
@@ -5782,9 +5778,12 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
         /* Re-evaluate base address per line — almost always
          * identical to line 0, but guard against mid-frame
          * BKTAU rewrite. */
-        u32 base = (L->VRSIZE & 0x8000)
-                 ? (((L->BKTAU & 0x7) << 16) | L->BKTAL) * 2
-                 : (((L->BKTAU & 0x3) << 16) | L->BKTAL) * 2;
+        /* VDP2 Manual ST-58-R2 p.176 : BKTA est un champ 19 bits
+         * (BKTA18-0), BKTA18-16 = BKTAU bits 2-0. Masque 0x7 quelle
+         * que soit la taille VRAM ; en 4Mbit le MSB est ignoré via le
+         * wrap VRAM (& 0x7FFFF dans Vdp2RamReadWord). L'ancien masque
+         * 0x3 en 4Mbit tronquait BKTA18. */
+        u32 base = (((L->BKTAU & 0x7) << 16) | L->BKTAL) * 2;
         const int isPerLineL = (L->BKTAU & 0x8000) != 0;
         u32 currentAddr = isPerLineL ? (base + 2 * li) : base;
         
