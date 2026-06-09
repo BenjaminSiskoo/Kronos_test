@@ -63,15 +63,16 @@ void UIDebugVDP2::updateScreenInfos()
         viewer->clearItems();
 
         for (int i = 0; i < 8; i++) {
-            // 1. On retire le widget du layout avant de recalculer sa position
+            // 1. Retirer le widget du layout (no-op si pas encore ajouté)
             DebugGrid->removeWidget(items[i].cb);
+            // 2. Masquer par défaut avant de recalculer
+            items[i].cb->setVisible(false);
 
-            // 2. Mise à jour des chaînes de caractères provenant du Core
+            // 3. Mise à jour des informations et test d'activation
             bool isVisible = updateInfoDisplay(items[i].debugStats, items[i].cb, items[i].pte);
 
-            // 3. Si la couche est active (enabled), on l'ajoute à la grille dynamiquement
+            // 4. Si la couche est active, on la replace dans la grille
             if (isVisible) {
-                // Placement automatique dans une grille de 3 colonnes
                 DebugGrid->addWidget(items[i].cb, activeCount / 3, activeCount % 3);
                 activeCount++;
                 viewer->addItem(items[i].layerId);
@@ -85,24 +86,30 @@ void UIDebugVDP2::updateScreenInfos()
 bool UIDebugVDP2::updateInfoDisplay(void (*debugStats)(char *, int *),
                                     QGroupBox *cb, QPlainTextEdit *pte)
 {
-    char tempstr[4096] = {0}; // Buffer étendu pour éviter les troncatures
+    char tempstr[4096];
+    // Garantir la null-termination même si debugStats remplit le buffer en entier
+    memset(tempstr, 0, sizeof(tempstr));
     int isScreenEnabled = 0;
 
     // Appel à la fonction de statistiques du noyau (vdp2debug.c)
     debugStats(tempstr, &isScreenEnabled);
+    // Sécurité : forcer la null-termination du dernier octet
+    tempstr[sizeof(tempstr)-1] = '\0';
 
     if (isScreenEnabled) {
         cb->setVisible(true);
-        
-        // Optimisation : On ne met à jour le texte que s'il a changé pour éviter le scintillement
         QString newText = QString::fromUtf8(tempstr);
+        // Mise à jour conditionnelle pour éviter le scintillement
         if (pte->toPlainText() != newText) {
             pte->setPlainText(newText);
         }
     } else {
         cb->setVisible(false);
+        // Vider le texte si la couche est désactivée pour ne pas afficher de données obsolètes
+        if (!pte->toPlainText().isEmpty())
+            pte->clear();
     }
-    
+
     return (isScreenEnabled != 0);
 }
 
