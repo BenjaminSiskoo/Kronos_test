@@ -20,6 +20,7 @@
 #include "UIDebugVDP2.h"
 #include "UIDebugVDP2Viewer.h"
 #include "CommonDialogs.h"
+#include <QApplication>
 
 // Structure de mappage pour lier les fonctions du noyau aux widgets UI
 typedef struct {
@@ -57,26 +58,42 @@ void UIDebugVDP2::updateScreenInfos()
         {Vdp2DebugStatsGeneral, GeneralDebug, pteGeneralInfo, 7}
     };
 
-    if (Vdp2Regs)
+    if (!Vdp2Regs)
     {
-        int activeCount = 0;
-        viewer->clearItems();
-
+        // Masquer tous les groupes et indiquer visuellement que VDP2 est inactif
         for (int i = 0; i < 8; i++) {
-            // 1. Retirer le widget du layout (no-op si pas encore ajouté)
             DebugGrid->removeWidget(items[i].cb);
-            // 2. Masquer par défaut avant de recalculer
             items[i].cb->setVisible(false);
+        }
+        pbViewer->setEnabled(false);
+        pbViewer->setToolTip(tr("VDP2 non initialisé"));
+        setWindowTitle(tr("VDP2 Debug — inactif"));
+        QtYabause::retranslateWidget(this);
+        return;
+    }
 
-            // 3. Mise à jour des informations et test d'activation
-            bool isVisible = updateInfoDisplay(items[i].debugStats, items[i].cb, items[i].pte);
+    // VDP2 actif : restaurer l'état des boutons
+    pbViewer->setEnabled(true);
+    pbViewer->setToolTip(tr("Ouvrir le visualiseur VDP2"));
+    setWindowTitle(tr("VDP2 Debug"));
 
-            // 4. Si la couche est active, on la replace dans la grille
-            if (isVisible) {
-                DebugGrid->addWidget(items[i].cb, activeCount / 3, activeCount % 3);
-                activeCount++;
-                viewer->addItem(items[i].layerId);
-            }
+    int activeCount = 0;
+    viewer->clearItems();
+
+    for (int i = 0; i < 8; i++) {
+        // 1. Retirer le widget du layout (no-op si pas encore ajouté)
+        DebugGrid->removeWidget(items[i].cb);
+        // 2. Masquer par défaut avant de recalculer
+        items[i].cb->setVisible(false);
+
+        // 3. Mise à jour des informations et test d'activation
+        bool isVisible = updateInfoDisplay(items[i].debugStats, items[i].cb, items[i].pte);
+
+        // 4. Si la couche est active, on la replace dans la grille
+        if (isVisible) {
+            DebugGrid->addWidget(items[i].cb, activeCount / 3, activeCount % 3);
+            activeCount++;
+            viewer->addItem(items[i].layerId);
         }
     }
 
@@ -103,8 +120,15 @@ bool UIDebugVDP2::updateInfoDisplay(void (*debugStats)(char *, int *),
         if (pte->toPlainText() != newText) {
             pte->setPlainText(newText);
         }
+        // Tooltip : afficher les 3 premières lignes comme résumé au survol
+        QStringList lines = newText.split('\n', Qt::SkipEmptyParts);
+        cb->setToolTip(lines.mid(0, 3).join('\n'));
+        // Indicateur visuel : titre en gras quand la couche est active
+        cb->setStyleSheet("QGroupBox { font-weight: bold; }");
     } else {
         cb->setVisible(false);
+        cb->setToolTip(tr("Couche inactive"));
+        cb->setStyleSheet("");
         // Vider le texte si la couche est désactivée pour ne pas afficher de données obsolètes
         if (!pte->toPlainText().isEmpty())
             pte->clear();
@@ -115,16 +139,29 @@ bool UIDebugVDP2::updateInfoDisplay(void (*debugStats)(char *, int *),
 
 void UIDebugVDP2::on_pbViewer_clicked()
 {
-    // Utilisation de show() au lieu d'exec() si vous voulez que le viewer 
-    // soit non-bloquant, ou exec() pour un dialogue modal.
-    viewer->exec();
+    // show() non-bloquant : permet de continuer à utiliser le dialogue principal
+    // (cliquer "Next Frame") pendant que le viewer est ouvert.
+    // raise() + activateWindow() pour ramener la fenêtre au premier plan si déjà ouverte.
+    viewer->show();
+    viewer->raise();
+    viewer->activateWindow();
 }
 
 void UIDebugVDP2::on_pbNextButton_clicked()
 {
     if (mLock != NULL) {
+        // Désactiver le bouton pendant l'exécution pour éviter les double-clics
+        pbNextButton->setEnabled(false);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+
         mLock->step();
         updateScreenInfos();
-        viewer->refresh();
+
+        // Mettre à jour le viewer seulement s'il est visible (évite un travail inutile)
+        if (viewer->isVisible())
+            viewer->refresh();
+
+        QApplication::restoreOverrideCursor();
+        pbNextButton->setEnabled(true);
     }
 }
