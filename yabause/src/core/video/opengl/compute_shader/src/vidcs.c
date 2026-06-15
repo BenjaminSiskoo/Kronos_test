@@ -5038,29 +5038,30 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
           u32 addr = row_base + (h >> 1);
-          if (addr >= 0x80000) {
-            *ctrl->texture.textdata++ = 0x00000000;
-          }
+          /* VDP2 Manual ST-058-R2 §3.1 : l'adressage VRAM est modulaire
+           * (Vdp2RamReadByte masque & 0x7FFFF / & 0xEFFFF selon VRSISE).
+           * Toujours lire — laisser la lecture replier l'adresse, comme
+           * les chemins 8/16/32 bpp ci-dessous et Vdp2DrawBitmapLineScroll.
+           * L'ancien clamp "addr >= 0x80000 -> transparent" videait la
+           * partie droite des lignes franchissant 0x80000. */
+          int cc = 1;
+          u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, addr);
+          u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
+          if (!(h & 0x01)) dot = dot >> 4;
+          if (!(dot & 0xF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
           else {
-            int cc = 1;
-            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, addr);
-            u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
-            if (!(h & 0x01)) dot = dot >> 4;
-            if (!(dot & 0xF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
-            else {
-              color = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
-              switch (ctrl->info.specialcolormode) {
-                case 1: if (ctrl->info.specialcolorfunction == 0) { cc = 0; } break;
-                case 2:
-                  if (ctrl->info.specialcolorfunction == 0) { cc = 0; }
-                  else { if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) { cc = 0; } }
-                  break;
-                case 3:
-                  if (((Vdp2ColorRamGetColorRaw(color) & 0x8000) == 0)) { cc = 0; }
-                  break;
-              }
-              *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, alpha, ctrl->info.priority, cc, color);
+            color = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+            switch (ctrl->info.specialcolormode) {
+              case 1: if (ctrl->info.specialcolorfunction == 0) { cc = 0; } break;
+              case 2:
+                if (ctrl->info.specialcolorfunction == 0) { cc = 0; }
+                else { if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) { cc = 0; } }
+                break;
+              case 3:
+                if (((Vdp2ColorRamGetColorRaw(color) & 0x8000) == 0)) { cc = 0; }
+                break;
             }
+            *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, alpha, ctrl->info.priority, cc, color);
           }
         }
       }
