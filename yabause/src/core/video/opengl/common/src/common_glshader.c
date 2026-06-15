@@ -1548,14 +1548,17 @@ if (!inCCWindow()) {\n \
       }\n \
     } \n \
   } else { \n \
-    // To be uncommented when we will have a CC issue in RAM_Mode 1 \n \
-    // //Table 12.1 p 236 Color calculation function when in the high resolution mode or special monitor mode \n \
-    // // when the TV screen mode is the high resolution mode or Exclusive monitor mode, the color RAM mode and second image color format hav limitations. \n \
-    // if ((ram_mode == 0) || (isRGBsecond == 1)){ \n \
-      secondImage.rgb = vec3(colorsecond.rgb); \n \
-    // } else { \n \
-    //   modetop = 1; \n \
-    // } \n \
+    /* VDP2 Manual ST-058-R2 §12.1 Table 12.1 (p.236): \n \
+       In Normal TV mode there is no color-calculation limitation. \n \
+       In high-resolution or Exclusive-monitor mode, color calculation \n \
+       cannot be used when CRAM mode is 1 or 2 AND the second image is in \n \
+       palette format. In that forbidden case the hardware outputs the top \n \
+       image only (no blend) -> force replace mode on the top image. \n \
+       special_monitor != 0  => Hi-Res or Exclusive (TVMD & 0x6). */ \n \
+    if ((special_monitor != 0) && (ram_mode != 0) && (isRGBsecond == 0)) { \n \
+      modetop = 1; \n \
+    } \n \
+    secondImage.rgb = vec3(colorsecond.rgb); \n \
   } \n \
 "
 
