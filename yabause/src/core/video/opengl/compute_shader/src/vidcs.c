@@ -5759,26 +5759,11 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     // --- CALCUL DE L'ADRESSE ---
     int line_shift = (_Ygl->rheight > 256) ? 1 : 0;
 
-    // --- LOGIQUE D'ALPHA (FIX DIE HARD / NBG3) ---
-    u8 alpha8;
+    /* Le calcul d'alpha est fait per-line dans la boucle ci-dessous
+     * (CCRLB/CCCTL peuvent changer en cours de frame). Le bloc qui
+     * etait ici etait du code mort : la variable etait redeclaree
+     * dans la boucle. */
 
-    // Si NBG3 a la Color Calculation activée (CCRNB bits 14-15), 
-    // le fond doit être traité comme une base opaque pour permettre le mélange.
-    if (varVdp2Regs->CCRNB & 0xC000) 
-    {
-        alpha8 = 0xFF; 
-    } 
-    else 
-    {
-        // Calcul standard basé sur CCRLB (ratio de mélange du Back Screen)
-        // On récupère les bits 8-12 (0x1F00)
-        u8 alpha = (u8)((varVdp2Regs->CCRLB & 0x1F00) >> 8);
-        
-        // Sur Saturn, 0 peut signifier transparent ou opaque selon le contexte.
-        // On convertit vers 8 bits (0-255).
-        if (alpha == 0) alpha8 = 0xFF; 
-        else alpha8 = (alpha << 3) | (alpha >> 2);
-    }
 
     /* VDP2 Manual ST-58-R2 §7.2 + §12.1 — BKTAU/BKTAL/CCRLB are
      * sampled per-line by the hardware. Map physical pixel rows
@@ -5792,13 +5777,18 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
         const Vdp2 *L = &Vdp2Lines[li];
 
         /* Re-evaluate alpha per line (CCRNB/CCRLB may differ). */
+        /* VDP2 ST-058-R2 §12.1 : l'enable CC de NBG3 est CCCTL bit 3
+         * (N3CCEN). CCRNB ne contient que les ratios (N3CCRT bits
+         * 12-8) ; ses bits 15-14 sont reserves et ne doivent pas
+         * influencer le rendu. */
         u8 alpha8;
-        if (L->CCRNB & 0xC000) {
+        if ((L->CCCTL >> 3) & 0x1) {   /* N3CCEN */
             alpha8 = 0xFF;
         } else {
-            u8 a = (u8)((L->CCRLB & 0x1F00) >> 8);
+            u8 a = (u8)((L->CCRLB & 0x1F00) >> 8);  /* BKCCRT, p.313 */
             alpha8 = (a == 0) ? 0xFF : ((a << 3) | (a >> 2));
         }
+
 
         /* Re-evaluate base address per line — almost always
          * identical to line 0, but guard against mid-frame
