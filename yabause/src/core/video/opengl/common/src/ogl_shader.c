@@ -464,6 +464,7 @@ uniform int ram_mode; \n \
 uniform int extended_cc; \n \
 uniform int u_lncl;  \n \
 uniform int isRGB; \n \
+uniform int special_monitor; \n \
 uniform int isBlur; \n \
 uniform int isShadow; \n \
 uniform int is_perline[8];\n \
@@ -1296,6 +1297,11 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
   glUniform1f(glGetUniformLocation(vdp2blit_prg, "u_vheight"), (float)_Ygl->height);
   glUniform2f(glGetUniformLocation(vdp2blit_prg, "vdp1Ratio"), _Ygl->vdp1ratio, _Ygl->vdp1ratio);//((float)_Ygl->rwidth*(float)_Ygl->vdp1ratio * (float)_Ygl->vdp1wdensity)/((float)_Ygl->vdp1width*(float)_Ygl->vdp2wdensity), ((float)_Ygl->rheight*(float)_Ygl->vdp1ratio * (float)_Ygl->vdp1hdensity)/((float)_Ygl->vdp1height * (float)_Ygl->vdp2hdensity));
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "ram_mode"), Vdp2Internal.ColorMode);
+  /* VDP2 Manual ST-058-R2 §12.1 Table 12.1 (p.236): color calculation is only
+   * unrestricted in Normal TV mode. TVMD HRESO (bits 2-0): 000/001 = Normal
+   * (320/352); bit1 => Hi-Res (640/704), bit2 => Exclusive monitor. So the
+   * non-Normal (restricted) modes are exactly (TVMD & 0x6) != 0. */
+  glUniform1i(glGetUniformLocation(vdp2blit_prg, "special_monitor"), ((varVdp2Regs->TVMD & 0x6) != 0) );
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "extended_cc"), ((varVdp2Regs->CCCTL & 0x8400) == 0x400) );
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "u_lncl"),lncl_val); //_Ygl->prioVa
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "isRGB"), isRGB_val);
