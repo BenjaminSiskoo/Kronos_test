@@ -1713,8 +1713,16 @@ int DrawVDP2Screen(Vdp2 *varVdp2Regs, int id) {
 }
 int setupBlur(Vdp2 *varVdp2Regs, int layer) {
   int val = (varVdp2Regs->CCCTL & 0xF000) >> 12;
-  if (Vdp2Internal.ColorMode != 0) return 0;
-  if ((val & 0x8) == 0) return 0;
+  /* VDP2 Manual ST-058-R2 §12.2 p.238 : the gradation (BOKE) function
+   * "can only be used when the TV screen mode is the Normal mode, and the
+   * color RAM mode is mode 0." setupBlur already enforced CRAM mode 0 but
+   * not the Normal-mode requirement, so BOKEN was honoured in hi-res /
+   * exclusive-monitor modes where the hardware ignores it.
+   * TVMD HRESO (bits 2-0): 000/001 = Normal (320/352); bit1=1 => Hi-Res,
+   * bit2=1 => Exclusive monitor. Normal-only test: (TVMD & 0x6) == 0. */
+  if ((varVdp2Regs->TVMD & 0x6) != 0) return 0;
+  if (Vdp2Internal.ColorMode != 0) return 0;   /* CRAM mode 0 only */
+  if ((val & 0x8) == 0) return 0;              /* BOKEN must be set  */
   switch (layer) {
     case RBG0:
       return ((val & 0x7) == 1);
