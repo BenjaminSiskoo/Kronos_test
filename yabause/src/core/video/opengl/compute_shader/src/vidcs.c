@@ -5782,19 +5782,20 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
         const int li = (i * logical_lines) / phys_lines;
         const Vdp2 *L = &Vdp2Lines[li];
 
-        /* Re-evaluate alpha per line (CCRNB/CCRLB may differ). */
-        /* VDP2 ST-058-R2 §12.1 : l'enable CC de NBG3 est CCCTL bit 3
-         * (N3CCEN). CCRNB ne contient que les ratios (N3CCRT bits
-         * 12-8) ; ses bits 15-14 sont reserves et ne doivent pas
-         * influencer le rendu. */
-        u8 alpha8;
-        if ((L->CCCTL >> 3) & 0x1) {   /* N3CCEN */
-            alpha8 = 0xFF;
-        } else {
-            u8 a = (u8)((L->CCRLB & 0x1F00) >> 8);  /* BKCCRT, p.313 */
-            alpha8 = (a == 0) ? 0xFF : ((a << 3) | (a >> 2));
-        }
-
+        /* VDP2 Manual ST-58-R2 §12.1 :
+         *   - CCCTL (1800ECH) p.242 : les seuls bits d'activation CC sont
+         *     N0CCEN(0), N1CCEN(1), N2CCEN(2), N3CCEN(3), R0CCEN(4),
+         *     LCCCEN(5), SPCCEN(6).  Le BACK SCREEN N'A PAS de bit
+         *     d'activation propre — l'ancien test (CCCTL>>3)&1 visait
+         *     N3CCEN (NBG3), erreur de copier-coller sans fondement.
+         *   - CCRLB (18010EH) p.243 : BKCCRT4-0 = bits 12-8 ; le ratio
+         *     vaut 1/32 des donnees RGB.  La conversion ratio->alpha est
+         *     identique a tous les autres calques (line color screen,
+         *     NBGx, RBGx) : alpha = (~ratio & 0x1F) * 255 / 31, sans
+         *     gating (LNCLEN/visibilite gerent l'affichage en amont).
+         *     ratio 0 donne naturellement 0xFF (opaque). */
+        const u8 bkccrt = (u8)((L->CCRLB >> 8) & 0x1F);   /* BKCCRT4-0 */
+        const u8 alpha8 = (u8)(((~bkccrt & 0x1F) * 255) / 31);
 
         /* Re-evaluate base address per line — almost always
          * identical to line 0, but guard against mid-frame
