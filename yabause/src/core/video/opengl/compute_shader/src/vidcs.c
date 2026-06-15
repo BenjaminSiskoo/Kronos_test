@@ -5762,84 +5762,68 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     u32* back_pixel_data = YglGetBackColorPointer();
     if (back_pixel_data == NULL) return;
 
-    // --- CALCUL DE L'ADRESSE ---
-    int line_shift = (_Ygl->rheight > 256) ? 1 : 0;
+    /* VDP2 Manual ST-58-R2 §7.2 Figure 7.4 p.175 :
+     *   - non-entrelace ET double densite : une entree de table PAR LIGNE
+     *   - entrelace SIMPLE densite        : une entree TOUTES LES 2 LIGNES
+     * (l'ancienne variable line_shift, conditionnee sur rheight>256, etait
+     *  morte et sans fondement dans le manuel — supprimee.) */
+    const int bk_line_shift = (_Ygl->interlace == SINGLE_INTERLACE) ? 1 : 0;
 
-    /* Le calcul d'alpha est fait per-line dans la boucle ci-dessous
-     * (CCRLB/CCCTL peuvent changer en cours de frame). Le bloc qui
-     * etait ici etait du code mort : la variable etait redeclaree
-     * dans la boucle. */
-
-
-    /* VDP2 Manual ST-58-R2 §7.2 + §12.1 — BKTAU/BKTAL/CCRLB are
-     * sampled per-line by the hardware. Map physical pixel rows
-     * to logical scan lines so the lookup is correct in
-     * double-interlace and in 480-line exclusive modes. */
+    /* VDP2 Manual ST-58-R2 §7.2 + §12.1 — BKTAU/BKTAL/CCRLB sont
+     * echantillonnes par ligne par le hardware. On mappe les rangees de
+     * pixels physiques vers les lignes logiques pour que la lecture soit
+     * correcte en double-interlace et en mode exclusif 480 lignes. */
     const int phys_lines = _Ygl->rheight;
     const int logical_lines = (yabsys.VBlankLineCount >= 270)
                               ? 270 : yabsys.VBlankLineCount;
+
     for (int i = 0; i < phys_lines; i++) {
         const int li = (i * logical_lines) / phys_lines;
+        const int table_line = li >> bk_line_shift;   /* §7.2 Fig.7.4 p.175 */
         const Vdp2 *L = &Vdp2Lines[li];
 
-        /* VDP2 Manual ST-58-R2 §12.1 :
+        /* --- Ratio de color calculation (alpha) ---
+         * VDP2 Manual ST-58-R2 §12.1 :
          *   - CCCTL (1800ECH) p.242 : les seuls bits d'activation CC sont
-         *     N0CCEN(0), N1CCEN(1), N2CCEN(2), N3CCEN(3), R0CCEN(4),
-         *     LCCCEN(5), SPCCEN(6).  Le BACK SCREEN N'A PAS de bit
-         *     d'activation propre — l'ancien test (CCCTL>>3)&1 visait
-         *     N3CCEN (NBG3), erreur de copier-coller sans fondement.
-         *   - CCRLB (18010EH) p.243 : BKCCRT4-0 = bits 12-8 ; le ratio
-         *     vaut 1/32 des donnees RGB.  La conversion ratio->alpha est
-         *     identique a tous les autres calques (line color screen,
-         *     NBGx, RBGx) : alpha = (~ratio & 0x1F) * 255 / 31, sans
-         *     gating (LNCLEN/visibilite gerent l'affichage en amont).
-         *     ratio 0 donne naturellement 0xFF (opaque). */
+         *     N0CCEN(0)..N3CCEN(3), R0CCEN(4), LCCCEN(5), SPCCEN(6).
+         *     Le BACK SCREEN n'a PAS de bit d'activation propre — l'ancien
+         *     test (CCCTL>>3)&1 visait N3CCEN (NBG3), erreur de copier-coller.
+         *   - CCRLB (18010EH) p.243 : BKCCRT4-0 = bits 12-8 ; le ratio vaut
+         *     1/32 des donnees RGB. Conversion ratio->alpha identique a tous
+         *     les autres calques (line color screen, NBGx, RBGx) :
+         *     alpha = (~ratio & 0x1F) * 255 / 31  (ratio 0 -> 0xFF opaque). */
         const u8 bkccrt = (u8)((L->CCRLB >> 8) & 0x1F);   /* BKCCRT4-0 */
         const u8 alpha8 = (u8)(((~bkccrt & 0x1F) * 255) / 31);
 
-        /* Re-evaluate base address per line — almost always
-         * identical to line 0, but guard against mid-frame
-         * BKTAU rewrite. */
-        /* VDP2 Manual ST-58-R2 p.176 : BKTA est un champ 19 bits
-         * (BKTA18-0), BKTA18-16 = BKTAU bits 2-0. Masque 0x7 quelle
-         * que soit la taille VRAM ; en 4Mbit le MSB est ignoré via le
-         * wrap VRAM (& 0x7FFFF dans Vdp2RamReadWord). L'ancien masque
-         * 0x3 en 4Mbit tronquait BKTA18. */
+        /* --- Adresse de la table back screen ---
+         * VDP2 Manual ST-58-R2 p.176 : BKTA = champ 19 bits (BKTA18-0),
+         * BKTA18-16 = BKTAU bits 2-0 ; adresse = valeur_registre_19bit x 2.
+         * BKCLMD = BKTAU bit 15 : 0 = couleur unique (1re entree pour tout
+         * l'ecran), 1 = couleur par ligne. On reevalue par ligne pour se
+         * proteger d'une reecriture de BKTAU en milieu de frame. */
         u32 base = (((L->BKTAU & 0x7) << 16) | L->BKTAL) * 2;
         const int isPerLineL = (L->BKTAU & 0x8000) != 0;
-        u32 currentAddr = isPerLineL ? (base + 2 * li) : base;
-        
-        // Masque de sécurité VRAM 512Ko
-        u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr & 0x7FFFF);
+        u32 currentAddr = isPerLineL ? (base + 2 * table_line) : base;
 
-        /* VDP2 Manual §7.2 Figure 7.5: Back Screen Table data layout
-         *   bit 14-10 = 5-bit Blue
-         *   bit  9- 5 = 5-bit Green
-         *   bit  4- 0 = 5-bit Red
-         * Per §3.4: "Because color data must be set to RGB-8 bit when it is
-         * output, a 0 will be added to the lowest 3 bits if RGB-5 bit color
-         * data is stored in the color RAM."
-         *
-         * The hardware adds zeros (`x << 3`), so 0x1F→0xF8 (not 0xFF).
-         * However the visible output is then identical to the standard
-         * full-range 5→8 conversion (x << 3) | (x >> 2) within ±2 LSB,
-         * and using the bit-replication form here would diverge from how
-         * Vdp2ColorRamGetColorRaw / SAT2YAB1 deliver scroll-screen pixels —
-         * which is what the back screen must blend with.  Keep `<< 3` to
-         * stay consistent with the rest of the pipeline (§3.4 wording). */
-		 
+        /* VDP2 Manual ST-58-R2 §7.2 p.177 : l'adresse fait 20 bits
+         * (BKTA 19 bits x 2). Le MSB (bit 19) n'est ignore QUE si la VRAM
+         * est en 4 Mbit. §3.1 p.27 : VRSIZE bit 15 (VRAMSZ) = 0 -> 4 Mbit
+         * (masque 0x7FFFF), 1 -> 8 Mbit (masque 0xFFFFF). L'ancien masque
+         * fixe 0x7FFFF tronquait BKTA18 en mode 8 Mbit. */
+        const u32 vram_mask = (L->VRSIZE & 0x8000) ? 0xFFFFF : 0x7FFFF;
+        u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr & vram_mask);
+
+        /* VDP2 Manual §7.2 Figure 7.5 p.176 : layout de la table back screen
+         *   bits 14-10 = Bleu 5 bits, 9-5 = Vert 5 bits, 4-0 = Rouge 5 bits.
+         * §3.4 p.218 : on fixe les 3 bits de poids faible de chaque RGB a 0
+         * (conversion 5->8 bits par << 3), comme pour un scroll RGB 32768. */
         u8 r = (dot & 0x001F) << 3;
         u8 g = ((dot >> 5)  & 0x1F) << 3;
         u8 b = ((dot >> 10) & 0x1F) << 3;
 
-        /* Output channel order: the YglBackTexture is uploaded with
-         * GL_RGBA / GL_UNSIGNED_BYTE on little-endian hosts, so the byte
-         * stored at offset 0 is the R channel.  Using a u32 with shift
-         * R<<0 | G<<8 | B<<16 | A<<24 produces the correct memory order.
-         *
-         * Previous comment claimed 'BGRA' which only worked by accident on
-         * the test machine — make the channel layout explicit and document
-         * that the alpha lives in the high byte. */
+        /* Ordre des canaux : YglBackTexture est uploade en GL_RGBA /
+         * GL_UNSIGNED_BYTE sur hote little-endian, donc l'octet a l'offset 0
+         * est le canal R. Alpha dans l'octet de poids fort. */
         back_pixel_data[i] =
               ((u32)alpha8 << 24)   /* A */
             | ((u32)b      << 16)   /* B */
