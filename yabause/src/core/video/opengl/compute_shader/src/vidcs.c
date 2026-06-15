@@ -3747,13 +3747,11 @@ static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
 	 *   Type 7          :  9 DC bits (DC8..DC0)   -> shadow = 0x1FE
 	 *   Type 8          :  7 DC bits (DC6..DC0)   -> shadow = 0x07E
 	 *   Type 9,A,B      :  6 DC bits (DC5..DC0)   -> shadow = 0x03E
-	 *   Type C,D,E,F    :  6 DC bits (DC5..DC0) on the FB itself.
-	 *                     DC6..DC7 exist as 'shared' bits that re-use
-	 *                     the priority/CC slots; they DO NOT count for
-	 *                     Normal Shadow detection because the FB only
-	 *                     stores 6 DC bits for these types (the shared
-	 *                     bits live in CRAM, not in the per-pixel FB).
-	 *                     -> shadow = 0x03E
+	 *   Type 9,A,B      :  6 DC bits (DC5..DC0)   -> shadow = 0x03E
+	 *   Type C,D,E,F    :  8 DC bits (DC7..DC0)   -> shadow = 0x0FE
+	 *                     DC7/DC6 sont des bits partages du mot FB
+	 *                     (Table 9.1 : "PR0 and DC7", "CC0 and DC6"...)
+	 *                     et comptent dans la detection Normal Shadow.
 	 *
 	 * So the dc_mask is the FB-resident DC width, not the maximum
 	 * theoretical DC width via shared bits — only the bits actually
@@ -3777,9 +3775,15 @@ static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
 		case 8: /* type 8: 7 DC bits */
 			dc_mask = 0x7F;
 			break;
-		case 9: case 10: case 11: /* 9, A, B : 6 DC bits */
-		case 12: case 13: case 14: case 15: /* C, D, E, F : 6 DC bits in FB */
-			dc_mask = 0x3F; /* 6 DC bits */
+		case 9: case 10: case 11: /* 9, A, B : 6 DC bits (DC5~DC0) */
+			dc_mask = 0x3F;
+			break;
+		case 12: case 13: case 14: case 15:
+			/* C, D, E, F : 8 DC bits (DC7~DC0).
+			 * §9.1 Table 9.1 : les bits 7-6 du mot FB sont des bits
+			 * PARTAGES — "PR0 and DC7", "CC0 and DC6", etc. Ils font
+			 * partie du dot color data. Normal Shadow = 0xFE. */
+			dc_mask = 0xFF;
 			break;
 		default:
 			return 0;
