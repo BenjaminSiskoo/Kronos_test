@@ -1906,7 +1906,9 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
      * (N1BMPR = bit 13), PAS du pattern name data. NBG0 lit déjà
      * N0BMPR (bit 5) dans sa branche bitmap. */
     ctrl.info.specialfunction = (ctrl.regs->BMPNA >> 13) & 0x01;
-    ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA & 0x1000) >> 4;
+    /* VDP2 ST-058-R2 p.112 : N1BMCC = BMPNA bit 12. Normaliser en 0/1
+     * (>>12), pas >>4 qui laissait la valeur a 256. */
+    ctrl.info.specialcolorfunction = (ctrl.regs->BMPNA >> 12) & 0x1;
 
     /* VDP2 Manual p.95 : wrap bitmap.
      * Calculé APRÈS charaddr (bitmap_base) ET colornumber ET cellw/cellh. */
