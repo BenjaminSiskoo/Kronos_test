@@ -4890,52 +4890,99 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     sv &= (ctrl->info.cellh - 1);
     sh &= (ctrl->info.cellw - 1);
 
-    switch (ctrl->info.colornumber) {
-    case 0:
-      baseaddr += (((sh + sv * ctrl->info.cellw) >> 2) << 1);
-      for (j = 0; j < width; j += 4)
-      {
-        Vdp2GetPixel4bpp(ctrl, baseaddr);
-        baseaddr += 2;
-      }
-      break;
-    case 1:
-      baseaddr += sh + sv * ctrl->info.cellw;
-      for (j = 0; j < width; j += 2)
-      {
-        Vdp2GetPixel8bpp(ctrl, baseaddr);
-        baseaddr += 2;
-      }
-      break;
-    case 2:
-      baseaddr += ((sh + sv * ctrl->info.cellw) << 1);
-      for (j = 0; j < width; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel16bpp(ctrl, baseaddr);
-        baseaddr += 2;
 
+    /* VDP2 ST-058-R2 §5.1 p.124 : scroll horizontal en unites de
+     * 1 pixel, et la zone bitmap se repete (wrap). Echantillonnage
+     * per-pixel h = (sh + j) & (cellw-1), comme dans
+     * Vdp2DrawBitmapCoordinateInc(). cellw est une puissance de 2
+     * (§4.3) donc le AND est un modulo exact. */
+    {
+      const int cellw_mask = ctrl->info.cellw - 1;
+ 
+      switch (ctrl->info.colornumber) {
+      case 0: /* 4 bpp — §10.1 : pixel gauche = quartet haut */
+        {
+          u32 row_base = baseaddr + sv * (ctrl->info.cellw >> 1);
+          for (j = 0; j < width; j++)
+          {
+            int h = (sh + j) & cellw_mask;
+            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + (h >> 1));
+            if (!(h & 0x01)) dot >>= 4;
+            if (!(dot & 0xF) && ctrl->info.transparencyenable) {
+              *ctrl->texture.textdata++ = 0x00000000;
+            } else {
+              u32 priority = 0;
+              u32 cramindex = (ctrl->info.coloroffset +
+                               ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+              Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
+              u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
+              *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
+                  ctrl->info.alpha, priority, cc, cramindex);
+            }
+          }
+        }
+        break;
+      case 1: /* 8 bpp */
+        {
+          u32 row_base = baseaddr + sv * ctrl->info.cellw;
+          for (j = 0; j < width; j++)
+          {
+            int h = (sh + j) & cellw_mask;
+            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + h);
+            if (!(dot & 0xFF) && ctrl->info.transparencyenable) {
+              *ctrl->texture.textdata++ = 0x00000000;
+            } else {
+              u32 priority = 0;
+              u32 cramindex = ctrl->info.coloroffset +
+                              ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+              Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
+              u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
+              *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
+                  ctrl->info.alpha, priority, cc, cramindex);
+            }
+          }
+        }
+        break;
+      case 2: /* 16 bpp palette */
+        {
+          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 2;
+          for (j = 0; j < width; j++)
+          {
+            int h = (sh + j) & cellw_mask;
+            *ctrl->texture.textdata++ =
+                Vdp2GetPixel16bpp(ctrl, row_base + (h << 1));
+          }
+        }
+        break;
+      case 3: /* 16 bpp RGB */
+        {
+          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 2;
+          for (j = 0; j < width; j++)
+          {
+            int h = (sh + j) & cellw_mask;
+            *ctrl->texture.textdata++ =
+                Vdp2GetPixel16bppbmp(ctrl, row_base + (h << 1));
+          }
+        }
+        break;
+      case 4: /* 32 bpp */
+        {
+          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 4;
+          for (j = 0; j < width; j++)
+          {
+            int h = (sh + j) & cellw_mask;
+            *ctrl->texture.textdata++ =
+                Vdp2GetPixel32bppbmp(ctrl, row_base + (h << 2));
+          }
+        }
+        break;
       }
-      break;
-    case 3:
-      baseaddr += ((sh + sv * ctrl->info.cellw) << 1);
-      for (j = 0; j < width; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel16bppbmp(ctrl, baseaddr);
-        baseaddr += 2;
-      }
-      break;
-    case 4:
-      baseaddr += ((sh + sv * ctrl->info.cellw) << 2);
-      for (j = 0; j < width; j++)
-      {
-        *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, baseaddr);
-        baseaddr += 4;
-      }
-      break;
     }
+
     ctrl->texture.textdata += ctrl->texture.w;
   }
 }
+
 
 
 static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
