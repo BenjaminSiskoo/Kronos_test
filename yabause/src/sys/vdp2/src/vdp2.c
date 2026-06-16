@@ -38,6 +38,15 @@
 #include "yui.h"
 #include "ygl.h"
 
+/* Nombre de decilines par ligne de balayage. Historiquement défini comme
+ * macro globale, il n'est plus exposé par yabause.h (timing en virgule fixe).
+ * On fournit un repli conforme à la convention Yabause ("déci" = 10) ; si un
+ * en-tête le définit déjà, sa valeur est conservée. À aligner avec la valeur
+ * réelle de yabause.c si elle diffère. */
+#ifndef DECILINE_STEP
+#define DECILINE_STEP 10
+#endif
+
 u8 * Vdp2Ram;
 u8 * Vdp2ColorRam;
 Vdp2 * Vdp2Regs;
@@ -721,9 +730,12 @@ void Vdp2VBlankOUT(void) {
 void Vdp2SendExternalLatch(int trigger, int hcnt, int vcnt)
 {
   if (trigger) {
-    Vdp2Regs->HCNT = hcnt << 1; //pourquoi?
+    /* HCNT en mode graphique Normal : HCT0 (bit 0) est invalide, la valeur
+     * est exprimée en unités de 2 points (ST-058-R2, Table 2.3). On décale
+     * donc la position horizontale (en points) dans le format du registre. */
+    Vdp2Regs->HCNT = hcnt << 1;
     Vdp2Regs->VCNT = vcnt;
-    Vdp2Regs->TVSTAT |= 0x200;
+    Vdp2Regs->TVSTAT |= 0x200; /* EXLTFG : HV latché (TVSTAT bit 9) */
   }
 }
 
@@ -748,10 +760,16 @@ u16 FASTCALL Vdp2ReadWord(SH2_struct *context, u8* mem, u32 addr) {
       case 0x002:
          if (!(Vdp2Regs->EXTEN & 0x200))
          {
-            // Latch HV counter on read
-            // Vdp2Regs->HCNT = (yabsys.DecilineCount * _Ygl->rwidth / DECILINE_STEP) << 1;
+            /* EXLTEN = 0 : le manuel (ST-058-R2) impose le latch de H ET V
+             * lors de la lecture du registre EXTEN. La position horizontale
+             * est dérivée de l'avancement dans la ligne (DecilineCount /
+             * DECILINE_STEP, voir le repli défini en tête de fichier) ;
+             * << 1 = encodage HCNT mode Normal (HCT0 invalide, Table 2.3).
+             * NB : précision horizontale limitée par la granularité des
+             * decilines — à raffiner si un jeu au pistolet l'exige. */
+            Vdp2Regs->HCNT = (yabsys.DecilineCount * _Ygl->rwidth / DECILINE_STEP) << 1;
             Vdp2Regs->VCNT = yabsys.LineCount;
-            Vdp2Regs->TVSTAT |= 0x200;
+            Vdp2Regs->TVSTAT |= 0x200; /* EXLTFG (TVSTAT bit 9) */
          }
 
          return Vdp2Regs->EXTEN;
