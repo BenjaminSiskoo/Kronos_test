@@ -697,14 +697,18 @@ void Vdp2VBlankOUT(void) {
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
-   if (_Ygl->interlace == NORMAL_INTERLACE){
-     vdp2_is_odd_frame = 1;
-   }else{ // p02_50.htm#TVSTAT_
-     if (vdp2_is_odd_frame)
-       vdp2_is_odd_frame = 0;
-     else
-       vdp2_is_odd_frame = 1;
-   }
+  /* yabsys.VBlankLineCount est désormais calculé dans Vdp2VBlankIN (avant
+   * Vdp2Draw), conformément au manuel VDP2 §2.4 (TVMD/VRESO). Le recalculer
+   * ici serait redondant et arriverait après le rendu — on ne le fait plus. */
+
+  /* Indicateur de champ (ODD/EVEN) pour le PROCHAIN champ.
+   * Manuel VDP2, TVSTAT (p02_50.htm) : en non-entrelacé le drapeau de champ
+   * est figé, en entrelacé il bascule à chaque champ. */
+  if (_Ygl->interlace == NORMAL_INTERLACE) {
+    vdp2_is_odd_frame = 1;
+  } else {
+    vdp2_is_odd_frame = !vdp2_is_odd_frame;
+  }
 
 }
 
