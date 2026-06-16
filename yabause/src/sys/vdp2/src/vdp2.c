@@ -687,35 +687,23 @@ void Vdp2VBlankOUT_It(void) {
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
-    switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
-    /* VDP2 Manual §2.4 TVMD VRESO bits 5~4 :
-     * 00=224, 01=240(NTSC)/256(PAL), 10=256, 11=interdit */
-    switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
-    case 0: yabsys.VBlankLineCount = 224; break;
-    case 1: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240; break;
-    case 2: yabsys.VBlankLineCount = 256; break;
-    case 3:
-    default: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
-    }
-    if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
-        break;
-    }
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
-  /* yabsys.VBlankLineCount est désormais calculé dans Vdp2VBlankIN (avant
-   * Vdp2Draw), conformément au manuel VDP2 §2.4 (TVMD/VRESO). Le recalculer
-   * ici serait redondant et arriverait après le rendu — on ne le fait plus. */
+  /* yabsys.VBlankLineCount est calculé dans Vdp2VBlankIN (avant Vdp2Draw),
+   * conformément au manuel VDP2 §2.4 (TVMD/VRESO). On ne le recalcule plus
+   * ici : le faire après le rendu serait trop tard, et le double switch
+   * précédent était de toute façon du code mort (switch externe sans case). */
 
-  /* Indicateur de champ (ODD/EVEN) pour le PROCHAIN champ.
-   * Manuel VDP2, TVSTAT (p02_50.htm) : en non-entrelacé le drapeau de champ
-   * est figé, en entrelacé il bascule à chaque champ. */
-  if (_Ygl->interlace == NORMAL_INTERLACE) {
+  /* Indicateur de champ ODD/EVEN pour le prochain champ.
+   * Manuel VDP2 : TVSTAT (180004H, bit 1) + TVMD (180000H, LSMD bits 7~6) :
+   *   LSMD = 00 (non-entrelacé)             -> ODD figé à 1
+   *   LSMD = 10/11 (entrelacé S/D ou D/D)   -> ODD alterne à chaque champ */
+  if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0) {
     vdp2_is_odd_frame = 1;
   } else {
     vdp2_is_odd_frame = !vdp2_is_odd_frame;
   }
-
 }
 
 //////////////////////////////////////////////////////////////////////////////
