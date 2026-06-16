@@ -1,4 +1,3 @@
-
 /*  Copyright 2003-2005 Guillaume Duhamel
     Copyright 2004-2007 Theo Berkau
     Copyright 2015 Shinya Miyamoto(devmiyax)
@@ -556,6 +555,23 @@ void resetFrameSkip(void) {
   nextFrameTime = 0;
 }
 
+/* VDP2 manual (ST-058-R2) §2.4, TVMD VRESO bits 5~4 :
+ *   00 = 224 lignes (NTSC/PAL)
+ *   01 = 240 lignes (NTSC/PAL d'après la spec ; ce fork conserve 256 en PAL)
+ *   10 = 256 lignes (PAL uniquement)
+ *   11 = interdit
+ * Source unique du mapping VRESO -> VBlankLineCount, utilisée par
+ * Vdp2VBlankIN() et Vdp2WriteWord() pour éviter toute divergence. */
+static inline int Vdp2VResoLineCount(u16 tvmd) {
+  switch ((tvmd >> 4) & 0x3) {
+  case 0:  return 224;
+  case 1:  return yabsys.IsPal ? 256 : 240;   /* spec stricte : 240 dans les deux cas */
+  case 2:  return 256;
+  case 3:
+  default: return yabsys.IsPal ? 256 : 224;   /* 11 = interdit : repli défensif */
+  }
+}
+
 void Vdp2VBlankIN_It(void) {
   Vdp2Regs->TVSTAT |= 0x0008;
   ScuSendVBlankIN();
@@ -580,13 +596,7 @@ void Vdp2VBlankIN(void) {
   /* VDP2 Manual §2.4: update VBlankLineCount from TVMD VRESO BEFORE Vdp2Draw(),
    * so Vdp2DrawNBGx() endLine uses the correct value for this field.
    * Vdp2VBlankOUT() would update it too late — after the render. */
-  switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
-  case 0: yabsys.VBlankLineCount = 224; break;
-  case 1: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 240; break;
-  case 2: yabsys.VBlankLineCount = 256; break;
-  case 3:
-  default: yabsys.VBlankLineCount = yabsys.IsPal ? 256 : 224; break;
-  }
+  yabsys.VBlankLineCount = Vdp2VResoLineCount(Vdp2Regs->TVMD);
 
   //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
   if (checkFrameSkip() != 0) {
@@ -675,7 +685,7 @@ Vdp2 * Vdp2RestoreRegs(int line, Vdp2* lines) {
 
 //////////////////////////////////////////////////////////////////////////////
 void Vdp2VBlankOUT_It(void) {
-  /* Sortie du retour vertical (manuel VDP2, TVSTAT 180004H) :
+  /* Sortie du retour vertical (manuel VDP2 ST-058-R2, TVSTAT 180004H) :
    *   VBLANK (bit 3) -> 0  : on quitte le vertical re-trace
    *   ODD    (bit 1)       : reflète l'indicateur de champ courant
    * PAL (bit 0), HBLANK (bit 2) et les drapeaux de latch externe (bits 9/10,
@@ -683,7 +693,6 @@ void Vdp2VBlankOUT_It(void) {
   Vdp2Regs->TVSTAT = (Vdp2Regs->TVSTAT & ~0x000A) | ((vdp2_is_odd_frame & 1) << 1);
   ScuSendVBlankOUT();
 }
-
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
@@ -693,13 +702,14 @@ void Vdp2VBlankOUT(void) {
   /* yabsys.VBlankLineCount est calculé dans Vdp2VBlankIN (avant Vdp2Draw),
    * conformément au manuel VDP2 §2.4 (TVMD/VRESO). On ne le recalcule plus
    * ici : le faire après le rendu serait trop tard, et le double switch
-   * précédent était de toute façon du code mort (switch externe sans case). */
+   * présent auparavant était de toute façon du code mort (switch externe
+   * sans étiquette case, dont le corps n'était jamais exécuté). */
 
   /* Indicateur de champ ODD/EVEN pour le prochain champ.
-   * Manuel VDP2 : TVSTAT (180004H, bit 1) + TVMD (180000H, LSMD bits 7~6) :
-   *   LSMD = 00 (non-entrelacé)             -> ODD figé à 1
-   *   LSMD = 10/11 (entrelacé S/D ou D/D)   -> ODD alterne à chaque champ */
-  if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0) {
+   * Manuel VDP2, TVSTAT (180004H, bit 1) : non-entrelacé -> figé à 1,
+   * entrelacé (simple ou double densité) -> alterne à chaque champ.
+   * _Ygl->interlace : NORMAL_INTERLACE == non-entrelacé (ygl.h). */
+  if (_Ygl->interlace == NORMAL_INTERLACE) {
     vdp2_is_odd_frame = 1;
   } else {
     vdp2_is_odd_frame = !vdp2_is_odd_frame;
@@ -801,14 +811,7 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
          Vdp2Regs->TVMD = val;
          if ((yabsys.LineCount < yabsys.VBlankLineCount) && (yabsys.LineCount < 225+(Vdp2Regs->TVMD & 0x30)) && ((Vdp2Regs->TVMD & 0x30)<(yabsys.VBlankLineCount - 225))) {
            //Safe to change right now
-			int new_vblank;
-			switch ((val >> 4) & 0x3) {
-			case 0: new_vblank = 224; break;
-			case 1: new_vblank = yabsys.IsPal ? 256 : 240; break;
-			case 2: new_vblank = 256; break;
-			case 3:
-			default: new_vblank = yabsys.IsPal ? 256 : 224; break;
-			}
+			int new_vblank = Vdp2VResoLineCount(val);
 			/* Mise à jour anticipée uniquement si le changement est sûr mid-frame :
 			 * la ligne courante doit être < nouveau VBlank, et strictement inférieure
 			 * à la résolution cible pour ne pas tronquer une frame en cours. */
