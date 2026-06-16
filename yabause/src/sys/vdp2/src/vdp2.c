@@ -675,9 +675,15 @@ Vdp2 * Vdp2RestoreRegs(int line, Vdp2* lines) {
 
 //////////////////////////////////////////////////////////////////////////////
 void Vdp2VBlankOUT_It(void) {
-  Vdp2Regs->TVSTAT = ((Vdp2Regs->TVSTAT & ~0x0008) & ~0x0002) | (vdp2_is_odd_frame << 1);
+  /* Sortie du retour vertical (manuel VDP2, TVSTAT 180004H) :
+   *   VBLANK (bit 3) -> 0  : on quitte le vertical re-trace
+   *   ODD    (bit 1)       : reflète l'indicateur de champ courant
+   * PAL (bit 0), HBLANK (bit 2) et les drapeaux de latch externe (bits 9/10,
+   * remis à 0 à la lecture de TVSTAT) sont préservés. */
+  Vdp2Regs->TVSTAT = (Vdp2Regs->TVSTAT & ~0x000A) | ((vdp2_is_odd_frame & 1) << 1);
   ScuSendVBlankOUT();
 }
+
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
