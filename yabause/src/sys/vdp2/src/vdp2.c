@@ -486,7 +486,11 @@ static int checkFrameSkip(void) {
   if(nextFrameTime < now) ret = 1;
   return ret;
 #endif
-  return !(yabsys.frame_count % (yabsys.skipframe+1) == 0);
+  /* skipframe+1 sert de pas : on le borne à >= 1 pour éviter un modulo par
+   * zéro (comportement indéfini / crash) si skipframe vaut -1. */
+  int step = yabsys.skipframe + 1;
+  if (step < 1) step = 1;
+  return !(yabsys.frame_count % step == 0);
 }
 
 static void updateCyclePattern() {
