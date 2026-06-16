@@ -186,7 +186,7 @@ static void vdp2RamAccessCPUCheck(int bank){
 
 u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+     addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
@@ -204,7 +204,7 @@ u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
 
 u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
@@ -222,7 +222,7 @@ u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
 
 u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
@@ -240,7 +240,7 @@ u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
 
 void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
@@ -258,7 +258,7 @@ void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 
 void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
@@ -276,7 +276,7 @@ void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
 
 void FASTCALL Vdp2RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
   else
     addr &= 0x7FFFF;
 
