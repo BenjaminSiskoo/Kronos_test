@@ -637,23 +637,20 @@ static u8 decodeFBCRMode(void) {
     int vbe = (Vdp1Regs->TVMR >> 3) & 0x1;
     int fcm = (Vdp1Regs->FBCR >> 1) & 0x1;
     int fct =  Vdp1Regs->FBCR       & 0x1;
-
-    /* VDP1 §4.2 p.38 Table 4.3: only 4 of the 8 VBE/FCM/FCT combos are legal.
-     * Returned bitfield (unchanged from callers' expectations):
-     *   bit 0 = useVBlankErase
-     *   bit 1 = manualchange
-     *   bit 2 = onecyclechange
-     *   bit 3 = manualerase
-     *   bit 4 = onecycleerase */
-    if (vbe == 0 && fcm == 0 && fct == 0) return 0x14; /* 1-cycle erase+change */
-    if (vbe == 0 && fcm == 1 && fct == 0) return 0x08; /* manual erase  */
-    if (vbe == 0 && fcm == 1 && fct == 1) return 0x02; /* manual change */
-    if (vbe == 1 && fcm == 1 && fct == 1) return 0x03; /* VBE erase + manual change */
-
-    /* Prohibited per §4.2 p.38. Hardware behaviour is undocumented;
-     * safest emulation is a no-op (no erase, no change). */
-    return 0;
+ 
+    /* VBE=1 : V-blank erase + bascule manuelle. Les 3 combos VBE=1
+     * interdites (FCM/FCT != 11) se comportent comme (1,1,1) sur HW. */
+    if (vbe == 1) return 0x03;
+ 
+    /* VBE=0, FCM=0 : mode 1-cycle (erase + change auto). FCT est ignoré
+     * (sélecteur = FCM), ce qui couvre (0,0,0) légal et (0,0,1) interdit. */
+    if (fcm == 0) return 0x14;
+ 
+    /* VBE=0, FCM=1 : mode manuel. FCT distingue erase / change. */
+    if (fct == 0) return 0x08;   /* (0,1,0) manual erase  */
+    return 0x02;                 /* (0,1,1) manual change */
 }
+
 
 static void updateFBCRChange() {
   if (FBCRChangeUpdated == 0) return;
