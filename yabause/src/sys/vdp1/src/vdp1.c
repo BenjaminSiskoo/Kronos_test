@@ -2090,6 +2090,7 @@ static void FASTCALL Vdp1ReadCommand(vdp1cmd_struct *cmd, u32 addr, u8* ram) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+
 int Vdp1SaveState(void ** stream)
 {
    int offset;
@@ -2097,28 +2098,35 @@ int Vdp1SaveState(void ** stream)
    int i = 0;
    u8 back_framebuffer[0x40000] = { 0 };
 #endif
-
-   offset = MemStateWriteHeader(stream, "VDP1", 2);
-
+ 
+   /* Version 3 : frame buffer sérialisé en 16 bits sans perte. */
+   offset = MemStateWriteHeader(stream, "VDP1", 3);
+ 
    // Write registers
    MemStateWrite((void *)Vdp1Regs, sizeof(Vdp1), 1, stream);
-
+ 
    // Write VDP1 ram
    MemStateWrite((void *)Vdp1Ram, 0x80000, 1, stream);
-
+ 
 #ifdef IMPROVED_SAVESTATES
-   for (i = 0; i < 0x40000; i++)
-      back_framebuffer[i] = Vdp1FrameBuffer16bReadByte(NULL, NULL, i);
-
+   /* Lecture du pixel 16 bits complet via l'accesseur Word et stockage
+    * octet haut puis octet bas (ordre interne au savestate ; seule la
+    * cohérence save/load importe). */
+   for (i = 0; i < 0x40000; i += 2) {
+      u16 px = Vdp1FrameBuffer16bReadWord(NULL, NULL, i);
+      back_framebuffer[i]     = (u8)((px >> 8) & 0xFF);
+      back_framebuffer[i + 1] = (u8)( px       & 0xFF);
+   }
    MemStateWrite((void *)back_framebuffer, 0x40000, 1, stream);
 #endif
-
+ 
     // VDP1 status
    int size = sizeof(Vdp1External_struct);
    MemStateWrite((void *)(&size), sizeof(int),1,stream);
    MemStateWrite((void *)(&Vdp1External), sizeof(Vdp1External_struct),1,stream);
    return MemStateFinishHeader(stream, offset);
 }
+
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -2128,21 +2136,31 @@ int Vdp1LoadState(const void * stream, UNUSED int version, int size)
    int i = 0;
    u8 back_framebuffer[0x40000] = { 0 };
 #endif
-
    // Read registers
    MemStateRead((void *)Vdp1Regs, sizeof(Vdp1), 1, stream);
-
    // Read VDP1 ram
    MemStateRead((void *)Vdp1Ram, 0x80000, 1, stream);
    vdp1Ram_update_start = 0x0;
    vdp1Ram_update_end = 0x80000;
 #ifdef IMPROVED_SAVESTATES
    MemStateRead((void *)back_framebuffer, 0x40000, 1, stream);
-
    YglGenerate();
-
-   for (i = 0; i < 0x40000; i++)
-      Vdp1FrameBuffer16bWriteByte(NULL, NULL, i, back_framebuffer[i]);
+   if (version >= 3) {
+      /* v3+ : restauration 16 bits sans perte. Les accesseurs Byte
+       * ignorent (addr & 1) et mettent l'octet haut du pixel à zéro ;
+       * on passe donc par l'accesseur Word, qui gère le pixel complet.
+       * Ordre interne : octet haut puis octet bas (cf. Vdp1SaveState). */
+      for (i = 0; i < 0x40000; i += 2) {
+         u16 px = ((u16)back_framebuffer[i] << 8) | back_framebuffer[i + 1];
+         Vdp1FrameBuffer16bWriteWord(NULL, NULL, i, px);
+      }
+   } else {
+      /* v2 : ces sauvegardes contenaient déjà un FB 8 bits/pixel (octet
+       * haut perdu au moment du save). On rejoue l'ancienne sémantique
+       * pour les charger exactement comme avant — jamais pire. */
+      for (i = 0; i < 0x40000; i++)
+         Vdp1FrameBuffer16bWriteByte(NULL, NULL, i, back_framebuffer[i]);
+   }
 #endif
    if (version > 1) {
      int size = 0;
