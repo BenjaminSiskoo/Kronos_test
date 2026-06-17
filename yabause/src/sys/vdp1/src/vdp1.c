@@ -239,39 +239,28 @@ static INLINE u32 vdp1FBWidth(void) {
     return ((Vdp1Regs->TVMR & 0x7) == 0x1) ? 1024 : 512;
 }
 
-//////////////////////////////////////////////////////////////////////////////
+#define VDP1_FB_PIX_CAPACITY (512u * 256u)   /* = 131072 */
+static INLINE int vdp1FBPixInBounds(u32 pixIdx) {
+    return pixIdx < VDP1_FB_PIX_CAPACITY;
+}
 
 u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   /* VDP1 Manual §1.2 Table 1.2 p.13 + §4.1 Table 4.2 p.42:
-    * FB height depends on TVMR.TVM, NOT on FBCR.DIE.  §4.2 p.41
-    * explicit note: "even and odd fields are rendered in different
-    * frame buffers" — DIE=1 does NOT enlarge the FB.  Use the same
-    * helper as every other reader to avoid drift. */
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/512 >= fb_height) return 0;
+   if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
-   PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF,addr);
-   //take care of half pixel.
+   PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   /* PATCH 4.3 — §4.1 p.36 / §4.2 p.41 : la hauteur du frame buffer
-    * depend de TVMR.TVM, jamais de FBCR.DIE. En mode rotation (TVM
-    * 010b/011b) et HDTV (TVM 100b) le double interlace est interdit,
-    * DIE doit etre ignore. On utilise le helper vdp1FBHeight() comme
-    * toutes les autres fonctions d'acces au FB (cette occurrence
-    * etait la seule restee sur l'ancien calcul FBCR & 0x8). */
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/512 >= fb_height) return 0;
+   if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
@@ -280,32 +269,26 @@ u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) 
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   u32 fb_height = vdp1FBHeight();
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 4;
    if (context != NULL) context->cycles += 4;
-   /* Validate each pixel independently — a long access near the
-    * bottom edge of the FB can have pixIdx valid but pixIdx+1 out
-    * of bounds. Return 0 for OOB sub-pixels instead of reading
-    * unmapped memory. */
-   u16 val1 = (pixIdx  /512 < fb_height)
-              ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFFFF) : 0;
-   u16 val2 = ((pixIdx+1)/512 < fb_height)
-              ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFFFF) : 0;
+   /* Validation par pixel : un accès long au bord bas du FB peut avoir
+    * pixIdx valide mais pixIdx+1 hors limites. */
+   u16 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFFFF) : 0;
+   u16 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFFFF) : 0;
    return (val1<<16) | val2;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/512 >= fb_height) return; 
+   if (!vdp1FBPixInBounds(pixIdx)) return;
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
@@ -317,41 +300,33 @@ void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   // En double-interlace (FBCR bit 3), hauteur FB = 512 lignes, sinon 256
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/512 >= fb_height) return;
-  u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
-  PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
-  buf[pixIdx] = (val&0xFFFF)|0xFF000000;
-  syncVdp1FBBuffer(pixIdx);
-  vdp1_clock -= 2;
-  if (context != NULL) context->cycles += 2;
-  _Ygl->FBDirty[_Ygl->drawframe] = 1;
-  _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
+   if (!vdp1FBPixInBounds(pixIdx)) return;
+   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
+   PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
+   buf[pixIdx] = (val&0xFFFF)|0xFF000000;
+   syncVdp1FBBuffer(pixIdx);
+   vdp1_clock -= 2;
+   if (context != NULL) context->cycles += 2;
+   _Ygl->FBDirty[_Ygl->drawframe] = 1;
+   _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
-   u32 fb_height = vdp1FBHeight();
-   /* 16bpp FB is always 512 wide per §4.1 Table 4.2 — use literal 512.
-    * Note: this function is void, no early return needed; per-pixel
-    * bounds checks below handle out-of-range pixIdx safely. */
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, addr, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
-   /* Validate each pixel: a long write straddling the FB bottom
-    * edge must not corrupt memory past the buffer end. */
-   if ((pixIdx  )/512 < fb_height) {
-     buf[pixIdx  ] = ((val>>16)&0xFFFF)|0xFF000000;
-     syncVdp1FBBuffer(pixIdx  );
+   if (vdp1FBPixInBounds(pixIdx)) {
+     buf[pixIdx]   = ((val>>16)&0xFFFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx);
    }
-   if ((pixIdx+1)/512 < fb_height) {
+   if (vdp1FBPixInBounds(pixIdx+1)) {
      buf[pixIdx+1] = ((val    )&0xFFFF)|0xFF000000;
      syncVdp1FBBuffer(pixIdx+1);
    }
@@ -360,62 +335,56 @@ void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
-//////////////////////////////////////////////////////////////////////////////
-
+ 
+/* ====================== 8 bpp ====================================== */
+ 
 u8 FASTCALL Vdp1FrameBuffer8bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr;
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/512 >= fb_height) return 0;  // retourner 0 = pixel vide
+   u32 pixIdx = addr;                       /* 8 bpp : 1 octet = 1 pixel */
+   if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
-   PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF,addr);
+   PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
-   u32 fb_height = vdp1FBHeight();
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 2;
    if (context != NULL) context->cycles += 2;
    PRINT_FB("R W 0x%x@0x%x (%d, %d)\n", T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF, addr, yabsys.LineCount, yabsys.DecilineCount);
-   /* Per-pixel bounds check: a word straddling the FB bottom edge
-    * must not read past the buffer. */
-   u8 val1 = ((pixIdx  )/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
-   u8 val2 = ((pixIdx+1)/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
+   u8 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
+   u8 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
    return (val1<<8) | val2;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
-   u32 fb_height = vdp1FBHeight();
    u32* buf = getVDP1ReadFramebuffer();
    vdp1_clock -= 4;
    if (context != NULL) context->cycles += 4;
-   u8 val1 = ((pixIdx  )/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
-   u8 val2 = ((pixIdx+1)/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
-   u8 val3 = ((pixIdx+2)/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+2)*4) & 0xFF) : 0;
-   u8 val4 = ((pixIdx+3)/vdp1FBWidth() < fb_height) ? (T1ReadLong((u8*)buf, (pixIdx+3)*4) & 0xFF) : 0;
-   PRINT_FB("R L 0x%x@0x%x\n", (val1<<24) | (val2<<16) | (val3<<8) | (val4),addr);
-   return (val1<<24) | (val2<<16) | (val3<<8) | (val4) ;
+   u8 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
+   u8 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
+   u8 val3 = vdp1FBPixInBounds(pixIdx+2) ? (T1ReadLong((u8*)buf, (pixIdx+2)*4) & 0xFF) : 0;
+   u8 val4 = vdp1FBPixInBounds(pixIdx+3) ? (T1ReadLong((u8*)buf, (pixIdx+3)*4) & 0xFF) : 0;
+   PRINT_FB("R L 0x%x@0x%x\n", (val1<<24)|(val2<<16)|(val3<<8)|val4, addr);
+   return (val1<<24) | (val2<<16) | (val3<<8) | val4;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr;     // 8bpp : 1 octet = 1 pixel
-   u32 fb_height = vdp1FBHeight();
-   if (pixIdx/vdp1FBWidth() >= fb_height) return;   // void : return sans valeur
+   u32 pixIdx = addr;
+   if (!vdp1FBPixInBounds(pixIdx)) return;
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
@@ -427,57 +396,55 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr,
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
-   u32 fb_height = vdp1FBHeight();
-  u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
-  PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
-  if ((pixIdx  )/vdp1FBWidth() < fb_height) {
-    buf[pixIdx  ] = ((val>>8)&0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx  );
-  }
-  if ((pixIdx+1)/vdp1FBWidth() < fb_height) {
-    buf[pixIdx+1] = ( val    &0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx+1);
-  }
-  vdp1_clock -= 2;
-  if (context != NULL) context->cycles += 2;
-  _Ygl->FBDirty[_Ygl->drawframe] = 1;
-  _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
+   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
+   PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
+   if (vdp1FBPixInBounds(pixIdx)) {
+     buf[pixIdx]   = ((val>>8)&0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx);
+   }
+   if (vdp1FBPixInBounds(pixIdx+1)) {
+     buf[pixIdx+1] = ( val    &0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx+1);
+   }
+   vdp1_clock -= 2;
+   if (context != NULL) context->cycles += 2;
+   _Ygl->FBDirty[_Ygl->drawframe] = 1;
+   _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x3FFFF;
-   u32 pixIdx = addr; 
-   u32 fb_height = vdp1FBHeight();
-  u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
-  PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
-  /* Per-pixel bounds check for each of the 4 bytes. */
-  if ((pixIdx  )/vdp1FBWidth() < fb_height) {
-    buf[pixIdx  ] = ((val>>24)&0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx  );
-  }
-  if ((pixIdx+1)/vdp1FBWidth() < fb_height) {
-    buf[pixIdx+1] = ((val>>16)&0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx+1);
-  }
-  if ((pixIdx+2)/vdp1FBWidth() < fb_height) {
-    buf[pixIdx+2] = ((val>> 8)&0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx+2);
-  }
-  if ((pixIdx+3)/vdp1FBWidth() < fb_height) {
-    buf[pixIdx+3] = ( val     &0xFF)|0xFF000000;
-    syncVdp1FBBuffer(pixIdx+3);
-  }
-  vdp1_clock -= 4;
-  if (context != NULL) context->cycles += 4;
-  _Ygl->FBDirty[_Ygl->drawframe] = 1;
-  _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
+   u32 pixIdx = addr;
+   u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
+   PRINT_FB("W L 0x%x@0x%x line %d(%d) frame %d %s\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe, (context==NULL)?"DMA":"CPU");
+   if (vdp1FBPixInBounds(pixIdx)) {
+     buf[pixIdx]   = ((val>>24)&0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx);
+   }
+   if (vdp1FBPixInBounds(pixIdx+1)) {
+     buf[pixIdx+1] = ((val>>16)&0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx+1);
+   }
+   if (vdp1FBPixInBounds(pixIdx+2)) {
+     buf[pixIdx+2] = ((val>> 8)&0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx+2);
+   }
+   if (vdp1FBPixInBounds(pixIdx+3)) {
+     buf[pixIdx+3] = ( val     &0xFF)|0xFF000000;
+     syncVdp1FBBuffer(pixIdx+3);
+   }
+   vdp1_clock -= 4;
+   if (context != NULL) context->cycles += 4;
+   _Ygl->FBDirty[_Ygl->drawframe] = 1;
+   _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
+
 //////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////
