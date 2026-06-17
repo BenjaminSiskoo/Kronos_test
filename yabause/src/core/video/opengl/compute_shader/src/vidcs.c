@@ -1426,7 +1426,20 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
        * and the layer rendered against an unsafe RAMCTL cycle pattern.
        * Either way the per-line decision was keyed off the wrong layer. */
       if ((Vdp2Lines[k].BGON & 0x1) != 0) {
-        if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
+        /* VDP2 Manual ST-58-R2 §6.2 p.149 (RDBSxx table) :
+         *   "This bit is only in effect when the rotation scroll screen is
+         *    displayed."
+         * A VRAM bank reserved for RBG0 (RDBS != 00b) has its cycle-pattern
+         * access commands ignored — but ONLY while RBG0 is actually on
+         * (R0ON = BGON bit 4). The previous inline test
+         *   ((RAMCTL >> (charAddrBk<<1)) & 0x3) != 0
+         * omitted the R0ON gate, so NBG0 was wrongly suppressed whenever the
+         * RDBS bits were stale/pre-set (e.g. a game that alternates between a
+         * rotation screen and a normal scroll, leaving RDBS configured while
+         * R0ON = 0). Vdp2BankOwnedByRBG0() already checks R0ON first and is
+         * the exact path NBG1 uses (l.1945) — route NBG0 through it for both
+         * correctness and NBG0/NBG1 parity. */
+        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], charAddrBk)) {
           needUpdate = 1;
           ctrl.info.display[k] = 0;
         }
@@ -1452,6 +1465,42 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % (512 * ctrl.info.planew));
     ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % (512 * ctrl.info.planeh));
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
+
+    /* VDP2 Manual ST-58-R2 §6.2 p.149 (RDBSxx table) — tile-mode counterpart
+     * of the bitmap-branch guard. A VRAM bank reserved for RBG0 (RDBS != 00b)
+     * has its cycle-pattern access commands ignored while the rotation screen
+     * is displayed (R0ON = 1); reads from it return nothing ("Data will not be
+     * read out ... the correct screen can no longer be displayed").
+     *
+     * In tile mode NBG0 sources data from one or more banks — its character
+     * pattern and pattern-name tables — flagged in char_bank[]/pname_bank[]
+     * by the AC_VRAM scan above. If any bank NBG0 needs is owned by RBG0 on a
+     * given line, that line cannot be fetched and NBG0 must be hidden there.
+     * Vdp2BankOwnedByRBG0() gates on R0ON, so this never fires when RBG0 is
+     * off, and never fires for the normal case where rotation image data lives
+     * in separate banks (which §6.2 in fact requires). */
+    {
+      const int line_max_t = (yabsys.VBlankLineCount >= 270)
+                             ? 270 : yabsys.VBlankLineCount;
+      int needUpdate_t = 0;
+      for (int k = 0; k < line_max_t; k++) {
+        if ((Vdp2Lines[k].BGON & 0x1) == 0) continue;   /* N0ON off this line */
+        for (int b = 0; b < 4; b++) {
+          if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
+          if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
+            needUpdate_t = 1;
+            ctrl.info.display[k] = 0;
+            break;
+          }
+        }
+      }
+      if (needUpdate_t != 0) {
+        ctrl.info.enable = 0;
+        for (int k = 0; k < line_max_t; k++)
+          ctrl.info.enable |= ctrl.info.display[k];
+        if (!ctrl.info.enable) return;
+      }
+    }
   }
  
   /* ------ Zoom (§5.2 p.126-130) ------ */
@@ -1461,27 +1510,50 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
   ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
  
-  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0.
-   *   00 = no reduction           (coordincx in [0, 1])
-   *   01 = up to 1/2              (coordincx in [0, 2], clamp at 0.5)
-   *   10/11 = up to 1/4           (coordincx in [0, 4], clamp at 0.25)
-   */
- 
+  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0
+   * (N0ZMQT/N0ZMHF).
+   *   00 = no reduction           (maxzoom 1.0)
+   *   01 = up to 1/2              (maxzoom 0.5)
+   *   10/11 = up to 1/4           (maxzoom 0.25)
+   *
+   * §5.2 p.129 "Restriction Items" : the reduction depth is ALSO bounded by
+   * the character / bitmap-pattern color count :
+   *   - up to 1/2 : 16 or 256 colors only
+   *   - up to 1/4 : 16 colors only
+   * The hardware cannot fetch enough VRAM per output dot to reduce further
+   * at higher color depths (insufficient access slots in the cycle pattern),
+   * so the achievable reduction is the LESS aggressive (larger floor) of the
+   * ZMCTL setting and the color-depth limit.
+   *
+   * We CLAMP rather than disable: a title that programs an out-of-spec
+   * combination (e.g. 256 colors + 1/4) is held at the depth the hardware
+   * can actually sustain (1/2 here) instead of producing an over-reduced /
+   * corrupted image. When the game respects the restriction this is a no-op
+   * (color_floor <= zmctl_floor), so existing correct content is unchanged.
+   * NB: the exact on-violation hardware behaviour is not specified by the
+   * manual; clamping is the conservative interpretation. */
+  float zmctl_floor;
   switch (ctrl.regs->ZMCTL & 0x03)
   {
-    case 0:
-      ctrl.info.maxzoom = 1.0f;
-      break;
-    case 1:
-      ctrl.info.maxzoom = 0.5f;
-      if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
-      break;
+    case 0:  zmctl_floor = 1.0f;  break;   /* no reduction */
+    case 1:  zmctl_floor = 0.5f;  break;   /* up to 1/2 */
     case 2:
     case 3:
-      ctrl.info.maxzoom = 0.25f;
-      if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
-      break;
+    default: zmctl_floor = 0.25f; break;   /* up to 1/4 */
   }
+
+  float color_floor;
+  switch (ctrl.info.colornumber)
+  {
+    case 0:  color_floor = 0.25f; break;   /* 16 colors  : reduction to 1/4 allowed */
+    case 1:  color_floor = 0.5f;  break;   /* 256 colors : reduction to 1/2 allowed */
+    default: color_floor = 1.0f;  break;   /* 2048+ col. : reduction not allowed */
+  }
+
+  /* Effective maxzoom = the less aggressive (larger) of the two floors. */
+  ctrl.info.maxzoom = (color_floor > zmctl_floor) ? color_floor : zmctl_floor;
+  if (ctrl.info.coordincx < ctrl.info.maxzoom)
+    ctrl.info.coordincx = ctrl.info.maxzoom;
  
   if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
   ctrl.info.coordincy_raw = ctrl.regs->ZMYN0.all & 0x7FF00;
@@ -1963,6 +2035,32 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.x = -((ctrl.regs->SCXIN1 & 0x7FF) % (512 * ctrl.info.planew));
     ctrl.info.y = -((ctrl.regs->SCYIN1 & 0x7FF) % (512 * ctrl.info.planeh));
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN1, ctrl.regs->CHCTLA & 0x100);
+
+    /* §6.2 p.149 tile-mode RBG0/RDBS guard (counterpart of NBG1's bitmap
+     * branch and of NBG0). Any bank NBG1 reads (char_bank[]/pname_bank[])
+     * that is owned by RBG0 (RDBS!=0, R0ON=1) is unreadable on that line, so
+     * NBG1 must be hidden there. N1ON = BGON bit 1. Gated on R0ON, inert when
+     * RBG0 is off or rotation data lives in separate banks. */
+    {
+      int needUpdate_t = 0;
+      for (int k = 0; k < line_max; k++) {
+        if ((Vdp2Lines[k].BGON & 0x2) == 0) continue;   /* N1ON off this line */
+        for (int b = 0; b < 4; b++) {
+          if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
+          if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
+            needUpdate_t = 1;
+            ctrl.info.display[k] = 0;
+            break;
+          }
+        }
+      }
+      if (needUpdate_t != 0) {
+        ctrl.info.enable = 0;
+        for (int k = 0; k < line_max; k++)
+          ctrl.info.enable |= ctrl.info.display[k];
+        if (!ctrl.info.enable) return;
+      }
+    }
   }
 
   ctrl.info.specialcolormode = (ctrl.regs->SFCCMD >> 2) & 0x3;
@@ -1998,21 +2096,34 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
    *
    * Mirror NBG0's switch which already handles case 0 explicitly. */
 
+  /* §5.2 p.129 "Restriction Items" : like NBG0, the reduction depth is also
+   * bounded by the color count (1/2 → 16/256 colors, 1/4 → 16 colors). The
+   * effective floor is the less aggressive (larger) of the ZMCTL setting and
+   * the color-depth limit; we clamp rather than disable. No-op for compliant
+   * content. Same rationale as NBG0 — see that function for the full note.
+   * NBG1 colornumber (CHCTLA bits 13-12) maxes at 3 (32768 colors), so the
+   * 2048+ entries collapse to "no reduction". */
+  float zmctl_floor;
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
-  case 0:
-    ctrl.info.maxzoom = 1.0f;
-    break;
-  case 1:
-    ctrl.info.maxzoom = 0.5f;
-    if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
-    break;
-  case 2:
-  case 3:
-    ctrl.info.maxzoom = 0.25f;
-    if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
-    break;
+    case 0:  zmctl_floor = 1.0f;  break;   /* no reduction */
+    case 1:  zmctl_floor = 0.5f;  break;   /* up to 1/2 */
+    case 2:
+    case 3:
+    default: zmctl_floor = 0.25f; break;   /* up to 1/4 */
   }
+
+  float color_floor;
+  switch (ctrl.info.colornumber)
+  {
+    case 0:  color_floor = 0.25f; break;   /* 16 colors  : reduction to 1/4 allowed */
+    case 1:  color_floor = 0.5f;  break;   /* 256 colors : reduction to 1/2 allowed */
+    default: color_floor = 1.0f;  break;   /* 2048+ col. : reduction not allowed */
+  }
+
+  ctrl.info.maxzoom = (color_floor > zmctl_floor) ? color_floor : zmctl_floor;
+  if (ctrl.info.coordincx < ctrl.info.maxzoom)
+    ctrl.info.coordincx = ctrl.info.maxzoom;
 
   if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) return;
   ctrl.info.coordincy_raw = ctrl.regs->ZMYN1.all & 0x7FF00;
@@ -2453,6 +2564,30 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
   }
 
+  /* §6.2 p.149 tile-mode RBG0/RDBS guard (see NBG0). NBG2 is tile-only; any
+   * bank it reads (char_bank[]/pname_bank[]) owned by RBG0 (RDBS!=0, R0ON=1)
+   * is unreadable on that line. N2ON = BGON bit 2. Gated on R0ON. */
+  {
+    int needUpdate_t = 0;
+    for (int k = 0; k < line_max; k++) {
+      if ((Vdp2Lines[k].BGON & 0x4) == 0) continue;   /* N2ON off this line */
+      for (int b = 0; b < 4; b++) {
+        if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
+        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
+          needUpdate_t = 1;
+          ctrl.info.display[k] = 0;
+          break;
+        }
+      }
+    }
+    if (needUpdate_t != 0) {
+      ctrl.info.enable = 0;
+      for (int k = 0; k < line_max; k++)
+        ctrl.info.enable |= ctrl.info.display[k];
+      if (!ctrl.info.enable) return;
+    }
+  }
+
 
   ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
   ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
@@ -2749,6 +2884,30 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
     if (char_access == 0) return;
     if (ptn_access == 0) return;
     if (Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) delayed = 1;
+  }
+
+  /* §6.2 p.149 tile-mode RBG0/RDBS guard (see NBG0). NBG3 is tile-only; any
+   * bank it reads (char_bank[]/pname_bank[]) owned by RBG0 (RDBS!=0, R0ON=1)
+   * is unreadable on that line. N3ON = BGON bit 3. Gated on R0ON. */
+  {
+    int needUpdate_t = 0;
+    for (int k = 0; k < line_max; k++) {
+      if ((Vdp2Lines[k].BGON & 0x8) == 0) continue;   /* N3ON off this line */
+      for (int b = 0; b < 4; b++) {
+        if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
+        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
+          needUpdate_t = 1;
+          ctrl.info.display[k] = 0;
+          break;
+        }
+      }
+    }
+    if (needUpdate_t != 0) {
+      ctrl.info.enable = 0;
+      for (int k = 0; k < line_max; k++)
+        ctrl.info.enable |= ctrl.info.display[k];
+      if (!ctrl.info.enable) return;
+    }
   }
  
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
@@ -6109,6 +6268,28 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
     info->mapwh = 4;
     ReadPlaneSize(info, rbg->ctrl.regs->PLSZ >> 12);
     ReadPatternData(info, rbg->ctrl.regs->PNCN0, rbg->ctrl.regs->CHCTLA & 0x1);
+
+    /* §6.1 / §6.2 p.149 — rotation-side counterpart of the RBG1 *bitmap*
+     * bank check above (and the INVERSE of the NBG guard: a rotation screen
+     * is the OWNER of its RDBS banks, so the test is "my bank must be mine",
+     * not "hide if owned by RBG0"). In tile mode RBG1 fetches character data
+     * from the bank based at (MPOFR & 0x70)*0x2000; per §6.2 a rotation screen
+     * may only read from a bank designated to it (RDBS = 11B = rotation
+     * character/pattern data). If that bank is not rotation-allocated the data
+     * cannot be fetched and RBG1 must abort — exactly as the bitmap branch
+     * does. RGB-format (colornumber == 3) reads VRAM directly and bypasses the
+     * restriction. Derivation is identical to the bitmap branch for parity. */
+    {
+      int tile_charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
+      int charAddrBk = (((tile_charaddr >> 16) & 0xF)
+                        >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
+      int n1_color = (rbg->ctrl.regs->CHCTLA & 0x70) >> 4;
+      if (n1_color != 3 &&
+          ((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
+        pushRBG(rbg);
+        return;
+      }
+    }
 
     rbg->paraB.ShiftPaneX = 8 + info->planew;
     rbg->paraB.ShiftPaneY = 8 + info->planeh;
