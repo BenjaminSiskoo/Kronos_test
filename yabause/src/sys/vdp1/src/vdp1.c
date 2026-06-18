@@ -608,9 +608,14 @@ u16 FASTCALL Vdp1ReadWord(SH2_struct *context, u8* mem, u32 addr) {
 //////////////////////////////////////////////////////////////////////////////
 
 u32 FASTCALL Vdp1ReadLong(SH2_struct *context, u8* mem, u32 addr) {
-   addr &= 0xFF;
-   LOG("trying to long-read a Vdp1 register - %08X\n", addr);
-   return 0;
+   /* VDP1 registers are 16-bit; a 32-bit bus access spans two adjacent
+    * registers. The Saturn SH2 bus is big-endian, so the word at the lower
+    * address is the upper 16 bits (identical convention to Vdp2ReadLong).
+    * The previous stub returned 0, so any 32-bit status poll (e.g. reading
+    * EDSR:LOPR at 0x10 as a long) got zero instead of the real status. */
+   u16 hi = Vdp1ReadWord(context, mem, addr);
+   u16 lo = Vdp1ReadWord(context, mem, addr + 2);
+   return ((u32)hi << 16) | lo;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -782,9 +787,17 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL Vdp1WriteLong(SH2_struct *context, u8* mem, u32 addr, UNUSED u32 val) {
-   addr &= 0xFF;
-   LOG("trying to long-write a Vdp1 register - %08X\n", addr);
+void FASTCALL Vdp1WriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
+   /* VDP1 registers are 16-bit; a 32-bit bus access targets two adjacent
+    * registers. Big-endian SH2: the word at the lower address holds the
+    * upper 16 bits (mirrors Vdp2WriteLong). Delegating to Vdp1WriteWord
+    * preserves every side effect the register write triggers — FB 8/16-bit
+    * switch + startVdp1Render on TVMR, draw trigger + EDSR.CEF clear on PTMR,
+    * erase-coordinate updates on EWLR/EWRR, ENDR abort. The previous no-op
+    * silently dropped all of it; a game or BIOS storing the erase pair
+    * (EWLR:EWRR) or TVMR:FBCR as a single long lost the write entirely. */
+   Vdp1WriteWord(context, mem, addr,     (val >> 16) & 0xFFFF);
+   Vdp1WriteWord(context, mem, addr + 2,  val        & 0xFFFF);
 }
 
 static void printCommand(vdp1cmd_struct *cmd) {
