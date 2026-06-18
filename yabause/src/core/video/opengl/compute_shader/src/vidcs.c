@@ -1426,20 +1426,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
        * and the layer rendered against an unsafe RAMCTL cycle pattern.
        * Either way the per-line decision was keyed off the wrong layer. */
       if ((Vdp2Lines[k].BGON & 0x1) != 0) {
-        /* VDP2 Manual ST-58-R2 §6.2 p.149 (RDBSxx table) :
-         *   "This bit is only in effect when the rotation scroll screen is
-         *    displayed."
-         * A VRAM bank reserved for RBG0 (RDBS != 00b) has its cycle-pattern
-         * access commands ignored — but ONLY while RBG0 is actually on
-         * (R0ON = BGON bit 4). The previous inline test
-         *   ((RAMCTL >> (charAddrBk<<1)) & 0x3) != 0
-         * omitted the R0ON gate, so NBG0 was wrongly suppressed whenever the
-         * RDBS bits were stale/pre-set (e.g. a game that alternates between a
-         * rotation screen and a normal scroll, leaving RDBS configured while
-         * R0ON = 0). Vdp2BankOwnedByRBG0() already checks R0ON first and is
-         * the exact path NBG1 uses (l.1945) — route NBG0 through it for both
-         * correctness and NBG0/NBG1 parity. */
-        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], charAddrBk)) {
+        if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
           needUpdate = 1;
           ctrl.info.display[k] = 0;
         }
@@ -1465,42 +1452,6 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.x = -((ctrl.regs->SCXIN0 & 0x7FF) % (512 * ctrl.info.planew));
     ctrl.info.y = -((ctrl.regs->SCYIN0 & 0x7FF) % (512 * ctrl.info.planeh));
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN0, ctrl.regs->CHCTLA & 0x1);
-
-    /* VDP2 Manual ST-58-R2 §6.2 p.149 (RDBSxx table) — tile-mode counterpart
-     * of the bitmap-branch guard. A VRAM bank reserved for RBG0 (RDBS != 00b)
-     * has its cycle-pattern access commands ignored while the rotation screen
-     * is displayed (R0ON = 1); reads from it return nothing ("Data will not be
-     * read out ... the correct screen can no longer be displayed").
-     *
-     * In tile mode NBG0 sources data from one or more banks — its character
-     * pattern and pattern-name tables — flagged in char_bank[]/pname_bank[]
-     * by the AC_VRAM scan above. If any bank NBG0 needs is owned by RBG0 on a
-     * given line, that line cannot be fetched and NBG0 must be hidden there.
-     * Vdp2BankOwnedByRBG0() gates on R0ON, so this never fires when RBG0 is
-     * off, and never fires for the normal case where rotation image data lives
-     * in separate banks (which §6.2 in fact requires). */
-    {
-      const int line_max_t = (yabsys.VBlankLineCount >= 270)
-                             ? 270 : yabsys.VBlankLineCount;
-      int needUpdate_t = 0;
-      for (int k = 0; k < line_max_t; k++) {
-        if ((Vdp2Lines[k].BGON & 0x1) == 0) continue;   /* N0ON off this line */
-        for (int b = 0; b < 4; b++) {
-          if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
-          if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
-            needUpdate_t = 1;
-            ctrl.info.display[k] = 0;
-            break;
-          }
-        }
-      }
-      if (needUpdate_t != 0) {
-        ctrl.info.enable = 0;
-        for (int k = 0; k < line_max_t; k++)
-          ctrl.info.enable |= ctrl.info.display[k];
-        if (!ctrl.info.enable) return;
-      }
-    }
   }
  
   /* ------ Zoom (§5.2 p.126-130) ------ */
@@ -1510,50 +1461,27 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   if ((ctrl.regs->ZMXN0.all & 0x7FF00) == 0) return;
   ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN0.all & 0x7FF00);
  
-  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0
-   * (N0ZMQT/N0ZMHF).
-   *   00 = no reduction           (maxzoom 1.0)
-   *   01 = up to 1/2              (maxzoom 0.5)
-   *   10/11 = up to 1/4           (maxzoom 0.25)
-   *
-   * §5.2 p.129 "Restriction Items" : the reduction depth is ALSO bounded by
-   * the character / bitmap-pattern color count :
-   *   - up to 1/2 : 16 or 256 colors only
-   *   - up to 1/4 : 16 colors only
-   * The hardware cannot fetch enough VRAM per output dot to reduce further
-   * at higher color depths (insufficient access slots in the cycle pattern),
-   * so the achievable reduction is the LESS aggressive (larger floor) of the
-   * ZMCTL setting and the color-depth limit.
-   *
-   * We CLAMP rather than disable: a title that programs an out-of-spec
-   * combination (e.g. 256 colors + 1/4) is held at the depth the hardware
-   * can actually sustain (1/2 here) instead of producing an over-reduced /
-   * corrupted image. When the game respects the restriction this is a no-op
-   * (color_floor <= zmctl_floor), so existing correct content is unchanged.
-   * NB: the exact on-violation hardware behaviour is not specified by the
-   * manual; clamping is the conservative interpretation. */
-  float zmctl_floor;
+  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 1-0 for NBG0.
+   *   00 = no reduction           (coordincx in [0, 1])
+   *   01 = up to 1/2              (coordincx in [0, 2], clamp at 0.5)
+   *   10/11 = up to 1/4           (coordincx in [0, 4], clamp at 0.25)
+   */
+ 
   switch (ctrl.regs->ZMCTL & 0x03)
   {
-    case 0:  zmctl_floor = 1.0f;  break;   /* no reduction */
-    case 1:  zmctl_floor = 0.5f;  break;   /* up to 1/2 */
+    case 0:
+      ctrl.info.maxzoom = 1.0f;
+      break;
+    case 1:
+      ctrl.info.maxzoom = 0.5f;
+      if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
+      break;
     case 2:
     case 3:
-    default: zmctl_floor = 0.25f; break;   /* up to 1/4 */
+      ctrl.info.maxzoom = 0.25f;
+      if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
+      break;
   }
-
-  float color_floor;
-  switch (ctrl.info.colornumber)
-  {
-    case 0:  color_floor = 0.25f; break;   /* 16 colors  : reduction to 1/4 allowed */
-    case 1:  color_floor = 0.5f;  break;   /* 256 colors : reduction to 1/2 allowed */
-    default: color_floor = 1.0f;  break;   /* 2048+ col. : reduction not allowed */
-  }
-
-  /* Effective maxzoom = the less aggressive (larger) of the two floors. */
-  ctrl.info.maxzoom = (color_floor > zmctl_floor) ? color_floor : zmctl_floor;
-  if (ctrl.info.coordincx < ctrl.info.maxzoom)
-    ctrl.info.coordincx = ctrl.info.maxzoom;
  
   if ((ctrl.regs->ZMYN0.all & 0x7FF00) == 0) return;
   ctrl.info.coordincy_raw = ctrl.regs->ZMYN0.all & 0x7FF00;
@@ -1783,11 +1711,8 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
     /* BGON: N1ON = bit 1. Also check RBG enable bits that suppress NBG1
-     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off),
-     * AND N1TPON = bit 9 (Transparent display enable, 180020H, p.81):
-     * Vdp2DrawNBG1 reads BGON & 0x200 into info.transparencyenable, so a
-     * mid-frame N1TPON toggle must split zones (mirror of NBG0's N0TPON). */
-    if ((a->BGON & 0x232) != (b->BGON & 0x232)) return 0;
+     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
+    if ((a->BGON & 0x32) != (b->BGON & 0x32)) return 0;
  
     /* CHCTLA bits 15-9: N1CHSZ(15-14), N1BMEN(9), N1CHCN(13-12).
      * Color depth, bitmap mode and bitmap size for NBG1. */
@@ -1861,13 +1786,6 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 3-2: NBG1 special color calculation mode. */
     if ((a->SFCCMD & 0x000C) != (b->SFCCMD & 0x000C)) return 0;
-
-    /* SFSEL bit 1 (N1SCN) + SFCODE (both bytes). VDP2 Manual ST-58-R2 §11.
-     * Vdp2DrawNBG1 selects the special function code byte via SFSEL bit 1 and
-     * reads SFCODE into info.specialcode. Same omission as NBG0 had — a
-     * mid-frame SFSEL/SFCODE change was silently merged. */
-    if ((a->SFSEL & 0x0002) != (b->SFSEL & 0x0002)) return 0;
-    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 1: N1LCEN — line color insertion enable for NBG1. */
     if ((a->LNCLEN & 0x0002) != (b->LNCLEN & 0x0002)) return 0;
@@ -2045,32 +1963,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.x = -((ctrl.regs->SCXIN1 & 0x7FF) % (512 * ctrl.info.planew));
     ctrl.info.y = -((ctrl.regs->SCYIN1 & 0x7FF) % (512 * ctrl.info.planeh));
     ReadPatternData(&ctrl.info, ctrl.regs->PNCN1, ctrl.regs->CHCTLA & 0x100);
-
-    /* §6.2 p.149 tile-mode RBG0/RDBS guard (counterpart of NBG1's bitmap
-     * branch and of NBG0). Any bank NBG1 reads (char_bank[]/pname_bank[])
-     * that is owned by RBG0 (RDBS!=0, R0ON=1) is unreadable on that line, so
-     * NBG1 must be hidden there. N1ON = BGON bit 1. Gated on R0ON, inert when
-     * RBG0 is off or rotation data lives in separate banks. */
-    {
-      int needUpdate_t = 0;
-      for (int k = 0; k < line_max; k++) {
-        if ((Vdp2Lines[k].BGON & 0x2) == 0) continue;   /* N1ON off this line */
-        for (int b = 0; b < 4; b++) {
-          if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
-          if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
-            needUpdate_t = 1;
-            ctrl.info.display[k] = 0;
-            break;
-          }
-        }
-      }
-      if (needUpdate_t != 0) {
-        ctrl.info.enable = 0;
-        for (int k = 0; k < line_max; k++)
-          ctrl.info.enable |= ctrl.info.display[k];
-        if (!ctrl.info.enable) return;
-      }
-    }
   }
 
   ctrl.info.specialcolormode = (ctrl.regs->SFCCMD >> 2) & 0x3;
@@ -2106,34 +1998,21 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
    *
    * Mirror NBG0's switch which already handles case 0 explicitly. */
 
-  /* §5.2 p.129 "Restriction Items" : like NBG0, the reduction depth is also
-   * bounded by the color count (1/2 → 16/256 colors, 1/4 → 16 colors). The
-   * effective floor is the less aggressive (larger) of the ZMCTL setting and
-   * the color-depth limit; we clamp rather than disable. No-op for compliant
-   * content. Same rationale as NBG0 — see that function for the full note.
-   * NBG1 colornumber (CHCTLA bits 13-12) maxes at 3 (32768 colors), so the
-   * 2048+ entries collapse to "no reduction". */
-  float zmctl_floor;
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
-    case 0:  zmctl_floor = 1.0f;  break;   /* no reduction */
-    case 1:  zmctl_floor = 0.5f;  break;   /* up to 1/2 */
-    case 2:
-    case 3:
-    default: zmctl_floor = 0.25f; break;   /* up to 1/4 */
+  case 0:
+    ctrl.info.maxzoom = 1.0f;
+    break;
+  case 1:
+    ctrl.info.maxzoom = 0.5f;
+    if (ctrl.info.coordincx < 0.5f) ctrl.info.coordincx = 0.5f;
+    break;
+  case 2:
+  case 3:
+    ctrl.info.maxzoom = 0.25f;
+    if (ctrl.info.coordincx < 0.25f) ctrl.info.coordincx = 0.25f;
+    break;
   }
-
-  float color_floor;
-  switch (ctrl.info.colornumber)
-  {
-    case 0:  color_floor = 0.25f; break;   /* 16 colors  : reduction to 1/4 allowed */
-    case 1:  color_floor = 0.5f;  break;   /* 256 colors : reduction to 1/2 allowed */
-    default: color_floor = 1.0f;  break;   /* 2048+ col. : reduction not allowed */
-  }
-
-  ctrl.info.maxzoom = (color_floor > zmctl_floor) ? color_floor : zmctl_floor;
-  if (ctrl.info.coordincx < ctrl.info.maxzoom)
-    ctrl.info.coordincx = ctrl.info.maxzoom;
 
   if ((ctrl.regs->ZMYN1.all & 0x7FF00) == 0) return;
   ctrl.info.coordincy_raw = ctrl.regs->ZMYN1.all & 0x7FF00;
@@ -2344,10 +2223,8 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
      * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
-    /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5, AND N2TPON = bit 10
-     * (180020H, p.81): Vdp2DrawNBG2 reads BGON & 0x400 into transparencyenable,
-     * so a mid-frame N2TPON toggle must split zones. */
-    if ((a->BGON & 0x434) != (b->BGON & 0x434)) return 0;
+    /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5. */
+    if ((a->BGON & 0x34) != (b->BGON & 0x34)) return 0;
  
     /* CHCTLB bits 2-0: N2CHCN(1)=colornumber, N2PNB(0)=pattern name size.
      * Also check N0CHCN(6-4) for NBG2 disable condition (§4.1 Table 4.1). */
@@ -2391,11 +2268,6 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 5-4: NBG2 special color calculation mode. */
     if ((a->SFCCMD & 0x0030) != (b->SFCCMD & 0x0030)) return 0;
-
-    /* SFSEL bit 2 (N2SCN) + SFCODE. Vdp2DrawNBG2 reads SFSEL bit 2 to select
-     * the SFCODE byte for info.specialcode; both were untracked. */
-    if ((a->SFSEL & 0x0004) != (b->SFSEL & 0x0004)) return 0;
-    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 2: N2LCEN. */
     if ((a->LNCLEN & 0x0004) != (b->LNCLEN & 0x0004)) return 0;
@@ -2581,30 +2453,6 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
   }
 
-  /* §6.2 p.149 tile-mode RBG0/RDBS guard (see NBG0). NBG2 is tile-only; any
-   * bank it reads (char_bank[]/pname_bank[]) owned by RBG0 (RDBS!=0, R0ON=1)
-   * is unreadable on that line. N2ON = BGON bit 2. Gated on R0ON. */
-  {
-    int needUpdate_t = 0;
-    for (int k = 0; k < line_max; k++) {
-      if ((Vdp2Lines[k].BGON & 0x4) == 0) continue;   /* N2ON off this line */
-      for (int b = 0; b < 4; b++) {
-        if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
-        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
-          needUpdate_t = 1;
-          ctrl.info.display[k] = 0;
-          break;
-        }
-      }
-    }
-    if (needUpdate_t != 0) {
-      ctrl.info.enable = 0;
-      for (int k = 0; k < line_max; k++)
-        ctrl.info.enable |= ctrl.info.display[k];
-      if (!ctrl.info.enable) return;
-    }
-  }
-
 
   ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
   ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
@@ -2664,10 +2512,8 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
-    /* BGON: N3ON = bit 3. Also RBG suppression bits, AND N3TPON = bit 11
-     * (180020H, p.81): Vdp2DrawNBG3 reads BGON & 0x800 into transparencyenable,
-     * so a mid-frame N3TPON toggle must split zones. */
-    if ((a->BGON & 0x838) != (b->BGON & 0x838)) return 0;
+    /* BGON: N3ON = bit 3. Also RBG suppression bits. */
+    if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
  
     /* CHCTLB (18002AH) bits 5,4 :
      *   bit 5 = N3CHCN (color number, 16 vs 256 colors)
@@ -2723,11 +2569,6 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 7-6: NBG3 special color calculation mode. */
     if ((a->SFCCMD & 0x00C0) != (b->SFCCMD & 0x00C0)) return 0;
-
-    /* SFSEL bit 3 (N3SCN) + SFCODE. Vdp2DrawNBG3 reads SFSEL bit 3 to select
-     * the SFCODE byte for info.specialcode; both were untracked. */
-    if ((a->SFSEL & 0x0008) != (b->SFSEL & 0x0008)) return 0;
-    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 3: N3LCEN. */
     if ((a->LNCLEN & 0x0008) != (b->LNCLEN & 0x0008)) return 0;
@@ -2908,30 +2749,6 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
     if (char_access == 0) return;
     if (ptn_access == 0) return;
     if (Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) delayed = 1;
-  }
-
-  /* §6.2 p.149 tile-mode RBG0/RDBS guard (see NBG0). NBG3 is tile-only; any
-   * bank it reads (char_bank[]/pname_bank[]) owned by RBG0 (RDBS!=0, R0ON=1)
-   * is unreadable on that line. N3ON = BGON bit 3. Gated on R0ON. */
-  {
-    int needUpdate_t = 0;
-    for (int k = 0; k < line_max; k++) {
-      if ((Vdp2Lines[k].BGON & 0x8) == 0) continue;   /* N3ON off this line */
-      for (int b = 0; b < 4; b++) {
-        if (!(ctrl.info.char_bank[b] || ctrl.info.pname_bank[b])) continue;
-        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], b)) {
-          needUpdate_t = 1;
-          ctrl.info.display[k] = 0;
-          break;
-        }
-      }
-    }
-    if (needUpdate_t != 0) {
-      ctrl.info.enable = 0;
-      for (int k = 0; k < line_max; k++)
-        ctrl.info.enable |= ctrl.info.display[k];
-      if (!ctrl.info.enable) return;
-    }
   }
  
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
@@ -3439,14 +3256,20 @@ void VIDCSReadColorOffset(void) {
 		// Encoder dans linebuf un flag shadow par ligne :
         int sptype  = lVdp2Regs->SPCTL & 0xF;
         int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
-        int msb_shadow_enabled = (!spwinen) && (sptype >= 2) && (sptype <= 7);
+        int spclmd  = (lVdp2Regs->SPCTL >> 5) & 1;
+        /* VDP2 Manual ST-58-R2 §9.1 Figure 9.1 + p.200 : the SD (shadow) bit
+         * is frame-buffer bit 15, which acts as a shadow bit ONLY in palette
+         * mode. In mixed mode (SPCLMD=1) bit 15 is the RGB color-format
+         * discriminator, and RGB sprite data has "shadow bits considered to
+         * be 0" — so MSB shadow requires SPCLMD=0 as well, not only SPWINEN=0
+         * and sprite type 2..7. Without !spclmd, a game using RGB/mixed
+         * sprites gets spurious half-luminance MSB shadows wherever bit 15=1. */
+        int msb_shadow_enabled = (!spwinen) && (!spclmd) && (sptype >= 2) && (sptype <= 7);
         int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
         int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
         int spccen  = (lVdp2Regs->CCCTL >> 6) & 1;
 
-        /* VDP2 Manual §9.2: RGB sprite data always selects priority register 0.
-         * SPCLMD = SPCTL bit 5: 1 = RGB format, 0 = palette format. */
-        int spclmd = (lVdp2Regs->SPCTL >> 5) & 1;
+        /* VDP2 Manual §9.2: RGB sprite data always selects priority register 0. */
         int sprite_rgb_priority = lVdp2Regs->PRISA & 0x7; /* register 0 */
         _Ygl->sprite_rgb_priority_per_line[line] = spclmd ? sprite_rgb_priority : -1;
 
@@ -4111,6 +3934,24 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   WinS[RBG1] = WinS[NBG0];
   WinS_mode[RBG1] = WinS_mode[NBG0];
   Win_op[RBG1] = Win_op[NBG0];
+
+  /* VDP2 Manual ST-58-R2 p.188 (SPCTL) + §8 / §9.1 : the sprite window only
+   * exists — i.e. the VDP1 framebuffer MSB is only a sprite-window bit — when
+   * SPWINEN=1 (bit 4), the sprite color mode is palette (SPCLMD=0, bit 5) and
+   * the sprite type is 2..7 (the only types whose bit 15 is free for SW). In
+   * any other case bit 15 is the shadow bit or the RGB discriminator, so no
+   * layer may be clipped by a sprite window. WinS[] is derived purely from the
+   * WCTL "use sprite window" flags, which ignore this; gate every layer here
+   * so a stale WCTL flag can't make Vdp2CheckSpriteWindow / the compositor
+   * misread the MSB and wrongly clip a layer. */
+  {
+    int sptype  =  varVdp2Regs->SPCTL & 0xF;
+    int spwinen = (varVdp2Regs->SPCTL >> 4) & 1;
+    int spclmd  = (varVdp2Regs->SPCTL >> 5) & 1;
+    int sw_available = spwinen && !spclmd && (sptype >= 2) && (sptype <= 7);
+    if (!sw_available)
+      for (int i = 0; i < enBGMAX+1; i++) WinS[i] = 0;
+  }
 
 
   for (int i=0; i<enBGMAX+1; i++) {
@@ -6293,28 +6134,6 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
     ReadPlaneSize(info, rbg->ctrl.regs->PLSZ >> 12);
     ReadPatternData(info, rbg->ctrl.regs->PNCN0, rbg->ctrl.regs->CHCTLA & 0x1);
 
-    /* §6.1 / §6.2 p.149 — rotation-side counterpart of the RBG1 *bitmap*
-     * bank check above (and the INVERSE of the NBG guard: a rotation screen
-     * is the OWNER of its RDBS banks, so the test is "my bank must be mine",
-     * not "hide if owned by RBG0"). In tile mode RBG1 fetches character data
-     * from the bank based at (MPOFR & 0x70)*0x2000; per §6.2 a rotation screen
-     * may only read from a bank designated to it (RDBS = 11B = rotation
-     * character/pattern data). If that bank is not rotation-allocated the data
-     * cannot be fetched and RBG1 must abort — exactly as the bitmap branch
-     * does. RGB-format (colornumber == 3) reads VRAM directly and bypasses the
-     * restriction. Derivation is identical to the bitmap branch for parity. */
-    {
-      int tile_charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
-      int charAddrBk = (((tile_charaddr >> 16) & 0xF)
-                        >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
-      int n1_color = (rbg->ctrl.regs->CHCTLA & 0x70) >> 4;
-      if (n1_color != 3 &&
-          ((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
-        pushRBG(rbg);
-        return;
-      }
-    }
-
     rbg->paraB.ShiftPaneX = 8 + info->planew;
     rbg->paraB.ShiftPaneY = 8 + info->planeh;
     rbg->paraB.MskH = (8 * 64 * info->planew) - 1;
@@ -6534,17 +6353,6 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->SFPRMD & 0x0003) != (b->SFPRMD & 0x0003)) return 0; // special priority mode NBG0/RBG1. Masque 0x0003
   if ((a->BMPNA & 0x0077) != (b->BMPNA & 0x0077)) return 0; // Actif uniquement en bitmap mode (N0BMEN=1 dans CHCTLA).
   if ((a->KTCTL & 0x1F00) != (b->KTCTL & 0x1F00)) return 0; // RBG1 utilise uniquement ParaB — seul l'octet haut compte.
-  /* KTAOF bits 10-8 = RBKTAOS : offset d'adresse de la coefficient table
-   * ParaB (1800B6H, ST-58-R2 p.170). RBG1 lit la coefficient table de ParaB
-   * (KTCTL bit 8 = RBKTE) ; l'offset s'ajoute à l'adresse KAst, donc un
-   * changement mid-frame décale la table et doit fractionner la zone. Les
-   * bits 2-0 (RAKTAOS, ParaA) ne concernent pas RBG1. */
-  if ((a->KTAOF & 0x0700) != (b->KTAOF & 0x0700)) return 0;
-  /* OVPNRB (1800BAH) : over pattern name ParaB. Lu par
-   * Vdp2DrawRotation_in_sync dans paraB.over_pattern_name (effectif quand
-   * screenover==1, PLSZ bits 15-14). Cohérent avec sameVDP2RegRBG0 qui
-   * compare déjà OVPNRA+OVPNRB. */
-  if ((a->OVPNRB & 0xFFFF) != (b->OVPNRB & 0xFFFF)) return 0;
   if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0; // N0MZE(0) enable, MZSZH(11-8)+MZSZV(15-12) taille commune.
   if ((a->SFSEL & 0x0001) != (b->SFSEL & 0x0001)) return 0;  // N0SFCS code A ou B pour NBG0/RBG1.
   if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0; // special function code A+B pertinent quand SFCCMD ou SFPRMD >= mode 2.  
@@ -6683,16 +6491,6 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 1-0: NBG0 special color calculation mode. */
     if ((a->SFCCMD & 0x0003) != (b->SFCCMD & 0x0003)) return 0;
-
-    /* SFSEL bit 0 (N0SCN) + SFCODE (both bytes). VDP2 Manual ST-58-R2
-     * §11 (1800E8H/1800ECH). Vdp2DrawNBG0 (l.1569-1571) selects the special
-     * function code byte via SFSEL bit 0 and reads SFCODE into info.specialcode
-     * (consumed when SFCCMD/SFPRMD select per-dot special priority/color).
-     * These were absent here while both RBG comparators already track them —
-     * a mid-frame SFSEL/SFCODE rewrite was silently merged, giving the wrong
-     * special-function code on the merged lines. */
-    if ((a->SFSEL & 0x0001) != (b->SFSEL & 0x0001)) return 0;
-    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 0: N0LCEN. */
     if ((a->LNCLEN & 0x0001) != (b->LNCLEN & 0x0001)) return 0;
