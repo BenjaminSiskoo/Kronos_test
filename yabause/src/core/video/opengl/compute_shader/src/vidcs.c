@@ -1783,8 +1783,11 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
     /* BGON: N1ON = bit 1. Also check RBG enable bits that suppress NBG1
-     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off). */
-    if ((a->BGON & 0x32) != (b->BGON & 0x32)) return 0;
+     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off),
+     * AND N1TPON = bit 9 (Transparent display enable, 180020H, p.81):
+     * Vdp2DrawNBG1 reads BGON & 0x200 into info.transparencyenable, so a
+     * mid-frame N1TPON toggle must split zones (mirror of NBG0's N0TPON). */
+    if ((a->BGON & 0x232) != (b->BGON & 0x232)) return 0;
  
     /* CHCTLA bits 15-9: N1CHSZ(15-14), N1BMEN(9), N1CHCN(13-12).
      * Color depth, bitmap mode and bitmap size for NBG1. */
@@ -1858,6 +1861,13 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 3-2: NBG1 special color calculation mode. */
     if ((a->SFCCMD & 0x000C) != (b->SFCCMD & 0x000C)) return 0;
+
+    /* SFSEL bit 1 (N1SCN) + SFCODE (both bytes). VDP2 Manual ST-58-R2 §11.
+     * Vdp2DrawNBG1 selects the special function code byte via SFSEL bit 1 and
+     * reads SFCODE into info.specialcode. Same omission as NBG0 had — a
+     * mid-frame SFSEL/SFCODE change was silently merged. */
+    if ((a->SFSEL & 0x0002) != (b->SFSEL & 0x0002)) return 0;
+    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 1: N1LCEN — line color insertion enable for NBG1. */
     if ((a->LNCLEN & 0x0002) != (b->LNCLEN & 0x0002)) return 0;
@@ -2334,8 +2344,10 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
      * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
-    /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5. */
-    if ((a->BGON & 0x34) != (b->BGON & 0x34)) return 0;
+    /* BGON: N2ON = bit 2. Also RBG suppression bits 4,5, AND N2TPON = bit 10
+     * (180020H, p.81): Vdp2DrawNBG2 reads BGON & 0x400 into transparencyenable,
+     * so a mid-frame N2TPON toggle must split zones. */
+    if ((a->BGON & 0x434) != (b->BGON & 0x434)) return 0;
  
     /* CHCTLB bits 2-0: N2CHCN(1)=colornumber, N2PNB(0)=pattern name size.
      * Also check N0CHCN(6-4) for NBG2 disable condition (§4.1 Table 4.1). */
@@ -2379,6 +2391,11 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 5-4: NBG2 special color calculation mode. */
     if ((a->SFCCMD & 0x0030) != (b->SFCCMD & 0x0030)) return 0;
+
+    /* SFSEL bit 2 (N2SCN) + SFCODE. Vdp2DrawNBG2 reads SFSEL bit 2 to select
+     * the SFCODE byte for info.specialcode; both were untracked. */
+    if ((a->SFSEL & 0x0004) != (b->SFSEL & 0x0004)) return 0;
+    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 2: N2LCEN. */
     if ((a->LNCLEN & 0x0004) != (b->LNCLEN & 0x0004)) return 0;
@@ -2647,8 +2664,10 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
-    /* BGON: N3ON = bit 3. Also RBG suppression bits. */
-    if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
+    /* BGON: N3ON = bit 3. Also RBG suppression bits, AND N3TPON = bit 11
+     * (180020H, p.81): Vdp2DrawNBG3 reads BGON & 0x800 into transparencyenable,
+     * so a mid-frame N3TPON toggle must split zones. */
+    if ((a->BGON & 0x838) != (b->BGON & 0x838)) return 0;
  
     /* CHCTLB (18002AH) bits 5,4 :
      *   bit 5 = N3CHCN (color number, 16 vs 256 colors)
@@ -2704,6 +2723,11 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 7-6: NBG3 special color calculation mode. */
     if ((a->SFCCMD & 0x00C0) != (b->SFCCMD & 0x00C0)) return 0;
+
+    /* SFSEL bit 3 (N3SCN) + SFCODE. Vdp2DrawNBG3 reads SFSEL bit 3 to select
+     * the SFCODE byte for info.specialcode; both were untracked. */
+    if ((a->SFSEL & 0x0008) != (b->SFSEL & 0x0008)) return 0;
+    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 3: N3LCEN. */
     if ((a->LNCLEN & 0x0008) != (b->LNCLEN & 0x0008)) return 0;
@@ -6510,6 +6534,17 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->SFPRMD & 0x0003) != (b->SFPRMD & 0x0003)) return 0; // special priority mode NBG0/RBG1. Masque 0x0003
   if ((a->BMPNA & 0x0077) != (b->BMPNA & 0x0077)) return 0; // Actif uniquement en bitmap mode (N0BMEN=1 dans CHCTLA).
   if ((a->KTCTL & 0x1F00) != (b->KTCTL & 0x1F00)) return 0; // RBG1 utilise uniquement ParaB — seul l'octet haut compte.
+  /* KTAOF bits 10-8 = RBKTAOS : offset d'adresse de la coefficient table
+   * ParaB (1800B6H, ST-58-R2 p.170). RBG1 lit la coefficient table de ParaB
+   * (KTCTL bit 8 = RBKTE) ; l'offset s'ajoute à l'adresse KAst, donc un
+   * changement mid-frame décale la table et doit fractionner la zone. Les
+   * bits 2-0 (RAKTAOS, ParaA) ne concernent pas RBG1. */
+  if ((a->KTAOF & 0x0700) != (b->KTAOF & 0x0700)) return 0;
+  /* OVPNRB (1800BAH) : over pattern name ParaB. Lu par
+   * Vdp2DrawRotation_in_sync dans paraB.over_pattern_name (effectif quand
+   * screenover==1, PLSZ bits 15-14). Cohérent avec sameVDP2RegRBG0 qui
+   * compare déjà OVPNRA+OVPNRB. */
+  if ((a->OVPNRB & 0xFFFF) != (b->OVPNRB & 0xFFFF)) return 0;
   if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0; // N0MZE(0) enable, MZSZH(11-8)+MZSZV(15-12) taille commune.
   if ((a->SFSEL & 0x0001) != (b->SFSEL & 0x0001)) return 0;  // N0SFCS code A ou B pour NBG0/RBG1.
   if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0; // special function code A+B pertinent quand SFCCMD ou SFPRMD >= mode 2.  
@@ -6648,6 +6683,16 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
  
     /* SFCCMD bits 1-0: NBG0 special color calculation mode. */
     if ((a->SFCCMD & 0x0003) != (b->SFCCMD & 0x0003)) return 0;
+
+    /* SFSEL bit 0 (N0SCN) + SFCODE (both bytes). VDP2 Manual ST-58-R2
+     * §11 (1800E8H/1800ECH). Vdp2DrawNBG0 (l.1569-1571) selects the special
+     * function code byte via SFSEL bit 0 and reads SFCODE into info.specialcode
+     * (consumed when SFCCMD/SFPRMD select per-dot special priority/color).
+     * These were absent here while both RBG comparators already track them —
+     * a mid-frame SFSEL/SFCODE rewrite was silently merged, giving the wrong
+     * special-function code on the merged lines. */
+    if ((a->SFSEL & 0x0001) != (b->SFSEL & 0x0001)) return 0;
+    if ((a->SFCODE & 0xFFFF) != (b->SFCODE & 0xFFFF)) return 0;
  
     /* LNCLEN bit 0: N0LCEN. */
     if ((a->LNCLEN & 0x0001) != (b->LNCLEN & 0x0001)) return 0;
