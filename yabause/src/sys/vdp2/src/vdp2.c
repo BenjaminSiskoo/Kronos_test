@@ -123,10 +123,14 @@ static int updateBlockedBank(int bank){
       break;
       case 0x3:
       // NBG3 Pattern Name Data Read
-      break;
       case 0x7:
       // NBG3 Character Pattern Data Read
-        // CPU can access if NBG3 is disabled
+        /* CPU can access if NBG3 is disabled (BGON bit 3). NBG3 has no
+         * vertical cell scroll, so only PN (0x3) + CP (0x7) apply — grouped
+         * exactly like NBG0/1/2 above. Previously code 0x3 had its own empty
+         * break, so a slot allocated to NBG3 pattern-name reads did NOT mark
+         * the bank as used by NBG3: hasAccessState kept a stale value from a
+         * prior slot and the CPU VRAM access-timing decision was wrong. */
         hasAccessState = ((Vdp2Regs->BGON&0x8)==0);
         if (!hasAccessState) hasWaitState = 0;
       break;
