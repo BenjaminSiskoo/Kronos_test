@@ -2051,7 +2051,15 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
    * pattern reserve un access command VCSC NBG1 (0xD) en T0-T2. */
   if ((ctrl.regs->SCRCTL & 0x100) && Vdp2VCSCAccessValid(ctrl.regs, NBG1)) {
     ctrl.info.isverticalscroll = 1;
-    if (ctrl.regs->SCRCTL & 0x1) {
+    /* §3.3 p.35 / §5.3 : NBG0 and NBG1 share the VCSC table. The table is
+     * interleaved (NBG0 word, then NBG1 word -> NBG1 at +4, stride 8) ONLY
+     * when NBG0 is *actually* doing VCSC, i.e. enabled (SCRCTL bit 0) AND a
+     * VCSC access command is reserved for it. Testing SCRCTL bit 0 alone was
+     * wrong: with N0VCSC enabled but no reserved access slot, NBG0 fetches
+     * nothing (its own block skips via Vdp2VCSCAccessValid(NBG0)), so the
+     * table is NOT interleaved and NBG1 must read at offset 0 / stride 4.
+     * The previous code put NBG1 at +4 / stride 8, reading the wrong words. */
+    if ((ctrl.regs->SCRCTL & 0x1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
       ctrl.info.verticalscrolltbl = 4 + ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1);
       ctrl.info.verticalscrollinc = 8;
     }
