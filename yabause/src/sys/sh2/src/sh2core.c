@@ -124,6 +124,15 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
      sh->intVector = sh->onchip.VCRC & 0x7F;
      sh->intPriority = ((sh->onchip.IPRB >> 8) & 0xF);
   }
+  else if (((sh->onchip.TIER & 0x4)!=0) && ((sh->onchip.FTCSR & 0x4)!=0) && (((sh->onchip.IPRB >> 8) & 0xF) > sh->regs.SR.part.I)) //FRT OCIB
+  {
+     /* Output Compare B shares the FRT priority (IPRB 11-8) and the output
+      * compare vector FOCV (VCRC bits 6-0) with OCIA. FRTExec already sets
+      * OCFB (FTCSR bit 2) on a compare-match B, but the interrupt source was
+      * missing here, so OCIB-driven interrupts were never raised. */
+     sh->intVector = sh->onchip.VCRC & 0x7F;
+     sh->intPriority = ((sh->onchip.IPRB >> 8) & 0xF);
+  }
   else if (((sh->onchip.TIER & 0x2)!=0) && ((sh->onchip.FTCSR & 0x2)!=0) && (((sh->onchip.IPRB >> 8) & 0xF) > sh->regs.SR.part.I)) //FRT OVI
   {
      sh->intVector = (sh->onchip.VCRD >> 8) & 0x7F;
@@ -2012,8 +2021,14 @@ void FRTExec(SH2_struct *context)
       // Do we need to clear the FRC?
       if (context->onchip.FTCSR & 0x1)
       {
+         /* CCLRA clears FRC to 0 on the OCRA match. Carry the cycles that
+          * overshot the match into leftover BEFORE zeroing FRC — frctemp still
+          * holds the matched value here. The previous order set frctemp=0
+          * first, so the carry evaluated (0 - OCRA): an unsigned underflow that
+          * injected a huge bogus value into frc.leftover and corrupted the next
+          * FRC increment (FRC-based timing/RNG in games drifted). */
+         context->frc.leftover += ((frctemp - context->onchip.OCRA) << context->frc.shift);
          frctemp = 0;
-         context->frc.leftover = (context->frc.leftover+((frctemp-context->onchip.OCRA) << context->frc.shift));
       }
 
       // Set OCFA flag
@@ -3121,4 +3136,3 @@ u32 *SH2GetBacktraceList(SH2_struct *context, int *size)
    *size = context->bt.numbacktrace;
    return context->bt.addr;
 }
-
