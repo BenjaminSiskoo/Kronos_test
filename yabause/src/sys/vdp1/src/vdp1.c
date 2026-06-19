@@ -1344,8 +1344,16 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
 
-  /* See Vdp1ScaledSpriteDraw: HSS implies hardware ignores end codes,
-   * but CMDPMOD is not mutated. */
+  /* VDP1 Manual §6.3 p.81 (HSS, CMDPMOD bit 12) + §4.2 p.37 (FBCR bit 4 EOS):
+   * a distorted sprite is textured, so — exactly like normal and scaled
+   * sprites — HSS/EOS must be propagated to the renderer (the hardware
+   * ignores end codes when HSS=1 but does NOT rewrite CMDPMOD, so the
+   * renderer relies on cmd->hss). This was only described in a comment here
+   * and never assigned: since 'cmd' is reused across the command loop, a
+   * distorted sprite inherited the previous command's hss/eos, mis-handling
+   * end codes on HSS=1 distorted sprites. */
+  cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+  cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
