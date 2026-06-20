@@ -4928,24 +4928,33 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     sv &= (ctrl->info.cellh - 1);
     sh &= (ctrl->info.cellw - 1);
 
-
-    /* VDP2 ST-058-R2 §5.1 p.124 : scroll horizontal en unites de
-     * 1 pixel, et la zone bitmap se repete (wrap). Echantillonnage
-     * per-pixel h = (sh + j) & (cellw-1), comme dans
-     * Vdp2DrawBitmapCoordinateInc(). cellw est une puissance de 2
-     * (§4.3) donc le AND est un modulo exact. */
+    /* VDP2 ST-058-R2 §5.1 / §4.3 : en mode bitmap line-scroll, l'adresse
+     * pixel est LINEAIRE dans la zone bitmap : addr = (sv*cellw + sh + j)
+     * masquee par la taille totale du bitmap (cellw*cellh, puissance de 2).
+     * Le debordement horizontal (sh+j >= cellw) REPORTE donc sur la rangee
+     * suivante au lieu de reboucler dans la meme rangee.
+     *
+     * REGRESSION corrigee : un patch avait introduit un wrap par-pixel
+     * h=(sh+j)&(cellw-1) qui rebouclait dans la rangee. Des jeux qui
+     * stockent un framebuffer lineaire 512 de large et le defilent via le
+     * line scroll (H=offset&(cellw-1), V=offset/cellw, donc sv*cellw+sh =
+     * offset lineaire) voyaient chaque ligne relire le DEBUT de la meme
+     * rangee -> duplication / traits horizontaux. L'adressage lineaire
+     * retablit le report inter-rangees. Aucun effet quand il n'y a pas de
+     * debordement (sh+width <= cellw), donc transparent pour le scroll
+     * horizontal normal. */
     {
-      const int cellw_mask = ctrl->info.cellw - 1;
- 
+      const u32 bmpmask = (u32)(ctrl->info.cellw * ctrl->info.cellh) - 1;
+      const u32 lin_base = (u32)sv * ctrl->info.cellw + (u32)sh;
+
       switch (ctrl->info.colornumber) {
       case 0: /* 4 bpp — §10.1 : pixel gauche = quartet haut */
         {
-          u32 row_base = baseaddr + sv * (ctrl->info.cellw >> 1);
           for (j = 0; j < width; j++)
           {
-            int h = (sh + j) & cellw_mask;
-            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + (h >> 1));
-            if (!(h & 0x01)) dot >>= 4;
+            u32 p = (lin_base + (u32)j) & bmpmask;
+            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + (p >> 1));
+            if (!(p & 0x01)) dot >>= 4;
             if (!(dot & 0xF) && ctrl->info.transparencyenable) {
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
@@ -4962,11 +4971,10 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         break;
       case 1: /* 8 bpp */
         {
-          u32 row_base = baseaddr + sv * ctrl->info.cellw;
           for (j = 0; j < width; j++)
           {
-            int h = (sh + j) & cellw_mask;
-            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + h);
+            u32 p = (lin_base + (u32)j) & bmpmask;
+            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + p);
             if (!(dot & 0xFF) && ctrl->info.transparencyenable) {
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
@@ -4983,34 +4991,31 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         break;
       case 2: /* 16 bpp palette */
         {
-          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 2;
           for (j = 0; j < width; j++)
           {
-            int h = (sh + j) & cellw_mask;
+            u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
-                Vdp2GetPixel16bpp(ctrl, row_base + (h << 1));
+                Vdp2GetPixel16bpp(ctrl, baseaddr + (p << 1));
           }
         }
         break;
       case 3: /* 16 bpp RGB */
         {
-          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 2;
           for (j = 0; j < width; j++)
           {
-            int h = (sh + j) & cellw_mask;
+            u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
-                Vdp2GetPixel16bppbmp(ctrl, row_base + (h << 1));
+                Vdp2GetPixel16bppbmp(ctrl, baseaddr + (p << 1));
           }
         }
         break;
       case 4: /* 32 bpp */
         {
-          u32 row_base = baseaddr + (sv * ctrl->info.cellw) * 4;
           for (j = 0; j < width; j++)
           {
-            int h = (sh + j) & cellw_mask;
+            u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
-                Vdp2GetPixel32bppbmp(ctrl, row_base + (h << 2));
+                Vdp2GetPixel32bppbmp(ctrl, baseaddr + (p << 2));
           }
         }
         break;
