@@ -196,7 +196,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                              Cs2Area->transfercount += 2;
                              Cs2Area->cdwnum += 2;
 
-                             if (Cs2Area->transfercount > (0xCC * 2))
+                             if (Cs2Area->transfercount >= (0xCC * 2)) // >= : TOC = 0xCC mots, evite OOB TOC[102]
                              {
                                 Cs2Area->transfercount = 0;
                                 Cs2Area->infotranstype = -1;
@@ -209,7 +209,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                              Cs2Area->transfercount += 2;
                              Cs2Area->cdwnum += 2;
 
-                             if (Cs2Area->transfercount > (0x6 * 2))
+                             if (Cs2Area->transfercount >= (0x6 * 2)) // >= : 6 mots, evite OOB transfileinfo[12]
                              {
                                 Cs2Area->transfercount = 0;
                                 Cs2Area->infotranstype = -1;
@@ -246,7 +246,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                              Cs2Area->transfercount += 2;
                              Cs2Area->cdwnum += 2;
 
-                             if (Cs2Area->transfercount > (5 * 2))
+                             if (Cs2Area->transfercount >= (5 * 2)) // >= : 5 mots, evite OOB transscodeq[10]
                              {
                                 Cs2Area->transfercount = 0;
                                 Cs2Area->infotranstype = -1;
@@ -260,7 +260,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                              Cs2Area->transfercount += 2;
                              Cs2Area->cdwnum += 2;
 
-                             if (Cs2Area->transfercount > (12 * 2))
+                             if (Cs2Area->transfercount >= (12 * 2)) // >= : 12 mots, evite OOB transscoderw[24]
                              {
                                 Cs2Area->transfercount = 0;
                                 Cs2Area->infotranstype = -1;
@@ -483,7 +483,12 @@ u32 FASTCALL Cs2ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                            Cs2SortBlocks(Cs2Area->datatranspartition);
 
                            Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
-                           Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+                           // garde anti-underflow (idem chemin mot, lignes ~324) :
+                           // numblocks ne doit jamais passer sous 0
+                           if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+                              Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+                           else
+                              Cs2Area->datatranspartition->numblocks = 0;
 
                            CDLOG("cs2\t: datatranspartition->size = %x\n", Cs2Area->datatranspartition->size);
                         }
@@ -1933,6 +1938,7 @@ void Cs2GetSubcodeQRW(void) {
              }
              else
                 group++;
+             if (group > 3) group = 3; // R-W = 4 packs de 24 octets max -> evite lecture OOB de workblock.data
              Cs2Area->reg.CR4 = group; // Subcode flag
 
              for (i = 0; i < 24; i++)
@@ -2416,7 +2422,13 @@ static INLINE void CalcSectorOffsetNumber(u32 bufno, u32 *sectoffset, u32 *sectn
       // Last sector
       *sectoffset = Cs2Area->partition[bufno].numblocks - 1;
    }
-   else if (*sectnum == 0xFFFF)
+   // BUG corrige : c'etait un "else if". Si sectoffset ET sectnum valent 0xFFFF
+   // (ex: "dernier secteur, jusqu'a la fin"), le else laissait sectnum=0xFFFF ->
+   // datasectstotrans=65535 -> sur-lecture massive (GetSectorData) ou boucle de
+   // liberation hors-borne -> NULL deref / crash (DeleteSectorData). En "if"
+   // independant : sectoffset=numblocks-1 puis sectnum=numblocks-(numblocks-1)=1,
+   // soit exactement le dernier secteur. Les autres cas sont inchanges.
+   if (*sectnum == 0xFFFF)
    {
       // From sectoffset to last sector in partition
       *sectnum = Cs2Area->partition[bufno].numblocks - *sectoffset;
@@ -2554,6 +2566,7 @@ void Cs2GetThenDeleteSectorData(void)
    Cs2Area->cdwnum = 0;
    Cs2Area->datatranstype = CDB_DATATRANSTYPE_GETDELSECTOR;
    Cs2Area->datatranspartition = Cs2Area->partition + gtdsdbufno;
+   Cs2Area->datatranspartitionnum = (u8)gtdsdbufno; // manquait : ResetSelector teste cet index
    Cs2Area->datatransoffset = 0;
    Cs2Area->datanumsecttrans = 0;
    Cs2Area->datatranssectpos = (u16)gtdsdsectoffset;
@@ -2620,10 +2633,20 @@ void Cs2PutSectorData(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2CopySectorData(void) {
+ // Layout registres VALIDE sur matériel réel (writeup Pseudo Saturn / auth type-2,
+ // cf. wiki.yabause.org/CDBlock) : dest = CR1[7:0], source = CR3[15:8], count = CR4.
+ // LIMITATION CONNUE : le matériel filtre CHAQUE secteur via le filtre du selector
+ // destination (seuls les secteurs satisfaisant les conditions du filtre passent).
+ // Cette copie est NON filtrée (memcpy direct). Sans incidence sur les jeux (Copy/Move
+ // quasi jamais utilises), mais necessaire pour emuler le boot des disques "type 2"
+ // (Pseudo Saturn). A implementer via Cs2FilterData() sur le filtre lie a `dest` si besoin.
  u32 source = Cs2Area->reg.CR3 >> 8;
   u32 offset = Cs2Area->reg.CR2;
   u32 dest = Cs2Area->reg.CR1 & 0xFF;
-  u32 count = Cs2Area->reg.CR4 & 0xFF;
+  // Le nombre de secteurs (CR4) est un mot 16 bits ; 0xFFFF = "tous les
+  // secteurs restants". Le masque & 0xFF rendait le cas 0xFFFF impossible a
+  // detecter (devenait 0xFF=255) et tronquait tout compte > 255.
+  u32 count = Cs2Area->reg.CR4;       // etait: & 0xFF
 
   if (source >= 0x18 || dest >= 0x18) {
     setStatus(CDB_STAT_ERROR); // ToDo: check
@@ -2643,10 +2666,15 @@ void Cs2CopySectorData(void) {
   }
 
   for (int i = 0; i < count; i++) {
-    putpartition->block[putpartition->numblocks] = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks],2352);
-    u8 *dest_ptr =  putpartition->block[putpartition->numblocks]->data;
-    u8 *src_ptr = srcpartition->block[offset+i]->data;
-    memcpy(dest_ptr, src_ptr, sizeof(u8) * 2352);
+    // Borne sur les blocs source reellement presents (evite OOB / NULL)
+    if ((offset + i) >= srcpartition->numblocks ||
+        srcpartition->block[offset + i] == NULL)
+       break;
+    block_struct *dblk = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], 2352);
+    if (dblk == NULL)        // buffer plein : ne pas dereferencer NULL
+       break;
+    putpartition->block[putpartition->numblocks] = dblk;
+    memcpy(dblk->data, srcpartition->block[offset + i]->data, sizeof(u8) * 2352);
     putpartition->numblocks++;
     putpartition->size += 2352;
   }
@@ -2659,11 +2687,15 @@ void Cs2CopySectorData(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MoveSectorData(void) {
-
+  // Layout VALIDE matériel réel (writeup Pseudo Saturn) : dest=CR1[7:0], source=CR3[15:8], count=CR4.
+  // LIMITATION CONNUE : idem CopySectorData, le matériel filtre chaque secteur via le filtre du
+  // selector destination ; ici le déplacement est NON filtré. Sans incidence sur les jeux.
   u32 source = Cs2Area->reg.CR3 >> 8;
   u32 offset = Cs2Area->reg.CR2;
   u32 dest = Cs2Area->reg.CR1 & 0xFF;
-  u32 count = Cs2Area->reg.CR4 & 0xFF;
+  // Idem CopySectorData : CR4 est un mot 16 bits, 0xFFFF = "tous". Le masque
+  // & 0xFF cassait la semantique "deplacer tout" et tout compte > 255.
+  u32 count = Cs2Area->reg.CR4;       // etait: & 0xFF
 
   if (source >= 0x18 || dest >= 0x18) {
     setStatus(CDB_STAT_ERROR); // ToDo: check
@@ -2683,6 +2715,10 @@ void Cs2MoveSectorData(void) {
   }
 
   for (int i = 0; i < count; i++) {
+    // Borne sur les blocs source reellement presents (evite OOB / underflow numblocks)
+    if ((offset + i) >= srcpartition->numblocks ||
+        srcpartition->block[offset + i] == NULL)
+       break;
     putpartition->block[putpartition->numblocks] = srcpartition->block[offset + i];
     srcpartition->numblocks--;
     srcpartition->size -= 2352;
