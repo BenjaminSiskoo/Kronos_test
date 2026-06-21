@@ -523,6 +523,10 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
    FILE *trackfp = NULL;
    int trackfp_size = 0;
    int fad = 150;
+   // FAD du debut du FILE courant. Les temps INDEX sont relatifs au debut du
+   // fichier : pour un single-BIN (un seul FILE, temps INDEX absolus type Redump)
+   // ce base reste 150 ; pour un multi-BIN il avance a la fin de piste precedente.
+   int file_base_fad = 150;
 
 	memset(trk, 0, sizeof(trk));
    disc.session = (session_info_struct*)calloc(1, sizeof(session_info_struct));
@@ -572,6 +576,7 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
            trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
            fad = trk[track_num-1].fad_end;
          }
+         file_base_fad = fad; // nouveau FILE -> nouvelle base pour les temps INDEX
          continue;
       }
 
@@ -610,7 +615,10 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
          if (indexnum == 1)
          {
             // Update toc entry
-            fad += MSF_TO_FAD(min, sec, frame) + pregap;
+            // FAD = base du FILE courant + temps INDEX (relatif au fichier) + pregap.
+            // Etait "fad += ..." (accumulation) -> faussait les FAD des pistes 3+ d'un
+            // single-BIN (Redump). Equivalent au multi-BIN (file_base = fad_end precedent).
+            fad = file_base_fad + MSF_TO_FAD(min, sec, frame) + pregap;
             trk[track_num-1].fad_start = fad;
             trk[track_num-1].file_offset = MSF_TO_FAD(min, sec, frame) * trk[track_num-1].sector_size;
             CDLOG("Start[%d] %d\n", track_num, trk[track_num-1].fad_start);
@@ -821,6 +829,7 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
    char *trackfp = NULL;
    int trackfp_size = 0;
    int fad = 150;
+   int file_base_fad = 150; // base FAD du FILE courant (cf. LoadBinCue)
    int pos;
 
    JZEndRecord* endRecord = (JZEndRecord*)calloc(1, sizeof(JZEndRecord));
@@ -888,6 +897,7 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
            trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
            fad = trk[track_num-1].fad_end;
          }
+         file_base_fad = fad; // nouveau FILE -> nouvelle base pour les temps INDEX
          continue;
       }
 
@@ -929,7 +939,8 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
          if (indexnum == 1)
          {
             // Update toc entry
-            fad += MSF_TO_FAD(min, sec, frame) + pregap;
+            // FAD = base du FILE courant + temps INDEX + pregap (cf. LoadBinCue).
+            fad = file_base_fad + MSF_TO_FAD(min, sec, frame) + pregap;
             trk[track_num-1].fad_start = fad;
             trk[track_num-1].file_offset = MSF_TO_FAD(min, sec, frame) * trk[track_num-1].sector_size;
             CDLOG("Start[%d] %d\n", track_num, trk[track_num-1].fad_start);
