@@ -231,7 +231,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
                              Cs2Area->transfercount += 2;
                              Cs2Area->cdwnum += 2;
 
-                             if (Cs2Area->transfercount > (254 * (0x6 * 2)))
+                             if (Cs2Area->transfercount >= (254 * (0x6 * 2))) // >= : 254 fichiers, evite SetupFileInfoTransfer(256)/fileinfo[256] OOB
                              {
                                 Cs2Area->transfercount = 0;
                                 Cs2Area->infotranstype = -1;
@@ -2632,14 +2632,42 @@ void Cs2PutSectorData(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+// Teste un bloc deja stocke contre les conditions d'un filtre (sous-en-tete
+// Mode 2 + FAD range), comme la partie "conditions" de Cs2FilterData() mais sur
+// un block_struct (qui porte deja FAD/cn/fn/sm/ci) au lieu du workblock brut, et
+// sans allocation ni conversion. Renvoie 1 si le bloc satisfait le filtre.
+// Reference : Copy/Move Sector (0x65/0x66) filtrent chaque secteur via le filtre
+// du selector destination (writeup Pseudo Saturn / wiki.yabause.org/CDBlock).
+static int Cs2BlockPassesFilter(block_struct *blk, filter_struct *f, int isaudio)
+{
+   int cond = 1;
+
+   if (blk->data[0xF] == 0x02 && !isaudio)
+   {
+      if (f->mode & 0x01) { if (blk->fn != f->fid)  cond = 0; }                 // File Number
+      if (f->mode & 0x02) { if (blk->cn != f->chan) cond = 0; }                 // Channel Number
+      if (f->mode & 0x04) { if ((blk->sm & f->smmask) != f->smval) cond = 0; }  // Sub Mode
+      if (f->mode & 0x08) { if ((blk->ci & f->cimask) != f->cival) cond = 0; }  // Coding Info
+      if (f->mode & 0x10) cond ^= 1;                                            // Reverse
+   }
+
+   if (f->mode & 0x40)                                                          // FAD Range
+   {
+      if (blk->FAD < f->FAD || blk->FAD >= (f->FAD + f->range))
+         cond = 0;
+   }
+
+   return cond;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void Cs2CopySectorData(void) {
- // Layout registres VALIDE sur matériel réel (writeup Pseudo Saturn / auth type-2,
+ // Layout registres VALIDE sur materiel reel (writeup Pseudo Saturn / auth type-2,
  // cf. wiki.yabause.org/CDBlock) : dest = CR1[7:0], source = CR3[15:8], count = CR4.
- // LIMITATION CONNUE : le matériel filtre CHAQUE secteur via le filtre du selector
- // destination (seuls les secteurs satisfaisant les conditions du filtre passent).
- // Cette copie est NON filtrée (memcpy direct). Sans incidence sur les jeux (Copy/Move
- // quasi jamais utilises), mais necessaire pour emuler le boot des disques "type 2"
- // (Pseudo Saturn). A implementer via Cs2FilterData() sur le filtre lie a `dest` si besoin.
+ // Chaque secteur est FILTRE par le filtre du selector destination : seuls ceux
+ // qui satisfont ses conditions (FAD range / sous-en-tete) sont copies. Avec les
+ // filtres par defaut (mode=0), tout passe -> comportement "copier tout" inchange.
  u32 source = Cs2Area->reg.CR3 >> 8;
   u32 offset = Cs2Area->reg.CR2;
   u32 dest = Cs2Area->reg.CR1 & 0xFF;
@@ -2657,6 +2685,7 @@ void Cs2CopySectorData(void) {
 
   partition_struct *putpartition = &Cs2Area->partition[dest];
   partition_struct *srcpartition = &Cs2Area->partition[source];
+  filter_struct *dstfilter = &Cs2Area->filter[dest]; // filtre du selector destination
   if (offset == 0xFFFF) {
     offset = srcpartition->numblocks - 1;
   }
@@ -2670,13 +2699,25 @@ void Cs2CopySectorData(void) {
     if ((offset + i) >= srcpartition->numblocks ||
         srcpartition->block[offset + i] == NULL)
        break;
+    block_struct *sblk = srcpartition->block[offset + i];
+    // Filtrage materiel : un secteur qui ne passe pas le filtre destination est ignore
+    if (!Cs2BlockPassesFilter(sblk, dstfilter, 0))
+       continue;
     block_struct *dblk = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], 2352);
     if (dblk == NULL)        // buffer plein : ne pas dereferencer NULL
        break;
     putpartition->block[putpartition->numblocks] = dblk;
-    memcpy(dblk->data, srcpartition->block[offset + i]->data, sizeof(u8) * 2352);
+    memcpy(dblk->data, sblk->data, sizeof(u8) * 2352);
+    // Conserver les metadonnees (sinon FAD/cn/fn/sm/ci du bloc copie restent indefinis,
+    // ce qui casserait un filtrage ulterieur sur la partition destination)
+    dblk->size = sblk->size;
+    dblk->FAD  = sblk->FAD;
+    dblk->cn   = sblk->cn;
+    dblk->fn   = sblk->fn;
+    dblk->sm   = sblk->sm;
+    dblk->ci   = sblk->ci;
     putpartition->numblocks++;
-    putpartition->size += 2352;
+    putpartition->size += sblk->size;
   }
 
 
@@ -2687,9 +2728,9 @@ void Cs2CopySectorData(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MoveSectorData(void) {
-  // Layout VALIDE matériel réel (writeup Pseudo Saturn) : dest=CR1[7:0], source=CR3[15:8], count=CR4.
-  // LIMITATION CONNUE : idem CopySectorData, le matériel filtre chaque secteur via le filtre du
-  // selector destination ; ici le déplacement est NON filtré. Sans incidence sur les jeux.
+  // Layout VALIDE materiel reel (writeup Pseudo Saturn) : dest=CR1[7:0], source=CR3[15:8], count=CR4.
+  // Chaque secteur est FILTRE par le filtre du selector destination ; un secteur qui ne
+  // passe pas reste dans la source. Filtres par defaut (mode=0) -> tout passe, "deplacer tout".
   u32 source = Cs2Area->reg.CR3 >> 8;
   u32 offset = Cs2Area->reg.CR2;
   u32 dest = Cs2Area->reg.CR1 & 0xFF;
@@ -2706,25 +2747,35 @@ void Cs2MoveSectorData(void) {
 
   partition_struct *putpartition = &Cs2Area->partition[dest];
   partition_struct *srcpartition = &Cs2Area->partition[source];
+  filter_struct *dstfilter = &Cs2Area->filter[dest]; // filtre du selector destination
+  // Borne STABLE : numblocks decroit dans la boucle (on retire des blocs), il ne faut
+  // donc pas l'utiliser comme limite sous peine de couper la boucle a mi-chemin.
+  u32 src_orig = srcpartition->numblocks;
   if (offset == 0xFFFF) {
-    offset = srcpartition->numblocks - 1;
+    offset = src_orig - 1;
   }
 
   if (count == 0xFFFF) {
-    count = srcpartition->numblocks - offset;
+    count = src_orig - offset;
   }
 
   for (int i = 0; i < count; i++) {
     // Borne sur les blocs source reellement presents (evite OOB / underflow numblocks)
-    if ((offset + i) >= srcpartition->numblocks ||
+    if ((offset + i) >= src_orig ||
         srcpartition->block[offset + i] == NULL)
        break;
-    putpartition->block[putpartition->numblocks] = srcpartition->block[offset + i];
-    srcpartition->numblocks--;
-    srcpartition->size -= 2352;
-    srcpartition->block[offset + i] = NULL;
+    block_struct *sblk = srcpartition->block[offset + i];
+    // Filtrage materiel : un secteur qui ne passe pas le filtre destination reste dans la source
+    if (!Cs2BlockPassesFilter(sblk, dstfilter, 0))
+       continue;
+    putpartition->block[putpartition->numblocks] = sblk;
+    putpartition->blocknum[putpartition->numblocks] = srcpartition->blocknum[offset + i];
     putpartition->numblocks++;
-    putpartition->size += 2352;
+    putpartition->size += sblk->size;
+    srcpartition->block[offset + i] = NULL;
+    srcpartition->blocknum[offset + i] = 0xFF;
+    srcpartition->numblocks--;
+    srcpartition->size -= sblk->size;
   }
 
   Cs2SortBlocks(&Cs2Area->partition[source]);
