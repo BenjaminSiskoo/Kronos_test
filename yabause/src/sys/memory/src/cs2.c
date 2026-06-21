@@ -1030,6 +1030,14 @@ static void Cs2Exec_unit(u32 timing) {
          default: break;
       }
 
+      // Si l'etat courant n'a pas redefini la cadence (PAUSE/SCAN/RETRY/BUSY/...),
+      // _periodictiming reste a 0 et le periodique se re-declencherait a CHAQUE
+      // appel de Cs2Exec (flood de doCDReport + SCDQ, ~par scanline au lieu de
+      // ~13.3 ms). Cela arrive notamment apres une lecture CD-DA qui se termine
+      // en PAUSE. On retombe sur la cadence "non-playing" standard (cf. Cs2SetTiming(0)).
+      if (Cs2Area->_periodictiming == 0)
+         Cs2Area->_periodictiming = 50000; // 16666.6.. us * 3
+
       if (Cs2Area->_command) {
         Cs2Area->status &= ~CDB_STAT_PERI;
         return;
