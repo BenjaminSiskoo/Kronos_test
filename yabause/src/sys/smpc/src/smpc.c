@@ -220,8 +220,14 @@ void SmpcCKCHG352(void) {
    // Set DOTSEL
    SmpcInternalVars->dotsel = 1;
 
-   // Reset VDP1, VDP2, SCU, and SCSP
-   ScspReset();
+   // Reset VDP1, VDP2, SCU
+   // [FIX] NE PAS reinitialiser le SCSP ici : la puce son a son propre quartz
+   // (22.5792 MHz), independant de l'horloge video commutee par CKCHG. Un
+   // changement de resolution ne doit pas effacer l'etat du SCSP (scieb, slots,
+   // timers). Sinon le son est tue a chaque changement de mode video -- ex.
+   // Independence Day perd toute la musique apres le changement de resolution
+   // logo -> jeu (scieb remis a 0, IRQ M68K jamais re-armee).
+   //ScspReset();
    Vdp1Reset();
    Vdp2Reset();
    ScuReset(0);
@@ -246,8 +252,10 @@ void SmpcCKCHG320(void) {
    SmpcInternalVars->dotsel = 0;
 
 
-   // Reset VDP1, VDP2, SCU, and SCSP
-   ScspReset();
+   // Reset VDP1, VDP2, SCU
+   // [FIX] idem CKCHG352 : ne pas reinitialiser le SCSP sur un changement
+   // d'horloge video (quartz son independant). Voir commentaire dans CKCHG352.
+   //ScspReset();
    Vdp1Reset();
    Vdp2Reset();
    ScuReset(0);
@@ -1193,4 +1201,3 @@ int SmpcLoadState(const void * stream, int version, int size)
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
