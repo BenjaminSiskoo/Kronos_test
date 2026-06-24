@@ -847,6 +847,12 @@ void ScuSetAddValue(scudmainfo_struct * dmainfo) {
     dmainfo->WriteAddress = DMAMappedMemoryReadLong(dmainfo->InDirectAdress + 4);
     dmainfo->ReadAddress = DMAMappedMemoryReadLong(dmainfo->InDirectAdress + 8);
     dmainfo->InDirectAdress += 0xC;
+	/* The indirect transfer count field is 12-bit (levels 1/2) or
+       20-bit (level 0); the upper bits are not part of the count. */
+    if (dmainfo->mode > 0)
+      dmainfo->TransferNumber &= 0xFFF;
+    else
+      dmainfo->TransferNumber &= 0xFFFFF;
   }
   else {
 
@@ -1072,6 +1078,11 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             dma->WriteAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 4);
             dma->ReadAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 8);
             dma->InDirectAdress += 0xC;
+			/* Clamp the reloaded indirect count to the channel width. */
+            if (dma->mode > 0)
+              dma->TransferNumber &= 0xFFF;
+            else
+              dma->TransferNumber &= 0xFFFFF;
           }
         }
       }
