@@ -207,27 +207,24 @@ static void SmpcSNDOFF(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 static void SmpcSYSRES(void) {
+  // SYSRES n'est plus groupe avec CKCHG dans SmpcSetTiming, donc plus de
+  // ScspHalt() a equilibrer ici : le SCSP n'est pas touche.
   SmpcRegs->OREG[31] = 0xD;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
-static void SmpcPreCKCHG(void) {
-  ScspHalt();
-}
 
 void SmpcCKCHG352(void) {
    // Set DOTSEL
    SmpcInternalVars->dotsel = 1;
 
    // Reset VDP1, VDP2, SCU
-   // [FIX] NE PAS reinitialiser le SCSP ici : la puce son a son propre quartz
+   // [FIX] NE PAS faire ScspReset() ici : la puce son a son propre quartz
    // (22.5792 MHz), independant de l'horloge video commutee par CKCHG. Un
    // changement de resolution ne doit pas effacer l'etat du SCSP (scieb, slots,
-   // timers). Sinon le son est tue a chaque changement de mode video -- ex.
-   // Independence Day perd toute la musique apres le changement de resolution
-   // logo -> jeu (scieb remis a 0, IRQ M68K jamais re-armee).
-   //ScspReset();
+   // timers) -- sinon le son est tue a chaque changement de mode video.
+   // Plus de ScspHalt/ScspUnLockThread non plus : on ne halte plus le thread
+   // audio pendant le CKCHG (voir SmpcSetTiming case 0xE/0xF, test mednafen).
    Vdp1Reset();
    Vdp2Reset();
    ScuReset(0);
@@ -253,9 +250,8 @@ void SmpcCKCHG320(void) {
 
 
    // Reset VDP1, VDP2, SCU
-   // [FIX] idem CKCHG352 : ne pas reinitialiser le SCSP sur un changement
-   // d'horloge video (quartz son independant). Voir commentaire dans CKCHG352.
-   //ScspReset();
+   // [FIX] idem CKCHG352 : pas de ScspReset() (quartz son independant) et plus
+   // de halt/unlock du thread audio (voir SmpcSetTiming case 0xE/0xF).
    Vdp1Reset();
    Vdp2Reset();
    ScuReset(0);
@@ -766,11 +762,31 @@ static void SmpcSetTiming(void) {
          SmpcInternalVars->timing = 1;
          return;
       case 0xD:
+        // [FIX] SYSRES n'est PAS un changement d'horloge : il ne doit ni stopper
+        // le thread audio (SmpcPreCKCHG/ScspHalt) ni prendre les 100 ms du CKCHG.
+        // Avant, il etait groupe avec 0xE/0xF -> le son etait gele ~100 ms a
+        // chaque SYSRES (qui n'est qu'un no-op acquittant via OREG[31]).
+         SmpcInternalVars->timing = 1;
+         return;
       case 0xE:
       case 0xF:
-        //CLKCHG => 100ms (64 cycles/16ms) => 64*100/16 = 400
-         SmpcPreCKCHG();
-         SmpcInternalVars->timing = 400; // this has to be tested on a real saturn
+        // [TEST mednafen] CKCHG : synchroniser la FIN de la commande (et donc le
+        // NMI au SH-2 maitre, envoye dans SmpcCKCHG352/320) sur le vblank-out,
+        // comme Mednafen : "Synchronize end of SMPC clock change commands to
+        // beginning of vsync instead of beginning of vblank, per tests on a SS".
+        // Sur le vrai materiel le SH-2 maitre recoit le NMI a une frontiere de
+        // frame ; l'envoyer ~0.37 ms apres la commande (ancien timing=400, non
+        // aligne) peut faire tourner le handler NMI (qui recharge le driver son)
+        // a un mauvais moment -> le M68K reste coince dans sa boucle d'attente
+        // (= le hang de la version USA d'Independence Day, corrige cote Mednafen
+        //  dans le meme lot que ce fix de timing CKCHG).
+        // On NE halte PAS le thread audio (pas de SmpcPreCKCHG) : le SCSP est sur
+        // un quartz independant et n'est pas reinitialise ici, donc rien a
+        // proteger, et on evite un trou de son pendant l'attente du vblank.
+         intback_wait_for_vblankout = 1; // delai generique "jusqu'au vblank-out"
+         SmpcInternalVars->timing = 0;
+         SmpcRegs->SF = 1;
+         return;
          return;
       case 0x10:
           if (SmpcInternalVars->firstPeri == 1) {
