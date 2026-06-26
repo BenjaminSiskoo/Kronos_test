@@ -2901,19 +2901,15 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
     break;
 	case 2:
-		// VDP2 Manual §6.3 RPMD=10B: "The rotation parameter is switched
-		// between A and B for each dot based on the coefficient data of
-		// rotation parameter A." ParaA's coefficient table (KTCTL bit 0 = RAKTE)
-		// is read per-dot; if its MSB is set, the dot uses paraB instead.
-		// ParaB does NOT have its own coefficient table in this mode.
-		// The shader (prg_rbg_rpmd2_2w) implements: read paraA coef → if MSB=1
-		// fallback to paraB. This requires paraA.coefenab=1 and paraB.coefenab=0.
+		// RPMD=2 : commutation A/B par dot via le MSB du coef du paramètre A.
+		// Chaque paramètre conserve l'activation de SA propre table de coef :
+		//   paraA -> RAKTE (KTCTL bit 0)   ;   paraB -> RBKTE (KTCTL bit 8)
+		// Régression ff14fa5 : paraB.coefenab était forcé à 0, ce qui privait
+		// les dots affichés en B de leur mise à l'échelle par coef (ciel Dark Savior).
 		info->rotatenum = 0;
 		info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
-		// RAKTE (KTCTL bit 0): enables paraA coefficient table read
-		rbg->paraA.coefenab = (rbg->ctrl.regs->KTCTL & 0x01) ? 1 : 0;
-		// ParaB must NOT enable its own coef table in RPMD=2 (§6.3 explicit prohibition)
-		rbg->paraB.coefenab = 0;
+		rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;   // RAKTE (bit 0)
+		rbg->paraB.coefenab = rbg->ctrl.regs->KTCTL & 0x100;  // RBKTE (bit 8)
 		rbg->useb = 1;
 		break;
   case 3:
