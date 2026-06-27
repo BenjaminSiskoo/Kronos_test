@@ -903,7 +903,14 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
 
         u32 start = dma->WriteAddress;
         while ( *time > 0 ) {
-          *time -= 1;
+          /* SCU Manual ST-097-R5 p.43-44 (Fig 3.6/3.7): the SCU<->B-Bus link
+           * is 32-bit, but the B-Bus<->processor (VDP1/VDP2/SCSP) link is
+           * 16-bit, so a 32-bit word is split into two 16-bit transfers on
+           * the processor side. Each long word therefore costs TWO B-Bus
+           * cycles, not one. (Table 3.3 / ST-210 No.19: B-Bus write add value
+           * is fixed at 001B = 2 bytes.) The two word-writes below are 2 B-Bus
+           * cycles -> charge 2 time units, matching the copy path's rate. */
+          *time -= 2;
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(val >> 16));
           dma->WriteAddress += dma->WriteAdd;
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)val);
@@ -921,7 +928,10 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       else {
         u32 start = dma->WriteAddress;
         while ( *time > 0) {
-          *time -= 1;
+          /* SCU Manual ST-097-R5 p.43-44: B-Bus<->processor link is 16-bit,
+           * so each 32-bit fill word is split into two 16-bit B-Bus writes
+           * (2 B-Bus cycles per long word). Charge 2 time units. */
+          *time -= 2;
           u32 tmp = DMAMappedMemoryReadLong((dma->ReadAddress));
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(tmp >> 16));
           dma->WriteAddress += dma->WriteAdd;
@@ -1138,7 +1148,14 @@ static void setupBusConcurrency(scudmainfo_struct * dma) {
 }
 static int isOnVDp1Ram(u32 addr) {
   addr &= 0x1FFFFFFF;
-  if ((addr >= 0x5C00000) && (addr < 0x5C80000)) return 1; //VDP1Ram
+  if ((addr >= 0x5C00000) && (addr < 0x5C80000)) return 1; //VDP1 VRAM (4-Mbit = 0x80000)
+  /* VDP1 Manual ST-013-R3 p.20: the draw frame buffer is accessed by both the
+   * VDP1 (drawing) and the system controller, and "when access from the system
+   * controller is performed during drawing, drawing is interrupted and must
+   * wait." So SCU-DMA touching the frame buffer must stall VDP1 drawing too,
+   * exactly like VRAM access. The draw FB is a single 2-Mbit plane = 0x40000
+   * mapped at 0x5C80000 (p.16: "two-plane frame buffer, 2-Mbit DRAM per screen"). */
+  if ((addr >= 0x5C80000) && (addr < 0x5CC0000)) return 1; //VDP1 frame buffer (one plane)
   return 0;
 }
 
