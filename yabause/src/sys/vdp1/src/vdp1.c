@@ -1001,17 +1001,14 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
     return MAX(rw, 1) * MAX(rh, 1);
 }
 
-/* VDP1 Manual §6.3 p.87: "when ECD = 0, SPD must equal 0. Do not
- * use the combination ECD = 0 and SPD = 1."
- *
- * Hardware behaviour with this prohibited combo is undefined per spec;
- * empirically, the end-code pixel is drawn as its color value (FFh or
- * 7FFFh depending on color mode) producing visible solid-color bars.
- *
- * Force SPD=0 to match the recommended hardware behaviour and match
- * what reference VDP1 test ROMs produce. Called from every sprite
- * draw path before forwarding CMDPMOD to the renderer. */
- 
+/* NOTE: the VDP1 Manual does NOT prohibit the ECD=0 / SPD=1 combination,
+ * and there is no "when ECD=0, SPD must equal 0" rule anywhere in the
+ * spec. ECD (End Code Disable, bit 7, p.85-86) and SPD (Transparent Pixel
+ * Disable, bit 6, p.88) are independent: end-code handling and transparent-
+ * pixel handling are evaluated separately per pixel. SPD must therefore be
+ * honoured as-is (it is applied normally in the texture/draw paths); do NOT
+ * force it to 0. */
+
 static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   int ret = 1;
@@ -3274,24 +3271,25 @@ void ToggleVDP1(void)
 //////////////////////////////////////////////////////////////////////////////
 
 static int getVdp1ErasePixelLine() {
-    /* VDP1 Manual §4.3 p.49: EWLR/EWRR register layout:
-     * EWLR bits 14-9 = X1 (6 bits, unit=8px for 16bpp / 16px for 8bpp)
-     * EWLR bits  8-0 = Y1 (9 bits)
-     * EWRR bits 15-9 = X3 (7 bits, same unit)
-     * EWRR bits  8-0 = Y3 (9 bits)
+    /* VDP1 Manual p.47: EWLR/EWRR register layout
+     *   EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1 (9 bits)
+     *   EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3 (9 bits)
+     * The X register value is scaled to pixels: x8 for 16bpp, x16 for 8bpp
+     * (and X3 has 1 subtracted). The Y value is in 1-line units. So the
+     * x1/x3 below are already expressed in real pixels via 'xunit'.
      *
-     * VDP1 Manual §4.3 formula (p.49):
-     *   pixels_needed = (X3-X1) × (Y3-Y1+1) × 8   [16bpp]
-     *   pixels_needed = (X3-X1) × (Y3-Y1+1) × 4   [8bpp]
+     * VDP1 Manual p.49: pixels required for V-blank erase (16bpp) =
+     *   (X3 - X1) x (Y3 - Y1 + 1) x 8, where X3/X1 are the *register*
+     *   values; the x8 is precisely the register->pixel scaling. Since we
+     *   already scale by xunit, area_w x area_h is that pixel count and must
+     *   NOT be multiplied by 8 again. The write rate then converts pixels
+     *   to cycles (see below).
      *
-     * VDP1 Manual Table 4.4 (p.49): pixels available per raster:
-     *   NTSC: 1708 total → (1708-200) = 1508 drawable pixels/raster
-     *   PAL : 1820 total → (1820-200) = 1620 drawable pixels/raster
+     * VDP1 Manual p.49: pixels usable for erase per raster = (pixels in
+     *   1 raster) - 200, i.e. NTSC 1708-200=1508, PAL 1820-200=1620.
      *
-     * "Drawing is performed in sync with the CPU operating clock.
-     *  The CPU operating clock is 28 MHz, and the data for 1 pixel
-     *  is drawn in sync with this." (§2.5 p.20)
-     * → 1 cycle = 1 pixel drawn at 28MHz pixel clock.
+     * VDP1 Manual p.20: drawing is synced to the 28 MHz CPU clock,
+     *   "the data for 1 pixel is drawn in sync with this" -> 1 word/cycle.
      */
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
@@ -3309,22 +3307,29 @@ static int getVdp1ErasePixelLine() {
     int area_w = x3 - x1 + 1;
     int area_h = y3 - y1 + 1;
 
-    /* VDP1 Manual §4.3 p.49: "erase/write is performed 2 pixels at a
-     * time" in 16bpp FB, 4 pixels at a time in 8bpp FB. So:
-     *   16bpp: cycles = area_pixels / 2
-     *    8bpp: cycles = area_pixels / 4
-     * VDP1 Manual §2.5 p.20: 1 cycle = 1 bus word at 28MHz. */
+    /* VDP1 Manual p.46 (EWDR register): "Erase/write is performed 2 pixels
+     * at a time when the frame buffer depth is 8 bits/pixel." The frame
+     * buffer is accessed one 16-bit word per cycle, so:
+     *    8bpp FB: 2 pixels per word  -> 2 pixels per cycle
+     *   16bpp FB: 1 pixel  per word  -> 1 pixel  per cycle
+     * (The previous code used 4/2, doubling the real erase throughput.)
+     * Cross-check: Table 4.5 (p.50) gives NTSC 320x224 16bpp = 58812 px,
+     * which equals (1708-200) x (263-224) = 1508 x 39, i.e. 1 px/cycle.
+     * VDP1 Manual p.20: 1 cycle = 1 bus word drawn at the 28 MHz clock. */
     int area_pixels = area_w * area_h;
-    int pixels_per_cycle = is8bpp ? 4 : 2;
+    int pixels_per_cycle = is8bpp ? 2 : 1;
     int total_cycles = (area_pixels + pixels_per_cycle - 1)
                        / pixels_per_cycle;
 
-    /* VDP1 Manual Table 4.4: cycles available per raster = pixels/raster - 200
-     * (200 reserved for H-blank overhead per raster) */
+    /* VDP1 Manual p.49: the number of pixels usable for erase per raster is
+     * {(pixels in 1 raster) - 200}; the 200 covers the per-raster overhead
+     * (H-blank/refresh) during which the frame buffer cannot be erased.
+     * The usable budget per line is therefore (cyclesPerLine - 200). */
     int cycles_per_line = getVdp1CyclesPerLine();
-    if (cycles_per_line <= 0) return 0;
+    int usable_per_line = cycles_per_line - 200;
+    if (usable_per_line <= 0) return 0;
 
-    return (total_cycles + cycles_per_line - 1) / cycles_per_line;
+    return (total_cycles + usable_per_line - 1) / usable_per_line;
 }
 
 static void Vdp1EraseWrite(int id){
