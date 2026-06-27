@@ -128,6 +128,7 @@ SHADER_VERSION_COMPUTE
 "  float alpha_lncl;\n"
 "  uint lncl_table_addr;\n"
 "  uint cram_mode;\n"
+"  uint vrsize;\n"
 "};\n"
 "layout(std430, binding = 5) readonly buffer VDP2C { uint cram[]; };\n"
 "layout(std430, binding = 6) readonly buffer ROTW { uint  rotWin[]; };\n"
@@ -345,23 +346,22 @@ const char prg_rbg_rpmd1_2w[] =
 
 const char prg_rbg_rpmd2_2w[] =
 "//prg_rbg_rpmd2_2w\n"
-"// VDP2 §6.3 RPMD=10B: per-dot switch A→B via paraA coef MSB.\n"
-"// ParaB never has its own coef table in this mode.\n"
+"// RPMD=2 : le MSB du coef du parametre A aiguille chaque dot vers A ou B.\n"
 "  paramid = 0; \n"
 "  ky = para[0].ky; \n"
 "  kx = para[0].kx; \n"
 "  lineaddr = para[0].lineaddr; \n"
 "  if (para[0].coefenab != 0) { \n"
 "    if (GetKValue(0, pos, ky, kx, lineaddr) == -1) { \n"
-"      // MSB=1: switch to paraB (§6.3)\n"
+"      // MSB=1 : ce dot est affiche par le parametre B\n"
 "      paramid = 1; \n"
 "      ky = para[1].ky; \n"
 "      kx = para[1].kx; \n"
 "      lineaddr = para[1].lineaddr; \n"
-"      // ParaB.coefenab must be 0 in RPMD=2 (guaranteed CPU-side)\n"
+"      // B garde SA propre table de coef (RBKTE) pour son scaling par-dot\n"
+"      if (para[1].coefenab != 0) { GetKValue(1, pos, ky, kx, lineaddr); } \n"
 "    } \n"
-"  }\n"
-"  // If para[0].coefenab==0: no switching, always paraA\n";
+"  }\n";
 
 
 const char prg_get_param_mode03[] =
@@ -544,7 +544,7 @@ const char prg_rbg_get_pattern_data_1w[] =
 "    }\n"
 "    break;\n"
 "  }\n"
-"  charaddr &= 0x3FFFu;\n"
+"  charaddr &= (((vrsize & 0x8000u) != 0u) ? 0x7FFFu : 0x3FFFu);\n" // 8Mbit:15 bits, 4Mbit:14 bits
 "  charaddr *= 0x20u;\n";
 
 const char prg_rbg_get_pattern_data_2w[] =
@@ -558,7 +558,7 @@ const char prg_rbg_get_pattern_data_2w[] =
 "  if(colornumber==0) paladdr = tmp1 & 0x7Fu; else paladdr = tmp1 & 0x70u;\n" // not in 16 colors
 "  specialfunction = (tmp1 & 0x2000u) >> 13;\n"
 "  specialcolorfunction = (tmp1 & 0x1000u) >> 12;\n"
-"  charaddr &= 0x3FFFu;\n"
+"  charaddr &= (((vrsize & 0x8000u) != 0u) ? 0x7FFFu : 0x3FFFu);\n" // 8Mbit:15 bits, 4Mbit:14 bits
 "  charaddr *= 0x20u;\n";
 
 const char prg_rbg_get_charaddr[] =
@@ -687,8 +687,8 @@ const char prg_rbg_getcolor_32bpp_rbg[] =
 "  if ( (dot&0x80000000u) == 0u && transparencyenable != 0 ) { \n"
 "    discarded = 1; \n"
 "  } else {\n"
-"    cc = setCCOn(cramindex, dot);\n"
 "    cramindex = dot & 0x00FFFFFFu;\n"
+"    cc = setCCOn(cramindex, dot);\n"
 "  }\n";
 
 
@@ -1037,6 +1037,7 @@ struct RBGUniform {
 	float alpha_lncl;
 	unsigned int lncl_table_addr;
 	unsigned int cram_mode;
+	unsigned int vrsize;
 };
 
 class RBGGenerator{
@@ -2231,64 +2232,7 @@ DEBUGWIP("Init\n");
 
 		if (VRAMNeedAnUpdate != 0) {
 			LOG("VRAM Update %x\n", VRAMNeedAnUpdate);
-			u32 start = 0;
-			u32 size = 0;
-			switch (VRAMNeedAnUpdate) {
-				case 0b0001:
-						size = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0010:
-						start = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-						size = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0011:
-						size = 0x40000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0100:
-						start = 0x40000<<(Vdp2Regs->VRSIZE>>15);
-						size = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0101:
-					size = 0x60000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0110:
-					start = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-					size = 0x40000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b0111:
-					size = 0x60000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1000:
-					start = 0x60000<<(Vdp2Regs->VRSIZE>>15);
-					size = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1001:
-					size = 0x80000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1010:
-					start = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-					size = 0x60000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1011:
-					size = 0x80000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1100:
-					start = 0x40000<<(Vdp2Regs->VRSIZE>>15);
-					size = 0x40000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1101:
-					size = 0x80000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1110:
-					start = 0x20000<<(Vdp2Regs->VRSIZE>>15);
-					size = 0x60000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				case 0b1111:
-					size = 0x80000<<(Vdp2Regs->VRSIZE>>15);
-				break;
-				default:
-				break;
-			}
+			// (switch VRAMNeedAnUpdate retire : copie complete ci-dessous)
 
   		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_vram_);
   		//glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 0x80000, (void*)Vdp2Ram);
@@ -2380,6 +2324,7 @@ DEBUGWIP("Init\n");
 	 uniform.alpha_lncl = ((~(varVdp2Regs->CCRLB & 0x1F) << 3) | NONE)/255.0f;
 	 uniform.lncl_table_addr = Vdp2RamReadWord(NULL, Vdp2Ram, (varVdp2Regs->LCTA.all & 0x7FFFF)<<1);
 	 uniform.cram_mode = Vdp2Internal.ColorMode;
+	 uniform.vrsize = varVdp2Regs->VRSIZE;
 
   glBindBuffer(GL_UNIFORM_BUFFER, scene_uniform);
        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(RBGUniform), (void*)&uniform);
