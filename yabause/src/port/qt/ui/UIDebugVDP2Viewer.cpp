@@ -88,6 +88,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     R(0x25F80000,"TVMD",  r.TVMD);   R(0x25F80002,"EXTEN", r.EXTEN);
     R(0x25F80004,"TVSTAT",r.TVSTAT); R(0x25F80006,"VRSIZE",r.VRSIZE);
     R(0x25F80008,"HCNT",  r.HCNT);   R(0x25F8000A,"VCNT",  r.VCNT);
+    R(0x25F8000C,"EWDR",  r.EWDR);
     R(0x25F8000E,"RAMCTL",r.RAMCTL);
     R(0x25F80010,"CYCA0L",r.CYCA0L); R(0x25F80012,"CYCA0U",r.CYCA0U);
     R(0x25F80014,"CYCA1L",r.CYCA1L); R(0x25F80016,"CYCA1U",r.CYCA1U);
@@ -175,17 +176,24 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     // EXTEN/TVSTAT/counters
     d<<"\n=== EXTEN=0x"<<HEX4(r.EXTEN)<<"  TVSTAT=0x"<<HEX4(r.TVSTAT)<<" ===\n";
     d<<"  EXLTEN="<<(r.EXTEN&1)<<"  EXSYEN="<<((r.EXTEN>>1)&1)<<"\n";
+    // ST-013-R3 §3.3 : TVSTAT bit9=EXLTFG (external latch flag), bit8=EXSYFG (external sync flag)
     d<<"  EXLTFG="<<((r.TVSTAT>>9)&1)<<"  EXSYFG="<<((r.TVSTAT>>8)&1)<<"\n";
     d<<"  ODD="<<((r.TVSTAT>>1)&1)<<"  PAL="<<(r.TVSTAT&1)<<"\n";
     d<<"  HBLANK="<<((r.TVSTAT>>2)&1)<<"  VBLANK="<<((r.TVSTAT>>3)&1)<<"\n";
     d<<"  H="<<DEC(r.HCNT)<<"  V="<<DEC(r.VCNT)<<"\n";
+
+    // EWDR — External Write Data Register (ST-013-R3 §3.4 / addr 0x25F8000C)
+    // Contient la donnée écrite lors d'un accès externe au VDP2. 16 bits, écriture seule.
+    d<<"\n=== EWDR=0x"<<HEX4(r.EWDR)<<" (External Write Data) ===\n";
+    d<<"  raw=0x"<<HEX4(r.EWDR)<<"  (write-only — valeur indéterminée en lecture)\n";
 
     // VRSIZE/RAMCTL
     d<<"\n=== VRAM/RAMCTL ===\n";
     {static const char*crm[]={"1024x16bit(m0)","2048x16bit(m1)","1024x32bit(m2)","(rsvd)"};
     d<<"  VRSIZE=0x"<<HEX4(r.VRSIZE)<<((r.VRSIZE>>15)&1?"  (8Mbit)":"  (4Mbit)")<<"\n";
     d<<"  CRMD="<<crm[(r.RAMCTL>>12)&3]<<"\n";
-    d<<"  VRBMD="<<((r.RAMCTL>>8)&1)<<"  VRAMD="<<((r.RAMCTL>>4)&1)<<"\n";}
+    // ST-013-R3 §3.6 : RAMCTL bit8=VRAMD (VRAM-A mode), bit9=VRBMD (VRAM-B mode)
+    d<<"  VRAMD="<<((r.RAMCTL>>8)&1)<<"  VRBMD="<<((r.RAMCTL>>9)&1)<<"\n";}
 
     // Cycle patterns
     d<<"\n=== VRAM Cycle Patterns ===\n";
@@ -197,12 +205,13 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     cyc("VRAM-A0",r.CYCA0L,r.CYCA0U); cyc("VRAM-A1",r.CYCA1L,r.CYCA1U);
     cyc("VRAM-B0",r.CYCB0L,r.CYCB0U); cyc("VRAM-B1",r.CYCB1L,r.CYCB1U);
 
-    // BGON §3.7 : bits 5-0 = display enable (NBG0-RBG1), bits 13-8 = transparency (NBG0-RBG0 seulement, 6 layers mais RBG1 sans transparence)
+    // BGON §3.7 : bits 5-0 = display enable (NBG0-RBG1), bits 13-8 = transparency (NBG0-RBG1, tous les 6 layers)
     d<<"\n=== BGON=0x"<<HEX4(r.BGON)<<" (Display Enable) ===\n";
     {static const char*bn[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
     for(int i=0;i<6;i++) {
         d<<"  "<<bn[i]<<": "<<((r.BGON>>i)&1?"ON ":"OFF");
-        if(i<5) d<<"  transparent="<<((r.BGON>>(8+i))&1);  // RBG1 n'a pas de bit transparence
+        // ST-013-R3 §3.7 : bits 13-8 = TRPN5-TRPN0 (transparency pour NBG0..RBG1, tous présents)
+        d<<"  transparent="<<((r.BGON>>(8+i))&1);
         d<<"\n";
     }}
 
@@ -238,11 +247,15 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     //   bit  8(hi): RBG0 char size via CHCTLB upper byte bit 8 → bit 8 du registre
     d<<"    NBG2: char="<<(((r.CHCTLB>>2)&1)?"16x16":"8x8")<<"  col="<<cc2[r.CHCTLB&1]<<"\n";
     d<<"    NBG3: char="<<(((r.CHCTLB>>10)&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>8)&1]<<"\n";
-    // RBG0 : bits indépendants de ceux de NBG3
+    // RBG0 dans CHCTLB (ST-013-R3 §3.9) :
+    //   bit  4  : char size (0=8x8, 1=16x16)
+    //   bit 12  : bitmap enable
+    //   bits 14-12 : color count (3 bits, index dans cc5[])
+    //   bits 11-10 : bitmap size (index dans bsz[])
     int r0bm =(r.CHCTLB>>12)&1;         // bit 12 = bitmap enable
-    int r0sz =(r.CHCTLB>>4) &1;         // bit  4 = char size pour RBG0 (upper-nibble low byte)
-    int r0cc =(r.CHCTLB>>13)&7;         // bits 15-13 = color count (3 bits)
-    int r0bw =(r.CHCTLB>>10)&3;         // bits 11-10 = bitmap size (réutilise champ bitmap)
+    int r0sz =(r.CHCTLB>>4) &1;         // bit  4 = char size pour RBG0
+    int r0cc =(r.CHCTLB>>12)&7;         // bits 14-12 = color count (3 bits) — ST-013-R3 §3.9
+    int r0bw =(r.CHCTLB>>10)&3;         // bits 11-10 = bitmap size
     d<<"    RBG0: bm="<<r0bm<<"  char="<<(r0sz?"16x16":"8x8")<<"  col="<<cc5[r0cc&7];
     if(r0bm)d<<"  bmpSz="<<bsz[r0bw&3];d<<"\n";}
 
@@ -311,6 +324,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
             static const char*iv[]={"everyLine","every2","every4","every8"};d<<" "<<iv[(b>>4)&3];}
         d<<"\n";};
     sb("NBG0",r.SCRCTL&0x3F,r.LSTA0.all,r.VCSTA.all);
+    // ST-013-R3 §3.20 : NBG1 line scroll table address est LSTA1 (non VCSTA)
     sb("NBG1",(r.SCRCTL>>8)&0x3F,r.LSTA1.all,r.VCSTA.all);}
 
     // Table addresses
@@ -361,7 +375,8 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  W1: ("<<DEC((s16)r.WPSX1)<<","<<DEC((s16)r.WPSY1)<<")->("<<DEC((s16)r.WPEX1)<<","<<DEC((s16)r.WPEY1)<<")";
     if(r.LWTA1.all&0x80000000)d<<"  [LINE 0x"<<std::hex<<std::uppercase<<(0x05E00000UL|((r.LWTA1.all&0x7FFFEUL)<<1))<<std::dec<<"]\n"; else d<<"\n";
     wc("NBG0",r.WCTLA);wc("NBG1",r.WCTLA>>8);wc("NBG2",r.WCTLB);wc("NBG3",r.WCTLB>>8);
-    wc("RBG0",r.WCTLC);wc("SPR ",r.WCTLC>>8);wc("RBG1",r.WCTLD);wc("ROT ",r.WCTLD>>8);}
+    // ST-013-R3 §3.27 : WCTLC[7:0]=RBG0, WCTLC[15:8]=SPR, WCTLD[7:0]=RBG1, WCTLD[15:8]=CC
+    wc("RBG0",r.WCTLC);wc("SPR ",r.WCTLC>>8);wc("RBG1",r.WCTLD);wc("CC  ",r.WCTLD>>8);}
 
     // SPCTL/SDCTL
     d<<"\n=== SPCTL=0x"<<HEX4(r.SPCTL)<<"  SDCTL=0x"<<HEX4(r.SDCTL)<<" ===\n";
@@ -432,6 +447,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  CLOFEN=0x"<<HEX4(r.CLOFEN)<<"  CLOFSL=0x"<<HEX4(r.CLOFSL)<<"\n";
     d<<"  BankA: R="<<DEC(s9(r.COAR))<<" G="<<DEC(s9(r.COAG))<<" B="<<DEC(s9(r.COAB))<<"\n";
     d<<"  BankB: R="<<DEC(s9(r.COBR))<<" G="<<DEC(s9(r.COBG))<<" B="<<DEC(s9(r.COBB))<<"\n";
+    // ST-013-R3 §3.36 : CLOFEN bits 7-0 = RBG1,SPR,BACK,RBG0,NBG3,NBG2,NBG1,NBG0
     {static const char*op[]={"NBG0","NBG1","NBG2","NBG3","RBG0","BACK","SPR","RBG1"};
     for(int i=0;i<8;i++)if((r.CLOFEN>>i)&1){
         bool useB=(r.CLOFSL>>i)&1;
