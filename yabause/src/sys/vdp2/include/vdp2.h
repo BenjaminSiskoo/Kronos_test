@@ -59,6 +59,7 @@ typedef struct {
    u16 VRSIZE; // 0x25F80006
    u16 HCNT;   // 0x25F80008
    u16 VCNT;   // 0x25F8000A
+   u16 EWDR;    // 0x25F8000C
    u16 RAMCTL; // 0x25F8000E
    u16 CYCA0L; // 0x25F80010
    u16 CYCA0U; // 0x25F80012
