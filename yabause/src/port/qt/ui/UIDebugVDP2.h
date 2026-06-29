@@ -30,10 +30,11 @@ class UIDebugVDP2 : public QDialog, public Ui::UIDebugVDP2
     Q_OBJECT
 public:
     explicit UIDebugVDP2(QWidget* parent = 0, YabauseLocker *lock = 0);
-    ~UIDebugVDP2(); // Ajout du destructeur pour la propreté
+    ~UIDebugVDP2();
 
 protected:
     bool updateInfoDisplay(void (*debugStats)(char *, int *), QGroupBox *cb, QPlainTextEdit *pte);
+    // viewer déclaré avant mLock : Qt le détruira en premier (ordre RAII correct)
     UIDebugVDP2Viewer *viewer;
 
 protected slots:
@@ -41,7 +42,8 @@ protected slots:
     void on_pbNextButton_clicked();
 
 private:
-    YabauseLocker* mLock;
+    // const : le pointeur n'est jamais réassigné après le constructeur
+    YabauseLocker* const mLock;
     void updateScreenInfos();
 };
 
