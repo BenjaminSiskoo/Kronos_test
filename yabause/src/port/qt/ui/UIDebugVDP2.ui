@@ -6,25 +6,37 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>788</width>
-    <height>560</height>
+    <width>1024</width>
+    <height>640</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Debug VDP2</string>
   </property>
+  <property name="sizeGripEnabled">
+   <bool>true</bool>
+  </property>
   <layout class="QVBoxLayout" name="verticalLayout_7">
    <item>
     <layout class="QGridLayout" name="DebugGrid">
+     <attribute name="columnStretch">
+      <string>1,1,1</string>
+     </attribute>
      <item row="0" column="0">
       <widget class="QGroupBox" name="NBG0Debug">
        <property name="title"><string>NBG0 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl0">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG0Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -34,12 +46,18 @@
      <item row="0" column="1">
       <widget class="QGroupBox" name="NBG1Debug">
        <property name="title"><string>NBG1 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl1">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG1Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -49,12 +67,18 @@
      <item row="0" column="2">
       <widget class="QGroupBox" name="NBG2Debug">
        <property name="title"><string>NBG2 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl2">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG2Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -64,12 +88,18 @@
      <item row="1" column="0">
       <widget class="QGroupBox" name="NBG3Debug">
        <property name="title"><string>NBG3 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl3">
         <item>
          <widget class="QPlainTextEdit" name="pteNBG3Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -79,12 +109,18 @@
      <item row="1" column="1">
       <widget class="QGroupBox" name="RBG0Debug">
        <property name="title"><string>RBG0 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl4">
         <item>
          <widget class="QPlainTextEdit" name="pteRBG0Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -94,12 +130,18 @@
      <item row="1" column="2">
       <widget class="QGroupBox" name="RBG1Debug">
        <property name="title"><string>RBG1 Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl5">
         <item>
          <widget class="QPlainTextEdit" name="pteRBG1Info">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -109,12 +151,18 @@
      <item row="2" column="0">
       <widget class="QGroupBox" name="SPRITEDebug">
        <property name="title"><string>Sprite Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl6">
         <item>
          <widget class="QPlainTextEdit" name="pteSPRITEInfo">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -124,12 +172,18 @@
      <item row="2" column="1">
       <widget class="QGroupBox" name="GeneralDebug">
        <property name="title"><string>General Info</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <layout class="QVBoxLayout" name="vl7">
         <item>
          <widget class="QPlainTextEdit" name="pteGeneralInfo">
           <property name="readOnly"><bool>true</bool></property>
+          <property name="minimumSize"><size><width>0</width><height>80</height></size></property>
           <property name="font">
-           <font><family>Courier New</family><pointsize>9</pointsize></font>
+           <font><family>Courier New,Courier,monospace</family><pointsize>9</pointsize></font>
           </property>
          </widget>
         </item>
@@ -142,12 +196,14 @@
     <layout class="QHBoxLayout" name="horizontalLayout">
      <item>
       <widget class="QPushButton" name="pbViewer">
-       <property name="text"><string>Viewer / Registers</string></property>
+       <property name="text"><string>Viewer &amp;&amp; Registers...</string></property>
+       <property name="toolTip"><string>Ouvrir le visualiseur VDP2</string></property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pbNextButton">
        <property name="text"><string>Next Frame</string></property>
+       <property name="toolTip"><string>Avancer d'une frame</string></property>
       </widget>
      </item>
      <item>
@@ -168,6 +224,16 @@
    <signal>rejected()</signal>
    <receiver>UIDebugVDP2</receiver>
    <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel"><x>347</x><y>321</y></hint>
+    <hint type="destinationlabel"><x>335</x><y>376</y></hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>dbbButtons</sender>
+   <signal>accepted()</signal>
+   <receiver>UIDebugVDP2</receiver>
+   <slot>accept()</slot>
    <hints>
     <hint type="sourcelabel"><x>347</x><y>321</y></hint>
     <hint type="destinationlabel"><x>335</x><y>376</y></hint>
