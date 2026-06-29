@@ -36,7 +36,7 @@ static std::string decodeVramTiming(u8 n) {
         case 0x6:return"NBG2CP"; case 0x7:return"NBG3CP";
         case 0x8:return"RBG0PN"; case 0x9:return"RBG1PN";
         case 0xA:return"RBG0CP"; case 0xB:return"RBG1CP";
-        case 0xC:return"CPU-RW"; case 0xD:return"VDP-RW";
+        case 0xC:return"CPU-RW"; case 0xD:return"NoAccess";
         case 0xE:return"(rsvd)"; case 0xF:return"------";
         default: return"??????";
     }
@@ -149,7 +149,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     R(0x25F800F0,"PRISA", r.PRISA);  R(0x25F800F2,"PRISB", r.PRISB);
     R(0x25F800F4,"PRISC", r.PRISC);  R(0x25F800F6,"PRISD", r.PRISD);
     R(0x25F800F8,"PRINA", r.PRINA);  R(0x25F800FA,"PRINB", r.PRINB);
-    R(0x25F800FC,"PRIR",  r.PRIR);
+    R(0x25F800FC,"PRIR",  r.PRIR);   R(0x25F800FE,"(rsvd)",r.pad);
     R(0x25F80100,"CCRSA", r.CCRSA);  R(0x25F80102,"CCRSB", r.CCRSB);
     R(0x25F80104,"CCRSC", r.CCRSC);  R(0x25F80106,"CCRSD", r.CCRSD);
     R(0x25F80108,"CCRNA", r.CCRNA);  R(0x25F8010A,"CCRNB", r.CCRNB);
@@ -168,8 +168,10 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     // TVMD
     {static const char*hr[]={"320","352","640","704"};static const char*vr[]={"224","240","256","480/448"};static const char*lm[]={"Non-interlace","(rsvd)","Single-density interlace","Double-density interlace"};
     d<<"=== TVMD=0x"<<HEX4(r.TVMD)<<" ===\n";
-    d<<"  DISP="<<((r.TVMD>>15)&1)<<(((r.TVMD>>15)&1)?"  ON":"  OFF")<<"\n";
-    d<<"  BSMC="<<((r.TVMD>>8)&1)<<"  LSMD="<<lm[(r.TVMD>>6)&3]<<"\n";
+    // ST-013-R3 §3.1 : DISP=bit15 (display on/off), BSMC=bit8 (border color mode)
+    bool disp=(r.TVMD>>15)&1;
+    d<<"  DISP="<<(disp?"ON":"OFF")<<"  BSMC="<<((r.TVMD>>8)&1)<<" (border color mode)\n";
+    d<<"  LSMD="<<lm[(r.TVMD>>6)&3]<<"\n";
     d<<"  VRES="<<vr[(r.TVMD>>4)&3]<<"  HRES="<<hr[r.TVMD&3]<<"\n";
     d<<"  Signal: "<<(Vdp2Regs->TVSTAT&1?"PAL":"NTSC")<<"\n";}
 
@@ -179,7 +181,8 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     // ST-013-R3 §3.3 : TVSTAT bit9=EXLTFG (external latch flag), bit8=EXSYFG (external sync flag)
     d<<"  EXLTFG="<<((r.TVSTAT>>9)&1)<<"  EXSYFG="<<((r.TVSTAT>>8)&1)<<"\n";
     d<<"  ODD="<<((r.TVSTAT>>1)&1)<<"  PAL="<<(r.TVSTAT&1)<<"\n";
-    d<<"  HBLANK="<<((r.TVSTAT>>2)&1)<<"  VBLANK="<<((r.TVSTAT>>3)&1)<<"\n";
+    // ST-013-R3 §3.3 : bit2=HBSY (H-blank busy), bit3=VBSY (V-blank busy)
+    d<<"  HBSY="<<((r.TVSTAT>>2)&1)<<"  VBSY="<<((r.TVSTAT>>3)&1)<<"\n";
     d<<"  H="<<DEC(r.HCNT)<<"  V="<<DEC(r.VCNT)<<"\n";
 
     // EWDR — External Write Data Register (ST-013-R3 §3.4 / addr 0x25F8000C)
@@ -261,8 +264,13 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // BMPNA/B
     d<<"\n=== Bitmap Palette Numbers ===\n";
-    d<<"  BMPNA=0x"<<HEX4(r.BMPNA)<<"  N0-pal="<<DEC(r.BMPNA&7)<<"  N1-pal="<<DEC((r.BMPNA>>8)&7)<<"\n";
-    d<<"  BMPNB=0x"<<HEX4(r.BMPNB)<<"  RBG0-pal="<<DEC(r.BMPNB&7)<<"\n";
+    // ST-013-R3 §3.11 : BMPNA[2:0]=N0 palette, BMPNA[10:8]=N0 special priority
+    //                    BMPNA[6:4]=N1 palette, BMPNA[14:12]=N1 special priority
+    d<<"  BMPNA=0x"<<HEX4(r.BMPNA)
+      <<"  N0-pal="<<DEC(r.BMPNA&7)<<"  N0-spr="<<DEC((r.BMPNA>>8)&7)
+      <<"  N1-pal="<<DEC((r.BMPNA>>4)&7)<<"  N1-spr="<<DEC((r.BMPNA>>12)&7)<<"\n";
+    // ST-013-R3 §3.11 : BMPNB[2:0]=RBG0 palette, BMPNB[10:8]=RBG0 special priority
+    d<<"  BMPNB=0x"<<HEX4(r.BMPNB)<<"  RBG0-pal="<<DEC(r.BMPNB&7)<<"  RBG0-spr="<<DEC((r.BMPNB>>8)&7)<<"\n";
 
     // PNC
     d<<"\n=== Pattern Name Control ===\n";
@@ -274,14 +282,17 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // PLSZ
     d<<"\n=== PLSZ=0x"<<HEX4(r.PLSZ)<<" (Plane Size) ===\n";
+    // ST-013-R3 §3.14 : N0[1:0], N1[3:2], N2[5:4], N3[7:6], R0A[9:8], R0B[11:10], R1[15:14]
     {static const char*ps[]={"1Hx1V","2Hx1V","(rsvd)","2Hx2V"};
     d<<"  N0="<<ps[r.PLSZ&3]<<"  N1="<<ps[(r.PLSZ>>2)&3]<<"  N2="<<ps[(r.PLSZ>>4)&3]
-      <<"  N3="<<ps[(r.PLSZ>>6)&3]<<"  R0A="<<ps[(r.PLSZ>>8)&3]<<"  R0B="<<ps[(r.PLSZ>>12)&3]<<"\n";}
+      <<"  N3="<<ps[(r.PLSZ>>6)&3]<<"  R0A="<<ps[(r.PLSZ>>8)&3]
+      <<"  R0B="<<ps[(r.PLSZ>>10)&3]<<"  R1="<<ps[(r.PLSZ>>14)&3]<<"\n";}
 
     // Map offsets
     d<<"\n=== Map Offsets ===\n";
     d<<"  MPOFN=0x"<<HEX4(r.MPOFN)<<"  N0="<<DEC(r.MPOFN&7)<<"  N1="<<DEC((r.MPOFN>>4)&7)<<"  N2="<<DEC((r.MPOFN>>8)&7)<<"  N3="<<DEC((r.MPOFN>>12)&7)<<"\n";
-    d<<"  MPOFR=0x"<<HEX4(r.MPOFR)<<"  R0A="<<DEC(r.MPOFR&7)<<"  R0B="<<DEC((r.MPOFR>>4)&7)<<"\n";
+    // ST-013-R3 §3.15 : MPOFR[2:0]=R0A, MPOFR[6:4]=R0B, MPOFR[10:8]=R1
+    d<<"  MPOFR=0x"<<HEX4(r.MPOFR)<<"  R0A="<<DEC(r.MPOFR&7)<<"  R0B="<<DEC((r.MPOFR>>4)&7)<<"  R1="<<DEC((r.MPOFR>>8)&7)<<"\n";
 
     // NBG map planes
     d<<"\n=== NBG Map Planes (A-D) ===\n";
@@ -299,14 +310,16 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // Scroll
     d<<"\n=== Scroll Positions ===\n";
-    d<<"  NBG0: X="<<DEC((s16)r.SCXIN0)<<"."<<DEC((r.SCXDN0>>8)&0xFF)<<"  Y="<<DEC((s16)r.SCYIN0)<<"."<<DEC((r.SCYDN0>>8)&0xFF)<<"\n";
-    d<<"  NBG1: X="<<DEC((s16)r.SCXIN1)<<"."<<DEC((r.SCXDN1>>8)&0xFF)<<"  Y="<<DEC((s16)r.SCYIN1)<<"."<<DEC((r.SCYDN1>>8)&0xFF)<<"\n";
+    // ST-013-R3 §3.16 : SCxDN bits 7-0 = fractional part (not bits 15-8)
+    d<<"  NBG0: X="<<DEC((s16)r.SCXIN0)<<"."<<DEC(r.SCXDN0&0xFF)<<"  Y="<<DEC((s16)r.SCYIN0)<<"."<<DEC(r.SCYDN0&0xFF)<<"\n";
+    d<<"  NBG1: X="<<DEC((s16)r.SCXIN1)<<"."<<DEC(r.SCXDN1&0xFF)<<"  Y="<<DEC((s16)r.SCYIN1)<<"."<<DEC(r.SCYDN1&0xFF)<<"\n";
     d<<"  NBG2: X="<<DEC((s16)r.SCXN2)<<"  Y="<<DEC((s16)r.SCYN2)<<"\n";
     d<<"  NBG3: X="<<DEC((s16)r.SCXN3)<<"  Y="<<DEC((s16)r.SCYN3)<<"\n";
 
     // Zoom
     d<<"\n=== ZMCTL=0x"<<HEX4(r.ZMCTL)<<" (Zoom) ===\n";
-    {static const char*zm[]={"None","H(1/2)","H+V(1/4)","H+V(1/4)"};
+    // ST-013-R3 §3.18 : 0=1/1, 1=H:1/2, 2=H+V:1/4, 3=(rsvd)
+    {static const char*zm[]={"1/1","H:1/2","H+V:1/4","(rsvd)"};
     d<<"  NBG0="<<zm[r.ZMCTL&3]<<"  NBG1="<<zm[(r.ZMCTL>>8)&3]<<"\n";
     d<<"  ZMX0="<<DEC(r.ZMXN0.part.I)<<"."<<DEC(r.ZMXN0.part.D)<<"  ZMY0="<<DEC(r.ZMYN0.part.I)<<"."<<DEC(r.ZMYN0.part.D)<<"\n";
     d<<"  ZMX1="<<DEC(r.ZMXN1.part.I)<<"."<<DEC(r.ZMXN1.part.D)<<"  ZMY1="<<DEC(r.ZMYN1.part.I)<<"."<<DEC(r.ZMYN1.part.D)<<"\n";}
@@ -355,8 +368,8 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     kt("ParamA",0);kt("ParamB",8);
     d<<"  KTAOF=0x"<<HEX4(r.KTAOF)<<"  A-off="<<DEC(r.KTAOF&7)<<"  B-off="<<DEC((r.KTAOF>>8)&7)<<"\n";
     d<<"  OVPNRA=0x"<<HEX4(r.OVPNRA)<<"  OVPNRB=0x"<<HEX4(r.OVPNRB)<<"\n";
-    // RPTA : addr = {RPTA.U[14:0], RPTA.L[15:1], 1b0} (§3.21)
-    u32 rp = 0x05E00000 | ((((u32)r.RPTA.part.U << 16) | (u32)r.RPTA.part.L) & 0x7FFFE) << 1;
+    // ST-013-R3 §3.21 : RPTA addr = 0x05E00000 | (RPTAU[14:0] << 17) | (RPTAL & 0xFFFE)
+    u32 rp = 0x05E00000 | (((u32)(r.RPTA.part.U & 0x7FFF) << 17) | ((u32)(r.RPTA.part.L & 0xFFFE)));
     d<<"  RPTA=0x"<<std::hex<<std::uppercase<<HEX8(rp)<<std::dec<<"\n";}
 
     // Windows
@@ -382,29 +395,36 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"\n=== SPCTL=0x"<<HEX4(r.SPCTL)<<"  SDCTL=0x"<<HEX4(r.SDCTL)<<" ===\n";
     {static const char*spc[]={"16(4bpp)","256(8bpp)","32768(15bpp)","16M(24bpp)","16bank","256bank","32768bank","16Mbank"};
     static const char*spcond[]={"Prio<=CCnum","Prio==CCnum","Prio>=CCnum","MSB colour"};
-    d<<"  type="<<DEC(r.SPCTL&0xF)<<"  col="<<spc[(r.SPCTL>>4)&7]<<"  SPWINEN="<<((r.SPCTL>>11)&1)<<"\n";
+    // ST-013-R3 §3.25 : type=bits3-0 (see table 4.1), col=bits6-4, SPWINEN=bit11
+    d<<"  type="<<DEC(r.SPCTL&0xF)<<" (ST-013-R3 table 4.1)"
+      <<"  col[6:4]="<<spc[(r.SPCTL>>4)&7]<<"  SPWINEN="<<((r.SPCTL>>11)&1)<<"\n";
     d<<"  CCcond="<<spcond[(r.SPCTL>>12)&3]<<"  CCnum="<<DEC((r.SPCTL>>8)&7)<<"\n";
     d<<"  RGB+pal="<<((r.SPCTL>>5)&1)<<"  MSBshadow="<<(r.SDCTL&1)<<"  TrShadow="<<((r.SDCTL>>8)&1)<<"\n";}
 
     // CRAOFA/B
     d<<"\n=== Color RAM Offset ===\n"<<std::hex;
     d<<"  CRAOFA=0x"<<HEX4(r.CRAOFA)<<"  N0=0x"<<((r.CRAOFA&7)<<8)<<"  N1=0x"<<(((r.CRAOFA>>4)&7)<<8)<<"  N2=0x"<<(((r.CRAOFA>>8)&7)<<8)<<"  N3=0x"<<(((r.CRAOFA>>12)&7)<<8)<<"\n";
-    d<<"  CRAOFB=0x"<<HEX4(r.CRAOFB)<<"  RBG0=0x"<<((r.CRAOFB&7)<<8)<<"  SPR=0x"<<(((r.CRAOFB>>4)&7)<<8)<<"\n"<<std::dec;
+    // ST-013-R3 §3.30 : CRAOFB[2:0]=RBG0, CRAOFB[6:4]=SPR, CRAOFB[10:8]=RBG1
+    d<<"  CRAOFB=0x"<<HEX4(r.CRAOFB)<<"  RBG0=0x"<<((r.CRAOFB&7)<<8)<<"  SPR=0x"<<(((r.CRAOFB>>4)&7)<<8)<<"  RBG1=0x"<<(((r.CRAOFB>>8)&7)<<8)<<"\n"<<std::dec;
 
     // LNCLEN
     d<<"\n=== LNCLEN=0x"<<HEX4(r.LNCLEN)<<" (Line Color Insertion) ===\n";
-    {static const char*lp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","SPR"};
-    for(int i=0;i<6;i++)d<<"  "<<lp[i]<<"="<<((r.LNCLEN>>i)&1?"ON":"off")<<"\n";}
+    // ST-013-R3 §3.31 : bits 6-0 = NBG0,NBG1,NBG2,NBG3,RBG0,RBG1,SPR (7 layers)
+    {static const char*lp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1","SPR"};
+    for(int i=0;i<7;i++)d<<"  "<<lp[i]<<"="<<((r.LNCLEN>>i)&1?"ON":"off")<<"\n";}
 
     // SFPRMD
     d<<"\n=== SFPRMD=0x"<<HEX4(r.SFPRMD)<<" (Special Priority) ===\n";
+    // ST-013-R3 §3.32 : bits 11-0 = 6 layers x 2 bits, bit12 = SPR (single bit)
     {static const char*sp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
     static const char*sm[]={"none","per-tile","per-pixel","(undoc)"};
-    for(int i=0;i<6;i++)d<<"  "<<sp[i]<<"="<<sm[(r.SFPRMD>>(i*2))&3]<<"\n";}
+    for(int i=0;i<6;i++)d<<"  "<<sp[i]<<"="<<sm[(r.SFPRMD>>(i*2))&3]<<"\n";
+    d<<"  SPR=per-pixel="<<((r.SFPRMD>>12)&1)<<"\n";}
 
     // CCCTL/SFCCMD
     d<<"\n=== CCCTL=0x"<<HEX4(r.CCCTL)<<"  SFCCMD=0x"<<HEX4(r.SFCCMD)<<" ===\n";
-    {d<<"  BOKEN="<<((r.CCCTL>>9)&1)<<"  EXCCEN="<<((r.CCCTL>>8)&1)<<"  BKCCEN="<<((r.CCCTL>>5)&1)<<"\n";
+    // ST-013-R3 §3.33 : BOKEN=bit15, EXCCEN=bit9, BKCCEN=bit8
+    {d<<"  BOKEN="<<((r.CCCTL>>15)&1)<<"  EXCCEN="<<((r.CCCTL>>9)&1)<<"  BKCCEN="<<((r.CCCTL>>8)&1)<<"\n";
     static const char*cp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1","SPR","BACK"};
     d<<"  CC enabled: ";for(int i=0;i<8;i++)if((r.CCCTL>>i)&1)d<<cp[i]<<" ";d<<"\n";
     static const char*sl[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
@@ -439,7 +459,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<" SP4="<<DEC(r.CCRSC&0x1F)    <<" SP5="<<DEC((r.CCRSC>>8)&0x1F);
     d<<" SP6="<<DEC(r.CCRSD&0x1F)    <<" SP7="<<DEC((r.CCRSD>>8)&0x1F);
     d<<"\n";}
-    // CCRLB (§3.34) : bits 4-0 = Line screen, bits 12-8 = Back screen
+    // CCRLB (§3.34) : bits 4-0 = Line color screen CC ratio, bits 12-8 = Back screen CC ratio
     d<<"  Line="<<DEC(r.CCRLB&0x1F)<<"  Back="<<DEC((r.CCRLB>>8)&0x1F)<<"\n";
 
     // Color offset
@@ -530,6 +550,11 @@ void UIDebugVDP2Viewer::updateColorRam()
 
     int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
     int total = (mode <= 1) ? 2048 : 1024;
+    // ST-013-R3 §3.6 / RAMCTL[13:12] = CRMD :
+    //   0=RGB555 word (2048 entries x 2 bytes)
+    //   1=RGB555 banked (2048 entries x 2 bytes, banked access)
+    //   2=RGB888 (1024 entries x 4 bytes)
+    //   3=(rsvd)
     lCramInfo->setText(QString("Color RAM mode %1  —  %2 entries  (%3 bytes each)")
         .arg(mode).arg(total).arg(mode<=1?2:4));
 
