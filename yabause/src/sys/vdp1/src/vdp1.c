@@ -1187,14 +1187,20 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   switch ((cmd->CMDCTRL & 0x300) >> 8) {
     case 1: //Left
     rw = cmd->CMDXB;
-        if (rw < 0) return 0;
+        /* negative display width = horizontally inverted scaled sprite.
+         * VDP1 manual marks it "not guaranteed", but real HW/Yaba draw the
+         * mirror; the arithmetic below yields a reversed quad the QUAD
+         * rasterizer maps correctly. Do NOT drop it (Golden Axe 2P sprite). */
         cmd->CMDXB = cmd->CMDXA + rw;
         cmd->CMDXC = cmd->CMDXA + rw;
         cmd->CMDXD = cmd->CMDXA;
     break;
     case 2: //center
     rw = cmd->CMDXB;
-        if (rw < 0) return 0;
+        /* negative display width = horizontally inverted scaled sprite.
+         * VDP1 manual marks it "not guaranteed", but real HW/Yaba draw the
+         * mirror; the arithmetic below yields a reversed quad the QUAD
+         * rasterizer maps correctly. Do NOT drop it (Golden Axe 2P sprite). */
         cmd->CMDXA = x - rw/2;
         cmd->CMDXB = x + (rw+1)/2;
         cmd->CMDXD = x - rw/2;
@@ -1202,7 +1208,10 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     break;
     case 3: //right
     rw = cmd->CMDXB;
-        if (rw < 0) return 0;
+        /* negative display width = horizontally inverted scaled sprite.
+         * VDP1 manual marks it "not guaranteed", but real HW/Yaba draw the
+         * mirror; the arithmetic below yields a reversed quad the QUAD
+         * rasterizer maps correctly. Do NOT drop it (Golden Axe 2P sprite). */
         cmd->CMDXA = x - rw;
         cmd->CMDXB = x;
         cmd->CMDXC = x;
@@ -1217,14 +1226,16 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     break;
     case 1: //Top
     rh = cmd->CMDYB;
-        if (rh < 0) return 0;
+        /* negative display height = vertically inverted scaled sprite (see
+         * note above for the horizontal case). Keep it; do not drop. */
         cmd->CMDYB = cmd->CMDYA;
         cmd->CMDYC = cmd->CMDYA + rh;
         cmd->CMDYD = cmd->CMDYA + rh;
     break;
     case 2: //center
     rh = cmd->CMDYB;
-        if (rh < 0) return 0;
+        /* negative display height = vertically inverted scaled sprite (see
+         * note above for the horizontal case). Keep it; do not drop. */
         cmd->CMDYA = y - rh/2;
         cmd->CMDYB = y - rh/2;
         cmd->CMDYC = y + (rh+1)/2;
@@ -1232,7 +1243,8 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     break;
     case 3: //bottom
     rh = cmd->CMDYB;
-        if (rh < 0) return 0;
+        /* negative display height = vertically inverted scaled sprite (see
+         * note above for the horizontal case). Keep it; do not drop. */
         cmd->CMDYA = y - rh;
         cmd->CMDYB = y - rh;
         cmd->CMDYC = y;
