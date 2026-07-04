@@ -321,15 +321,24 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
   tile.vertices[6] = x;
   tile.vertices[7] = (y + lines/*(float)ctrl->info.lineinc*/ );
 
-  // Screen culling
-  if (tile.vertices[0] >= _Ygl->rwidth || tile.vertices[1] >= _Ygl->rheight || tile.vertices[2] < 0 || tile.vertices[5] < 0)
-  {
-  	return;
-  }
-  if (   tile.vertices[0] >= _Ygl->rwidth   // tile à droite de l'écran
-      || tile.vertices[2] < 0               // tile à gauche de l'écran
-      || tile.vertices[1] >= _Ygl->rheight  // tile en dessous de l'écran
-      || tile.vertices[5] < 0)              // tile au-dessus de l'écran
+  /* Screen culling. `x`/`y` (and therefore tile.vertices[]) are expressed
+   * in pre-zoom "source" units whenever coordincx/coordincy != 1.0 --
+   * Vdp2DrawMapTest's draww/drawh loop bounds are computed as
+   * rwidth/coordincx and rheight/coordincy, so the h/v (and thus x/y)
+   * values handed to this function already live in that scaled space.
+   * The actual on-screen position is only produced later, at draw time,
+   * by YglQuadOffset(..., coordincx, coordincy, ...).
+   *
+   * Comparing the raw (unscaled) vertices directly against
+   * _Ygl->rwidth/rheight is only correct when coordincx == coordincy == 1.0
+   * (no zoom). As soon as an NBG layer has a non-1.0 coordinate increment
+   * (any zoom in or out, e.g. Golden Axe: The Duel's magnified background),
+   * tiles that are still legitimately on-screen once scaled were being
+   * culled here, leaving the rest of the screen undrawn (black). */
+  if ((tile.vertices[0] * ctrl->info.coordincx)  >= _Ygl->rwidth    // tile à droite de l'écran
+      || (tile.vertices[2] * ctrl->info.coordincx) < 0              // tile à gauche de l'écran
+      || (tile.vertices[1] * ctrl->info.coordincy) >= _Ygl->rheight // tile en dessous de l'écran
+      || (tile.vertices[5] * ctrl->info.coordincy) < 0)             // tile au-dessus de l'écran
   {
       return;
   }
