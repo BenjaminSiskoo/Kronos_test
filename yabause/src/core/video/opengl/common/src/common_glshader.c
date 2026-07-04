@@ -624,9 +624,9 @@ static const GLchar Yglprg_vdp2_common_draw[] =
 "  }\n"
 "  int cc_enable = 0;\n"
 "  if (spccen != 0) {\n"
-"    if      (spcccs == 0) cc_enable = (ret.prio <= spccn) ? 1 : 0;\n"
-"    else if (spcccs == 1) cc_enable = (ret.prio == spccn) ? 1 : 0;\n"
-"    else if (spcccs == 2) cc_enable = (ret.prio >= spccn) ? 1 : 0;\n"
+"    if      (spcccs == 0) cc_enable = (depth <= spccn) ? 1 : 0;\n"
+"    else if (spcccs == 1) cc_enable = (depth == spccn) ? 1 : 0;\n"
+"    else if (spcccs == 2) cc_enable = (depth >= spccn) ? 1 : 0;\n"
 "    else                  cc_enable = color_data_msb;\n"
 "  }\n"
 /* Appliquer cc_enable : si 0, forcer fbmode=2 pour bypasser la CC sprite */
