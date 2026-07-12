@@ -1771,7 +1771,14 @@ void Cs2PlayDisc(void) {
     Cs2Area->_seekToStop = 0;
   } else {
     // Calculate Seek time
-    // A CD is 74 min = 74*4500 = 333000 FAD Max
+    // Note: a generic 74-min CD-ROM blank holds up to 74*4500 = 333000 FAD,
+    // but Sega's own spec caps a Saturn Game-CD at 63 minutes / no
+    // multisession (Disc Format Standards Specification Sheet ST-040-R4-
+    // 051795, section 1.2), i.e. a lead-out start at FAD ~283800. This
+    // doesn't change the geometry-based blckNb[] model below (its size and
+    // contents come from the physical radius/track-pitch constants, not
+    // from this capacity figure), so it's corrected here only as an
+    // accurate reference, not a functional change.
     // The CD has a track of data every 1.6µm, from 4.5 cm diameter to 12 cm diameter, so 46875 circles of data
     // We can evaluate
     // 46875 * 2 *pi *45 + 2 *pi * (46875 * 46874) *0.0016 = 35324529 mm to cover 330000 block
@@ -1971,7 +1978,7 @@ void Cs2SetCDDeviceConnection(void) {
 
   if (scdcfilternum == 0xFF)
      Cs2Area->outconcddev = NULL;
-  else if (scdcfilternum < 0x24)
+  else if (scdcfilternum < MAX_SELECTORS)
      Cs2Area->outconcddev = Cs2Area->filter + scdcfilternum;
 
   Cs2Area->outconcddevnum = (u8)scdcfilternum;
@@ -2008,8 +2015,14 @@ void Cs2SetFilterRange(void) {
 
   sfrfilternum = Cs2Area->reg.CR3 >> 8;
 
-  Cs2Area->filter[sfrfilternum].FAD = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
-  Cs2Area->filter[sfrfilternum].range = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
+  // Guard against an out-of-range selector number: filter[] only has
+  // MAX_SELECTORS (24) valid entries, but sfrfilternum comes straight
+  // from an 8-bit command register field (0-255).
+  if (sfrfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->filter[sfrfilternum].FAD = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+     Cs2Area->filter[sfrfilternum].range = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
+  }
 
   // return default cd stats
   doCDReport(Cs2Area->status);
@@ -2023,10 +2036,20 @@ void Cs2GetFilterRange(void) {
 
    sfrfilternum = Cs2Area->reg.CR3 >> 8;
 
-   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | ((Cs2Area->filter[sfrfilternum].FAD & 0xFF0000) >> 16);
-   Cs2Area->reg.CR2 = Cs2Area->filter[sfrfilternum].FAD & 0xFFFF;
-   Cs2Area->reg.CR3 = ((Cs2Area->filter[sfrfilternum].range & 0xFF0000) >> 16);
-   Cs2Area->reg.CR4 = Cs2Area->filter[sfrfilternum].range & 0xFFFF;
+   if (sfrfilternum < MAX_SELECTORS)
+   {
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | ((Cs2Area->filter[sfrfilternum].FAD & 0xFF0000) >> 16);
+      Cs2Area->reg.CR2 = Cs2Area->filter[sfrfilternum].FAD & 0xFFFF;
+      Cs2Area->reg.CR3 = ((Cs2Area->filter[sfrfilternum].range & 0xFF0000) >> 16);
+      Cs2Area->reg.CR4 = Cs2Area->filter[sfrfilternum].range & 0xFFFF;
+   }
+   else
+   {
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+      Cs2Area->reg.CR2 = 0;
+      Cs2Area->reg.CR3 = 0;
+      Cs2Area->reg.CR4 = 0;
+   }
    Cs2SetIRQ(CDB_HIRQ_CMOK);
 }
 
@@ -2037,12 +2060,15 @@ void Cs2SetFilterSubheaderConditions(void) {
 
   sfscfilternum = Cs2Area->reg.CR3 >> 8;
 
-  Cs2Area->filter[sfscfilternum].chan = Cs2Area->reg.CR1 & 0xFF;
-  Cs2Area->filter[sfscfilternum].smmask = Cs2Area->reg.CR2 >> 8;
-  Cs2Area->filter[sfscfilternum].cimask = Cs2Area->reg.CR2 & 0xFF;
-  Cs2Area->filter[sfscfilternum].fid = Cs2Area->reg.CR3 & 0xFF;;
-  Cs2Area->filter[sfscfilternum].smval = Cs2Area->reg.CR4 >> 8;
-  Cs2Area->filter[sfscfilternum].cival = Cs2Area->reg.CR4 & 0xFF;
+  if (sfscfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->filter[sfscfilternum].chan = Cs2Area->reg.CR1 & 0xFF;
+     Cs2Area->filter[sfscfilternum].smmask = Cs2Area->reg.CR2 >> 8;
+     Cs2Area->filter[sfscfilternum].cimask = Cs2Area->reg.CR2 & 0xFF;
+     Cs2Area->filter[sfscfilternum].fid = Cs2Area->reg.CR3 & 0xFF;;
+     Cs2Area->filter[sfscfilternum].smval = Cs2Area->reg.CR4 >> 8;
+     Cs2Area->filter[sfscfilternum].cival = Cs2Area->reg.CR4 & 0xFF;
+  }
 
   doCDReport(Cs2Area->status);
   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
@@ -2055,10 +2081,20 @@ void Cs2GetFilterSubheaderConditions(void) {
 
   gfscfilternum = Cs2Area->reg.CR3 >> 8;
 
-  Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->filter[gfscfilternum].chan;
-  Cs2Area->reg.CR2 = (Cs2Area->filter[gfscfilternum].smmask << 8) | Cs2Area->filter[gfscfilternum].cimask;
-  Cs2Area->reg.CR3 = Cs2Area->filter[gfscfilternum].fid;
-  Cs2Area->reg.CR4 = (Cs2Area->filter[gfscfilternum].smval << 8) | Cs2Area->filter[gfscfilternum].cival;
+  if (gfscfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->filter[gfscfilternum].chan;
+     Cs2Area->reg.CR2 = (Cs2Area->filter[gfscfilternum].smmask << 8) | Cs2Area->filter[gfscfilternum].cimask;
+     Cs2Area->reg.CR3 = Cs2Area->filter[gfscfilternum].fid;
+     Cs2Area->reg.CR4 = (Cs2Area->filter[gfscfilternum].smval << 8) | Cs2Area->filter[gfscfilternum].cival;
+  }
+  else
+  {
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+     Cs2Area->reg.CR2 = 0;
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
 }
 
@@ -2069,22 +2105,25 @@ void Cs2SetFilterMode(void) {
 
   sfmfilternum = Cs2Area->reg.CR3 >> 8;
 
-  Cs2Area->filter[sfmfilternum].mode = Cs2Area->reg.CR1 & 0xFF;
-
-  if (Cs2Area->filter[sfmfilternum].mode & 0x80)
+  if (sfmfilternum < MAX_SELECTORS)
   {
-     // Initialize filter conditions
-     Cs2Area->filter[sfmfilternum].mode = 0;
-     Cs2Area->filter[sfmfilternum].FAD = 0;
+     Cs2Area->filter[sfmfilternum].mode = Cs2Area->reg.CR1 & 0xFF;
+
+     if (Cs2Area->filter[sfmfilternum].mode & 0x80)
+     {
+        // Initialize filter conditions
+        Cs2Area->filter[sfmfilternum].mode = 0;
+        Cs2Area->filter[sfmfilternum].FAD = 0;
 	//ST-040-R4-051795, §5.5.3 « Set Filter Mode (command 0x44) » :
 	//When bit 7 = 1 : initialize filter. Default range = 0xFFFFFFFF (no restriction)
 	//§5.5.2 « Reset Selector (command 0x48) » confirme la même valeur par défaut.
-     Cs2Area->filter[sfmfilternum].range = 0xFFFFFFFF;  // était: 0
-     Cs2Area->filter[sfmfilternum].chan = 0;
-     Cs2Area->filter[sfmfilternum].smmask = 0;
-     Cs2Area->filter[sfmfilternum].cimask = 0;
-     Cs2Area->filter[sfmfilternum].smval = 0;
-     Cs2Area->filter[sfmfilternum].cival = 0;
+        Cs2Area->filter[sfmfilternum].range = 0xFFFFFFFF;  // était: 0
+        Cs2Area->filter[sfmfilternum].chan = 0;
+        Cs2Area->filter[sfmfilternum].smmask = 0;
+        Cs2Area->filter[sfmfilternum].cimask = 0;
+        Cs2Area->filter[sfmfilternum].smval = 0;
+        Cs2Area->filter[sfmfilternum].cival = 0;
+     }
   }
 
   doCDReport(Cs2Area->status);
@@ -2098,7 +2137,7 @@ void Cs2GetFilterMode(void) {
 
   gfmfilternum = Cs2Area->reg.CR3 >> 8;
 
-  Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->filter[gfmfilternum].mode;
+  Cs2Area->reg.CR1 = (Cs2Area->status << 8) | (gfmfilternum < MAX_SELECTORS ? Cs2Area->filter[gfmfilternum].mode : 0);
   Cs2Area->reg.CR2 = 0;
   Cs2Area->reg.CR3 = 0;
   Cs2Area->reg.CR4 = 0;
@@ -2112,16 +2151,19 @@ void Cs2SetFilterConnection(void) {
 
   sfcfilternum = Cs2Area->reg.CR3 >> 8;
 
-  if (Cs2Area->reg.CR1 & 0x1)
+  if (sfcfilternum < MAX_SELECTORS)
   {
-     // Set connection for true condition
-     Cs2Area->filter[sfcfilternum].condtrue = Cs2Area->reg.CR2 >> 8;
-  }
+     if (Cs2Area->reg.CR1 & 0x1)
+     {
+        // Set connection for true condition
+        Cs2Area->filter[sfcfilternum].condtrue = Cs2Area->reg.CR2 >> 8;
+     }
 
-  if (Cs2Area->reg.CR1 & 0x2)
-  {
-     // Set connection for false condition
-     Cs2Area->filter[sfcfilternum].condfalse = Cs2Area->reg.CR2 & 0xFF;
+     if (Cs2Area->reg.CR1 & 0x2)
+     {
+        // Set connection for false condition
+        Cs2Area->filter[sfcfilternum].condfalse = Cs2Area->reg.CR2 & 0xFF;
+     }
   }
 
   doCDReport(Cs2Area->status);
@@ -2136,7 +2178,10 @@ void Cs2GetFilterConnection(void) {
    sfcfilternum = Cs2Area->reg.CR3 >> 8;
 
    Cs2Area->reg.CR1 = (Cs2Area->status << 8);
-   Cs2Area->reg.CR2 = (Cs2Area->filter[sfcfilternum].condtrue << 8) | Cs2Area->filter[sfcfilternum].condfalse;
+   if (sfcfilternum < MAX_SELECTORS)
+      Cs2Area->reg.CR2 = (Cs2Area->filter[sfcfilternum].condtrue << 8) | Cs2Area->filter[sfcfilternum].condfalse;
+   else
+      Cs2Area->reg.CR2 = 0;
    Cs2Area->reg.CR3 = 0;
    Cs2Area->reg.CR4 = 0;
 
@@ -2814,7 +2859,7 @@ void Cs2ChangeDirectory(void) {
      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
      return;
   }
-  else if (cdfilternum < 0x24)
+  else if (cdfilternum < MAX_SELECTORS)
   {
      if (Cs2ReadFileSystem(Cs2Area->filter + cdfilternum, ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4, 0) != 0)
      {
@@ -2842,7 +2887,7 @@ void Cs2ReadDirectory(void) {
      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
      return;
   }
-  else if (rdfilternum < 0x24)
+  else if (rdfilternum < MAX_SELECTORS)
   {
 		// ST-040-R4-051795, §6.9 « Read Directory (command 0x71) » :
 		// CR3[7:0] = FAD[23:16], CR4[15:0] = FAD[15:0]
@@ -3455,6 +3500,12 @@ partition_struct * Cs2GetPartition(filter_struct * curfilter)
 {
   // go through various filter conditions here(fix me)
 
+  // condtrue is an 8-bit value written verbatim from a command register
+  // (Cs2SetFilterConnection); guard against it pointing past the 24
+  // physical partitions before using it as an array index.
+  if (curfilter->condtrue >= MAX_SELECTORS)
+     return NULL;
+
   return &Cs2Area->partition[curfilter->condtrue];
 }
 
@@ -3524,6 +3575,11 @@ partition_struct * Cs2FilterData(filter_struct * curfilter, int isaudio)
      if (condresults == 1)
      {
         Cs2Area->lastbuffer = curfilter->condtrue;
+        // condtrue is written verbatim from a command register
+        // (Cs2SetFilterConnection); guard against an out-of-range value
+        // before indexing partition[] (24 entries).
+        if (curfilter->condtrue >= MAX_SELECTORS)
+           return NULL;
         fltpartition = &Cs2Area->partition[curfilter->condtrue];
         break;
      }
@@ -3531,7 +3587,11 @@ partition_struct * Cs2FilterData(filter_struct * curfilter, int isaudio)
      {
         Cs2Area->lastbuffer = curfilter->condfalse;
 
-        if (curfilter->condfalse == 0xFF)
+        // 0xFF means "not connected" (sector discarded); any other
+        // value >= MAX_SELECTORS is out of range for filter[] (24
+        // entries) and must be rejected the same way rather than
+        // indexed.
+        if (curfilter->condfalse >= MAX_SELECTORS)
            return NULL;
         // loop and try filter that was connected to the false connector
         curfilter = &Cs2Area->filter[curfilter->condfalse];
