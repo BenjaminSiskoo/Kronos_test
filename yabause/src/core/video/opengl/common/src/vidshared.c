@@ -408,11 +408,22 @@ void Vdp2ReadRotationTable(int which, vdp2rotationparameter_struct *parameter, V
       parameter->deltaKAst = ftmp;
       addr += 4;
 
+      // deltaKAx (+5CH per Figure 6.3) is always present in the rotation
+      // parameter table at a fixed offset, just like deltaKAst right above
+      // it -- its existence doesn't depend on CRKTE (RAMCTL bit 15, which
+      // only selects whether the coefficient *data* KAst points to comes
+      // from color RAM or normal VRAM). The shader unconditionally uses
+      // deltaKAx for the per-dot coefficient index (kindex = deltaKAst*V +
+      // deltaKAx*H, VDP2 manual ST-058-R2 p.170) regardless of k_mem_type,
+      // so gating this read behind CRKTE left deltaKAx stale/zero -- and
+      // per-dot horizontal coefficient variation broken -- in the more
+      // common CRKTE=0 (VRAM coefficient table) case.
+      i = Vdp2RamReadLong(NULL, ram, addr);
+      ftmp = (float)(signed)((i & 0x03FFFFC0) | (i & 0x02000000 ? 0xFE000000 : 0x00000000)) / 65536;
+      parameter->deltaKAx = ftmp;
+
       if (regs->RAMCTL & 0x8000){
         parameter->k_mem_type = 1; // use cram
-        i = Vdp2RamReadLong(NULL, ram, addr);
-        ftmp = (float)(signed)((i & 0x03FFFFC0) | (i & 0x02000000 ? 0xFE000000 : 0x00000000)) / 65536;
-        parameter->deltaKAx = ftmp;
       }
       else{
         parameter->k_mem_type = 0; // use vram
