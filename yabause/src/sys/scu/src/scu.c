@@ -1308,10 +1308,15 @@ static void ScuDspExec(u32 timing) {
                }
 
 
-               //if (ScuDsp->ALU.part.L ??) // set overflow flag
-               //    ScuDsp->ProgControlPort.part.V = 1;
-               //else
-               //   ScuDsp->ProgControlPort.part.V = 0;
+               //Signed 32-bit two's complement overflow: operands share a
+               //sign and the result's sign differs from theirs (SCU Manual
+               //Fig. 3.14, V flag: "becomes 1 when the operation results
+               //causes overflow (or underflow)" -- exact bit formula is not
+               //given in the manual, this follows the standard rule).
+               if ((~((u32)ScuDsp->AC.part.L ^ (u32)ScuDsp->P.part.L) & ((u32)ScuDsp->AC.part.L ^ (u32)ScuDsp->ALU.part.L)) & 0x80000000)
+                   ScuDsp->ProgControlPort.part.V = 1;
+               else
+                  ScuDsp->ProgControlPort.part.V = 0;
                break;
             case 0x5: // SUB
             {
@@ -1334,10 +1339,13 @@ static void ScuDspExec(u32 timing) {
                 ScuDsp->ProgControlPort.part.C = 0;
 
 
-//               if (ScuDsp->ALU.part.L ??) // set overflow flag
-//                  ScuDsp->ProgControlPort.part.V = 1;
-//               else
-//                  ScuDsp->ProgControlPort.part.V = 0;
+              //Signed 32-bit two's complement overflow: operands have
+              //different signs and the result's sign differs from AC's
+              //(SCU Manual Fig. 3.14, V flag -- see ADD comment above).
+              if ((((u32)ScuDsp->AC.part.L ^ (u32)ScuDsp->P.part.L) & ((u32)ScuDsp->AC.part.L ^ (u32)ScuDsp->ALU.part.L)) & 0x80000000)
+                ScuDsp->ProgControlPort.part.V = 1;
+              else
+                ScuDsp->ProgControlPort.part.V = 0;
 		}
                break;
             case 0x6: // AD2
@@ -1364,10 +1372,15 @@ static void ScuDspExec(u32 timing) {
                else
                   ScuDsp->ProgControlPort.part.C = 0;
 
-//               if (ScuDsp->ALU.part.unused != 0)
-//                  ScuDsp->ProgControlPort.part.V = 1;
-//               else
-//                  ScuDsp->ProgControlPort.part.V = 0;
+               //Signed 48-bit two's complement overflow: operands share a
+               //sign and the result's sign (bit 47) differs from theirs
+               //(SCU Manual Fig. 3.14, V flag -- see ADD comment above).
+               //AC.all/P.all/ALU.all are already sign-extended 48-bit
+               //values, so testing bit 0x800000000000 directly is valid.
+               if ((~(ScuDsp->AC.all ^ ScuDsp->P.all) & (ScuDsp->AC.all ^ ScuDsp->ALU.all)) & 0x800000000000)
+                  ScuDsp->ProgControlPort.part.V = 1;
+               else
+                  ScuDsp->ProgControlPort.part.V = 0;
 
                break;
             case 0x8: // SR
@@ -2534,10 +2547,18 @@ u8 FASTCALL ScuReadByte(SH2_struct *sh, u8* mem, u32 addr) {
 //////////////////////////////////////////////////////////////////////////////
 
 u16 FASTCALL ScuReadWord(SH2_struct *sh, u8* mem, u32 addr) {
-   addr &= 0xFF;
-   LOG("Unhandled SCU Register word read %08X\n", addr);
+   // SCU registers are documented as 32-bit (long word) only (SCU User's
+   // Manual ST-97-R5-072694, Fig. 1.6 "SCU Register Map"), but some code
+   // (compiler-generated or debuggers) may still issue 16-bit accesses.
+   // Emulate them as an aligned 32-bit read split into halves, rather than
+   // silently returning 0, so partial/misaligned access doesn't desync
+   // register-polling code.
+   u32 longval = ScuReadLong(sh, mem, addr & 0xFFFFFFFC);
 
-   return 0;
+   if (addr & 2)
+      return (u16)(longval & 0xFFFF);
+   else
+      return (u16)(longval >> 16);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2565,9 +2586,23 @@ u32 FASTCALL ScuReadLong(SH2_struct *sh, u8* mem, u32 addr) {
       case 0x48:
          return ScuRegs->D2C;
       case 0x7C: {
+        // DSTA bit layout per SCU manual Fig. 3.13 / p.48-50:
+        //   bit4  D0MV  Level-0 DMA in operation
+        //   bit5  D0WT  Level-0 DMA standby      (not modeled: no priority
+        //   bit8  D1MV  Level-1 DMA in operation   arbitration between
+        //   bit9  D1WT  Level-1 DMA standby        levels 0-2 yet, so a
+        //   bit12 D2MV  Level-2 DMA in operation    lower level is never
+        //   bit13 D2WT  Level-2 DMA standby         reported as waiting on
+        //   bit16 D0BK  Level-0 DMA interrupted      a higher one)
+        //   bit17 D1BK  Level-1 DMA interrupted
+        //   bit20-22    A/B/DSP-Bus access flags  (not modeled: bus arbiter
+        //                                           state isn't tracked)
+        //   bit0  DDMV  DSP-issued DMA in operation
+        //   bit1  DDWT  DSP-issued DMA standby
         if (ScuRegs->dma0.TransferNumber > 0) { ScuRegs->DSTA |= 0x10; }else{ ScuRegs->DSTA &= ~0x10;  }
         if (ScuRegs->dma1.TransferNumber > 0) { ScuRegs->DSTA |= 0x100; }else{ ScuRegs->DSTA &= ~0x100;  }
         if (ScuRegs->dma2.TransferNumber > 0) { ScuRegs->DSTA |= 0x1000; }else{ ScuRegs->DSTA &= ~0x1000; }
+        if (ScuDsp->dsp_dma_wait > 0) { ScuRegs->DSTA |= 0x2; } else { ScuRegs->DSTA &= ~0x2; }
         return ScuRegs->DSTA;
       }
       case 0x80: // DSP Program Control Port
@@ -2683,9 +2718,19 @@ void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, UNUSED u16 val) {
-   addr &= 0xFF;
-   LOG("Unhandled SCU Register word write %08X\n", addr);
+void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
+   // See ScuReadWord: registers are 32-bit only per the SCU manual, but we
+   // emulate a 16-bit write as a read-modify-write of the containing long
+   // word so we don't silently drop writes issued as word accesses.
+   u32 alignedAddr = addr & 0xFFFFFFFC;
+   u32 longval = ScuReadLong(sh, mem, alignedAddr);
+
+   if (addr & 2)
+      longval = (longval & 0xFFFF0000) | val;
+   else
+      longval = (longval & 0x0000FFFF) | ((u32)val << 16);
+
+   ScuWriteLong(sh, mem, alignedAddr, longval);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2707,7 +2752,11 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D0AD = val;
          break;
       case 0x10:
-      if ((val & 0x1) && ((ScuRegs->D0MD&0x7)==0x7) )
+      // SCU manual Fig. 3.9 (D0EN): the GO bit (bit 0) is only significant
+      // when the start factor is 111B, and it must be written together with
+      // the enable bit (bit 8) for the transfer to actually begin -- a write
+      // of GO alone, with the channel not enabled, must not start DMA.
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D0MD&0x7)==0x7) )
          {
             if (ScuRegs->dma0.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma0, 0x7FFFFFFF);
@@ -2740,7 +2789,8 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D1AD = val;
          break;
       case 0x30:
-      if ((val & 0x1) && ((ScuRegs->D1MD&0x07) == 0x7))
+      // See D0EN comment above (level 1 equivalent).
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D1MD&0x07) == 0x7))
          {
             if (ScuRegs->dma1.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma1, 0x7FFFFFFF);
@@ -2774,7 +2824,8 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D2AD = val;
          break;
       case 0x50:
-      if ((val & 0x1) && ((ScuRegs->D2MD & 0x7) == 0x7))
+      // See D0EN comment above (level 2 equivalent).
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D2MD & 0x7) == 0x7))
          {
 
             if (ScuRegs->dma2.TransferNumber != 0) {
