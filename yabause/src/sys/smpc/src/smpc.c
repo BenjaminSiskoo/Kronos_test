@@ -22,6 +22,16 @@
     \brief SMPC emulation functions.
 */
 
+// INTBACK continue-request detection (see SmpcWriteByte, case 0x01).
+// SMPC manual (ST-169-R1-072694, p.59): a continue request is signaled by
+// REVERSING IREG0 bit 7 (an edge), not by it simply being 1 (a level).
+// Set to 1 for the spec-correct XOR/edge check (current default).
+// Set to 0 to revert to the previous plain level check ('IREG0 & 0x80'),
+// e.g. if testing shows a real game relies on the old behavior instead.
+// This define is the only thing that needs to change to switch between
+// the two -- no need to touch the code below or dig through git history.
+#define SMPC_INTBACK_CONTINUE_BY_REVERSAL 1
+
 #include <stdlib.h>
 #include <time.h>
 #include "smpc.h"
@@ -515,9 +525,19 @@ static void SmpcINTBACK(void) {
       SMPCLOG("non peripheral require controlers %d\n", (SmpcRegs->IREG[1]&0x8)!=0);
       SmpcInternalVars->firstPeri = ((SmpcRegs->IREG[1] & 0x8) >> 3);
       for(int i=0;i<31;i++) SmpcRegs->OREG[i] = 0xff;
-      m_pmode = (SmpcRegs->IREG[0]>>4);
+      // Port-mode bits (P2MD1,P2MD0,P1MD1,P1MD0) live in IREG1 bits 7-4
+      // (SMPC manual ST-169-R1-072694, Fig. 3.8), matching SR bits 3-0
+      // (Fig. 3.13) exactly when shifted down by 4. IREG0 only has a
+      // meaningful bit at bit 0 (Fig. 3.6, status acquisition switch);
+      // bits 7-4 of IREG0 are undefined, so reading them here fed garbage
+      // into the P1MD/P2MD bits games use to know the peripheral data
+      // layout to expect.
+      m_pmode = (SmpcRegs->IREG[1]>>4);
       SmpcINTBACKStatus();
-      SmpcRegs->SR = 0x40 | (SmpcInternalVars->firstPeri << 5); // the low nibble is undefined(or 0xF)
+      // SR bit 7 is documented "Always 1" (SMPC manual ST-169-R1-072694,
+      // Fig. 3.13); the other two SR assignments in this file (above) both
+      // include it (0x80/0xC0) but this one was missing it.
+      SmpcRegs->SR = 0xC0 | (SmpcInternalVars->firstPeri << 5); // the low nibble is undefined(or 0xF)
       SmpcRegs->SF = (SmpcRegs->IREG[1]&0x8)!=0;
       ScuSendSystemManager();
       return;
@@ -914,8 +934,17 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                SmpcRegs->SF = 0;
                break;
             }
-            // else if ((SmpcRegs->IREG[0] & 0x80)^(oldVal& 0x80)) {
+            // SMPC manual (ST-169-R1-072694, p.59): "A continue request from
+            // the SH-2 to the SMPC is done by REVERSING the IREG0 bit 7" --
+            // an edge/toggle, not a level. Controlled by the
+            // SMPC_INTBACK_CONTINUE_BY_REVERSAL define at the top of this
+            // file -- flip that one line to revert to the plain level check
+            // if a real game turns out to need it instead.
+#if SMPC_INTBACK_CONTINUE_BY_REVERSAL
+            else if ((SmpcRegs->IREG[0] & 0x80)^(oldVal& 0x80)) {
+#else
             else if (SmpcRegs->IREG[0] & 0x80) {
+#endif
                // Continue
                SMPCLOG("INTBACK Continue\n");
                SmpcSetTiming();
