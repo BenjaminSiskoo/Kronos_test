@@ -1586,7 +1586,15 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          SH2EvaluateInterrupt(context);
          return;
       case 0x1B0:
-         context->onchip.DMAOR = val & 0xF;
+         // AE (bit 2) and NMIF (bit 1) are documented "R/(W)*: only
+         // writing permitted is 0 to clear the flag" (Hitachi SH7095
+         // manual, Sec. 9.2.7) -- hardware-set-only status bits that
+         // software can clear but never set. PR (bit 3) and DME (bit 0)
+         // are plain R/W. A direct 'val & 0xF' let a stray write set
+         // AE/NMIF to 1 and spuriously block all DMA (the manual says DMA
+         // stays disabled while either is 1), which real hardware
+         // wouldn't allow.
+         context->onchip.DMAOR = (context->onchip.DMAOR & val & 0x6) | (val & 0x9);
 
          // If the DMAOR DME bit is set and AE and NMIF bits are cleared,
          // and CHCR's DE bit is set and TE bit is cleared,
