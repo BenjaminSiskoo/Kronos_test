@@ -1274,6 +1274,17 @@ void FASTCALL OnchipWriteWord(SH2_struct *context, u32 addr, u16 val) {
             context->wdt.isinterval = (~val & 0x40);
 
             context->onchip.WTCSR = (context->onchip.WTCSR & (context->onchip.WTCSRM | val) & 0x80) | (val & 0x67);
+            // FIXME(?): the line below unconditionally clears bit 7 (OVF)
+            // right after the formula above computed it using the same
+            // read-then-write-0/WTCSRM race-avoidance logic FTCSR uses
+            // (Hitachi SH7095 manual, Sec. 12.2.2: OVF "cleared by reading
+            // OVF, then writing 0 in OVF"). That makes this unconditional
+            // clear override the formula's result, and also makes the
+            // '&= ~0x80' a few lines below (in the TME==0 branch) dead code
+            // (bit 7 is already 0 by the time it's reached). Not changed
+            // here since the WDT is rarely used as a real watchdog by
+            // Saturn games and the practical impact is unclear -- flagging
+            // for a future pass rather than guessing.
             context->onchip.WTCSR &= ~0x80;
             if(context->onchip.WTCSR & 0x20){
                context->onchip.SBYCR &= 0x7F;
