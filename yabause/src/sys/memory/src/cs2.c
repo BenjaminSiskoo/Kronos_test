@@ -1918,7 +1918,16 @@ void Cs2GetSubcodeQRW(void) {
              Cs2Area->reg.CR3 = 0;
              Cs2Area->reg.CR4 = 0;
 
-             rel_fad = Cs2Area->FAD-(Cs2Area->TOC[Cs2Area->track-1] & 0xFFFFFF);
+             // Cs2Area->track is a u8 and can legitimately hold the reset/
+             // "no track" sentinel 0xFF, or 0 when Cs2FADToTrack() can't
+             // place the current FAD in any track (e.g. lead-in). Either
+             // makes 'track-1' wrap to 254 or -1, indexing well past
+             // TOC[102] (tracks only occupy TOC[0..98]). Guard it instead
+             // of trusting track to always be a valid 1-99 track number.
+             if (Cs2Area->track >= 1 && Cs2Area->track <= 99)
+                rel_fad = Cs2Area->FAD-(Cs2Area->TOC[Cs2Area->track-1] & 0xFFFFFF);
+             else
+                rel_fad = Cs2Area->FAD;
              Cs2FADToMSF(rel_fad, &rel_m, &rel_s, &rel_f);
              Cs2FADToMSF(Cs2Area->FAD, &m, &s, &f);
 
@@ -2317,7 +2326,11 @@ void Cs2GetSectorNumber(void) {
 
   gsnbufno = Cs2Area->reg.CR3 >> 8;
 
-  if (Cs2Area->partition[gsnbufno].size == -1)
+  // partition[] only has MAX_SELECTORS entries; every sibling command
+  // (Cs2GetSectorInfo, Cs2GetBufferSize, Cs2GetSectorData, etc.) bound-
+  // checks this same partition-number field before indexing -- this one
+  // didn't.
+  if (gsnbufno >= MAX_SELECTORS || Cs2Area->partition[gsnbufno].size == -1)
      Cs2Area->reg.CR4 = 0;
   else
      Cs2Area->reg.CR4 = Cs2Area->partition[gsnbufno].numblocks;
@@ -3422,7 +3435,15 @@ void Cs2FADToMSF(u32 val, u8 *m, u8 *s, u8 *f)
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2SetupDefaultPlayStats(u8 track_number, int writeFAD) {
-  if (track_number != 0xFF)
+  // 0xFF is the documented "no track" sentinel, but track_number also
+  // reaches here as 0 (e.g. Cs2FADToTrack() returns 0 when a FAD isn't
+  // within any track, such as the lead-in area) and straight from a
+  // game-supplied register field (CR2>>8) with no prior validation.
+  // track_number - 1 must stay a valid TOC[] index (tracks occupy
+  // TOC[0..98]), so 0 needs rejecting the same as 0xFF -- as written,
+  // track_number==0 wrapped to TOC[-1], an out-of-bounds read just
+  // before the array.
+  if (track_number != 0xFF && track_number != 0)
   {
      Cs2Area->options = 8;
      Cs2Area->repcnt = 0;
