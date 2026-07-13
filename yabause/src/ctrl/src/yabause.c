@@ -122,6 +122,21 @@ PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 // if this regresses anything for usecache=1 users.
 #define YAB_ENABLE_MSH2_CACHE_AT_BOOT 1
 
+// YabauseQuickLoadGame() unconditionally overwrote the IP.BIN-computed
+// 'size'/'blocks' (how much of the First Program to load) with a
+// hardcoded 0x8000 bytes / 16 sectors, labeled "Lastbronx for 0x8000" but
+// applied to every game -- not gated by any game-ID check. This path
+// runs whenever usequickload OR emulatebios is set, i.e. for anyone
+// playing without a real BIOS dump, a common configuration.
+// Rather than gate this on Last Bronx's product code (GS-9152 for the
+// Japanese release; unconfirmed for other regions, so an ID check risked
+// missing a region that needs the same workaround), the fix takes
+// max(computed size, 0x8000): never loads less than whatever Last Bronx
+// apparently needs, and never truncates a game whose real IP.BIN size is
+// bigger than 0x8000 the way the old unconditional override did.
+// Set to 0 to revert to the previous always-exactly-0x8000 behavior.
+#define YAB_QUICKLOAD_CORRECT_IP_SIZE 1
+
 #define THREAD_LOG //printf
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1287,9 +1302,20 @@ int YabauseQuickLoadGame(void)
       if ((size % 2048) != 0)
          blocks++;
 
-      // Lastbronx for 0x8000
+      // Lastbronx for 0x8000 -- see YAB_QUICKLOAD_CORRECT_IP_SIZE at the
+      // top of this file. Was an unconditional override to exactly 16
+      // sectors for every game; now a floor, so games needing more than
+      // 0x8000 aren't truncated.
+#if YAB_QUICKLOAD_CORRECT_IP_SIZE
+      if (size < 16 * 2048)
+      {
+         size = 16 * 2048;
+         blocks = 16;
+      }
+#else
       size = 16 * 2048;
       blocks = 16;
+#endif
 
       // Figure out where to load the first program
       addr = (buffer[0xF0] << 24) |
