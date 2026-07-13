@@ -105,12 +105,21 @@ PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 // behavior. The call to do this was present but broken (wrong signature:
 // missing the SH2_struct* context argument that OnchipWriteByte actually
 // takes, see sh2core.c) and left commented out, so the cache has always
-// started disabled here. This emulator's cache model doesn't simulate
-// real timing effects (see sh2core.c OnchipWriteByte case 0x092), so
-// enabling it is expected to be a no-op for most games -- but a game that
-// reads CCR back at boot, or otherwise depends on its state, could behave
-// differently. Set to 0 to revert to the previous (cache-disabled-at-
-// boot) behavior if this regresses anything.
+// started disabled here.
+//
+// CORRECTION vs. this define's original changelog wording: this is NOT
+// a cosmetic no-op. sh2core.c's CacheRead/WriteByte/Word/Long implement a
+// real 4-way tagged cache with LRU replacement over LowWRAM/HiWRAM,
+// including an A-Bus contention cycle penalty (SH2UpdateABusAccess) --
+// but ALL of it is gated by the separate yabsys.usecache flag (exposed
+// as the 'kronos_usecache' frontend option, default OFF). So:
+//   - usecache=0 (default): enableCache() early-returns, this change is
+//     a genuine no-op, exactly like before.
+//   - usecache=1 (user opted in): this now correctly starts the game
+//     with the cache active, like real hardware, instead of leaving it
+//     off until/unless the game's own code happens to touch CCR again.
+// Set to 0 to revert to the previous (cache-disabled-at-boot) behavior
+// if this regresses anything for usecache=1 users.
 #define YAB_ENABLE_MSH2_CACHE_AT_BOOT 1
 
 #define THREAD_LOG //printf
