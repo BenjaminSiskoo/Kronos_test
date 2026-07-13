@@ -1451,9 +1451,17 @@ int YabauseQuickLoadGame(void)
       Cs2ResetSelector();
       Cs2GetToc();
 
-      // LANGRISSER Dramatic Edition #531
+      // LANGRISSER Dramatic Edition #531 (Japan, product code T-2507G --
+      // Japan-exclusive release, no other region to worry about).
       // This game uses Color ram data written by BIOS
       // So it need to write them before start game on no bios mode.
+      // Was applied unconditionally to every game in emulatebios mode;
+      // gated to the actual game via the IP.BIN product number (offset
+      // 0x20, per the Disc Format Standards Specification Sheet) so
+      // other games' boot-time color RAM isn't clobbered with values
+      // that only make sense for this one.
+      if (strncmp((const char*)&buffer[0x20], "T-2507G", 7) == 0)
+      {
       Vdp2WriteWord(MSH2, NULL, 0x0E,0); // set color mode to 0
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0x0, 0x8000);
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0x2, 0x9908);
@@ -1472,10 +1480,17 @@ int YabauseQuickLoadGame(void)
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0x1C, 0xF39C);
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0x1E, 0xFBDE);
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0xFF, 0x0000);
+      }
 
-      //Workaround for Radiant silergun boot in Emulated bios
+      //Workaround for Radiant silvergun boot in Emulated bios
+      // Japan-exclusive, product code T-32902G. Was applied unconditionally
+      // to every game (filling the *entire* 512KB of VDP1 RAM); gated the
+      // same way as the Langrisser fix above.
+      if (strncmp((const char*)&buffer[0x20], "T-32902G", 8) == 0)
+      {
       for (int i = 0; i < 0x80000; i += 0x20) {
         Vdp1RamWriteWord(NULL, Vdp1Ram, i, 0x8000);
+      }
       }
 
    }
