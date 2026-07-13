@@ -100,6 +100,19 @@ PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 
 //#define DEBUG_ACCURACY
 
+// Enable the master SH-2's instruction cache (CCR bit 0, CE) right before
+// jumping to the game's entry point, matching real Saturn boot ROM
+// behavior. The call to do this was present but broken (wrong signature:
+// missing the SH2_struct* context argument that OnchipWriteByte actually
+// takes, see sh2core.c) and left commented out, so the cache has always
+// started disabled here. This emulator's cache model doesn't simulate
+// real timing effects (see sh2core.c OnchipWriteByte case 0x092), so
+// enabling it is expected to be a no-op for most games -- but a game that
+// reads CCR back at boot, or otherwise depends on its state, could behave
+// differently. Set to 0 to revert to the previous (cache-disabled-at-
+// boot) behavior if this regresses anything.
+#define YAB_ENABLE_MSH2_CACHE_AT_BOOT 1
+
 #define THREAD_LOG //printf
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1391,7 +1404,9 @@ int YabauseQuickLoadGame(void)
       MSH2->regs.PC = Cs2GetMasterExecutionAdress();
       MSH2->regs.R[15] = Cs2GetMasterStackAdress();
       SH2SetRegisters(MSH2, &MSH2->regs);
-      //OnchipWriteByte(0x92, 0X1); //Enable cache support
+#if YAB_ENABLE_MSH2_CACHE_AT_BOOT
+      OnchipWriteByte(MSH2, 0x092, 0x01); // CCR: CE=1 (cache enable), matches real boot ROM
+#endif
 
       Cs2InitializeCDSystem();
       Cs2Area->reg.CR1 = 0x48fc;
