@@ -239,9 +239,20 @@ static INLINE u32 vdp1FBWidth(void) {
     return ((Vdp1Regs->TVMR & 0x7) == 0x1) ? 1024 : 512;
 }
 
-#define VDP1_FB_PIX_CAPACITY (512u * 256u)   /* = 131072 */
+/* BUG CORRIGE : cette capacité était figée à 512*256 (131072), soit
+ * exactement la moitié du vrai framebuffer Hi-Res (1024*256=262144,
+ * cf. vdp1FBWidth() ci-dessus qui renvoie bien 1024 pour TVM=001).
+ * Résultat : en Hi-Res, toute écriture (commande de dessin OU écriture
+ * directe en mémoire par le jeu) au-delà du pixel 131072 était
+ * silencieusement rejetée par vdp1FBPixInBounds(), tronquant à tort
+ * la moitié du framebuffer alors que cette zone est parfaitement
+ * valide en Hi-Res. On utilise maintenant vdp1FBWidth()*vdp1FBHeight()
+ * dynamiquement, cohérent avec le TVM courant. */
+static INLINE u32 vdp1FBPixCapacity(void) {
+    return vdp1FBWidth() * vdp1FBHeight();
+}
 static INLINE int vdp1FBPixInBounds(u32 pixIdx) {
-    return pixIdx < VDP1_FB_PIX_CAPACITY;
+    return pixIdx < vdp1FBPixCapacity();
 }
 
 u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
@@ -1093,6 +1104,30 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
 
 
   memset(cmd->G, 0, sizeof(float)*12);
+  /* VDP1 Manual §5.3 p.65: "Gouraud shading [...] is only effective on
+   * RGB color codes. The color cannot be guaranteed when Gouraud
+   * shading is specified for color bank color codes."
+   * Skip the Gouraud table read entirely for palette-bank color modes
+   * (0, 2, 3, 4) -- they would produce garbage palette-index shifts.
+   * Mode 1 (LUT) and mode 5 (RGB) may legitimately use Gouraud.
+   * Table 5.3: correction = value - 0x10, range [-16,+15].
+   * NOTE: this block was accidentally dropped here when the
+   * pre-clipping bounding-box check below was added; restored using
+   * the same corrected formula already used in Vdp1ScaledSpriteDraw. */
+  {
+    u32 _scm = (cmd->CMDPMOD >> 3) & 0x7u;
+    if ((cmd->CMDPMOD & 4) && (_scm == 1 || _scm == 5))
+    {
+      u32 gouraud_base = (u32)cmd->CMDGRDA << 3;
+      for (int i = 0; i < 4; i++){
+        u16 color2 = Vdp1RamReadWord(NULL, ram,
+            (gouraud_base + (i << 1)) & 0x7FFFF);
+        cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
+        cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
+        cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+      }
+    }
+  }
 // Spec §6.3 Pre-Clipping: reject only if the entire bounding box is outside
 // system clip area. Partial overlap is handled per-line in the draw engine.
 if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
