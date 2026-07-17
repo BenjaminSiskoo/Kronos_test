@@ -397,7 +397,11 @@ u32* getVDP1WriteFramebuffer(int frame) {
     if (_Ygl->vdp1_pbo[0] == 0) YglGenerate();
     glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[frame]);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _Ygl->vdp1_pbo[frame]);
-    _Ygl->vdp1fb_write_buf[frame] = (u32 *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 512 * 256 * 4, GL_MAP_WRITE_BIT );
+    /* BUG CORRIGE : la taille mappée doit correspondre à l'allocation
+     * réelle du buffer (voir YglGenerate ci-dessous, agrandie à
+     * 1024x256 pour couvrir le vrai framebuffer VDP1 Hi-Res). Elle
+     * était figée à 512*256*4, ne couvrant que la moitié en Hi-Res. */
+    _Ygl->vdp1fb_write_buf[frame] = (u32 *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 1024 * 256 * 4, GL_MAP_WRITE_BIT );
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
@@ -417,7 +421,8 @@ void updateVdp1DrawingFBMem(int frame) {
       glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[frame]);
       glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _Ygl->vdp1_pbo[frame]);
       glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 512, 256, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+      /* BUG CORRIGE : idem, 1024x256 pour matcher l'allocation Hi-Res. */
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1024, 256, GL_RGBA, GL_UNSIGNED_BYTE, 0);
       glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
       glBindTexture(GL_TEXTURE_2D, 0 );
       glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT|GL_SHADER_IMAGE_ACCESS_BARRIER_BIT|GL_PIXEL_BUFFER_BARRIER_BIT|GL_FRAMEBUFFER_BARRIER_BIT);
@@ -429,7 +434,9 @@ void clearVDP1Framebuffer(int frame) {
   invalidateVDP1ReadFramebuffer(frame);
   if (_Ygl->FBDirty[frame] != 0) {
     u32* buf = getVDP1WriteFramebuffer(frame);
-    memset(buf, 0, 512*256*4);
+    /* BUG CORRIGE : idem, 1024x256x4 pour matcher l'allocation Hi-Res
+     * (sinon on ne remet à zéro que la moitié du buffer réel). */
+    memset(buf, 0, 1024*256*4);
     updateVdp1DrawingFBMem(frame);
     _Ygl->FBDirty[frame] = 0;
   }
@@ -539,19 +546,29 @@ void YglGenerate() {
   glGenTextures(2, _Ygl->vdp1AccessTex);
   glGenBuffers(2, _Ygl->vdp1_pbo);
   YGLDEBUG("glGenBuffers %d %d\n",_Ygl->vdp1_pbo[0], _Ygl->vdp1_pbo[1]);
+  /* BUG CORRIGE : ces deux buffers (accès direct CPU au framebuffer
+   * VDP1, cf. getVDP1WriteFramebuffer/getVDP1ReadFramebuffer) étaient
+   * alloués en dur à 512x256, soit la moitié du vrai framebuffer
+   * VDP1 Hi-Res (1024x256, cf. vdp1FBWidth() dans vdp1.c). Toute
+   * écriture directe en mémoire par un jeu en Hi-Res au-delà du
+   * pixel 131072 débordait silencieusement (ou était tronquée par le
+   * garde-fou de vdp1.c, qui a le même correctif). On alloue
+   * systématiquement à la taille maximale (1024x256) pour couvrir
+   * tous les modes VDP1 sans avoir à réallouer dynamiquement au
+   * changement de TVM -- surcoût mémoire négligeable (~1 Mo de plus). */
   glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[0]);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, _Ygl->vdp1_pbo[0]);
-  glBufferData(GL_PIXEL_PACK_BUFFER, 512*256*4, NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_PIXEL_PACK_BUFFER, 1024*256*4, NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[1]);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, _Ygl->vdp1_pbo[1]);
-  glBufferData(GL_PIXEL_PACK_BUFFER, 512*256*4, NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_PIXEL_PACK_BUFFER, 1024*256*4, NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1627,13 +1644,23 @@ void YglSetBackColor(float r, float g, float b){
 
 void YglCheckFBSwitch(int sync) {
   GLenum ret = GL_WAIT_FAILED;
-  if (_Ygl->sync == 0) return;
+  if (_Ygl->sync == 0) {
+    return;
+  }
   ret = glClientWaitSync(_Ygl->sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
   if (sync != 0) {
     int end = 0;
+    int loops = 0;
     while (end == 0) {
      ret = glClientWaitSync(_Ygl->sync, GL_SYNC_FLUSH_COMMANDS_BIT, 20000000);
+     loops++;
      if ((ret == GL_CONDITION_SATISFIED) || (ret == GL_ALREADY_SIGNALED)) end = 1;
+     /* Garde-fou : évite un blocage total si le GPU ne signale jamais
+      * la clôture (2s max au lieu d'une attente potentiellement
+      * infinie). */
+     if (loops > 100) {
+       break;
+     }
     }
   }
   if ((ret == GL_CONDITION_SATISFIED) || (ret == GL_ALREADY_SIGNALED)) {
