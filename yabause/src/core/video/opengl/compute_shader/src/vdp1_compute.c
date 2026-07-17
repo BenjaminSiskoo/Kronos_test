@@ -103,7 +103,10 @@ static GLuint prg_vdp1[NB_PRG] = {0};
 
 static GLuint ssbo_cmd_line_list_ = 0;
 
-static u32 write_fb[2][512*256];
+/* BUG CORRIGE : figé à 512*256, la moitié du vrai framebuffer VDP1
+ * Hi-Res (1024x256). Voir vdp1_read() plus bas et le commentaire sur
+ * ssbo_vdp1access_ ci-dessus. */
+static u32 write_fb[2][1024*256];
 
 
 static const GLchar * a_prg_vdp1[NB_PRG][6] = {
@@ -659,7 +662,17 @@ static int generateComputeBuffer(int w, int h) {
 
 	glGenBuffers(1, &ssbo_vdp1access_);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_vdp1access_);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, 512*256*4, NULL, GL_DYNAMIC_DRAW);
+	/* BUG CORRIGE : ce buffer recevait le résultat du compute shader
+	 * vdp1_read (dispatché sur toute la largeur _Ygl->vdp1width, qui
+	 * vaut 1024 en Hi-Res), mais n'était alloué que pour 512x256 --
+	 * la moitié de la capacité réellement nécessaire en Hi-Res. Le
+	 * compute shader écrivait donc au-delà de la fin du buffer pour
+	 * les pixels Hi-Res au-delà de l'index 131072 (comportement GPU
+	 * indéfini), et de toute façon la relecture CPU plus bas
+	 * (glGetBufferSubData) ne récupérait que la première moitié.
+	 * Alloué maintenant à la taille maximale (1024x256) pour couvrir
+	 * tous les modes VDP1 sans réallocation dynamique. */
+	glBufferData(GL_SHADER_STORAGE_BUFFER, 1024*256*4, NULL, GL_DYNAMIC_DRAW);
 
 
 	float col[4] = {0.0};
@@ -1804,7 +1817,11 @@ u32* vdp1_read(int frame) {
 	glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
 
 #ifdef _OGL3_
-	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0x0, 512*256*4, (void*)(&write_fb[frame][0]));
+	/* BUG CORRIGE : ne relisait que 512*256*4 octets (la moitié du
+	 * buffer en Hi-Res, cf. ssbo_vdp1access_ ci-dessus), tronquant la
+	 * moitié droite du contenu VDP1 avant même que VDP2 ne le
+	 * compose -- exactement le rognage observé à l'écran. */
+	glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0x0, 1024*256*4, (void*)(&write_fb[frame][0]));
 #endif
 
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
