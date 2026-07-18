@@ -42,6 +42,20 @@
 extern u8 * Vdp1FrameBuffer[];
 static int rebuild_frame_buffer = 0;
 
+/* CORRECTION (crash) : densite avec laquelle vdp1AccessTex/vdp1_pbo ont
+ * ETE REELLEMENT alloues en dernier (mise a jour uniquement dans
+ * YglGenerate(), juste apres les glTexImage2D/glBufferData reels).
+ * getVDP1WriteFramebuffer()/updateVdp1DrawingFBMem()/clearVDP1Framebuffer()
+ * DOIVENT utiliser CES valeurs (pas _Ygl->vdp1wdensity/hdensity en
+ * direct) pour calculer leurs tailles de map/upload : sinon, entre le
+ * moment ou la densite "live" change et celui ou YglGenerate() a
+ * effectivement regenere le buffer (surtout avec le debounce), tout
+ * appel a getVDP1WriteFramebuffer() base sur la densite live demande
+ * de mapper PLUS d'octets que ce que le buffer contient reellement --
+ * un depassement qui plante l'application. */
+static float vdp1access_allocated_wdensity = 1.0f;
+static float vdp1access_allocated_hdensity = 1.0f;
+
 extern int WaitVdp2Async(int sync);
 
 static int YglGenerateBackBuffer();
@@ -397,11 +411,16 @@ u32* getVDP1WriteFramebuffer(int frame) {
     if (_Ygl->vdp1_pbo[0] == 0) YglGenerate();
     glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[frame]);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _Ygl->vdp1_pbo[frame]);
-    /* BUG CORRIGE : la taille mappée doit correspondre à l'allocation
-     * réelle du buffer (voir YglGenerate ci-dessous, agrandie à
-     * 1024x256 pour couvrir le vrai framebuffer VDP1 Hi-Res). Elle
-     * était figée à 512*256*4, ne couvrant que la moitié en Hi-Res. */
-    _Ygl->vdp1fb_write_buf[frame] = (u32 *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 1024 * 256 * 4, GL_MAP_WRITE_BIT );
+    /* CORRECTION (regression) : la taille mappée doit correspondre à
+     * l'allocation réelle du buffer courant -- 512x256 ou 1024x256
+     * selon le mode VDP1 (TVMR), PAS _Ygl->vdp1width/height qui
+     * inclut EN PLUS le facteur d'agrandissement d'affichage ("scale"
+     * 2x/4x) : ce facteur est déjà réappliqué séparément par le ratio
+     * "upscale" dans les shaders vdp1_write_f/vdp1_read_f, donc
+     * l'inclure ici aussi le compterait deux fois. On utilise
+     * 512*vdp1wdensity / 256*vdp1hdensity, qui reflètent uniquement
+     * le mode VDP1 (normal=1 / Hi-Res=2), sans le scale. */
+    _Ygl->vdp1fb_write_buf[frame] = (u32 *)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 512 * vdp1access_allocated_wdensity * 256 * vdp1access_allocated_hdensity * 4, GL_MAP_WRITE_BIT );
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
@@ -421,8 +440,17 @@ void updateVdp1DrawingFBMem(int frame) {
       glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[frame]);
       glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _Ygl->vdp1_pbo[frame]);
       glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-      /* BUG CORRIGE : idem, 1024x256 pour matcher l'allocation Hi-Res. */
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1024, 256, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+      /* CORRECTION (regression) : idem, 512*wdensity x 256*hdensity
+       * (scale-independant), pas _Ygl->vdp1width/height (qui inclut
+       * le scale d'agrandissement, déjà réappliqué via le ratio
+       * "upscale" dans le shader). Une texture systématiquement plus
+       * large que ce stride décalait chaque ligne d'un buffer plus
+       * étroit lors de l'upload (glTexSubImage2D interprète les
+       * données linéaires avec un stride = largeur de la texture),
+       * produisant des lignes verticales corrompues -- notamment sur
+       * tous les jeux en résolution normale une fois la texture
+       * forcée à 1024 de large en permanence. */
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 512*vdp1access_allocated_wdensity, 256*vdp1access_allocated_hdensity, GL_RGBA, GL_UNSIGNED_BYTE, 0);
       glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
       glBindTexture(GL_TEXTURE_2D, 0 );
       glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT|GL_SHADER_IMAGE_ACCESS_BARRIER_BIT|GL_PIXEL_BUFFER_BARRIER_BIT|GL_FRAMEBUFFER_BARRIER_BIT);
@@ -434,9 +462,9 @@ void clearVDP1Framebuffer(int frame) {
   invalidateVDP1ReadFramebuffer(frame);
   if (_Ygl->FBDirty[frame] != 0) {
     u32* buf = getVDP1WriteFramebuffer(frame);
-    /* BUG CORRIGE : idem, 1024x256x4 pour matcher l'allocation Hi-Res
-     * (sinon on ne remet à zéro que la moitié du buffer réel). */
-    memset(buf, 0, 1024*256*4);
+    /* CORRECTION (regression) : idem, taille reelle scale-independante
+     * du mode courant (512/1024 x 256), pas _Ygl->vdp1width/height. */
+    memset(buf, 0, (size_t)(512*vdp1access_allocated_wdensity*256*vdp1access_allocated_hdensity*4));
     updateVdp1DrawingFBMem(frame);
     _Ygl->FBDirty[frame] = 0;
   }
@@ -508,6 +536,7 @@ void YglGenerate() {
   GLuint error;
   float col[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
+
   warning = 0;
   YglDestroy();
   vdp1_compute_init( _Ygl->vdp1width, _Ygl->vdp1height, _Ygl->vdp1ratio);
@@ -546,34 +575,53 @@ void YglGenerate() {
   glGenTextures(2, _Ygl->vdp1AccessTex);
   glGenBuffers(2, _Ygl->vdp1_pbo);
   YGLDEBUG("glGenBuffers %d %d\n",_Ygl->vdp1_pbo[0], _Ygl->vdp1_pbo[1]);
-  /* BUG CORRIGE : ces deux buffers (accès direct CPU au framebuffer
-   * VDP1, cf. getVDP1WriteFramebuffer/getVDP1ReadFramebuffer) étaient
-   * alloués en dur à 512x256, soit la moitié du vrai framebuffer
-   * VDP1 Hi-Res (1024x256, cf. vdp1FBWidth() dans vdp1.c). Toute
-   * écriture directe en mémoire par un jeu en Hi-Res au-delà du
-   * pixel 131072 débordait silencieusement (ou était tronquée par le
-   * garde-fou de vdp1.c, qui a le même correctif). On alloue
-   * systématiquement à la taille maximale (1024x256) pour couvrir
-   * tous les modes VDP1 sans avoir à réallouer dynamiquement au
-   * changement de TVM -- surcoût mémoire négligeable (~1 Mo de plus). */
+  /* CORRECTION (regression) : ces deux buffers (accès direct CPU au
+   * framebuffer VDP1, cf. getVDP1WriteFramebuffer/getVDP1ReadFramebuffer)
+   * étaient alloués en dur à 512x256 -- la moitié du vrai framebuffer
+   * VDP1 Hi-Res (1024x256). Une première correction les a forcés à
+   * TOUJOURS être 1024x256, mais le code qui remplit ce buffer côté
+   * CPU (Vdp1FrameBuffer*WriteByte/Word/Long dans vdp1.c) calcule son
+   * index avec le stride du mode VDP1 COURANT (512 en résolution
+   * normale) -- une texture systématiquement 1024 de large décalait
+   * donc chaque ligne d'un jeu en résolution normale lors de l'upload
+   * (glTexSubImage2D interprète le buffer linéaire avec un stride =
+   * largeur de la texture), produisant des lignes verticales
+   * corrompues sur TOUS les jeux non-Hi-Res.
+   *
+   * IMPORTANT : on n'utilise PAS _Ygl->vdp1width/vdp1height ici (à la
+   * différence de vdp1FrameBuff juste au-dessus) car ces variables
+   * incluent EN PLUS le facteur d'agrandissement d'affichage ("scale"
+   * 2x/4x) -- ce facteur est déjà réappliqué séparément par le ratio
+   * "upscale" des shaders vdp1_write_f/vdp1_read_f (qui font le pont
+   * entre ce buffer et vdp1FrameBuff), donc l'inclure ici aussi le
+   * compterait deux fois. 512*vdp1wdensity / 256*vdp1hdensity ne
+   * reflètent que le mode VDP1 (normal=1 / Hi-Res=2), sans le scale --
+   * ces buffers sont régénérés par cette fonction à chaque changement
+   * de résolution/TVM. */
   glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[0]);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512*_Ygl->vdp1wdensity, 256*_Ygl->vdp1hdensity, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, _Ygl->vdp1_pbo[0]);
-  glBufferData(GL_PIXEL_PACK_BUFFER, 1024*256*4, NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_PIXEL_PACK_BUFFER, 512*_Ygl->vdp1wdensity*256*_Ygl->vdp1hdensity*4, NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, _Ygl->vdp1AccessTex[1]);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512*_Ygl->vdp1wdensity, 256*_Ygl->vdp1hdensity, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, _Ygl->vdp1_pbo[1]);
-  glBufferData(GL_PIXEL_PACK_BUFFER, 1024*256*4, NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_PIXEL_PACK_BUFFER, 512*_Ygl->vdp1wdensity*256*_Ygl->vdp1hdensity*4, NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  /* CORRECTION (crash) : on enregistre ICI, juste apres les allocations
+   * reelles ci-dessus, la densite avec laquelle vdp1AccessTex/vdp1_pbo
+   * viennent VRAIMENT d'etre alloues -- c'est cette valeur (pas la
+   * densite "live") que getVDP1WriteFramebuffer() etc. doivent utiliser. */
+  vdp1access_allocated_wdensity = _Ygl->vdp1wdensity;
+  vdp1access_allocated_hdensity = _Ygl->vdp1hdensity;
   glGenFramebuffers(2, _Ygl->vdp1AccessFB);
 
   glGenRenderbuffers(1, &_Ygl->rboid_depth);
@@ -614,6 +662,69 @@ void YglGenReset() {
 //////////////////////////////////////////////////////////////////////////////
 int VIDCSGenFrameBuffer() {
     u32* vdp1_framebuffer[2];
+  /* DIAGNOSTIC (temporaire) : log INCONDITIONNEL (pas seulement sur
+   * changement) pour prouver que cette fonction est bien appelee et
+   * voir la vraie valeur de densite a chaque fois, meme si elle ne
+   * change jamais. Limite a quelques lignes puis 1 fois toutes les
+   * 500 fois pour ne pas noyer le fichier. */
+  {
+    static unsigned int call_count = 0;
+    call_count++;
+    if (call_count <= 10 || (call_count % 500) == 0) {
+    }
+  }
+  /* CORRECTION (regression) : Vdp1SetTextureRatio() (vidcs.c) met a
+   * jour _Ygl->vdp1wdensity/vdp1hdensity a chaque appel (tres frequent
+   * -- lie au traitement de la resolution VDP2, y compris quand un
+   * jeu bascule le bit DIE de FBCR pour du double-buffering manuel,
+   * independamment du mode VDP1/TVM), mais rien ne declenchait de
+   * regeneration de vdp1AccessTex/vdp1_pbo quand cette densite
+   * changeait. Ces buffers restaient alloues a la taille qu'ils
+   * avaient au tout premier appel de YglGenerate(), alors que
+   * getVDP1WriteFramebuffer()/updateVdp1DrawingFBMem() mappent/
+   * uploadent avec la densite COURANTE -- un decalage de taille qui
+   * se traduit visuellement par des lignes verticales corrompues des
+   * qu'un jeu change cette densite en cours de route. On detecte ici
+   * le changement (cette fonction tourne regulierement) et on force
+   * une regeneration complete, exactement comme le fait deja
+   * YglChangeResolution() pour un changement de "scale". Entierement
+   * local a ce fichier : pas de nouveau symbole expose.
+   *
+   * CORRECTION (crash, Pro Yakyuu Greatest Nine '97) : certains jeux
+   * font (volontairement ou par un pattern DMA inhabituel) osciller
+   * rapidement le registre qui pilote cette densite au demarrage.
+   * Regenerer TOUTES les ressources GL (YglGenerate -> YglDestroy +
+   * recreation complete) est une operation lourde et sensible au
+   * timing ; la declencher en rafale sur chaque oscillation pouvait
+   * provoquer un crash. On "debounce" desormais : la nouvelle valeur
+   * doit rester stable plusieurs appels consecutifs avant qu'une
+   * regeneration reelle soit declenchee, ce qui filtre les
+   * oscillations rapides tout en traitant correctement les vrais
+   * changements durables (transition Hi-Res, etc.). */
+  {
+    static float last_vdp1wdensity = -1.0f;
+    static float last_vdp1hdensity = -1.0f;
+    static float pending_vdp1wdensity = -1.0f;
+    static float pending_vdp1hdensity = -1.0f;
+    static int stable_count = 0;
+    #define VDP1_DENSITY_DEBOUNCE_FRAMES 5
+
+    if ((_Ygl->vdp1wdensity != pending_vdp1wdensity) || (_Ygl->vdp1hdensity != pending_vdp1hdensity)) {
+      /* Nouvelle valeur candidate : on redemarre le compteur de stabilite. */
+      pending_vdp1wdensity = _Ygl->vdp1wdensity;
+      pending_vdp1hdensity = _Ygl->vdp1hdensity;
+      stable_count = 1;
+    } else if (stable_count < VDP1_DENSITY_DEBOUNCE_FRAMES) {
+      stable_count++;
+    }
+
+    if ((stable_count == VDP1_DENSITY_DEBOUNCE_FRAMES) &&
+        ((pending_vdp1wdensity != last_vdp1wdensity) || (pending_vdp1hdensity != last_vdp1hdensity))) {
+      last_vdp1wdensity = pending_vdp1wdensity;
+      last_vdp1hdensity = pending_vdp1hdensity;
+      rebuild_frame_buffer = 1;
+    }
+  }
   if (rebuild_frame_buffer == 0){
     return 0;
   }
