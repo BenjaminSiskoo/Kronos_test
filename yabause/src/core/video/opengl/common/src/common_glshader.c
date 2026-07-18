@@ -7,6 +7,41 @@ extern int YglInitDrawFrameBufferShaders(int id, int CS);
 
 GLuint _prgid[PG_MAX] = { 0 };
 
+/* =====================================================================
+ * Historique des correctifs fusionnés dans ce fichier
+ * =====================================================================
+ *
+ * 1) "vdp2: test sprite transparency before FB-MSB injection (types 8-F)"
+ *    Bug   : le hack de propagation du MSB sur colonne impaire s'exécutait
+ *            AVANT le test de transparence dans chaque décodeur sprite
+ *            8 bits. Un code d'effacement VDP1 0x8000 (octet bas = 0,
+ *            octet haut = 0x80) devenait alors un pixel opaque valide sur
+ *            les colonnes impaires.
+ *    Fix   : le test "col.x == 0.0 -> transparent" est déplacé AVANT
+ *            l'injection du MSB, pour toutes les colonnes, tout en
+ *            conservant le comportement du MSB pour les pixels réellement
+ *            opaques.
+ *    Effet : corrige les lignes verticales (vertical-line corruption) sur
+ *            Kunoichi Torimonochou (type F), et corrige le même défaut
+ *            latent présent dans les types 8, 9, A, B, C, D, E.
+ *    Statut dans ce fichier : appliqué et vérifié sur les 8 décodeurs
+ *            (types 8 à F) ci-dessous — voir chaque fonction
+ *            Yglprg_vdp2_sprite_type_[8-F].
+ *
+ * 2) Correctif "darklight conflict" (SPCCCS = 3 / comparaison de priorité)
+ *    - Pour SPCCCS == 3 (color calc quand le MSB des données couleur == 1),
+ *      les données sprite en mode RGB direct ont toujours leur bit MSB à 1
+ *      (flag RGB) : on ne doit donc PAS relire la CRAM avec ret.code (qui
+ *      n'est pas un index CRAM valide en mode direct) mais forcer
+ *      color_data_msb = 1 quand ret.isRGB == 1.
+ *    - Les comparaisons SPCCCS 0/1/2 doivent se faire sur la priorité VDP2
+ *      réellement utilisée pour ce pixel (depth = getVDP2Reg(prio+8,line)),
+ *      et non sur ret.prio (index de registre de priorité sprite brut),
+ *      afin d'éviter un conflit d'arbitrage de priorité ("darklight
+ *      conflict") entre sprite et écrans VDP2.
+ *    Statut dans ce fichier : appliqué dans Yglprg_vdp2_common_draw.
+ * ===================================================================== */
+
 static const GLchar Yglprg_vdp2_sprite_palette_only[] =
 "bool isRGBCode(int index) {"
 " return false;\n"
@@ -269,15 +304,28 @@ static const GLchar Yglprg_vdp2_sprite_type_7[] =
 "}\n";
 
 
+/* ---------------------------------------------------------------------
+ * Types 8 à F : décodeurs "palette only" 8 bits.
+ *
+ * FIX KUNOICHI (voir historique en tête de fichier) : le test de
+ * transparence "if (col.x != 0.0) ret.valid = 1; else return ret;" est
+ * placé AVANT le hack de propagation du MSB sur colonne impaire. Ainsi
+ * un code d'effacement VDP1 0x8000 (col.x == 0) reste transparent quelle
+ * que soit la parité de la colonne, alors qu'avant ce fix l'injection du
+ * MSB sur les colonnes impaires pouvait transformer col.x en une valeur
+ * non nulle et rendre le pixel effacé faussement opaque -> lignes
+ * verticales parasites (Kunoichi Torimonochou, notamment le type F).
+ * ------------------------------------------------------------------- */
+
 //Kunoichi Torimonochou is clearing with VDP1 clear code 0x8000 with FB in 8bits mode, so palette Only
 // Then the color code has to be considered as transparent color
 static const GLchar Yglprg_vdp2_sprite_type_8[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type 8\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 7) & 0x1;\n"
 "  ret.code = ret.code & 0x7F;\n"
@@ -290,10 +338,10 @@ static const GLchar Yglprg_vdp2_sprite_type_8[] =
 static const GLchar Yglprg_vdp2_sprite_type_9[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type 9\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 7) & 0x1;\n"
 "  ret.cc = (ret.code >> 6) & 0x1;\n"
@@ -307,10 +355,10 @@ static const GLchar Yglprg_vdp2_sprite_type_9[] =
 static const GLchar Yglprg_vdp2_sprite_type_A[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type A\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 6) & 0x3;\n"
 "  ret.code = ret.code & 0x3F;\n"
@@ -323,10 +371,10 @@ static const GLchar Yglprg_vdp2_sprite_type_A[] =
 static const GLchar Yglprg_vdp2_sprite_type_B[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type B\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.cc = (ret.code >> 6) & 0x3;\n"
 "  ret.code = ret.code & 0x3F;\n"
@@ -339,10 +387,10 @@ static const GLchar Yglprg_vdp2_sprite_type_B[] =
 static const GLchar Yglprg_vdp2_sprite_type_C[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type C\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 7) & 0x1;\n"
 "  ret.code = ret.code & 0xFF;\n"
@@ -355,10 +403,10 @@ static const GLchar Yglprg_vdp2_sprite_type_C[] =
 static const GLchar Yglprg_vdp2_sprite_type_D[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type D\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 7) & 0x1;\n"
 "  ret.cc = (ret.code >> 6) & 0x1;\n"
@@ -372,10 +420,10 @@ static const GLchar Yglprg_vdp2_sprite_type_D[] =
 static const GLchar Yglprg_vdp2_sprite_type_E[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type E\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.prio = (ret.code >> 6) & 0x3;\n"
 "  ret.code = ret.code & 0xFF;\n"
@@ -388,10 +436,10 @@ static const GLchar Yglprg_vdp2_sprite_type_E[] =
 static const GLchar Yglprg_vdp2_sprite_type_F[] =
 "FBCol getVDP1PixelCode(vec2 col, bool odd) {\n"
 "//Sprite type F\n"
-"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  FBCol ret = zeroFBCol();\n"
 "  if (col.x != 0.0) ret.valid = 1;\n"
 "  else return ret;\n"
+"  if (odd && ((uint(col.y*255.0) & 0x80u)==0x80u)) col.x = float(uint(col.x * 255.0) | 0x80u)/255.0;\n"
 "  ret.code = getCode(col);\n"
 "  ret.cc = (ret.code >> 6) & 0x3;\n"
 "  ret.code = ret.code & 0xFF;\n"
@@ -609,12 +657,15 @@ static const GLchar Yglprg_vdp2_common_draw[] =
 /* SPCCCS=3: lire le MSB du mot CRAM à l'index ret.code (cramindex du pixel sprite).
  * s_color est bindé sur GL_TEXTURE11. getColorLine(line) donne la ligne CRAM.
  * Le MSB du mot CRAM 16-bit est le bit 15 = bit 7 du canal alpha de s_color
- * (format RGBA8: alpha stocke les bits 15-8 du mot CRAM original). */
+ * (format RGBA8: alpha stocke les bits 15-8 du mot CRAM original).
+ * FIX DARKLIGHT CONFLICT: en mode couleur directe (ret.isRGB == 1), le bit
+ * MSB (bit15) du mot sprite est toujours à 1 (c'est le flag RGB lui-même),
+ * et ret.code n'est alors PAS un index CRAM valide (c'est une valeur RGB
+ * directe) : relire la CRAM avec ret.code serait faux. On force donc
+ * color_data_msb = 1 directement dans ce cas, et on ne consulte la CRAM
+ * que pour les pixels indexés palette. */
 "  int color_data_msb = 0;\n"
 "  if (spcccs == 3) {\n"
-/* VDP2 Manual S9.2 SPCCCS=3: colour calc when the colour-data MSB is 1.
- * RGB sprite data has MSB(bit15)=RGB flag => always 1 (condition met).
- * ret.code is the raw RGB value (not a CRAM index) so the CRAM lookup was bogus. */
 "    if (ret.isRGB == 1) {\n"
 "      color_data_msb = 1;\n"
 "    } else {\n"
@@ -622,6 +673,12 @@ static const GLchar Yglprg_vdp2_common_draw[] =
 "      color_data_msb = (int(cram_entry.a * 255.0) != 0) ? 1 : 0;\n"
 "    }\n"
 "  }\n"
+/* FIX DARKLIGHT CONFLICT: la comparaison SPCCN doit se faire sur la
+ * priorité VDP2 effective du pixel (depth = getVDP2Reg(ret.prio+8,line)),
+ * pas sur ret.prio (qui n'est qu'un index de registre de priorité sprite
+ * brut, pas la priorité VDP2 réellement arbitrée). Utiliser ret.prio ici
+ * provoquait un mauvais arbitrage priorité sprite/écran (conflit
+ * "darklight"). */
 "  int cc_enable = 0;\n"
 "  if (spccen != 0) {\n"
 "    if      (spcccs == 0) cc_enable = (depth <= spccn) ? 1 : 0;\n"
