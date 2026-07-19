@@ -38,15 +38,6 @@
 #include "yui.h"
 #include "ygl.h"
 
-/* Nombre de decilines par ligne de balayage. Historiquement défini comme
- * macro globale, il n'est plus exposé par yabause.h (timing en virgule fixe).
- * On fournit un repli conforme à la convention Yabause ("déci" = 10) ; si un
- * en-tête le définit déjà, sa valeur est conservée. À aligner avec la valeur
- * réelle de yabause.c si elle diffère. */
-#ifndef DECILINE_STEP
-#define DECILINE_STEP 10
-#endif
-
 u8 * Vdp2Ram;
 u8 * Vdp2ColorRam;
 Vdp2 * Vdp2Regs;
@@ -123,14 +114,10 @@ static int updateBlockedBank(int bank){
       break;
       case 0x3:
       // NBG3 Pattern Name Data Read
+      break;
       case 0x7:
       // NBG3 Character Pattern Data Read
-        /* CPU can access if NBG3 is disabled (BGON bit 3). NBG3 has no
-         * vertical cell scroll, so only PN (0x3) + CP (0x7) apply — grouped
-         * exactly like NBG0/1/2 above. Previously code 0x3 had its own empty
-         * break, so a slot allocated to NBG3 pattern-name reads did NOT mark
-         * the bank as used by NBG3: hasAccessState kept a stale value from a
-         * prior slot and the CPU VRAM access-timing decision was wrong. */
+        // CPU can access if NBG3 is disabled
         hasAccessState = ((Vdp2Regs->BGON&0x8)==0);
         if (!hasAccessState) hasWaitState = 0;
       break;
@@ -190,7 +177,7 @@ static void vdp2RamAccessCPUCheck(int bank){
 
 u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-     addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -208,7 +195,7 @@ u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
 
 u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -226,7 +213,7 @@ u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
 
 u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -244,7 +231,7 @@ u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
 
 void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -262,7 +249,7 @@ void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 
 void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -280,7 +267,7 @@ void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
 
 void FASTCALL Vdp2RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xFFFFF; /* 8 Mbit (VRAMSZ=1) = 1 Mo (ST-058-R2, registre VRSIZE) */
+    addr &= 0xEFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -490,11 +477,7 @@ static int checkFrameSkip(void) {
   if(nextFrameTime < now) ret = 1;
   return ret;
 #endif
-  /* skipframe+1 sert de pas : on le borne à >= 1 pour éviter un modulo par
-   * zéro (comportement indéfini / crash) si skipframe vaut -1. */
-  int step = yabsys.skipframe + 1;
-  if (step < 1) step = 1;
-  return !(yabsys.frame_count % step == 0);
+  return !(yabsys.frame_count % (yabsys.skipframe+1) == 0);
 }
 
 static void updateCyclePattern() {
@@ -572,23 +555,6 @@ void resetFrameSkip(void) {
   nextFrameTime = 0;
 }
 
-/* VDP2 manual (ST-058-R2) §2.4, TVMD VRESO bits 5~4 :
- *   00 = 224 lignes (NTSC/PAL)
- *   01 = 240 lignes (NTSC/PAL d'après la spec ; ce fork conserve 256 en PAL)
- *   10 = 256 lignes (PAL uniquement)
- *   11 = interdit
- * Source unique du mapping VRESO -> VBlankLineCount, utilisée par
- * Vdp2VBlankIN() et Vdp2WriteWord() pour éviter toute divergence. */
-static inline int Vdp2VResoLineCount(u16 tvmd) {
-  switch ((tvmd >> 4) & 0x3) {
-  case 0:  return 224;
-  case 1:  return yabsys.IsPal ? 256 : 240;   /* spec stricte : 240 dans les deux cas */
-  case 2:  return 256;
-  case 3:
-  default: return yabsys.IsPal ? 256 : 224;   /* 11 = interdit : repli défensif */
-  }
-}
-
 void Vdp2VBlankIN_It(void) {
   Vdp2Regs->TVSTAT |= 0x0008;
   ScuSendVBlankIN();
@@ -597,9 +563,11 @@ void Vdp2VBlankIN_It(void) {
 void Vdp2VBlankIN(void) {
   FRAMELOG("***** VIN *****");
 
-  if (Vdp2Regs->EXTEN & 0x200)
+  if (Vdp2Regs->EXTEN & 0x200) // Should be revised for accuracy(should occur only occur on the line it happens at, etc.)
   {
     if ((SmpcRegs->EXLE & 0x8) == 0){
+      // Use unused bit to detect latch already done
+      // Only Latch if EXLTEN is enabled
       if (SmpcRegs->EXLE & 0x1){
         Vdp2SendExternalLatch(((PORTDATA1.data[2] & 0x40) == 0), (PORTDATA1.data[3]<<8)|PORTDATA1.data[4], (PORTDATA1.data[5]<<8)|PORTDATA1.data[6]);
       }
@@ -610,21 +578,24 @@ void Vdp2VBlankIN(void) {
     }
   }
 
-  /* VDP2 Manual §2.4: update VBlankLineCount from TVMD VRESO BEFORE Vdp2Draw(),
-   * so Vdp2DrawNBGx() endLine uses the correct value for this field.
-   * Vdp2VBlankOUT() would update it too late — after the render. */
-  yabsys.VBlankLineCount = Vdp2VResoLineCount(Vdp2Regs->TVMD);
+   /* this should be done after a frame change or a plot trigger */
 
-  //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
-  if (checkFrameSkip() != 0) {
-    dropFrameDisplay();
-    isSkipped = 1;
-  } else {
-    VIDCore->Vdp2Draw();
-    isSkipped = 0;
-  }
-  nextFrameTime  += yabsys.OneFrameTime;
-  VIDCore->Sync();
+   /* I'm not 100% sure about this, but it seems that when using manual change
+   we should swap framebuffers in the "next field" and thus, clear the CEF...
+   now we're lying a little here as we're not swapping the framebuffers. */
+   //if (Vdp1External.manualchange) Vdp1Regs->EDSR >>= 1;
+
+   if (checkFrameSkip() != 0) {
+     dropFrameDisplay();
+     isSkipped = 1;
+   } else {
+     VIDCore->Vdp2Draw();
+     isSkipped = 0;
+   }
+   nextFrameTime  += yabsys.OneFrameTime;
+
+   VIDCore->Sync();
+
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -702,35 +673,26 @@ Vdp2 * Vdp2RestoreRegs(int line, Vdp2* lines) {
 
 //////////////////////////////////////////////////////////////////////////////
 void Vdp2VBlankOUT_It(void) {
-  /* Sortie du retour vertical (manuel VDP2 ST-058-R2, TVSTAT 180004H) :
-   *   VBLANK (bit 3) -> 0  : on quitte le vertical re-trace
-   *   ODD    (bit 1)       : reflète l'indicateur de champ courant
-   * PAL (bit 0), HBLANK (bit 2) et les drapeaux de latch externe (bits 9/10,
-   * remis à 0 à la lecture de TVSTAT) sont préservés. */
-  Vdp2Regs->TVSTAT = (Vdp2Regs->TVSTAT & ~0x000A) | ((vdp2_is_odd_frame & 1) << 1);
+  Vdp2Regs->TVSTAT = ((Vdp2Regs->TVSTAT & ~0x0008) & ~0x0002) | (vdp2_is_odd_frame << 1);
   ScuSendVBlankOUT();
 }
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
+  yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
+  if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
-  /* yabsys.VBlankLineCount est calculé dans Vdp2VBlankIN (avant Vdp2Draw),
-   * conformément au manuel VDP2 §2.4 (TVMD/VRESO). On ne le recalcule plus
-   * ici : le faire après le rendu serait trop tard, et le double switch
-   * présent auparavant était de toute façon du code mort (switch externe
-   * sans étiquette case, dont le corps n'était jamais exécuté). */
+   if (_Ygl->interlace == NORMAL_INTERLACE){
+     vdp2_is_odd_frame = 1;
+   }else{ // p02_50.htm#TVSTAT_
+     if (vdp2_is_odd_frame)
+       vdp2_is_odd_frame = 0;
+     else
+       vdp2_is_odd_frame = 1;
+   }
 
-  /* Indicateur de champ ODD/EVEN pour le prochain champ.
-   * Manuel VDP2, TVSTAT (180004H, bit 1) : non-entrelacé -> figé à 1,
-   * entrelacé (simple ou double densité) -> alterne à chaque champ.
-   * _Ygl->interlace : NORMAL_INTERLACE == non-entrelacé (ygl.h). */
-  if (_Ygl->interlace == NORMAL_INTERLACE) {
-    vdp2_is_odd_frame = 1;
-  } else {
-    vdp2_is_odd_frame = !vdp2_is_odd_frame;
-  }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -738,12 +700,9 @@ void Vdp2VBlankOUT(void) {
 void Vdp2SendExternalLatch(int trigger, int hcnt, int vcnt)
 {
   if (trigger) {
-    /* HCNT en mode graphique Normal : HCT0 (bit 0) est invalide, la valeur
-     * est exprimée en unités de 2 points (ST-058-R2, Table 2.3). On décale
-     * donc la position horizontale (en points) dans le format du registre. */
-    Vdp2Regs->HCNT = hcnt << 1;
+    Vdp2Regs->HCNT = hcnt << 1; //pourquoi?
     Vdp2Regs->VCNT = vcnt;
-    Vdp2Regs->TVSTAT |= 0x200; /* EXLTFG : HV latché (TVSTAT bit 9) */
+    Vdp2Regs->TVSTAT |= 0x200;
   }
 }
 
@@ -768,16 +727,10 @@ u16 FASTCALL Vdp2ReadWord(SH2_struct *context, u8* mem, u32 addr) {
       case 0x002:
          if (!(Vdp2Regs->EXTEN & 0x200))
          {
-            /* EXLTEN = 0 : le manuel (ST-058-R2) impose le latch de H ET V
-             * lors de la lecture du registre EXTEN. La position horizontale
-             * est dérivée de l'avancement dans la ligne (DecilineCount /
-             * DECILINE_STEP, voir le repli défini en tête de fichier) ;
-             * << 1 = encodage HCNT mode Normal (HCT0 invalide, Table 2.3).
-             * NB : précision horizontale limitée par la granularité des
-             * decilines — à raffiner si un jeu au pistolet l'exige. */
-            Vdp2Regs->HCNT = (yabsys.DecilineCount * _Ygl->rwidth / DECILINE_STEP) << 1;
+            // Latch HV counter on read
+            // Vdp2Regs->HCNT = (yabsys.DecilineCount * _Ygl->rwidth / DECILINE_STEP) << 1;
             Vdp2Regs->VCNT = yabsys.LineCount;
-            Vdp2Regs->TVSTAT |= 0x200; /* EXLTFG (TVSTAT bit 9) */
+            Vdp2Regs->TVSTAT |= 0x200;
          }
 
          return Vdp2Regs->EXTEN;
@@ -837,15 +790,8 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
          Vdp2Regs->TVMD = val;
          if ((yabsys.LineCount < yabsys.VBlankLineCount) && (yabsys.LineCount < 225+(Vdp2Regs->TVMD & 0x30)) && ((Vdp2Regs->TVMD & 0x30)<(yabsys.VBlankLineCount - 225))) {
            //Safe to change right now
-			int new_vblank = Vdp2VResoLineCount(val);
-			/* Mise à jour anticipée uniquement si le changement est sûr mid-frame :
-			 * la ligne courante doit être < nouveau VBlank, et strictement inférieure
-			 * à la résolution cible pour ne pas tronquer une frame en cours. */
-			if (yabsys.LineCount < new_vblank &&
-				yabsys.LineCount < (int)(225 + ((Vdp2Regs->TVMD & 0x30))) &&
-				new_vblank > yabsys.VBlankLineCount) {
-				yabsys.VBlankLineCount = new_vblank;
-			}
+           yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
+           if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
          }
          Vdp1SetRaster(Vdp2Regs->TVMD & 0x1);
          updateCyclePattern();
@@ -1198,9 +1144,42 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       case 0x0DE:
          Vdp2Regs->LWTA1.part.L = val;
          return;
-      case 0x0E0:
-         Vdp2Regs->SPCTL = val;
+      case 0x0E0: {
+         u16 spctl_oldval = Vdp2Regs->SPCTL;
+         u16 spctl_newval = val;
+
+         // --- Fix for Kronos issue #1503 (VDP2 SPCTL / VDP1 TVMR desync) ---
+         // The game writes SPCTL (sprite type, bits 0-3) and VDP1's TVMR
+         // (bit 0: is the VDP1 framebuffer 8-bit or 16-bit) from two
+         // different points in its own code, tens of frames apart. In the
+         // window where they disagree about "8-bit vs 16-bit", VDP2 ends up
+         // decoding pixels VDP1 wrote in one width as if they were the
+         // other width, producing visible noise (confirmed via
+         // instrumentation: SPCTL flips to an 8-bit-category type while
+         // TVMR is still 16-bit, or vice versa). This mirrors FCare's own
+         // diagnostic finding on issue #1503 ("if SPCT stays at 0x3, image
+         // is nice").
+         //
+         // Rather than dropping the SPCTL write outright, only the SPTYPE
+         // nibble's 8-bit/16-bit *category* is held at its previous value
+         // when the new category doesn't match VDP1's current TVMR --
+         // every other SPCTL bit (SPWINEN, SPCLMD, SPCCN, SPCCCS...) still
+         // updates normally. Once TVMR itself flips to match, the game's
+         // own periodic register-block DMA sync will re-send the same
+         // SPCTL value and it will go through unheld.
+         {
+            int old_is8bit = (spctl_oldval & 0xF) > 7;
+            int new_is8bit = (spctl_newval & 0xF) > 7;
+            int tvmr_is8bit = (Vdp1Regs->TVMR & 0x1) != 0;
+            if ((new_is8bit != old_is8bit) && (new_is8bit != tvmr_is8bit)) {
+               spctl_newval = (spctl_newval & ~0xF) | (spctl_oldval & 0xF);
+            }
+         }
+         // --- End fix ---
+
+         Vdp2Regs->SPCTL = spctl_newval;
          return;
+      }
       case 0x0E2:
          Vdp2Regs->SDCTL = val;
          return;
