@@ -1359,9 +1359,18 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
   }
  
+
   if (char_access == 0) return;
  
-  /* VDP2 Manual §4.2 CHCTLA bits 6-4 : NBG0 color number. */
+  /* VDP2 Manual §4.2 CHCTLA bits 6-4 : NBG0 color number.
+   * Must be assigned BEFORE the isbitmap branch below, which switches on
+   * ctrl.info.colornumber for the wrap-size computation, and before
+   * Vdp2DrawCell_in_sync()'s per-pixel switch (case 0..4) that decides how
+   * many bytes/pixel to read. This line was accidentally dropped during a
+   * manual file reconstruction -- leaving colornumber as uninitialised
+   * stack garbage, which matched none of the switch cases and silently
+   * skipped writing any pixel data at all (root cause of the missing
+   * NBG0 bitmap: title logo + background never drawn). */
   ctrl.info.colornumber = (ctrl.regs->CHCTLA & 0x70) >> 4;
  
   if ((ctrl.info.isbitmap = ctrl.regs->CHCTLA & 0x2) != 0)
@@ -1435,7 +1444,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
        * and the layer rendered against an unsafe RAMCTL cycle pattern.
        * Either way the per-line decision was keyed off the wrong layer. */
       if ((Vdp2Lines[k].BGON & 0x1) != 0) {
-        if (((Vdp2Lines[k].RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x0) {
+        if (Vdp2BankOwnedByRBG0(&Vdp2Lines[k], charAddrBk)) {
           needUpdate = 1;
           ctrl.info.display[k] = 0;
         }
@@ -1990,23 +1999,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   if ((ctrl.regs->ZMXN1.all & 0x7FF00) == 0) return;
   else ctrl.info.coordincx = (float)65536 / (ctrl.regs->ZMXN1.all & 0x7FF00);
 
-  /* Reduction Enable Register ZMCTL §5.2 p.129 : bits 9-8 for NBG1
-   * (N1ZMQT/N1ZMHF — same encoding as bits 1-0 for NBG0).
-   *   00 = no reduction              (maxzoom = 1.0)
-   *   01 = up to 1/2                 (maxzoom = 0.5)
-   *   10/11 = up to 1/4              (maxzoom = 0.25)
-   *
-   * The previous switch lacked a 'case 0' branch, leaving maxzoom
-   * uninitialised on the local Vdp2Ctrl whenever NBG1 had no
-   * reduction enabled — which is the most common case.  The down-
-   * stream clamp `coordincx = max(coordincx, maxzoom)` then read a
-   * stack-garbage value, occasionally producing visible zoom
-   * artefacts on NBG1 backgrounds (especially in titles that share
-   * the bitmap path between zones because the clamp ran on every
-   * pixel via Vdp2DrawBitmapCoordinateInc).
-   *
-   * Mirror NBG0's switch which already handles case 0 explicitly. */
-
   switch ((ctrl.regs->ZMCTL >> 8) & 0x03)
   {
   case 0:
@@ -2031,22 +2023,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
 
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG1PlaneAddr;
 
-  /* VDP2 Manual §4.1 p.61 (Note after color count tables):
-   *   "When NBG0 is set at 16,770,000 colors, NBG1 to NBG3 can no longer
-   *    be displayed."
-   *
-   * Only the 16,770,000 color mode (CHCTLA N0CHCN[2:0] = 100B = 4) suppresses
-   * NBG1.  The 32,768 color mode (colornumber == 3 = RGB-15) does NOT
-   * suppress NBG1 — the spec is explicit: NBG1 vanishes only at colornumber
-   * == 4 ("32K Direct Color Mode" / 16,770,000 colors).
-   *
-   * The previous threshold ">= 3" wrongly killed NBG1 whenever NBG0 ran in
-   * the standard 32K RGB mode (very common: Saturn games using NBG0 as a
-   * full-color background plus NBG1 for HUD/text).  Symptom: NBG1 layer
-   * (typically the score / HUD on RGB backgrounds) silently disappears.
-   *
-   * Correct threshold: == 4  (only the 16.7M color mode disables NBG1). */
-
   if ((ctrl.info.priority == 0) ||
       ((ctrl.regs->BGON & 0x1) && (((ctrl.regs->CHCTLA & 0x70) >> 4) == 4))) {
     return;
@@ -2056,18 +2032,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.lineinfo = lineNBG1;
   Vdp2GenLineinfo(&ctrl.info);
 
-  /* §3.3 p.35 : VCSC NBG1 active seulement si le cycle
-   * pattern reserve un access command VCSC NBG1 (0xD) en T0-T2. */
   if ((ctrl.regs->SCRCTL & 0x100) && Vdp2VCSCAccessValid(ctrl.regs, NBG1)) {
     ctrl.info.isverticalscroll = 1;
-    /* §3.3 p.35 / §5.3 : NBG0 and NBG1 share the VCSC table. The table is
-     * interleaved (NBG0 word, then NBG1 word -> NBG1 at +4, stride 8) ONLY
-     * when NBG0 is *actually* doing VCSC, i.e. enabled (SCRCTL bit 0) AND a
-     * VCSC access command is reserved for it. Testing SCRCTL bit 0 alone was
-     * wrong: with N0VCSC enabled but no reserved access slot, NBG0 fetches
-     * nothing (its own block skips via Vdp2VCSCAccessValid(NBG0)), so the
-     * table is NOT interleaved and NBG1 must read at offset 0 / stride 4.
-     * The previous code put NBG1 at +4 / stride 8, reading the wrong words. */
     if ((ctrl.regs->SCRCTL & 0x1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
       ctrl.info.verticalscrolltbl = 4 + ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1);
       ctrl.info.verticalscrollinc = 8;
@@ -2079,21 +2045,12 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
   else ctrl.info.isverticalscroll = 0;
 
-  /* Precompute the screen pixel rows for this zone.
-   * All bitmap and linescroll paths below must draw only within
-   * [screenY1, screenY2) so zones don't overwrite each other.
-   * VDP2 Manual §5.1: the display area is split into segments where
-   * each segment uses the register snapshot of its first scanline. */
   const int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
   const int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
 
   if (ctrl.info.isbitmap)
   {
     if (ctrl.info.coordincx != 1.0f || ctrl.info.coordincy != 1.0f || VDPLINE_SZ(ctrl.info.islinescroll)) {
-      /* Bitmap + CoordinateInc (zoom) or line-zoom path.
-       * Was: hardcoded vertices [0, rheight]. Now: zone slice [screenY1, screenY2].
-       * Vdp2DrawBitmapCoordinateInc() reads ctrl.info.startLine/endLine to
-       * restrict its pixel-by-pixel loop to the same vertical range. */
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
       ctrl.info.x = 0; ctrl.info.y = 0;
@@ -2111,11 +2068,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
       int xx, yy;
       int isCached = 0;
       if (ctrl.info.islinescroll) {
-        /* Bitmap + linescroll path.
-         * Was: hardcoded vertices [0, rheight] and Vdp2DrawBitmapLineScroll
-         * over the full screen. Now: zone slice [screenY1, screenY2].
-         * Vdp2DrawBitmapLineScroll iterates 'height' rows starting from
-         * vertex[1]; passing (screenY2 - screenY1) restricts it to the zone. */
         ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
         ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
         ctrl.info.x = 0; ctrl.info.y = 0;
@@ -2130,14 +2082,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
         Vdp2DrawBitmapLineScroll(&ctrl, _Ygl->rwidth, screenY2 - screenY1);
       }
       else {
-        /* Bitmap tile path (no zoom, no linescroll).
-         * Clamp the tile iteration to [screenY1, screenY2).
-         * ctrl.info.y is the negative scroll offset (always <= 0 here).
-         * We start yy at the first tile row that overlaps screenY1,
-         * and stop as soon as yy >= screenY2. */
         int cellh = ctrl.info.cellh;
         yy = ctrl.info.y;
-        /* Advance past tile rows that are entirely above screenY1. */
         while (yy + cellh <= screenY1) yy += cellh;
         while (yy < screenY2) {
           ctrl.info.draw_line = yy;
@@ -2162,12 +2108,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
   else {
     if (ctrl.info.islinescroll) {
-      /* Tile + linescroll path.
-       * Was: hardcoded [0, rheight]. Now: zone slice [screenY1, screenY2].
-       * Vdp2DrawMapPerLine iterates _Ygl->rheight rows in its inner loop;
-       * the tile/pixel culling in Vdp2DrawPatternPos (vertex screen-cull)
-       * discards tiles outside the visible range, but we also bound the
-       * quad geometry to the zone so the GPU doesn't sample outside it. */
       if (char_access == 0) return;
       ctrl.info.sh = (ctrl.regs->SCXIN1 & 0x7FF);
       ctrl.info.sv = (ctrl.regs->SCYIN1 & 0x7FF);
@@ -2184,13 +2124,6 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
       Vdp2DrawMapPerLine(&ctrl);
     }
     else {
-      /* Tile + standard scroll path.
-       * Vdp2DrawMapTest iterates tiles over the full logical scroll space;
-       * Vdp2DrawPatternPos screen-culls via vertex bounds, so tiles outside
-       * [screenY1, screenY2) are naturally discarded. No geometry change
-       * needed here — the tile positions are computed from scroll registers
-       * and the screen culling in Vdp2DrawPatternPos handles the rest.
-       * ctrl.info.startLine/endLine are set above for getPriority() lookups. */
       int delayed = 0;
       if (((ptn_access & 0x1)==0) && Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0)
         delayed = 1;
@@ -2389,28 +2322,6 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.priority = ctrl.regs->PRINB & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG2PlaneAddr;
 
-	/* VDP2 Manual §4.1 Table 4.1 (color count) and §5.2 Table 5.2
-	 * (reduction enable) jointly govern when NBG2 is hidden:
-	 *
-	 * Table 4.1 — NBG0 colornumber >= 010B (>= 2048 colors) -> NBG2 off
-	 * Table 4.1 — NBG0 colornumber == 100B (16,770,000 colors) -> NBG1..NBG3 off
-	 * Table 5.2 — reduction setting on NBG0 also restricts NBG2:
-	 *
-	 *   NBG0 16  colors  + NBG0 reduction up to 1/4   -> NBG2 cannot display
-	 *   NBG0 256 colors  + NBG0 reduction up to 1/2   -> NBG2 cannot display
-	 *   NBG0 256 colors  + NBG0 reduction up to 1/4   -> NBG2 cannot display
-	 *
-	 * ZMCTL bits 0/1 (N0ZMHF / N0ZMQT) encode the NBG0 reduction:
-	 *   00 = none (no restriction)
-	 *   01 = up to 1/2  -> kills NBG2 only when NBG0 has 256 colors
-	 *   1x = up to 1/4  -> kills NBG2 for both 16- and 256-color NBG0
-	 *
-	 * The previous check only handled the colornumber>=2 case from Table
-	 * 4.1.  Games that drove NBG0 in 16-color mode with N0ZMQT=1 (heavy
-	 * horizontal reduction) would still see NBG2 rendered, which is
-	 * forbidden by Table 5.2 and produces visual conflicts on real
-	 * hardware (NBG2 is supposed to vanish when NBG0 reduces past these
-	 * thresholds because of the VRAM access bandwidth budget). */
 	if (ctrl.info.priority == 0) return;
 	if (ctrl.regs->BGON & 0x1) {
 		const int n0_color = (ctrl.regs->CHCTLA & 0x70) >> 4;
@@ -2457,13 +2368,6 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
     if (ptn_access == 0) {
       return;
     }
-    /* VDP2 Manual ST-58-R2 §3.3 (Tables 3.2-3.4 p.33-34) :
-     * when the VRAM cycle pattern is set incorrectly with
-     * respect to the pattern-name / character-data dependency
-     * graph, character data read is delayed by 8 dots
-     * HORIZONTAL (= one character cell on the pixel grid).
-     * The downstream Vdp2DrawMapTest applies this as
-     * `x + delayed * 8`, i.e. on the horizontal axis. */
      if (Vdp2CheckCharAccessPenalty(char_access, ptn_access, (ctrl.info.patternwh == 2)) != 0) {
        delayed = 1;
 
@@ -2479,12 +2383,6 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
      ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
      ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
-     // Shift the draw origin so Vdp2DrawMapTest starts at the zone top.
-     // The map draws from (info.y + v) where v iterates in tile steps;
-     // we adjust info.y by subtracting the pixel rows above this zone.
-     // The screen Y of each tile is (v - charx_equiv); we pass startLine
-     // via ctrl.info.startLine so Vdp2DrawPatternPos can screen-cull tiles
-     // outside [screenY1, screenY2).
      Vdp2DrawMapTest(&ctrl, delayed);
    }
 
@@ -2532,21 +2430,9 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
     /* BGON: N3ON = bit 3. Also RBG suppression bits. */
     if ((a->BGON & 0x38) != (b->BGON & 0x38)) return 0;
  
-    /* CHCTLB (18002AH) bits 5,4 :
-     *   bit 5 = N3CHCN (color number, 16 vs 256 colors)
-     *   bit 4 = N3CHSZ (character size, 1x1 vs 2x2 cells)
-     * VDP2 Manual ST-58-R2 p.60.
-     * (N3PNB is not here — it lives in PNCN3 bit 15, p.76.) */
-
     if ((a->CHCTLB & 0x0030) != (b->CHCTLB & 0x0030)) return 0;
-    /* CHCTLA bits 6-4 (N0CHCN) — must be tracked because crossing
-     * the value 4 (16,770,000 colors) disables NBG3 entirely
-     * (ST-58-R2 p.61). Comparing the full 3-bit field also covers
-     * any reduction-driven recompute. */
 
     if (((a->CHCTLA & 0x0070) >> 4) != ((b->CHCTLA & 0x0070) >> 4)) return 0;
-    /* CHCTLA bits 13-12 (N1CHCN) — NBG1 >= 2048 colors disables
-     * NBG3 (ST-58-R2 p.61). */
 
     if (((a->CHCTLA & 0x3000) >> 12) != ((b->CHCTLA & 0x3000) >> 12)) return 0;
  
@@ -2565,16 +2451,8 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
     /* CRAOFA bits 14-12: N3CAOS[2:0] — NBG3 color RAM address offset. */
     if ((a->CRAOFA & 0x7000) != (b->CRAOFA & 0x7000)) return 0;
 
-    /* MPOFN bits 14-12: N3MP[8:6] — NBG3 map offset.
-     * VDP2 Manual §4 'Map Offset Register' p.85.  Same rationale as the
-     * NBG2 MPOFN check — required to keep render zones in sync with
-     * mid-frame bank swaps. */
+    /* MPOFN bits 14-12: N3MP[8:6] — NBG3 map offset. */
     if ((a->MPOFN & 0x7000) != (b->MPOFN & 0x7000)) return 0;
-
-    /* PLSZ (18003AH) bits 7-6 = N3PLSZ1, N3PLSZ0 — NBG3 plane size.
-     * VDP2 Manual ST-58-R2 p.83 : NBG3 has a single 2-bit field
-     * (1x1 / 2x1 / 2x2 pages). Bits 15-12 are RBPLSZ/RBOVR
-     * (rotation B), unrelated to NBG3. */
 
     if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
  
@@ -2597,24 +2475,14 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
      * N3W0E, N3W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D2H). */
     if ((a->WCTLB & 0xFF00) != (b->WCTLB & 0xFF00)) return 0;
 	
-    /* CLOFEN bit 3: N3COEN — color offset enable for NBG3.
-     * VDP2 Manual ST-58-R2 p.250-251 (180110H).
-     * Without comparing CLOFEN, a mid-frame toggle of color offset
-     * (used for fades / scene transitions) is silently dropped by
-     * the zonal optimiser. */
+    /* CLOFEN bit 3: N3COEN — color offset enable for NBG3. */
     if ((a->CLOFEN & 0x0008) != (b->CLOFEN & 0x0008)) return 0;
 
 
-    /* ZMCTL bits 9-8: N1ZMQT/N1ZMHF — NBG1 horizontal reduction.
-     * VDP2 Manual §5.2 Table 5.2: NBG1 reduction settings can disable
-     * NBG3 (16 colors + 1/4 reduction, 256 colors + any reduction).
-     * Mirror of the NBG2/NBG0 ZMCTL check — keep the zonal optimiser
-     * in sync with mid-frame ZMCTL writes. */
+    /* ZMCTL bits 9-8: N1ZMQT/N1ZMHF — NBG1 horizontal reduction. */
     if ((a->ZMCTL & 0x0300) != (b->ZMCTL & 0x0300)) return 0;
 
-    /* MZCTL bits 15-8 + bit 3: VDP2 §6.6.
-     *   bit 3 = N3MZE (NBG3 mosaic enable)
-     *   bits 15-8 = shared mosaic size. */
+    /* MZCTL bits 15-8 + bit 3: VDP2 §6.6. */
     if ((a->MZCTL & 0xFF08) != (b->MZCTL & 0xFF08)) return 0;
 
     return 1;
@@ -2691,37 +2559,9 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.priority = (ctrl.regs->PRINB >> 8) & 0x7;
   ctrl.info.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2NBG3PlaneAddr;
  
-  /* NBG3 visibility rules — VDP2 Manual ST-58-R2 :
-   *
-   *   • Texte p.61 (chapitre 4) :
-   *       « When NBG0 is set at 16,770,000 colors, NBG1 to NBG3
-   *         can no longer be displayed.  When NBG1 is set at
-   *         2048 or 32,768 colors, NBG3 can no longer be displayed. »
-   *
-   *   • §5.2 Table 5.2 p.130 (Reduction enable bit) :
-   *       NBG1 16  colors  + reduction 1/4   -> NBG3 hidden
-   *       NBG1 256 colors  + reduction 1/2   -> NBG3 hidden
-   *       NBG1 256 colors  + reduction 1/4   -> NBG3 hidden
-   *     (Aucune règle de réduction NBG0 ne désactive NBG3 — la
-   *     table 5.2 ne mentionne que NBG2 du côté NBG0.)
-   *
-   *   • ZMCTL (180098H) bit 9 = N1ZMQT (1/4), bit 8 = N1ZMHF (1/2).
-   *   • CHCTLA bits 6-4 = N0CHCN, bits 13-12 = N1CHCN.
-   */
   if (ctrl.info.priority == 0) return;
 
   if (ctrl.regs->BGON & 0x1) {
-    /* VDP2 Manual ST-58-R2 p.61 :
-     *   « When NBG0 is set at 16,770,000 colors, NBG1 to NBG3
-     *     can no longer be displayed. »
-     * CHCTLA bits 6-4 (N0CHCN) :
-     *   000b = 16    couleurs
-     *   001b = 256   couleurs
-     *   010b = 2048  couleurs   <-- désactive NBG2 seulement
-     *   011b = 32768 couleurs   <-- désactive NBG2 seulement
-     *   100b = 16,770,000       <-- désactive NBG1, NBG2 ET NBG3
-     * Le seuil correct pour NBG3 est donc N0CHCN >= 4, pas >= 2.
-     */
     if (((ctrl.regs->CHCTLA & 0x70) >> 4) >= 4) return;
   }
 
@@ -2837,27 +2677,11 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
   Vdp2ReadRotationTable(0, &rbg->paraA, rbg->ctrl.regs, Vdp2Ram);
   Vdp2ReadRotationTable(1, &rbg->paraB, rbg->ctrl.regs, Vdp2Ram);
 
-  //rbg->paraA.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
-  //rbg->paraB.PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
   rbg->paraA.charaddr = (rbg->ctrl.regs->MPOFR & 0x7) * 0x20000;
   rbg->paraB.charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
   ReadPlaneSizeR(&rbg->paraA, rbg->ctrl.regs->PLSZ >> 8);
   ReadPlaneSizeR(&rbg->paraB, rbg->ctrl.regs->PLSZ >> 12);
 
-  /* VDP2 Manual ST-058-R2 §6.2 'Rotation Parameter Mode Register'
-   * (RPMD @ 1800B0H, p.166):
-   *   bits 1-0 = RPMD[1:0]   ;  bits 15-2 are reserved (read-undefined)
-   *   00B  Mode 0 - parameter A only
-   *   01B  Mode 1 - parameter B only
-   *   10B  Mode 2 - A/B selected by coefficient data MSB
-   *   11B  Mode 3 - A/B selected by rotation parameter window
-   *
-   * Always mask 0x3 — the upper bits are reserved, and on real Saturn
-   * hardware their value is undefined.  The previous direct equality
-   * 'RPMD == 0x03' would silently miss mode 3 if any reserved bit
-   * happened to read as 1.  Same reasoning applies to the
-   * 'RPMD != 0' fast-path elsewhere — both have been switched to the
-   * masked form. */
   if ((rbg->ctrl.regs->RPMD & 0x3) == 0x03)
   {
     //printf("RPMD 0x3\n");
@@ -2881,11 +2705,6 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
   rbg->paraB.screenover = (rbg->ctrl.regs->PLSZ >> 14) & 0x03;
 	  
-	// APRÈS (spec §6.3 p.160) :
-	// mode 0 = repeat → over_pattern_name ignoré, laisser à 0
-	// mode 1 = pattern depuis registre OVPNRA/OVPNRB
-	// mode 2 = transparent → sentinelle 0xFFFF
-	// mode 3 = zone 512 transparente → sentinelle 0xFFFF (MaxH/MaxV déjà forcés à 512)
 	if (rbg->paraA.screenover == 1)
 		rbg->paraA.over_pattern_name = rbg->ctrl.regs->OVPNRA;
 	else if (rbg->paraA.screenover >= 2)
@@ -2910,11 +2729,6 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
     info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterBPlaneAddr;
     break;
 	case 2:
-		// RPMD=2 : commutation A/B par dot via le MSB du coef du paramètre A.
-		// Chaque paramètre conserve l'activation de SA propre table de coef :
-		//   paraA -> RAKTE (KTCTL bit 0)   ;   paraB -> RBKTE (KTCTL bit 8)
-		// Régression ff14fa5 : paraB.coefenab était forcé à 0, ce qui privait
-		// les dots affichés en B de leur mise à l'échelle par coef (ciel Dark Savior).
 		info->rotatenum = 0;
 		info->PlaneAddr = (void FASTCALL(*)(void *, int, Vdp2*))&Vdp2ParameterAPlaneAddr;
 		rbg->paraA.coefenab = rbg->ctrl.regs->KTCTL & 0x01;   // RAKTE (bit 0)
@@ -3270,13 +3084,6 @@ void VIDCSReadColorOffset(void) {
         int sptype  = lVdp2Regs->SPCTL & 0xF;
         int spwinen = (lVdp2Regs->SPCTL >> 4) & 1;
         int spclmd  = (lVdp2Regs->SPCTL >> 5) & 1;
-        /* VDP2 Manual ST-58-R2 §9.1 Figure 9.1 + p.200 : the SD (shadow) bit
-         * is frame-buffer bit 15, which acts as a shadow bit ONLY in palette
-         * mode. In mixed mode (SPCLMD=1) bit 15 is the RGB color-format
-         * discriminator, and RGB sprite data has "shadow bits considered to
-         * be 0" — so MSB shadow requires SPCLMD=0 as well, not only SPWINEN=0
-         * and sprite type 2..7. Without !spclmd, a game using RGB/mixed
-         * sprites gets spurious half-luminance MSB shadows wherever bit 15=1. */
         int msb_shadow_enabled = (!spwinen) && (!spclmd) && (sptype >= 2) && (sptype <= 7);
         int spcccs  = (lVdp2Regs->SPCTL >> 12) & 3;
         int spccn   = (lVdp2Regs->SPCTL >> 8) & 7;
@@ -3305,10 +3112,6 @@ for (int id = 0; id < enBGMAX+1; id++) {
     }
 
     if (id == SPRITE) {
-        /* VDP2 Manual §9.2: encode spcccs (bits 25-24), spccn (bits 28-26),
-         * spccen (bit 29) dans les bits 31-24 du slot SPRITE.
-         * Le shader lira cramindex du pixel courant et calculera
-         * color_data_msb lui-même pour SPCCCS=3. */
         u32 sp_ctrl_bits = ((u32)(spccen & 0x1) << 29)
                          | ((u32)(spccn  & 0x7) << 26)
                          | ((u32)(spcccs & 0x3) << 24);
@@ -3325,15 +3128,6 @@ for (int id = 0; id < enBGMAX+1; id++) {
 
 void VIDCSVdp1LocalCoordinate(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
-  /* VDP1 Manual §6.7 p.105: local coordinate values are 11-bit signed;
-   * bits 15-11 of CMDXA/CMDYA are sign-extension of bit 10, and the
-   * hardware ignores them, sign-extending from bit 10 regardless.
-   *
-   * CMDXA/YA were read from VRAM as u16 (Vdp1ReadCommand) and stored
-   * in the s32 struct field without sign extension. For negative
-   * origins (e.g. -16 = 0xFFF0 in VRAM) the raw value becomes
-   * +65520 here, and every downstream sprite coordinate is pushed
-   * far off-screen. Sign-extend from bit 10 to recover the value. */
   s32 lx = cmd->CMDXA & 0x7FF;
   s32 ly = cmd->CMDYA & 0x7FF;
   regs->localX = (lx & 0x400) ? (lx | ~0x7FF) : lx;
@@ -3363,11 +3157,7 @@ void VIDCSVdp2Draw(void)
   }
   YglTmPull(YglTM_vdp2, 0);
 
-  /* VDP2 Manual ST-58-R2 §2.4 p.16 — DISP bit must change in
-   * V-blank. Read it from the same per-frame snapshot used to
-   * configure the resolution, otherwise a late vblank rewrite
-   * causes the current frame to honor next-frame's DISP. */
-   if (Vdp2Lines[0].TVMD & 0x8000) {
+  if (Vdp2Lines[0].TVMD & 0x8000) {
 
     VIDCSVdp2DrawScreens();
     screenDirty = 1;
@@ -3379,8 +3169,6 @@ void VIDCSVdp2Draw(void)
     screenDirty = 0;
   }
 
-  /* It would be better to reset manualchange in a Vdp1SwapFrameBuffer
-  function that would be called here and during a manual change */
   //Vdp1External.manualchange = 0;
 }
 
@@ -3401,12 +3189,6 @@ LOG_ASYN("===================================\n");
 
   Vdp2GenerateWindowInfo(&Vdp2Lines[VDP2_DRAW_LINE]);
 
-	/* vidcs.c — VIDCSVdp2DrawScreens
-	 * VDP1 §4.1 p.36 : seul TVM = 010b (Rotation 16bpp) ou 011b
-	 * (Rotation 8bpp) active la lecture en rotation du frame buffer.
-	 * Le frame buffer VDP1 est alors transformé par le VDP2 via
-	 * Rotation Parameter A (§6.3). Tester (TVM == 2 || TVM == 3),
-	 * pas seulement le bit 1, qui inclurait les TVM 6/7 non définis. */
 	const int vdp1_tvm = Vdp1Regs->TVMR & 0x7;
 	if (vdp1_tvm == 2 || vdp1_tvm == 3) {
 		Vdp2ReadRotationTable(0, &Vdp1ParaA, &Vdp2Lines[VDP2_DRAW_LINE], Vdp2Ram);
@@ -3471,52 +3253,22 @@ static void Vdp2SetResolution(u16 TVMD)
     break;
   }
 
-  // Vertical Resolution
-	/* VDP2 User's Manual ST-058-R2 §2.1 (TVMD VRESO[1:0], bits 5-4):
-	 *   00  224 lines    NTSC or PAL format TV
-	 *   01  240 lines    NTSC or PAL format TV
-	 *   10  256 lines    PAL format TV only
-	 *   11  Not Allowed  (reserved)
-	 */
-
 	switch ((TVMD >> 4) & 0x3)
 	{
 	case 0:
 	  height = 224;
 	  break;
 	case 1:
-		/* §2.1: 240 lines — same on NTSC and PAL.  Do NOT branch on
-		 * yabsys.IsPal here; the previous '256/240' fork came from a
-		 * misreading of the table (the 256-line entry is VRESO=10,
-		 * not VRESO=01). */
 		height = 240;
 		break;
 	case 2:
-	  /* §2.1: VRESO=10 - 256 lines, PAL format TV ONLY.
-	   * On NTSC hardware this setting is undefined, but every real
-	   * BIOS-tested behaviour returns 256 because the line counter
-	   * uses the VRESO field directly.  Returning 256 unconditionally
-	   * is the safest cross-region choice and matches every other
-	   * reasonably accurate Saturn emulator. */
 	  height = 256;
 	  break;
 	case 3:
-	  /* §2.1: VRESO=11 'Not Allowed'.
-	   * Some Japanese homebrew/test ROMs poke this value to validate
-	   * emulator robustness.  Pick a safe non-zero fallback so the
-	   * GL pipeline never gets a zero height.  Use the region default
-	   * (224 NTSC / 256 PAL) - it matches what most real Saturn boards
-	   * produce by latching the previous valid VRESO setting at boot. */
 	  height = yabsys.IsPal ? 256 : 224;
 	  break;
 	}
 
-  /* VDP2 Manual ST-58-R2 §2.1 Table 2.1 p.12 — Exclusive monitor
-   * mode (HRESO bit 2 = 1) forces vertical resolution to 480
-   * regardless of VRESO :
-   *   HRESO=100 / 101  Exclusive Normal      → 320/352 × 480
-   *   HRESO=110 / 111  Exclusive Hi-Res      → 640/704 × 480
-   * VRESO is silently ignored by the hardware in these modes. */
   if (TVMD & 0x4) {
     height = 480;
   }
@@ -3627,18 +3379,6 @@ static void Vdp1SetTextureRatio(int vdp2widthratio, int vdp2heightratio)
   int vdp1w = 1;
   int vdp1h = 1;
 
-  /* VDP1 User's Manual ST-013-R3 §4.1 Table 4.2 'Screen Modes':
-   *   TVM[2:0]  Mode                Bit width  FB size     Interlace
-   *   000       Normal              16 bpp     512 H 256 V single/dbl
-   *   001       High Resolution      8 bpp    1024 H 256 V single/dbl
-   *   010       Rotation 16         16 bpp     512 H 256 V single only
-   *   011       Rotation 8           8 bpp     512 H 512 V single only
-   *   100       HDTV                16 bpp     512 H 256 V non-interlace
-   *
-   * TVMR bit 0 (the bit-depth selector inside TVM) selects 8 vs 16 bpp.
-   * High Resolution (TVM=001) widens the frame buffer to 1024 H => density
-   * x2.  Rotation 8 (TVM=011) keeps 512 H but doubles the height to 512 V
-   * => density x2 in the vertical axis. */
   if (Vdp1Regs->TVMR & 0x1) VDP1_MASK = 0xFF;     /* 8 bpp pixel mask  */
   else VDP1_MASK = 0xFFFF;                        /* 16 bpp pixel mask */
 
@@ -3656,28 +3396,15 @@ static void Vdp1SetTextureRatio(int vdp2widthratio, int vdp2heightratio)
     vdp1h = 1;
     break;
   case 3:
-    /* VDP1 §4.1 Table 4.2: Rotation 8 frame buffer is 512 H x 512 V.
-     * Treating it as 512 H x 256 V (the previous default) caused the
-     * lower half of the FB to be sampled at half-resolution, visible as
-     * vertical squashing of rotation backgrounds in titles that use
-     * TVM=011 (notably for 8 bpp rotation effects). */
     vdp1w = 1;
     vdp1h = 2;
     break;
   default:
-    /* Reserved TVM values (5,6,7) - 'Setting not allowed' per §4.1.
-     * Fall back to the safest non-disruptive defaults. */
     vdp1w = 1;
     vdp1h = 1;
     break;
   }
 
-  /* VDP1 Manual ST-013-R3 §4.1 Table 4.2 + §4.2 :
-   * Double-interlace (FBCR DIE bit) is only legal when
-   *   TVM = 000 (Normal) or TVM = 001 (High Resolution).
-   * For TVM = 010 / 011 (Rotation) the spec mandates "single only".
-   * For TVM = 100 (HDTV)              the spec mandates "no interlace".
-   * Hardware ignores DIE in these modes ; emulate that. */
   const int tvm = Vdp1Regs->TVMR & 0x7;
   const int die_legal = (tvm == 0) || (tvm == 1);
   if (die_legal && (Vdp1Regs->FBCR & 0x8)) {
@@ -3699,7 +3426,6 @@ static u16 Vdp2ColorRamGetColorRaw(u32 colorindex) {
   switch (Vdp2Internal.ColorMode)
   {
   case 0:
-    // VDP2 Manual §3.4: mode 0 = 1024 colors, CRAM mirrored (index wraps at 0x3FF)
     colorindex &= 0x3FF; // mirror: N and N+1024 are identical
     colorindex <<= 1;
     return T2ReadWord(Vdp2ColorRam, colorindex & 0xFFF);
@@ -3730,15 +3456,11 @@ static u32 Vdp2ColorRamGetLineColorOffset(u32 colorindex, int alpha, int offset)
   {
     u32 tmp;
     flag &= 0x780;
-    //Line color offset from rotation table might be applicable here
     if (offset != 0) colorindex = (colorindex&flag) | (offset&0x7F);
     colorindex <<= 1;
     tmp = T2ReadWord(Vdp2ColorRam, colorindex & 0xFFF);
     return SAT2YAB1(alpha, tmp);
   }
-  // APRÈS — vérifier que tmp1 fournit bien le composant R (bits 7-0 de tmp1)
-  // VDP2 Manual §4.4 : mot0 = [msb|0|R(7-0)|0|G(7-3)], mot1 = [G(2-0)|B(7-0)|0...]
-  // SAT2YAB2 doit recevoir les deux mots dans l'ordre correct
   case 2:
   {
     u32 tmp1, tmp2;
@@ -3756,28 +3478,6 @@ static u32 Vdp2ColorRamGetLineColorOffset(u32 colorindex, int alpha, int offset)
 static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha) {
   return Vdp2ColorRamGetLineColorOffset(colorindex, alpha,0);
 }
-
-	/* VDP2 Manual §14.1 Figure 14.3 (Normal Shadow):
-	 * The Normal Shadow code is the value where every DC (Dot Color)
-	 * bit is set to 1 except bit 0.  Each sprite type exposes a
-	 * different number of DC bits in the frame-buffer word — see
-	 * Figure 9.1 in §9.1 'Sprite Data':
-	 *
-	 *   Type 0,1,2,3,5  : 11 DC bits (DC10..DC0)  -> shadow = 0x7FE
-	 *   Type 4,6        : 10 DC bits (DC9..DC0)   -> shadow = 0x3FE
-	 *   Type 7          :  9 DC bits (DC8..DC0)   -> shadow = 0x1FE
-	 *   Type 8          :  7 DC bits (DC6..DC0)   -> shadow = 0x07E
-	 *   Type 9,A,B      :  6 DC bits (DC5..DC0)   -> shadow = 0x03E
-	 *   Type 9,A,B      :  6 DC bits (DC5..DC0)   -> shadow = 0x03E
-	 *   Type C,D,E,F    :  8 DC bits (DC7..DC0)   -> shadow = 0x0FE
-	 *                     DC7/DC6 sont des bits partages du mot FB
-	 *                     (Table 9.1 : "PR0 and DC7", "CC0 and DC6"...)
-	 *                     et comptent dans la detection Normal Shadow.
-	 *
-	 * So the dc_mask is the FB-resident DC width, not the maximum
-	 * theoretical DC width via shared bits — only the bits actually
-	 * stored in the frame buffer participate in Normal Shadow detection.
-	 */
 
 static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
 		u32 dc_mask;
@@ -3800,40 +3500,22 @@ static INLINE int Vdp2IsNormalShadow(u32 cramindex, int sptype) {
 			dc_mask = 0x3F;
 			break;
 		case 12: case 13: case 14: case 15:
-			/* C, D, E, F : 8 DC bits (DC7~DC0).
-			 * §9.1 Table 9.1 : les bits 7-6 du mot FB sont des bits
-			 * PARTAGES — "PR0 and DC7", "CC0 and DC6", etc. Ils font
-			 * partie du dot color data. Normal Shadow = 0xFE. */
 			dc_mask = 0xFF;
 			break;
 		default:
 			return 0;
 		}
 
-		/* Normal shadow: all DC bits = 1 except bit 0 = 0 */
 		u32 shadow_val = dc_mask & ~1u; /* e.g. 0x7FE for 11-bit */
 		return (dc_bits & dc_mask) == shadow_val;
 	}
 	
- /* Vdp2GetSpriteShadowBit — VDP2 Manual §14.1 MSB Shadow / §9.1 Figure 9.1
-  * Returns the SD (shadow) bit from a raw 16-bit sprite frame-buffer word.
-  * SD is at bit 15 for types 2-7 (16-bit pixel types with shadow support).
-   * Types 0,1 and 8-F have no SD bit; returns 0.
-  * When SPWINEN=1, bit 15 is sprite-window, not shadow; MSB shadow disabled. */
-  
 static INLINE int Vdp2GetSpriteShadowBit(u16 sprite_word, int sptype, int spwinen) {
 	  if (spwinen)                    return 0;  /* bit 15 = sprite window */
 	  if (sptype >= 2 && sptype <= 7) return (sprite_word >> 15) & 1;
 	  return 0;
 	}
 	
- /* Vdp2GetSpriteCCEnable — VDP2 Manual §9.2
-  * @param priority_number  3-bit sprite character priority (from PR bits)
-  * @param color_data_msb   MSB of CRAM color entry (1=enable for SPCCCS=3)
-  * @param spcccs           SPCTL bits 13-12: condition selector
-  * @param spccn            SPCTL bits 10-8: condition number (0-7)
-  * @param spccen           CCCTL bit 6: master CC enable for sprites */
-  
 static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb, int spcccs, int spccn, int spccen) {
 	  if (!spccen) return 0;
 	  switch (spcccs) {
@@ -3845,9 +3527,6 @@ static INLINE int Vdp2GetSpriteCCEnable(int priority_number, int color_data_msb,
 	  }
 	}
 
-/* Vdp2ApplyMSBShadow — apply half-luminance to a scroll-screen RGB pixel.
- * Called when MSB shadow condition is met (SD=1 and scroll MSB=1).
- * VDP2 §14.1: processing order is after CC and after color offset. */
 static INLINE u32 Vdp2ApplyMSBShadow(u32 scroll_rgb32) {
 	  u8 r = ((scroll_rgb32 >> 16) & 0xFF) >> 1;
 	  u8 g = ((scroll_rgb32 >>  8) & 0xFF) >> 1;
@@ -3923,8 +3602,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   Win1_mode[SPRITE] = (varVdp2Regs->WCTLC >> 10) & 0x01;
   WinS_mode[SPRITE] = (varVdp2Regs->WCTLC >> 12) & 0x01;
 
-  // VDP2 Manual §8: Win_op bit 0=OR, 1=AND
-  // Vdp2CheckWindowRange: use_and = (Win_op[id] != 0)  ← correct
   Win_op[NBG0] = (varVdp2Regs->WCTLA >> 7) & 0x01;  // correct: bit 7
   Win_op[NBG1] = (varVdp2Regs->WCTLA >> 15) & 0x01; // correct: bit 15
   Win_op[NBG2] = (varVdp2Regs->WCTLB >> 7) & 0x01;
@@ -3948,15 +3625,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   WinS_mode[RBG1] = WinS_mode[NBG0];
   Win_op[RBG1] = Win_op[NBG0];
 
-  /* VDP2 Manual ST-58-R2 p.188 (SPCTL) + §8 / §9.1 : the sprite window only
-   * exists — i.e. the VDP1 framebuffer MSB is only a sprite-window bit — when
-   * SPWINEN=1 (bit 4), the sprite color mode is palette (SPCLMD=0, bit 5) and
-   * the sprite type is 2..7 (the only types whose bit 15 is free for SW). In
-   * any other case bit 15 is the shadow bit or the RGB discriminator, so no
-   * layer may be clipped by a sprite window. WinS[] is derived purely from the
-   * WCTL "use sprite window" flags, which ignore this; gate every layer here
-   * so a stale WCTL flag can't make Vdp2CheckSpriteWindow / the compositor
-   * misread the MSB and wrongly clip a layer. */
   {
     int sptype  =  varVdp2Regs->SPCTL & 0xF;
     int spwinen = (varVdp2Regs->SPCTL >> 4) & 1;
@@ -3976,7 +3644,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
     if (WinS_mode[i] != _Ygl->WinS_mode[i]) _Ygl->needWinUpdate |= 1;
     if (Win_op[i] != _Ygl->Win_op[i]) _Ygl->needWinUpdate |= 1;
   #ifdef WINDOW_DEBUG
-    //DEBUG
     if ((Win0[i] == 1) || (Win1[i] == 1) || (WinS[i] == 1))
       YuiMsg("Windows are used on layer %d (WO:%d, W1:%d, WS:%d, WS mode %s, WS op %s)\n", i, Win0[i], Win1[i], WinS[i], (WinS_mode[i]==0)?"INSIDE":"OUTSIDE", (Win_op[i]==0)?"OR":"AND");
     else
@@ -4005,7 +3672,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   // Line Table mode
   if ((varVdp2Regs->LWTA0.part.U & 0x8000))
   {
-    // start address
     LineWinAddr = (u32)((((varVdp2Regs->LWTA0.part.U & 0x07) << 15) | (varVdp2Regs->LWTA0.part.L >> 1)) << 2);
     for (v = 0,p=0; p < _Ygl->rheight; v+=step, p++) {
       if (v >= varVdp2Regs->WPSY0 && v <= varVdp2Regs->WPEY0) {
@@ -4023,7 +3689,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
         _Ygl->needWinUpdate = 1;
       }
     }
-    // Parameter Mode
   }
   else {
     for (v = 0,p=0; p < _Ygl->rheight; v+=step, p++) {
@@ -4044,7 +3709,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   // Line Table mode
   if ((varVdp2Regs->LWTA1.part.U & 0x8000))
   {
-    // start address
     LineWinAddr = (u32)((((varVdp2Regs->LWTA1.part.U & 0x07) << 15) | (varVdp2Regs->LWTA1.part.L >> 1)) << 2);
     for (v = 0,p=0; p < _Ygl->rheight; v+=step, p++) {
       if (v >= varVdp2Regs->WPSY1 && v <= varVdp2Regs->WPEY1) {
@@ -4062,7 +3726,6 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
         _Ygl->needWinUpdate = 1;
       }
     }
-    // Parameter Mode
   }
   else {
     for (v = 0,p=0; p < _Ygl->rheight; v+=step, p++) {
@@ -4087,8 +3750,6 @@ static INLINE int Vdp2CheckWindow(vdp2draw_struct *info, int x, int y, int area,
 {
   if (y < 0) return 0;
 
-  // if (_Ygl->interlace == DOUBLE_INTERLACE) y >>= 1;
-
   if (y >= _Ygl->rheight) return 0;
   int upLx = win[y] & 0xFFFF;
   int upRx = (win[y] >> 16) & 0xFFFF;
@@ -4103,7 +3764,6 @@ static INLINE int Vdp2CheckWindow(vdp2draw_struct *info, int x, int y, int area,
     else {
       return 0;
     }
-    // outside
   }
   else {
     if (win[y] == 0) return 1;
@@ -4114,7 +3774,6 @@ static INLINE int Vdp2CheckWindow(vdp2draw_struct *info, int x, int y, int area,
   return 0;
 }
 
-// Helper : le segment [x, x+w] intersecte-t-il la fenêtre sur la ligne ly ?
 static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
                                        int x, int ly, int w,
                                        int area, u32 *win)
@@ -4124,44 +3783,22 @@ static INLINE int Vdp2CheckWindowLine(vdp2draw_struct *info,
   int wl = win[ly] & 0xFFFF;
   int wr = (win[ly] >> 16) & 0xFFFF;
 
-  // win[ly] == 0x000000FF means END < START → window invalid/empty
   if (win[ly] == 0x000000FF) {
-    // Fenêtre invalide (END < START)
-    // WA_INSIDE → rien n'est dans une fenêtre vide → 0
-    // WA_OUTSIDE → tout est hors d'une fenêtre vide → 1
     return (area == WA_OUTSIDE) ? 1 : 0;
   }
 
   if (area == WA_INSIDE) {
-    // Le tile doit avoir au moins un pixel DANS la fenêtre pour être visible
     return (x <= wr && (x + w - 1) >= wl);
   } else {
-    // WA_OUTSIDE : le tile doit avoir au moins un pixel EN DEHORS de la fenêtre
     return (x < wl || (x + w - 1) > wr);
   }
 }
 
 
-/*
- * Vdp2CheckSpriteWindow - check if a VDP2 screen coordinate is inside/outside
- * the sprite window (WinS), which is defined by the MSB of VDP1 framebuffer pixels.
- *
- * VDP2 Manual §8.2: The sprite window uses the MSB of each VDP1 sprite pixel.
- * A pixel belongs to the sprite window when its VDP1 framebuffer MSB = 1.
- *
- * Returns 1 if the pixel satisfies the window condition (inside or outside
- * depending on WinS_mode), 0 otherwise.
- */
 static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
 {
-    /* WinS not enabled for this layer */
     if (_Ygl->WinS[id] == 0) return 0;
 
-    /* Map VDP2 screen coordinate → VDP1 framebuffer coordinate.
-     * The same ratio used by the compositor shader:
-     *   vdp1x = vdp2x * (vdp1ratio * vdp1wdensity / vdp2wdensity) * (rwidth / vdp1width)
-     * Simplified using the pre-computed densities stored in _Ygl.
-     */
     float ratioX = _Ygl->vdp1ratio * _Ygl->vdp1wdensity / _Ygl->vdp2wdensity
                    * (float)_Ygl->rwidth  / (float)_Ygl->vdp1width;
     float ratioY = _Ygl->vdp1ratio * _Ygl->vdp1hdensity / _Ygl->vdp2hdensity
@@ -4170,52 +3807,28 @@ static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
     int fbx = (int)(vdp2x * ratioX);
     int fby = (int)(vdp2y * ratioY);
 
-    /* Clamp to VDP1 framebuffer bounds */
     if (fbx < 0) fbx = 0;
     if (fby < 0) fby = 0;
     if (fbx >= _Ygl->vdp1width)  fbx = _Ygl->vdp1width  - 1;
     if (fby >= _Ygl->vdp1height) fby = _Ygl->vdp1height - 1;
 
-    /* Read from the CPU-side VDP1 framebuffer copy.
-     * vdp1fb_read_buf[readframe] is populated by vdp1_read() / vdp1_read_gl().
-     * Each pixel is RGBA u8: R=color&0xFF, G=(color>>8)&0xFF, B=0, A=0.
-     * MSB of the 16-bit VDP1 color = bit 15 = bit 7 of the G byte.
-     */
     u32 *fb = _Ygl->vdp1fb_read_buf[_Ygl->readframe];
     if (fb == NULL) return 0;
 
     u32 pixel = fb[fby * _Ygl->vdp1width + fbx];
-    /* Extract G channel (bits 15-8 of the original 16-bit color) */
     u8 g = (pixel >> 8) & 0xFF;
     int msb = (g >> 7) & 1;   /* bit 15 of the original VDP1 color */
 
-    /* msb=1 → pixel is inside the sprite window */
     int inside = msb;
 
     if (_Ygl->WinS_mode[id] == WA_INSIDE) {
-        /* Drawing inside: visible when inside the sprite window */
         return inside;
     } else {
-        /* Drawing outside: visible when outside the sprite window */
         return !inside;
     }
 }
 
 
-/* vidcs.c — Vdp2CheckWindowRange()
- * VDP2 Manual §8.1: Window area is applied per-dot. In line window mode
- * (LWTA0/LWTA1 bit 15 = 1, §8.2 LWTA register), horizontal bounds change
- * each line. Testing only 4 tile corners misses cases where a tile is
- * entirely inside or outside the window on intermediate lines.
- *
- * Fix: sample all lines of the tile (y, y+1, ..., y+h-1) at tile left and
- * right edges, and return 1 (draw) if any sample satisfies the window
- * condition. This is accurate for both rectangular and line window modes.
- *
- * VDP2 Manual §8.1: "If the start coordinate of either the horizontal or
- * vertical direction is larger than the end coordinate, the whole screen
- * is considered outside the window."
- */
 static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
 {
     int id = ctrl->info.idScreen;
@@ -4227,10 +3840,7 @@ static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, in
 
     int use_and = (_Ygl->Win_op[id] != 0);
 
-    /* VDP2 Manual §8.2 line window: sample every line of the tile at
-     * left (x) and right (x+w) edges to handle per-line window bounds. */
     for (int ly = y; ly < y + h; ly++) {
-        /* Test left and right edge of tile at this screen line */
         int test_xs[2] = { x, x + w };
         for (int ei = 0; ei < 2; ei++) {
             int cx = test_xs[ei];
@@ -4258,66 +3868,24 @@ static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, in
     return 0;
 }
 
-/* vidcs.c — Vdp2GenLineinfo() — REWRITE per §5.3 p.131/133/137
- *
- * VDP2 Manual §5.3 Figure 5.4: each active field = 4 bytes (2 integer + 2 frac).
- * VDP2 Manual §5.3 Figure 5.5: each enabled field is stored once per
- *   `lineinc` lines (lineinc = 1, 2, 4, 8 in non-interlace / DDI ; doubled
- *   in single-density interlace per p.272 N0LSS table).
- *
- * For lines that fall BETWEEN sampled entries:
- *   - LineScrollValH (sh): held constant = last sampled value (p.137)
- *   - CoordinateIncH (zoom): held constant = last sampled value (p.137)
- *   - LineScrollValV (sv): INTERPOLATED by adding ∆Yst per sub-line (p.131/137)
- *
- * ∆Yst comes from the vertical coordinate increment register
- * (ZMYIN/ZMYDN, 18007Ch/18007Eh for NBG0 ; 18008Ch/18008Eh for NBG1),
- * which Vdp2DrawNBGx() has already converted into info->coordincy
- * via:  coordincy = 65536 / (ZMY register raw, bits 18-8).
- *
- * To convert back to the same 11.8 fixed-point used by line scroll,
- * we do:  delta_y_q8 = round(256 / coordincy).
- *
- * NOTE: a future patch should pass the raw ZMY register value through
- * vdp2draw_struct instead of round-tripping through coordincy, to avoid
- * accumulated float error on long line groups.
- */
- 
 static void Vdp2GenLineinfo(vdp2draw_struct *info)
 {
     int bound = 0, i;
     u16 val1;
     if (info->lineinc == 0 || info->islinescroll == 0) return;
 
-    /* §5.3 Figure 5.4: each active field = 4 bytes (2 integer + 2 fractional) */
     if (VDPLINE_SX(info->islinescroll)) bound += 4;
     if (VDPLINE_SY(info->islinescroll)) bound += 4;
     if (VDPLINE_SZ(info->islinescroll)) bound += 4;
 
     int height = _Ygl->rheight;
 
-    /* PATCH 1.1 : lineNBG0[]/lineNBG1[] sont dimensionnes a 512.
-     * rheight peut depasser cette valeur sur les chemins upscale ;
-     * on clampe pour eviter un debordement de tableau. */
     if (height > 512) height = 512;
 
-    /* PATCH 2.2 — §5.3 p.131/137 : pour les lignes entre deux entrees
-     * echantillonnees, la V-scroll = derniere valeur lue + increment
-     * vertical (delta-Yst) par sous-ligne.
-     *
-     * delta-Yst vient directement du registre ZMYNx, deja masque par
-     * Vdp2DrawNBGx en info->coordincy_raw = (ZMYNx.all & 0x7FF00).
-     * Cette valeur est un point fixe 11.8 aligne sur le bit 8 ;
-     * un >> 8 la ramene en .8 pur, ce qu'attend delta_y_q8.
-     * On n'utilise PLUS le float coordincy : le round-trip
-     * (65536/x puis 256/coordincy) accumulait de l'erreur d'arrondi
-     * sur les groupes longs (NxLSS = 8 / 16). */
     int delta_y_q8 = 0x100;   /* 1.0 par defaut */
     if (info->coordincy_raw != 0)
         delta_y_q8 = (int)(info->coordincy_raw >> 8);
 
-    /* Cached last-sampled values: H-scroll and H-coord-increment are HELD
-     * constant across the group (§5.3 p.137); V-scroll is interpolated. */
     s16 last_sh = 0, last_sv = 0;
     int last_inc = 0x0100;
 
@@ -4328,15 +3896,6 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
         int field_off   = 0;
 
         if (sub_line == 0) {
-            /* §5.3 fig.5.5: sample point — read all enabled fields fresh. */
-
-            /* PATCH 1.2 — §5.3 p.132 fig.5.4 : le scroll value est un
-             * point fixe 11.8 signe (entier 11 bits + fraction 8 bits).
-             * Le hardware TRONQUE vers la partie entiere, il n'arrondit
-             * PAS selon le MSB de la fraction. L'ancien terme d'arrondi
-             * "demi vers l'infini" introduisait un biais d'1 px sur la
-             * moitie des lignes -> tremblement vertical/horizontal.
-             * On lit donc uniquement la partie entiere 11 bits. */
             if (VDPLINE_SX(info->islinescroll)) {
                 val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
                 s32 ival = (s32)(val1 & 0x07FF);
@@ -4366,12 +3925,10 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
             }
         }
 
-        /* §5.3 p.137: H-scroll and H-coord-increment held constant over group. */
         info->lineinfo[i].LineScrollValH = last_sh;
         info->lineinfo[i].CoordinateIncH = last_inc;
 
         if (VDPLINE_SY(info->islinescroll)) {
-            /* §5.3 p.131/137: V-scroll interpolated between sampled entries. */
             s32 v = (s32)last_sv + ((sub_line * delta_y_q8) >> 8);
             if (v >  32767) v =  32767;
             if (v < -32768) v = -32768;
@@ -4396,9 +3953,6 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
 }
 
 static INLINE int Vdp2CheckCCWindow(int x, int y) {
-		// VDP2 Manual §9.4: Color Calculation Window (CCW) restricts color
-		// calculation to specific screen regions. CCW data is in WCTLD bits 15-8.
-		// CCW index in window arrays is SPRITE+1.
 		int idx = SPRITE + 1;
 		if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // no CCW → CC active everywhere
 
@@ -4417,25 +3971,17 @@ static INLINE int Vdp2CheckCCWindow(int x, int y) {
 			else if (have_w0)        in_ccw = w0;
 			else                     in_ccw = w1;
 		  }
-		  /* VDP2 §9.4: CC not performed INSIDE the CCW — return 1 = "do CC here" */
 		  return !in_ccw;
 	}
 
 static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
-  /* VDP2 Manual §12.1 CCCTL (1800ECH) bit 8 = CCMD:
-   *   CCMD=0  "Rate mode": out = top*(ratio/32) + 2nd*((32-ratio)/32)
-   *   CCMD=1  "Add mode":  out = saturate(top + 2nd)
-   * Both modes use the same dot-level enable logic (§12.3 SFCCMD/SFSEL).
-   * cc=0 → do NOT color-calculate this dot (write top pixel as-is). */
   int cc = 1;
   switch (ctrl->info.specialcolormode) {
   case 0: /* always CC */ break;
   case 1:
-    /* VDP2 §12.3 mode 1: CC only when pattern-name special-CC bit = 1 */
     if (ctrl->info.specialcolorfunction == 0) cc = 0;
     break;
   case 2:
-    /* VDP2 §12.3 mode 2: special-CC bit AND special code matches nibble */
     if (ctrl->info.specialcolorfunction == 0) {
       cc = 0;
     } else if ((ctrl->info.specialcode & (1 << ((dot & 0xF) >> 1))) == 0) {
@@ -4443,9 +3989,6 @@ static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
     }
     break;
   case 3:
-    /* VDP2 §12.3 mode 3: CRAM MSB is CC-enable flag.
-     * Only valid for palette format (colornumber<3). For RGB pixels,
-     * cramindex is a direct color value, NOT a CRAM address — skip read. */
     if (ctrl->info.colornumber < 3) {
       if ((Vdp2ColorRamGetColorRaw(cramindex) & 0x8000) == 0) cc = 0;
     }
@@ -4555,54 +4098,14 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   }
 }
 
-/* Vdp2GetPixel16bppbmp - 16-bit RGB-555 bitmap pixel fetch
- *
- * VDP2 User's Manual ST-058-R2:
- *   §4.3 Table 4.3 - RGB format dot bit layout:
- *      bit 15      = transparent / opaque flag (0 = transparent dot,
- *                    1 = displayed dot when SPD-equivalent is active)
- *      bits 14-10  = 5-bit Blue
- *      bits  9- 5  = 5-bit Green
- *      bits  4- 0  = 5-bit Red
- *   §12.3  Special Color Calculation Function, mode 3:
- *      "the most significant bit of color RAM data becomes the color
- *       calculation enable bit"
- *      For RGB-format pixels there is no CRAM lookup, but the spec
- *      generalises this to "the most significant bit of the COLOR
- *      DATA" - i.e. dot bit 15.  This is exactly the same physical
- *      bit as the transparency flag, used for a different purpose
- *      depending on whether the pixel is transparent.
- *
- * Special Color Calculation mode 2 inspects the lower nibble of the
- * dot value (specialcode bitmap).  For RGB pixels the lower 4 bits
- * are the red LSBs; passing them through preserves the documented
- * mode-2 behaviour (and matches the previous implementation).
- */
-
-
 static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
   u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
 
-  /* VDP2 §4.3 Table 4.3: RGB format transparent when bit 15 = 0 */
-
   if (!(dot & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
 
-  /* §12.3 mode 3: for RGB pixels the CC-enable flag is dot bit 15 itself.
-   * Vdp2GetCCOn() takes a 'cramindex' argument and feeds it to
-   * Vdp2ColorRamGetColorRaw() in mode 3.  We can't supply a meaningful
-   * CRAM index for an RGB pixel, but the previous code passed 0, which
-   * makes mode 3 always read CRAM[0] (a value unrelated to the actual
-   * pixel).  Short-circuit the result here using the dot's own MSB:
-   *
-   *   - mode 0/1/2 : Vdp2GetCCOn handles correctly via the 'dot' arg
-   *   - mode 3     : we override with the bit 15 of dot
-   *
-   * Color number passed unchanged to Vdp2GetCCOn so its colornumber-based
-   * path discriminates correctly. */
   int cc;
   if (ctrl->info.specialcolormode == 3) {
-    /* Direct bit-15 test - matches §12.3 wording 'MSB of color data' */
     cc = (dot & 0x8000) ? 1 : 0;
   } else {
     cc = Vdp2GetCCOn(ctrl, (u8)(dot & 0xF), 0);
@@ -4611,31 +4114,6 @@ static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
                     ctrl->info.priority, cc, RGB555_TO_RGB24(dot));
   return color;
 }
-
-/* Vdp2GetPixel32bppbmp - 32-bit RGB-888 bitmap pixel fetch.
- *
- * VDP2 User's Manual ST-058-R2 §4.4 RGB Format Dot Data:
- *   "16,770,000 colors are designated by RGB 8-bit; 32 bits are used
- *    (only the MSB and the lower 24 bits are used)."
- *
- * 32-bit dot layout (the two consecutive u16 words 'dot1' / 'dot2'):
- *   word @ +0 (dot1):  bit 15      = transparent flag (0=transparent dot)
- *                      bits 14- 8  = reserved (don't care)
- *                      bits  7- 0  = R (8 bits)
- *   word @ +2 (dot2):  bits 15- 8  = G (8 bits)
- *                      bits  7- 0  = B (8 bits)
- *
- * Special Color Calculation mode 3 (§12.3):
- *   For palette pixels the CC-enable flag is the MSB of CRAM data.
- *   For RGB pixels there is no CRAM lookup; the spec generalises to
- *   "MSB of color data" — for 32-bit RGB that is dot1 bit 15 (the
- *   same physical bit as the transparency flag, used differently).
- *
- * Mode 0/1/2 Vdp2GetCCOn() expects a meaningful 'dot' nibble for its
- * mode-2 specialcode bitmap test.  For RGB-888 there is no useful
- * nibble; pass the LSBs of B (dot2 & 0xF) which preserves the
- * documented mode-2 semantics on the LSBs of the color code.
- */
 
 static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
@@ -4646,12 +4124,8 @@ static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
 
   cc = Vdp2GetCCOn(ctrl, 0, 0);
   
-  /* §4.4: transparent when dot1 bit 15 = 0 */
   if (!(dot1 & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
 
-  /* §12.3 mode 3: short-circuit using dot1 bit 15.  Modes 0/1/2 use
-   * the standard Vdp2GetCCOn() path with the B LSB nibble as the
-   * specialcode-test dot value (mirrors the 16bpp helper). */
   if (ctrl->info.specialcolormode == 3) {
     cc = (dot1 & 0x8000) ? 1 : 0;
   } else {
@@ -4669,8 +4143,6 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
     if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
     int idx = info->draw_line + id;
     if (idx < 0) idx = 0;
-    /* alpha_per_line est rempli jusqu'à min(VBlankLineCount, 270).
-     * Clamper au même plafond pour rester dans la plage initialisée. */
     const int alpha_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
     int li = idx >> shift;
     if (li >= alpha_max) li = alpha_max - 1;
@@ -4678,30 +4150,6 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
 }
 
 static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
-    /* VDP2 Manual ST-058-R2 §3.1 'VRAM Mode Bit (VRBMD, VRAMD)' p.45:
-     *   RAMCTL bit 8  = VRAMD (VRAM-A bank partition select)
-     *   RAMCTL bit 9  = VRBMD (VRAM-B bank partition select)
-     *
-     *   00B = single bank (256 KB), full bank as one slot
-     *   01B = two banks  (128 KB each, A0+A1 or B0+B1)
-     *
-     * AC_VRAM[bank][timeslot] uses the same partitioning.
-     *
-     * Previous code read VRBMD from bit 12 (which is CRMD0, the
-     * color-RAM-mode bit).  When CRMD0 happened to be 1 (color RAM
-     * mode 1, 2048-color RGB) the function would treat VRAM-B as
-     * partitioned even when VRBMD was 0; conversely, when VRBMD was 1
-     * but CRMD0 was 0, the function would miss the partition entirely.
-     *
-     * Effect on the renderer: bank-index lookups for VRAM-B were keyed
-     * off the wrong bit.  In titles using both color-RAM mode 1 AND a
-     * partitioned VRAM-B, the bug was self-cancelling and invisible;
-     * in the more common case of color-RAM mode 0 or 2 with VRBMD=1,
-     * the bug reported the wrong bank for any address >= 0x40000,
-     * causing AC_VRAM lookups to consult the wrong bank's cycle
-     * pattern — manifesting as occasional 'wrong tiles in the right-
-     * hand half of NBG2/NBG3' when those layers' character/pattern
-     * data lived in VRAM-B1 (= addresses 0x60000-0x7FFFF). */
     int vrama_split = (ctrl->regs->RAMCTL >> 8) & 0x1; /* §3.1 VRAMD */
     int vramb_split = (ctrl->regs->RAMCTL >> 9) & 0x1; /* §3.1 VRBMD */
 
@@ -4709,21 +4157,15 @@ static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
 
     int bank;
     if (addr < 0x40000) {
-        /* VRAMA : 0x00000–0x3FFFF */
         if (vrama_split) {
-            /* partitionnée : A0=0x00000–0x1FFFF, A1=0x20000–0x3FFFF */
             bank = (addr < 0x20000) ? 0 : 1;
         } else {
-            /* non partitionnée : une seule banque A = index 0 */
             bank = 0;
         }
     } else {
-        /* VRAMB : 0x40000–0x7FFFF */
         if (vramb_split) {
-            /* partitionnée : B0=0x40000–0x5FFFF, B1=0x60000–0x7FFFF */
             bank = (addr < 0x60000) ? 2 : 3;
         } else {
-            /* non partitionnée : une seule banque B = index 2 */
             bank = 2;
         }
     }
@@ -4735,16 +4177,6 @@ static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
 static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
 {
   int i, j;
-	//   if ((vdp2_interlace == 1) && (_Ygl->rheight > 448)) {
-	//     // Weird... Partly fix True Pinball in case of interlace only but it is breaking Zen Nihon Pro Wres, so use the bad test of the height
-	//     Vdp2DrawCellInterlace(info, texture, ctrl->regs);
-	//     return;
-	//   }
-  /* Wrap et accessibilité VRAM : uniquement en mode bitmap.
-   * En mode tile, le filtrage est fait en amont dans Vdp2DrawMapTest
-   * via char_bank[]. Appliquer isVramAccessible aux tiles causerait
-   * des faux positifs (tiles dont le charaddr tombe dans une banque
-   * non déclarée accessible pour ce layer mais valide via pattern name). */
   u32 base      = ctrl->info.bitmap_base;
   u32 wrap_size = ctrl->info.bitmap_wrap_size;
   int is_bitmap = (ctrl->info.isbitmap != 0) && (wrap_size > 0);
@@ -4849,45 +4281,13 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
 #undef BITMAP_ACCESSIBLE
 }
 
-/* Vdp2DrawBitmapLineScroll — render a bitmap-format NBG with per-line scroll.
- *
- * VDP2 User's Manual ST-058-R2:
- *   §4.9  Bitmap mode (cellw/cellh = 256/512 powers of two, p.93-95)
- *   §5.3  Line scroll function (p.131-133)
- *   §5.1  Screen Scroll Function (p.124-126, scroll wrap behaviour)
- *
- * The renderer splits the screen into vertical "zones" — contiguous spans
- * of scanlines over which all VDP2 registers relevant to the layer are
- * unchanged.  Each zone is drawn by a single call into this function.
- *
- * 'i' in the loop is the row offset WITHIN THE ZONE (0..height-1),
- * but the zone may start somewhere other than line 0.  Two state
- * lookups must therefore be re-anchored on the absolute screen line:
- *
- *   (a) lineinfo[] is filled by Vdp2GenLineinfo() over [0, _Ygl->rheight)
- *       — always indexed by absolute screen line.
- *   (b) The "no V-scroll" fallback for sv must use the absolute line,
- *       because §5.1 says vertical scroll is screen-line-relative.
- *
- * The previous implementation read lineinfo[i] and used 'i' as the
- * vertical delta, so any zone that did NOT start at line 0 would
- * sample the wrong line-scroll values and the wrong vertical offset.
- * Symptoms: visible "mid-screen jump" of NBG0/NBG1 bitmap layers in
- * titles whose line-scroll register set changes mid-frame (Sega Rally
- * road horizon, Panzer Dragoon Saga water, Burning Rangers fire).
- */
-
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height)
 {
   int i, j;
   int shift = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
 
-  /* Anchor the zone on its absolute screen line.  startLine == 0 for the
-   * legacy single-zone case — backward-compatible. */
   const int zone_start = ctrl->info.startLine;
-
-
 
   for (i = 0; i < height; i++)
   {
@@ -4896,8 +4296,6 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     vdp2Lineinfo * line;
     const int absline = zone_start + i;
 
-    /* alpha_per_line is also indexed by absolute screen line, see
-     * VIDCSReadColorOffset() which fills it over the full frame. */
     ctrl->info.draw_line = absline;
     ctrl->info.alpha = ctrl->info.alpha_per_line[absline >> shift];
     baseaddr = (u32)ctrl->info.charaddr;
@@ -4911,43 +4309,11 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     if (VDPLINE_SY(ctrl->info.islinescroll))
       sv = line->LineScrollValV + ctrl->info.sv;
     else
-      /* §5.1: vertical scroll = base SCYIN value + screen line.
-       * Use absline instead of 'i' so the zone's vertical offset is
-       * preserved across split points.  Without this, every new zone
-       * resets the vertical mapping to line 0. */
         sv = absline + ctrl->info.sv;
 
-     /* §5.1 wrap: bitmap dimensions are powers of 2 (cellw, cellh ∈
-     * {256, 512, 1024}), so a bit-AND with (size-1) is equivalent to
-     * a positive modulo for two's-complement integers — the wrap is
-     * correct even for negative sh/sv (which can happen when
-     * LineScrollValH/V is sign-extended at bit 10).
-     *
-     * The previous code carried an additional adjustment:
-     *   if (LineScrollValH >= 0 && LineScrollValH < sh && sv > 0)
-     *       sv -= 1;
-     * which has no basis in the manual — H scroll value should not
-     * influence V scroll mapping.  It was an empirical fix for a
-     * 1-pixel mis-alignment that no longer manifests once the zone
-     * indexing above is corrected; remove it. */
     sv &= (ctrl->info.cellh - 1);
     sh &= (ctrl->info.cellw - 1);
 
-    /* VDP2 ST-058-R2 §5.1 / §4.3 : en mode bitmap line-scroll, l'adresse
-     * pixel est LINEAIRE dans la zone bitmap : addr = (sv*cellw + sh + j)
-     * masquee par la taille totale du bitmap (cellw*cellh, puissance de 2).
-     * Le debordement horizontal (sh+j >= cellw) REPORTE donc sur la rangee
-     * suivante au lieu de reboucler dans la meme rangee.
-     *
-     * REGRESSION corrigee : un patch avait introduit un wrap par-pixel
-     * h=(sh+j)&(cellw-1) qui rebouclait dans la rangee. Des jeux qui
-     * stockent un framebuffer lineaire 512 de large et le defilent via le
-     * line scroll (H=offset&(cellw-1), V=offset/cellw, donc sv*cellw+sh =
-     * offset lineaire) voyaient chaque ligne relire le DEBUT de la meme
-     * rangee -> duplication / traits horizontaux. L'adressage lineaire
-     * retablit le report inter-rangees. Aucun effet quand il n'y a pas de
-     * debordement (sh+width <= cellw), donc transparent pour le scroll
-     * horizontal normal. */
     {
       const u32 bmpmask = (u32)(ctrl->info.cellw * ctrl->info.cellh) - 1;
       const u32 lin_base = (u32)sv * ctrl->info.cellw + (u32)sh;
@@ -5050,14 +4416,12 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   if (screenY1 < 0) screenY1 = 0;
   if (screenY2 > _Ygl->rheight) screenY2 = _Ygl->rheight;
  
-  /* Constantes de wrap bitmap (cellw et cellh sont puissances de 2, §4.3). */
   const int cellw = ctrl->info.cellw;
   const int cellh = ctrl->info.cellh;
   const int cellw_mask = cellw - 1;
   const int cellh_mask = cellh - 1;
  
 #ifdef SHELLSHOCK_DEBUG
-  /* Log une fois par appel zone pour confirmer les paramètres effectifs. */
   static int log_throttle = 0;
   if ((log_throttle++ & 0x3F) == 0) {
     YuiMsg("[NBG0 bitmap draw] zone=[%d..%d] sh=%d sv=%d cellw=%d cellh=%d "
@@ -5077,31 +4441,9 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     int inch = inch_base;
  
     baseaddr = (u32)ctrl->info.charaddr;
-    /* VDP2 Manual §5.3 Figure 5.5 'Line Scroll Table' (p.133):
-     * Vdp2GenLineinfo() fills lineinfo[] over [0, _Ygl->rheight),
-     * indexed by ABSOLUTE screen line, and applies the per-line
-     * /lineinc grouping internally (line at absline reads
-     * table_entry = absline / lineinc).
-     *
-     * The previous code divided 'i' by lineinc here too, producing
-     * a DOUBLE division and reading lineinfo[i/lineinc] — i.e. the
-     * data that lineinfo[i/lineinc] was supposed to mirror, not the
-     * data for screen line i.  For lineinc > 1 the read was off by
-     * up to (lineinc-1)*N lines and could even go out of bounds for
-     * upscaled rheights (e.g. i=400 with lineinc=2 -> index 200,
-     * which is fine for 240-line rheight but indexable only because
-     * lineinfo is dimensioned generously; on shorter heights this
-     * would be reading past the array).
-     *
-     * Fix: read lineinfo[i] directly. */
      line = &(ctrl->info.lineinfo[i]);
      ctrl->info.draw_line = i;
  
-    /* Mode ABSOLU conservé : v est l'offset vertical écran absolu, converti
-     * en rangée source via incv. SCYIN0 du snapshot de zone s'ajoute
-     * naturellement. Pour un jeu qui ne change pas SCYIN0 entre zones,
-     * cela produit une texture continue sur tout l'écran, ce qui est
-     * le comportement voulu. */
     v = (i * incv) >> 8;
  
     if (VDPLINE_SZ(ctrl->info.islinescroll)) {
@@ -5121,7 +4463,6 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     else
       sv = v + ctrl->info.sv;
  
-    /* Wrap cellw/cellh (powers of two, sans division). */
     sv = sv & cellh_mask;
     sh = sh & cellw_mask;
  
@@ -5133,12 +4474,6 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
           u32 addr = row_base + (h >> 1);
-          /* VDP2 Manual ST-058-R2 §3.1 : l'adressage VRAM est modulaire
-           * (Vdp2RamReadByte masque & 0x7FFFF / & 0xEFFFF selon VRSISE).
-           * Toujours lire — laisser la lecture replier l'adresse, comme
-           * les chemins 8/16/32 bpp ci-dessous et Vdp2DrawBitmapLineScroll.
-           * L'ancien clamp "addr >= 0x80000 -> transparent" videait la
-           * partie droite des lignes franchissant 0x80000. */
           int cc = 1;
           u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, addr);
           u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
@@ -5305,9 +4640,6 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
       }
       return   VDP2COLOR(info->idScreen, alpha, priority, cc, cramindex);
     }
-	// VDP2 Manual §4.3 Figure 4.6: RGB format, bit15=transparent.
-	// §11.2: Special priority mode applies to RGB format tiles the same as palette tiles.
-	// Pass dot lower nibble as special priority check value (consistent with palette cases).
 	case 3: // 16 BPP(RGB)
 	  dot = Vdp2RamReadWord(NULL, Vdp2Ram, (info->charaddr + ((y * cellw) + x) * 2));
 	  if (!(dot & 0x8000) && info->transparencyenable) return 0x00000000;
@@ -5324,13 +4656,6 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
   }
 }
 
-/* vidcs.c — getPriority() — VDP2 Manual §11.1 PRINA/PRINB/PRINB registers
- * Priority number is a 3-bit value per scroll screen (bits 2-0 of each field).
- * PRINA (1800F8H): bits 2-0 = NBG0, bits 10-8 = NBG1
- * PRINB (1800FAH): bits 2-0 = NBG2, bits 10-8 = NBG3
- * PRIR  (1800FCH): bits 2-0 = RBG0
- * When priority == 0, the screen is treated as transparent (not displayed).
- */
 static int getPriority(int id, Vdp2 *a) {
     switch (id) {
     case NBG0:  return  (a->PRINA)       & 0x7;
@@ -5375,37 +4700,10 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
   const int res_shift = 0;
 
-
-  /* §5.3 p.137 : l'intervalle de relecture du line scroll
-   * (NxLSS) est deja calcule par ReadLineScrollData() dans
-   * info->lineinc, a partir du snapshot par-ligne. Vdp2GenLineinfo()
-   * remplit ensuite lineinfo[] indexe par ligne ecran absolue, avec
-   * la V-scroll deja interpolee sur l'intervalle. Il suffit donc de
-   * lire lineinfo[v] ; aucun recalcul local de spacing/mask n'est
-   * necessaire (l'ancien linescroll_spacing relisait en plus le
-   * registre live ctrl->regs->SCRCTL au lieu du snapshot). */
   int screenH = _Ygl->rheight;
 
   for (v = 0; v < screenH; v++) {
     int targetv = 0;
-	
-    /* VDP2 Manual §5.3 Figure 5.5: lineinfo[] is filled by
-     * Vdp2GenLineinfo() indexed by ABSOLUTE screen line.  Adjacent
-     * entries within the same NxLSS interval already share identical
-     * data (the per-table_entry grouping is applied inside
-     * Vdp2GenLineinfo when populating).
-     *
-     * The previous code indexed by 'lineindex<<res_shift', where
-     * 'lineindex' is the loop's table_entry counter (incremented
-     * once per linescroll_spacing lines).  That is a valid index
-     * only if lineinfo[] is indexed by table_entry — it is NOT.
-     * Reading lineinfo[lineindex] for line 'v' returns the values
-     * stored at array index lineindex, which Vdp2GenLineinfo filled
-     * with table_entry = lineindex / lineinc — i.e. wrong by a
-     * factor of lineinc.
-     *
-     * Fix: read lineinfo[v] directly, mirroring the corrected
-     * Vdp2DrawBitmapLineScroll / Vdp2DrawBitmapCoordinateInc paths. */
 
     if (VDPLINE_SX(ctrl->info.islinescroll)) {
       sx = ctrl->info.sh + ctrl->info.lineinfo[v].LineScrollValH;
@@ -5415,49 +4713,25 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     }
 
     if (VDPLINE_SY(ctrl->info.islinescroll)) {
-       /* §5.3 p.131/137 : lineinfo[v].LineScrollValV est deja interpole
-        * avec delta-Yst par sous-ligne dans Vdp2GenLineinfo(). On lit
-        * directement la valeur de la ligne absolue v. */
        targetv = ctrl->info.sv + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
       targetv = ctrl->info.sv + ((v*incv)>>8);
     }
 
-    /* §5.3 p.134 + Figure 5.8 : la table VCSC contient une
-     * entree par COLONNE DE CELLULE (8 dots) de l'ecran, lue de gauche
-     * a droite. Le V-shift doit donc etre re-echantillonne quand la
-     * colonne de cellule change, dans la boucle horizontale (voir plus
-     * bas). Ici on ne fait que memoriser le targetv de base de la
-     * ligne ; le V-shift VCSC sera ajoute par colonne. */
     const int base_targetv = targetv;
 
-	/* vidcs.c — Vdp2DrawMapPerLine() line zoom update
-	 * VDP2 Manual §5.3 SCRCTL N0LZMX/N1LZMX: when set, horizontal coordinate
-	 * increment is read per-line from the line scroll table (8.8 fixed-point).
-	 * Table value 0x0100 = 1.0 (no zoom). Value 0x0000 is undefined/invalid;
-	 * treat as 1.0 to avoid division by zero. Value > 0x0100 = reduction.
-	 * VDP2 Manual §5.3: "coordinate increment must not exceed reduction setting."
-	 */
 	if (VDPLINE_SZ(ctrl->info.islinescroll)) {
 		u16 raw_inc = ctrl->info.lineinfo[v].CoordinateIncH;
 		if (raw_inc == 0) {
-			/* VDP2 Manual §5.3: 0 is undefined — treat as 1.0 (no zoom) */
 			ctrl->info.coordincx = 1.0f;
 		} else {
-			/* 8.8 fixed-point: integer part bits 10-8, frac bits 7-0 */
 			ctrl->info.coordincx = 1.0f / ((float)raw_inc / 256.0f);
 		}
 	}
-	/* VDP2 Manual §4.3 ZMCTL: clamp to minimum zoom allowed by reduction register */
 	if (ctrl->info.coordincx < ctrl->info.maxzoom)
 		ctrl->info.coordincx = ctrl->info.maxzoom;
 
-/* PATCH 3.1 — quand la VCSC n'est PAS active, le V-shift est
-     * constant sur toute la ligne : on calcule mapy/.../chary une
-     * seule fois, comme avant. Quand la VCSC EST active, ces valeurs
-     * dependent de la colonne de cellule et sont (re)calculees dans
-     * la boucle j ci-dessous. */
     if (!ctrl->info.isverticalscroll) {
       mapy = (base_targetv) >> planeh_shift;
       dot_on_planey = (base_targetv) - (mapy << planeh_shift);
@@ -5472,21 +4746,12 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
     int inch = (int)(1.0f / ctrl->info.coordincx * 256.0f);
 
-    /* Colonne de cellule VCSC courante ; -1 = non initialisee.
-     * §5.3 p.134 : verticalscrollinc vaut 4 (un seul NBG en VCSC) ou
-     * 8 (les deux NBG -> entrees alternees). verticalscrolltbl pointe
-     * deja sur la 1re entree du bon NBG (le +4 pour NBG1 est applique
-     * dans Vdp2DrawNBG1). cellCol * verticalscrollinc parcourt donc
-     * la table correctement dans les deux cas. */
     int vcsc_cell = -1;
 
     for (int j = 0; j < ctrl->info.draww; j += 1) {
 
       int hh = ((j*inch) >> 8);
 
-      /* PATCH 3.1 — re-echantillonnage VCSC par colonne de cellule.
-       * La position horizontale dans le plan est (hh + sx) ; la
-       * colonne de cellule est cette position divisee par 8. */
       if (ctrl->info.isverticalscroll) {
         int cellCol = (hh + sx) >> 3;
         if (cellCol != vcsc_cell) {
@@ -5539,27 +4804,15 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       ctrl->info.draw_line = v;
       if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl->info.draw_line >>= 1;
 
-      /* VDP2 Manual §11.1 PRINA/PRINB (1800F8H-1800FAH, p.225):
-       * Priority is a 3-bit value per scroll screen, sampled per line
-       * from Vdp2Lines[] to capture mid-frame register changes.
-       * PRINA bits 2-0 = NBG0, bits 10-8 = NBG1.
-       * PRINB bits 2-0 = NBG2, bits 10-8 = NBG3.
-       * (MapPerLine is only called for NBG0 and NBG1.) */
       ctrl->info.priority = getPriority(ctrl->info.idScreen,
                                         &Vdp2Lines[ctrl->info.draw_line]);
 
-      /* VDP2 Manual §11.2 Special Priority Function (p.227):
-       * specialprimode==1: LSB of the 3-bit priority number is replaced
-       * by the special priority bit from pattern name data.
-       * Must save/restore so the per-line base priority is not corrupted
-       * across pixels within the same line. */
       int priority = ctrl->info.priority;
       if (ctrl->info.specialprimode == 1) {
         ctrl->info.priority = (ctrl->info.priority & 0xFFFFFFFE)
                               | ctrl->info.specialfunction;
       }
 
-      /* Compute tile-local pixel coordinates with flip */
       int x = charx;
       int y = chary;
 
@@ -5606,12 +4859,9 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
         }
       }
 
-      /* Fetch pixel — priority already set above, restored below */
       *(ctrl->texture.textdata++) =
           Vdp2RotationFetchPixel(&ctrl->info, x, y, ctrl->info.cellw);
 
-      /* VDP2 Manual §11.2: restore base priority after each pixel,
-       * whether or not specialprimode modified it. */
       ctrl->info.priority = priority;
     }
 
@@ -5648,28 +4898,19 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
   if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl->info.drawh *= 2;
   ctrl->info.lineinc = ctrl->info.patternpixelwh;
 
-  //ctrl->info.coordincx = 1.0f;
-
   for (v = -ctrl->info.patternpixelwh; v < ctrl->info.drawh + ctrl->info.patternpixelwh; v += ctrl->info.patternpixelwh) {
     int targetv = 0;
     sx = ctrl->info.x;
 
     if (!ctrl->info.isverticalscroll) {
       targetv = ctrl->info.y + v;
-      // determine which chara shoud be used.
-      //mapy   = (v+sy) / (512 * ctrl->info.planeh);
       mapy = (targetv) >> planeh_shift;
-      //int dot_on_planey = (v + sy) - mapy*(512 * ctrl->info.planeh);
       dot_on_planey = (targetv)-(mapy * (1 << planeh_shift));
       mapy = mapy & 0x01;
-      //planey = dot_on_planey / 512;
       planey = dot_on_planey >> plane_shift;
-      //int dot_on_pagey = dot_on_planey - planey * 512;
       dot_on_pagey = dot_on_planey & plane_mask;
       planey = planey & (ctrl->info.planeh - 1);
-      //pagey = dot_on_pagey / (512 / ctrl->info.pagewh);
       pagey = dot_on_pagey >> page_shift;
-      //chary = dot_on_pagey - pagey*(512 / ctrl->info.pagewh);
       chary = dot_on_pagey & page_mask;
       if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
     }
@@ -5681,37 +4922,24 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       if (ctrl->info.isverticalscroll) {
         targetv = ctrl->info.y + v + (Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl + cell_count) >> 16);
         cell_count += ctrl->info.verticalscrollinc;
-        // determine which chara shoud be used.
-        //mapy   = (v+sy) / (512 * ctrl->info.planeh);
         mapy = (targetv) >> planeh_shift;
-        //int dot_on_planey = (v + sy) - mapy*(512 * ctrl->info.planeh);
         dot_on_planey = (targetv)-(mapy << planeh_shift);
         mapy = mapy & 0x01;
-        //planey = dot_on_planey / 512;
         planey = dot_on_planey >> plane_shift;
-        //int dot_on_pagey = dot_on_planey - planey * 512;
         dot_on_pagey = dot_on_planey & plane_mask;
         planey = planey & (ctrl->info.planeh - 1);
-        //pagey = dot_on_pagey / (512 / ctrl->info.pagewh);
         pagey = dot_on_pagey >> page_shift;
-        //chary = dot_on_pagey - pagey*(512 / ctrl->info.pagewh);
         chary = dot_on_pagey & page_mask;
         if (pagey < 0) pagey = ctrl->info.pagewh - 1 + pagey;
       }
 
-      //mapx = (h + sx) / (512 * ctrl->info.planew);
       mapx = (h + sx) >> planew_shift;
-      //int dot_on_planex = (h + sx) - mapx*(512 * ctrl->info.planew);
       dot_on_planex = (h + sx) - (mapx * (1<<planew_shift));
       mapx = mapx & 0x01;
-      //planex = dot_on_planex / 512;
       planex = dot_on_planex >> plane_shift;
-      //int dot_on_pagex = dot_on_planex - planex * 512;
       dot_on_pagex = dot_on_planex & plane_mask;
       planex = planex & (ctrl->info.planew - 1);
-      //pagex = dot_on_pagex / (512 / ctrl->info.pagewh);
       pagex = dot_on_pagex >> page_shift;
-      //charx = dot_on_pagex - pagex*(512 / ctrl->info.pagewh);
       charx = dot_on_pagex & page_mask;
 
       if (ctrl->info.PlaneAddr == 0) {
@@ -5719,7 +4947,6 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       }
       ctrl->info.PlaneAddr(&ctrl->info, ctrl->info.mapwh * mapy + mapx, ctrl->regs);
       if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) != 0) {
-        //Only draw if there is a valid character pattern VRAM access for the current layer
         int charAddrBk = (((ctrl->info.charaddr >> 16)& 0xF) >> ((ctrl->regs->VRSIZE >> 15)&0x1)) >> 1;
         if (ctrl->info.char_bank[charAddrBk] == 1) {
           int x = h - charx;
@@ -5755,10 +4982,8 @@ static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int m
 {
   if (regs->CLOFEN & mask)
   {
-    // color offset enable
     if (regs->CLOFSL & mask)
     {
-      // color offset B
       info->cor = regs->COBR & 0xFF;
       if (regs->COBR & 0x100)
         info->cor |= 0xFFFFFF00;
@@ -5773,7 +4998,6 @@ static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int m
     }
     else
     {
-      // color offset A
       info->cor = regs->COAR & 0xFF;
       if (regs->COAR & 0x100)
         info->cor |= 0xFFFFFF00;
@@ -5788,7 +5012,7 @@ static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int m
     }
     info->PostPixelFetchCalc = &DoColorOffset;
   }
-  else { // color offset disable
+  else {
 
     info->PostPixelFetchCalc = &DoNothing;
     info->cor = 0;
@@ -5804,17 +5028,8 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     u32* back_pixel_data = YglGetBackColorPointer();
     if (back_pixel_data == NULL) return;
 
-    /* VDP2 Manual ST-58-R2 §7.2 Figure 7.4 p.175 :
-     *   - non-entrelace ET double densite : une entree de table PAR LIGNE
-     *   - entrelace SIMPLE densite        : une entree TOUTES LES 2 LIGNES
-     * (l'ancienne variable line_shift, conditionnee sur rheight>256, etait
-     *  morte et sans fondement dans le manuel — supprimee.) */
     const int bk_line_shift = (_Ygl->interlace == SINGLE_INTERLACE) ? 1 : 0;
 
-    /* VDP2 Manual ST-58-R2 §7.2 + §12.1 — BKTAU/BKTAL/CCRLB sont
-     * echantillonnes par ligne par le hardware. On mappe les rangees de
-     * pixels physiques vers les lignes logiques pour que la lecture soit
-     * correcte en double-interlace et en mode exclusif 480 lignes. */
     const int phys_lines = _Ygl->rheight;
     const int logical_lines = (yabsys.VBlankLineCount >= 270)
                               ? 270 : yabsys.VBlankLineCount;
@@ -5824,48 +5039,20 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
         const int table_line = li >> bk_line_shift;   /* §7.2 Fig.7.4 p.175 */
         const Vdp2 *L = &Vdp2Lines[li];
 
-        /* --- Ratio de color calculation (alpha) ---
-         * VDP2 Manual ST-58-R2 §12.1 :
-         *   - CCCTL (1800ECH) p.242 : les seuls bits d'activation CC sont
-         *     N0CCEN(0)..N3CCEN(3), R0CCEN(4), LCCCEN(5), SPCCEN(6).
-         *     Le BACK SCREEN n'a PAS de bit d'activation propre — l'ancien
-         *     test (CCCTL>>3)&1 visait N3CCEN (NBG3), erreur de copier-coller.
-         *   - CCRLB (18010EH) p.243 : BKCCRT4-0 = bits 12-8 ; le ratio vaut
-         *     1/32 des donnees RGB. Conversion ratio->alpha identique a tous
-         *     les autres calques (line color screen, NBGx, RBGx) :
-         *     alpha = (~ratio & 0x1F) * 255 / 31  (ratio 0 -> 0xFF opaque). */
         const u8 bkccrt = (u8)((L->CCRLB >> 8) & 0x1F);   /* BKCCRT4-0 */
         const u8 alpha8 = (u8)(((~bkccrt & 0x1F) * 255) / 31);
 
-        /* --- Adresse de la table back screen ---
-         * VDP2 Manual ST-58-R2 p.176 : BKTA = champ 19 bits (BKTA18-0),
-         * BKTA18-16 = BKTAU bits 2-0 ; adresse = valeur_registre_19bit x 2.
-         * BKCLMD = BKTAU bit 15 : 0 = couleur unique (1re entree pour tout
-         * l'ecran), 1 = couleur par ligne. On reevalue par ligne pour se
-         * proteger d'une reecriture de BKTAU en milieu de frame. */
         u32 base = (((L->BKTAU & 0x7) << 16) | L->BKTAL) * 2;
         const int isPerLineL = (L->BKTAU & 0x8000) != 0;
         u32 currentAddr = isPerLineL ? (base + 2 * table_line) : base;
 
-        /* VDP2 Manual ST-58-R2 §7.2 p.177 : l'adresse fait 20 bits
-         * (BKTA 19 bits x 2). Le MSB (bit 19) n'est ignore QUE si la VRAM
-         * est en 4 Mbit. §3.1 p.27 : VRSIZE bit 15 (VRAMSZ) = 0 -> 4 Mbit
-         * (masque 0x7FFFF), 1 -> 8 Mbit (masque 0xFFFFF). L'ancien masque
-         * fixe 0x7FFFF tronquait BKTA18 en mode 8 Mbit. */
         const u32 vram_mask = (L->VRSIZE & 0x8000) ? 0xFFFFF : 0x7FFFF;
         u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, currentAddr & vram_mask);
 
-        /* VDP2 Manual §7.2 Figure 7.5 p.176 : layout de la table back screen
-         *   bits 14-10 = Bleu 5 bits, 9-5 = Vert 5 bits, 4-0 = Rouge 5 bits.
-         * §3.4 p.218 : on fixe les 3 bits de poids faible de chaque RGB a 0
-         * (conversion 5->8 bits par << 3), comme pour un scroll RGB 32768. */
         u8 r = (dot & 0x001F) << 3;
         u8 g = ((dot >> 5)  & 0x1F) << 3;
         u8 b = ((dot >> 10) & 0x1F) << 3;
 
-        /* Ordre des canaux : YglBackTexture est uploade en GL_RGBA /
-         * GL_UNSIGNED_BYTE sur hote little-endian, donc l'octet a l'offset 0
-         * est le canal R. Alpha dans l'octet de poids fort. */
         back_pixel_data[i] =
               ((u32)alpha8 << 24)   /* A */
             | ((u32)b      << 16)   /* B */
@@ -5889,15 +5076,7 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
   u32 * line_pixel_data;
   u32 addr;
 
-	// VDP2 Manual §11.3: LNCLEN register enables line color insertion per layer.
-	// Bits: 0=NBG0, 1=NBG1, 2=NBG2, 3=NBG3, 4=RBG0, 5=Sprite
-	// Early-out if no layer has line color enabled.
-	// Per-layer activation is handled by the shader via VDP2COLOR encoding.
 	if (varVdp2Regs->LNCLEN == 0) return;
-	// Note: individual bit checking (varVdp2Regs->LNCLEN & (1<<layer)) should
-	// be forwarded to the compositor shader. Currently the line color screen
-	// texture is generated globally — full per-layer enforcement requires
-	// shader-side LNCLEN bit testing. TODO: pass LNCLEN to compositor.
 
 
   line_pixel_data = YglGetLineColorScreenPointer();
@@ -5905,9 +5084,6 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
     return;
   }
 
-  /* Keep the original pointer for the YglSet call below — the
-   * loop increments line_pixel_data and would otherwise hand
-   * YglSetLineColorScreen the past-the-end pointer. */
   u32 * const line_pixel_data_base = line_pixel_data;
 
   if ((varVdp2Regs->LCTA.part.U & 0x8000)) {
@@ -5917,31 +5093,14 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
     inc = 0x00; // single color
   }
 
-	/* vidcs.c — Vdp2DrawLineColorScreen()
-	 * VDP2 Manual §11.3 CCRLB (18010EH) bits 4-0 = LCCCRT[4:0]:
-	 *   Line color screen color calculation ratio, same encoding as CCRNA.
-	 *   alpha = (~ratio & 0x1F) * 255 / 31  (0=opaque, 31=~transparent)
-	 * VDP2 Manual §11.3 LNCLEN (1800E8H): per-layer enable bits.
-	 *   bit 0=NBG0, 1=NBG1, 2=NBG2, 3=NBG3, 4=RBG0, 5=Sprite.
-	 *   Line color is only inserted on layers where LNCLEN bit is set.
-	 */
-
-  /* VDP2 Manual ST-58-R2 §11.3 + §12.1 — both LCTA (line color
-   * table address) and CCRLB (color calc ratio) are sampled
-   * per-line by the hardware. The previous code read both from
-   * line 0 only, freezing the alpha and the table address for
-   * the entire frame. */
   const int phys_lines = _Ygl->rheight;
   const int logical_lines = (yabsys.VBlankLineCount >= 270)
                             ? 270 : yabsys.VBlankLineCount;
   for (i = 0; i < phys_lines; i++) {
-    /* Map physical row → logical scan line (handles double-interlace). */
     const int li = (i * logical_lines) / phys_lines;
     const Vdp2 *L = &Vdp2Lines[li];
     const u8 alpha = (u8)(((~L->CCRLB & 0x1F) * 255) / 31);
     u32 lineAddr = (L->LCTA.all & 0x7FFFF) << 1;
-    /* When LCCLMD = 1 (per-line color), the table is indexed by
-     * scan line ; when = 0 the same word is read every line. */
     if (L->LCTA.part.U & 0x8000) lineAddr += 2 * li;
     u16 LineColorRamAddress = Vdp2RamReadWord(NULL, Vdp2Ram, lineAddr);
     *(line_pixel_data++) = Vdp2ColorRamGetLineColor(LineColorRamAddress, alpha);
@@ -5953,16 +5112,9 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
 
 //////////////////////////////////////////////////////////////////////////////
 
-/* char_size_2x2 : 1 si la couche utilise un character pattern 2x2,
- *                  0 si 1x1. Doit être passé par l'appelant qui
- *                  connaît CHCTLA/CHCTLB. */
 static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_size_2x2) {
   if (_Ygl->rwidth >= 640) {
-    //if (char_access < ptn_access) {
-    //  return -1;
-    //}
     if (ptn_access & 0x01) { // T0
-      // T0-T2
       if ((char_access & 0x07) != 0) {
         if (char_access < ptn_access) {
           return -1;
@@ -5972,7 +5124,6 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_
     }
 
     if (ptn_access & 0x02) { // T1
-      // T1-T3
       if ((char_access & 0x0E) != 0) {
         if (char_access < ptn_access) {
           return -1;
@@ -5982,10 +5133,6 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_
     }
 
     if (ptn_access & 0x04) { // T2
-      /* VDP2 Manual ST-58-R2 §3.3 Table 3.4 p.34, note *1 :
-       *   2x2 character pattern in hi-res restricts T2 PNT to
-       *   T2 and T3 character access (mask 0x0C) ;
-       *   default is T0,T2,T3 (mask 0x0D). */
       const int mask = char_size_2x2 ? 0x0C : 0x0D;
       if ((char_access & mask) != 0) {
         if (char_access < ptn_access) {
@@ -5996,9 +5143,6 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_
     }
 
     if (ptn_access & 0x08) { // T3
-      /* Note *2 : 2x2 character pattern in hi-res restricts
-       * T3 PNT to T3 only (mask 0x08) ; default is T0,T1,T3
-       * (mask 0x0B). */
       const int mask = char_size_2x2 ? 0x08 : 0x0B;
       if ((char_access & mask) != 0) {
         if (char_access < ptn_access) {
@@ -6012,56 +5156,48 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_
   else {
 
     if (ptn_access & 0x01) { // T0
-      // T0-T2, T4-T7
       if ((char_access & 0xF7) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x02) { // T1
-      // T0-T3, T5-T7
       if ((char_access & 0xEF) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x04) { // T2
-      // T0-T3, T6-T7
       if ((char_access & 0xCF) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x08) { // T3
-      // T0-T3, T7
       if ((char_access & 0x8F) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x10) { // T4
-      // T0-T3
       if ((char_access & 0x0F) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x20) { // T5
-      // T1-T3
       if ((char_access & 0x0E) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x40) { // T6
-      // T2,T3
       if ((char_access & 0x0C) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x80) { // T7
-      // T3
       if ((char_access & 0x08) != 0) {
         return 0;
       }
@@ -6093,9 +5229,6 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
   // RBG1 mode
   info->enable = ((rbg->ctrl.regs->BGON & 0x20)!=0);
-  // RBG1 shall not work without RBG0 but it looks like the HW is able to...
-  // MechWarrior 2 - 31st Century Combat - Arcade Combat Edition uses this capability.
-  //if (!(varVdp2Regs->BGON & 0x10)) info->enable = 0;
 
   if (!info->enable) {
     pushRBG(rbg);
@@ -6104,9 +5237,6 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
   for (int i = info->startLine; i < info->endLine; i++) {
     info->display[i] = info->enable;
-    /* VDP2 Manual §12.1 CCRNA (180108H) bits 4-0 = N0CCRT[4:0]:
-     * RBG1 shares NBG0's color calculation ratio register (same bits).
-     * Full 0-255 mapping instead of <<3 which clips at 248. */
     rbg->alpha[i] = (u8)(((~Vdp2Lines[i].CCRNA & 0x1F) * 255) / 31);
     info->alpha_per_line[i] = rbg->alpha[i];
   }
@@ -6122,16 +5252,7 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
     info->charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
 
-    // VDP2 Manual §6.1: Verify that the VRAM bank used by RBG1 bitmap
-    // is actually allocated for rotation screen use (RAMCTL bits).
-    // RAMCTL bits [2*bank+1 : 2*bank] must be 11B (rotation data) for the
-    // bank to be valid. This mirrors the check done in Vdp2DrawRBG0_part.
     {
-	// VDP2 Manual §6.1: RAMCTL rotation-exclusive check only applies to
-	// palette format bitmaps. RGB format (colornumber==3) reads VRAM directly as
-	// pixel data and does not require the bank to be rotation-allocated (0x3).
-	// Skipping the check for RGB format prevents incorrectly suppressing RBG1 RGB bitmaps.
-
 	int charAddrBk = (((info->charaddr >> 16) & 0xF)
 					  >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
 	if (info->colornumber != 3 &&  /* RGB format bypasses VRAM bank restriction */
@@ -6220,53 +5341,26 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 {
 
-    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
-     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
-     * Mid-frame moves of W0 (spotlight effect) must split zones. */
     if (a->WPSX0 != b->WPSX0) return 0;
     if (a->WPEX0 != b->WPEX0) return 0;
     if (a->WPSY0 != b->WPSY0) return 0;
     if (a->WPEY0 != b->WPEY0) return 0;
-    /* W1 : 180028H..18002EH */
     if (a->WPSX1 != b->WPSX1) return 0;
     if (a->WPEX1 != b->WPEX1) return 0;
     if (a->WPSY1 != b->WPSY1) return 0;
     if (a->WPEY1 != b->WPEY1) return 0;
 	
-    /* LWTA0/LWTA1 (1800D8H/1800DCH) : line window table
-     * addresses + W0LWE/W1LWE bit 15. VDP2 Manual ST-58-R2
-     * p.186. Mid-frame rewrite must split zones. */
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
-    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
-     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
-     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
-     * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
   if ((a->BGON & 0x1010) != (b->BGON & 0x1010)) return 0;
   if ((a->PRIR & 0x7) != (b->PRIR & 0x7)) return 0;
   if ((a->RPTA.all) != (b->RPTA.all)) return 0;
   if ((a->RPMD & 0x3) != (b->RPMD & 0x3)) return 0;
-  // Alpha/transparence RBG0 : CCRR bits 4-0, CCCTL bit 12
   if ((a->CCRR & 0x1F) != (b->CCRR & 0x1F)) return 0;
-   /* §12.1 : R0CCEN(4) active le color calc pour RBG0.
-   *          CCMD(8) bascule mode ratio/add.
-   *          CCRTMD(9) sélectionne top vs second screen pour le ratio.
-   *          EXCCEN(10) active le extended color calc (3e/4e plan).
-   *          BOKEN(15) + BOKN2..0(14-12) : §12.2 — la fonction gradation
-   *          peut désigner RBG0 (BOKN=001b -> RBG0). Le manuel précise que
-   *          si BOKEN=1, EXCCEN est ignoré : BOKEN change donc le mode de
-   *          color-calc et doit invalider la zone. Masque 0xF710. */
   if ((a->CCCTL & 0xF710) != (b->CCCTL & 0xF710)) return 0;
-  /* ------------------------------------------------------------------
-   * §6.4 : tous les bits contrôlent le mode, la taille des données et
-   *         la line-color-enable des tables coefficient A et B.
-   *   ParaA: RAKTE(0)+RAKDBS(1)+RAKMD(3-2)+RAKLCE(4)
-   *   ParaB: RBKTE(8)+RBKDBS(9)+RBKMD(11-10)+RBKLCE(12)
-   * Masque 0x1F1F = bits 12..8 | 4..0.
-   * ------------------------------------------------------------------ */
   if ((a->KTCTL & 0x1F1F) != (b->KTCTL & 0x1F1F)) return 0;
   if ((a->CHCTLB & 0x7700) != (b->CHCTLB & 0x7700)) return 0; // colornumber + bitmap RBG0
   if ((a->PLSZ & 0xFF00)   != (b->PLSZ & 0xFF00))   return 0; // plane size ParaA + ParaB
@@ -6274,36 +5368,11 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->PNCR & 0xFFFF) != (b->PNCR & 0xFFFF)) return 0; // R0PNB,R0CNSM,R0SPR,etc.
   if ((a->KTAOF & 0x0707) != (b->KTAOF & 0x0707)) return 0; // RAKTAOS+RBKTAOS
 
-   /* OVPNRA (1800B8H), OVPNRB (1800BAH) : over pattern name for
-    * Rotation Parameter A and B.  VDP2 Manual ST-58-R2 p.155.
-    * Used by Vdp2DrawRBG0_part when screenover == 1 (PLSZ
-    * bits 11-10 / 15-14).  Mid-frame rewrite of the border
-    * pattern must invalidate the zone. */
    if ((a->OVPNRA & 0xFFFF) != (b->OVPNRA & 0xFFFF)) return 0;
    if ((a->OVPNRB & 0xFFFF) != (b->OVPNRB & 0xFFFF)) return 0;
 
-  /* ------------------------------------------------------------------
-   * SFPRMD 1800EAH bits 9~8 : R0SPRM1,R0SPRM0
-   * §11.2 : special priority mode RBG0 (par écran / par caractère /
-   *          par dot). Change comment le LSB du numéro de priorité est
-   *          sélectionné pour chaque dot → doit provoquer un split.
-   * Masque 0x0300 = bits 9,8.
-   * ------------------------------------------------------------------ */
   if ((a->SFPRMD & 0x0300) != (b->SFPRMD & 0x0300)) return 0;
-  /* ------------------------------------------------------------------
-   * WCTLC 1800D4H bits 7~0 : fenêtres RBG0
-   * §8.1 : R0W0A,R0W0E,R0W1A,R0W1E,R0SWA,R0SWE + R0LOG(7).
-   *          Un changement mid-frame active, désactive ou inverse
-   *          la zone de fenêtre appliquée à RBG0.
-   * Masque 0x00FF = octet bas.
-   * ------------------------------------------------------------------ */
   if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;
-  /* ------------------------------------------------------------------
-   * WCTLD 1800D6H bits 3~0 : rotation parameter window
-   * §8.2 : RPW0A(0),RPW0E(1),RPW1A(2),RPW1E(3).
-   *          Utilisé directement dans Vdp2DrawRBG0_part() pour
-   *          info->RotWin (mode RPMD=3). Masque 0x000F.
-   * ------------------------------------------------------------------ */
   if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0;
   if ((a->BMPNB & 0x0077) != (b->BMPNB & 0x0077)) return 0;
   if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
@@ -6314,47 +5383,25 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
   if ((a->LCTA.all) != (b->LCTA.all)) return 0;
   if ((a->CRAOFB & 0x0007) != (b->CRAOFB & 0x0007)) return 0;
   if ((a->CLOFSL & 0x0010) != (b->CLOFSL & 0x0010)) return 0;
-  /* CLOFEN bit 4 : R0COEN — color offset enable RBG0.
-   * VDP2 Manual ST-58-R2 p.251 (180110H). Comme pour NBG0..3, l'étape de
-   * blending teste CLOFEN en premier ; sans cette comparaison un fade
-   * ON/OFF mid-frame est silencieusement perdu. */
   if ((a->CLOFEN & 0x0010) != (b->CLOFEN & 0x0010)) return 0;
-	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
-	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
-	//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
-	//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
-	//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
-	//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
   return 1;
 }
 
 static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
 {
 
-    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
-     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
-     * Mid-frame moves of W0 (spotlight effect) must split zones. */
     if (a->WPSX0 != b->WPSX0) return 0;
     if (a->WPEX0 != b->WPEX0) return 0;
     if (a->WPSY0 != b->WPSY0) return 0;
     if (a->WPEY0 != b->WPEY0) return 0;
-    /* W1 : 180028H..18002EH */
     if (a->WPSX1 != b->WPSX1) return 0;
     if (a->WPEX1 != b->WPEX1) return 0;
     if (a->WPSY1 != b->WPSY1) return 0;
     if (a->WPEY1 != b->WPEY1) return 0;
 	
-    /* LWTA0/LWTA1 (1800D8H/1800DCH) : line window table
-     * addresses + W0LWE/W1LWE bit 15. VDP2 Manual ST-58-R2
-     * p.186. Mid-frame rewrite must split zones. */
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
-    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
-     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
-     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
-     * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 	
   if ((a->BGON & 0x130) != (b->BGON & 0x130)) return 0;
@@ -6378,159 +5425,78 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->LCTA.all) != (b->LCTA.all)) return 0; // adresse table ligne couleur source des couleurs line-color.
   if ((a->CRAOFA & 0x0007) != (b->CRAOFA & 0x0007)) return 0; // N0CAOS2..0 color RAM address offset NBG0/RBG1.
   if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0; // N0COSL color offset A vs B pour NBG0/RBG1.
-  /* CLOFEN bit 0 : N0COEN — color offset enable NBG0/RBG1.
-   * VDP2 Manual ST-58-R2 p.250-251 (180110H). RBG1 partage la voie
-   * color-offset de NBG0 ; cohérence avec sameVDP2RegNBG0. */
   if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;  
   if ((a->LSTA0.all) != (b->LSTA0.all)) return 0; // adresse table line scroll NBG0/RBG1 scroll est actif (SCRCTL bits 5-0 != 0).
   if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
   if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
-	//  if ((a->VRSIZE & 0x8000) != (b->VRSIZE & 0x8000)) return 0;
-	//  if ((a->PLSZ & 0xFF00) != (b->PLSZ & 0xFF00)) return 0;
-	//  if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
-	//  if ((a->WCTLA & 0xFF) != (b->WCTLA & 0xFF)) return 0;
-	//  if ((a->PNCN0 & 0xFFFF) != (b->PNCN0 & 0xFFFF)) return 0;
-	//  if ((a->COBR & 0x1FF) != (b->COBR & 0x1FF)) return 0;
-	//  if ((a->COBG & 0x1FF) != (b->COBG & 0x1FF)) return 0;
-	//  if ((a->COBB & 0x1FF) != (b->COBB & 0x1FF)) return 0;
-	//  if ((a->COAR & 0x1FF) != (b->COAR & 0x1FF)) return 0;
-	//  if ((a->COAG & 0x1FF) != (b->COAG & 0x1FF)) return 0;
-	//  if ((a->COAB & 0x1FF) != (b->COAB & 0x1FF)) return 0;
   return 1;
 }
 
 static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
 {
-    /* WPSX0/WPEX0/WPSY0/WPEY0 (180020H..180026H) :
-     * Window 0 boundaries.  VDP2 Manual ST-58-R2 §8.1 p.181.
-     * Mid-frame moves of W0 (spotlight effect) must split zones. */
     if (a->WPSX0 != b->WPSX0) return 0;
     if (a->WPEX0 != b->WPEX0) return 0;
     if (a->WPSY0 != b->WPSY0) return 0;
     if (a->WPEY0 != b->WPEY0) return 0;
-    /* W1 : 180028H..18002EH */
     if (a->WPSX1 != b->WPSX1) return 0;
     if (a->WPEX1 != b->WPEX1) return 0;
     if (a->WPSY1 != b->WPSY1) return 0;
     if (a->WPEY1 != b->WPEY1) return 0;
 	
-    /* LWTA0/LWTA1 (1800D8H/1800DCH) : line window table
-     * addresses + W0LWE/W1LWE bit 15. VDP2 Manual ST-58-R2
-     * p.186. Mid-frame rewrite must split zones. */
     if (a->LWTA0.all != b->LWTA0.all) return 0;
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
-    /* RAMCTL bits 15 (CRKTE) + 11..0 (bank type assignments).
-     * VDP2 Manual ST-58-R2 §3.2 p.29-30. The bank-conflict
-     * scans inside Vdp2DrawNBG0..3 and Vdp2DrawRBG0_part read
-     * RAMCTL ; mid-frame rewrites must invalidate zones. */
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
 
-    /* BGON: N0ON = bit 0. Also check RBG enable bits that suppress NBG0
-     * (VDP2 §4.1 Table 4.1: when R0ON(4)+R1ON(5) both set, NBG screens off),
-     * AND N0TPON = bit 8 (Transparent display enable, 180020H bit 8,
-     * VDP2 Manual ST-58-R2 p.81). Vdp2DrawNBG0 reads BGON & 0x100 into
-     * info.transparencyenable; a mid-frame N0TPON toggle must split zones. */
     if ((a->BGON & 0x131) != (b->BGON & 0x131)) return 0;
  
-    /* CHCTLA byte 0 (bits 6-0) : N0CHCN(6-4), N0BMSZ(3-2), N0BMEN(1),
-     * N0CHSZ(0). VDP2 Manual ST-58-R2 p.60/p.82 (180028H). */
      if ((a->CHCTLA & 0x7F) != (b->CHCTLA & 0x7F)) return 0;
  
-    /* PRINA bits 2-0: NBG0 priority number. */
     if ((a->PRINA & 0x7) != (b->PRINA & 0x7)) return 0;
  
-    /* CCRNA bits 4-0: N0CCRT[4:0] — NBG0 color calculation ratio. */
     if ((a->CCRNA & 0x1F) != (b->CCRNA & 0x1F)) return 0;
  
-    /* SCXIN0 bits 10-0: NBG0 horizontal scroll integer part.
-     * Games doing raster-scroll MUST be detected here — Shellshock changes
-     * SCXIN0 mid-frame to switch between the two halves of its ground bitmap
-     * used as a double-buffer. */
     if ((a->SCXIN0 & 0x7FF) != (b->SCXIN0 & 0x7FF)) return 0;
  
-    /* SCYIN0 bits 10-0: NBG0 vertical scroll integer part. */
     if ((a->SCYIN0 & 0x7FF) != (b->SCYIN0 & 0x7FF)) return 0;
  
-    /* NEW: SCXDN0 bits 15-8: NBG0 horizontal scroll FRACTIONAL part (8.8 FP).
-     * Some games use sub-pixel scrolling — a pure SCXDN0 change would
-     * otherwise be invisible to the zone detector. */
     if ((a->SCXDN0 & 0xFF00) != (b->SCXDN0 & 0xFF00)) return 0;
  
-    /* NEW: SCYDN0 bits 15-8: NBG0 vertical scroll FRACTIONAL part. */
     if ((a->SCYDN0 & 0xFF00) != (b->SCYDN0 & 0xFF00)) return 0;
  
-    /* ZMXN0 / ZMYN0 : NBG0 coordinate increment (zoom).
-     * VDP2 §5.2 p.127: integer part = bits 18-16, fractional = bits 15-8.
-     * Mask 0x7FF00 covers exactly those; bits 7-0 and 19+ are reserved
-     * and must not be compared (host-dependent noise → spurious zone splits). */
     if ((a->ZMXN0.all & 0x7FF00) != (b->ZMXN0.all & 0x7FF00)) return 0;
     if ((a->ZMYN0.all & 0x7FF00) != (b->ZMYN0.all & 0x7FF00)) return 0;
  
-    /* NEW: ZMCTL bits 1-0: N0ZMQT,N0ZMHF — NBG0 reduction limit.
-     * Vdp2DrawNBG0 reads these to clamp coordincx. A mid-frame change of the
-     * reduction cap would otherwise be missed. */
     if ((a->ZMCTL & 0x0003) != (b->ZMCTL & 0x0003)) return 0;
  
-    /* CRAOFA bits 2-0: N0CAOS[2:0] — NBG0 color RAM address offset.
-     * If the game uses different palette banks for cabin vs ground, this
-     * is where the transition is detected. */
     if ((a->CRAOFA & 0x7) != (b->CRAOFA & 0x7)) return 0;
  
-    /* MPOFN bits 2-0: NBG0 map offset. In bitmap mode it selects the VRAM
-     * area holding the bitmap base (charaddr). */
     if ((a->MPOFN & 0x7) != (b->MPOFN & 0x7)) return 0;
  
-    /* BMPNA bits 5,4,2,1,0 : N0BMPR (5), N0BMCC (4), N0BMP6..N0BMP4 (2-0).
-     * VDP2 Manual ST-58-R2 p.111-112 (18002CH). Bits 3, 6, 7 are
-     * reserved ('~') and must not be tracked. */
     if ((a->BMPNA & 0x37) != (b->BMPNA & 0x37)) return 0;
  
-    /* PLSZ bits 1-0: NBG0 plane size (tile mode only, harmless in bitmap). */
     if ((a->PLSZ & 0x0003) != (b->PLSZ & 0x0003)) return 0;
  
-    /* PNCN0: NBG0 pattern name control (tile mode). */
     if ((a->PNCN0 & 0xFFFF) != (b->PNCN0 & 0xFFFF)) return 0;
  
-    /* SCRCTL bits 7-0: NBG0 line/cell scroll control. */
     if ((a->SCRCTL & 0x00FF) != (b->SCRCTL & 0x00FF)) return 0;
 
-    /* LSTA0 (1800A0H..1800A2H): NBG0 line scroll table address.
-     * VDP2 Manual ST-58-R2 p.140.  Read by Vdp2DrawNBG0 (l.1384) ;
-     * mid-frame change must trigger a new zone. */
     if (a->LSTA0.all != b->LSTA0.all) return 0;
 
-    /* VCSTA (18009CH..18009EH): vertical cell scroll table address.
-     * Shared by NBG0 and NBG1.  VDP2 Manual ST-58-R2 p.141. */
     if (a->VCSTA.all != b->VCSTA.all) return 0;
  
-    /* SFPRMD bits 1-0: NBG0 special priority mode. */
     if ((a->SFPRMD & 0x0003) != (b->SFPRMD & 0x0003)) return 0;
  
-    /* SFCCMD bits 1-0: NBG0 special color calculation mode. */
     if ((a->SFCCMD & 0x0003) != (b->SFCCMD & 0x0003)) return 0;
  
-    /* LNCLEN bit 0: N0LCEN. */
     if ((a->LNCLEN & 0x0001) != (b->LNCLEN & 0x0001)) return 0;
  
-    /* CLOFSL bit 0: N0COSL. */
     if ((a->CLOFSL & 0x0001) != (b->CLOFSL & 0x0001)) return 0;
 
-    /* WCTLA byte 0 (bits 7-0): N0LOG, N0SWE, N0SWA, N0W1E, N0W1A,
-     * N0W0E, N0W0A.  VDP2 Manual ST-58-R2 §8 p.193 (1800D0H).
-     * Mid-frame window changes affect NBG0 visibility. */
     if ((a->WCTLA & 0x00FF) != (b->WCTLA & 0x00FF)) return 0;
 
-    /* CLOFEN bit 0: N0COEN — color offset enable for NBG0.
-     * VDP2 Manual ST-58-R2 p.250 (180110H).  The blending stage
-     * (vidcs.c l.2930) keys off CLOFEN first; without comparing it
-     * here, mid-frame fade ON/OFF is silently dropped. */
     if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;
 
-    /* MZCTL (180022H) bit 0 = N0MZE (NBG0 mosaic enable),
-     *               bits 11-8  = MZSZH (horizontal mosaic size, shared),
-     *               bits 15-12 = MZSZV (vertical mosaic size, shared).
-     * VDP2 Manual ST-58-R2 p.118-119. Mask 0xFF01 covers enable + size. */
     if ((a->MZCTL & 0xFF01) != (b->MZCTL & 0xFF01)) return 0;
  
     return 1;
@@ -6581,39 +5547,17 @@ static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b)
 static int isEnabled(int id, Vdp2* varVdp2Regs) {
   int display = 1;
 
-  /* VDP2 User's Manual ST-058-R2 §4.1 'Screen display enable bit':
-   *   "When R0ON is 0, do not set R1ON at 1."
-   *   "When both R0ON and R1ON are 1, the normal scroll screen can no
-   *    longer be displayed.  At this time, VRAM-B0 is fixed in RAM used
-   *    for RBG1 character pattern tables; and VRAM-B1 is fixed in RAM
-   *    used for RBG1 pattern name tables."
-   *
-   * Two derived rules used below:
-   *   rule_a: R0ON=1 AND R1ON=1  ->  NBG0..NBG3 forced off
-   *   rule_b: R0ON=0 AND R1ON=1  ->  prohibited combination; the spec
-   *           does not specify behaviour, but RBG1 cannot run without
-   *           RBG0 supplying the rotation parameter resources, so we
-   *           force RBG1 off and let NBG draws proceed normally.  This
-   *           matches what the original Saturn hardware does in
-   *           practice (RBG1 silently drops) and prevents an attempt
-   *           to render with undefined parameter tables. */
   const int r0on = (varVdp2Regs->BGON & 0x10) != 0;
   const int r1on = (varVdp2Regs->BGON & 0x20) != 0;
   const int rule_a = (r0on && r1on);  /* both rotation screens active */
   const int rule_b = (!r0on && r1on); /* prohibited config */
 
-  /* VDP2 Manual ST-58-R2 p.61 — color-count cross-disable rules.
-   * These are evaluated per-line so display[i] reflects the rule on
-   * each scan line, not just the zone snapshot. */
   const int n0on    = (varVdp2Regs->BGON & 0x1) != 0;
   const int n1on    = (varVdp2Regs->BGON & 0x2) != 0;
   const int n0color = (varVdp2Regs->CHCTLA & 0x70) >> 4;     /* N0CHCN */
   const int n1color = (varVdp2Regs->CHCTLA & 0x3000) >> 12;  /* N1CHCN */
-  /* NBG0 ≥ 2048 colors (n0color ≥ 2) ⇒ NBG2 off */
   const int n0_kills_n2 = n0on && (n0color >= 2);
-  /* NBG0 = 16,770,000 colors (n0color == 4) ⇒ NBG1..NBG3 off */
   const int n0_kills_n1n2n3 = n0on && (n0color >= 4);
-  /* NBG1 ≥ 2048 colors (n1color ≥ 2) ⇒ NBG3 off */
   const int n1_kills_n3 = n1on && (n1color >= 2);
 
   switch(id) {
@@ -6642,8 +5586,6 @@ static int isEnabled(int id, Vdp2* varVdp2Regs) {
       display = r0on;
       break;
     case RBG1:
-      /* §4.1: if R0ON=0, R1ON=1 is prohibited - drop RBG1 silently
-       * rather than rendering against undefined parameter tables. */
       display = r1on && !rule_b;
       break;
     default:
