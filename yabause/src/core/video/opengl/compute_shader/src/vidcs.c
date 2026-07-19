@@ -722,19 +722,33 @@ void VIDCSDeInit(void)
 
 int WaitVdp2Async(int sync) {
   int empty = 0;
-  if (vdp2busy == 1) {
+  /* Fix: this whole block used to be gated behind `if (vdp2busy == 1)`.
+   * vdp2busy is a one-shot latch: the first WaitVdp2Async() call in a
+   * frame that finds the async cell-draw queue empty resets it to 0,
+   * and every LATER call in the SAME frame then short-circuits here,
+   * even if new async work (e.g. from NBG0's tile cache filling in
+   * YglTMRealloc) was queued after that reset. That let callers like
+   * YglTMRealloc() -- which relies on this function to guarantee the
+   * async worker thread is done before the texture atlas buffer is
+   * unmapped/replaced -- silently skip the wait, unmapping/deleting a
+   * buffer the worker thread was still writing into (and likewise
+   * skip RBGGenerator_onFinish() at the wrong time). This was mostly
+   * invisible before because NBG0 rarely queued enough real tile
+   * fills to trigger a mid-frame atlas realloc; now that it does,
+   * the gap became reachable. Always run the check -- it's already
+   * cheap and safe to call repeatedly (YaGetQueueSize on an empty
+   * queue just returns 0 immediately). */
 #ifdef CELL_ASYNC
-    if (cellq_end != NULL) {
-      empty = 1;
-      while (((empty = YaGetQueueSize(cellq_end))!=0) && (sync == 1))
-      {
-        YabThreadYield();
-      }
+  if (cellq_end != NULL) {
+    empty = 1;
+    while (((empty = YaGetQueueSize(cellq_end))!=0) && (sync == 1))
+    {
+      YabThreadYield();
     }
-#endif
-    RBGGenerator_onFinish();
-    if (empty == 0) vdp2busy = 0;
   }
+#endif
+  RBGGenerator_onFinish();
+  if (empty == 0) vdp2busy = 0;
   return empty;
 }
 
