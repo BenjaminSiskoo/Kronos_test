@@ -31,6 +31,8 @@
 #include <iomanip>
 #include <fstream>
 #include <sstream>
+#include <vector>
+#include <algorithm>
 
 int SH2Dis(SH2_struct *context, u32 addr, char *string)
 {
@@ -228,8 +230,17 @@ void UIDebugSH2::loadCodeAddress()
 		tr("Address (hex):"), QLineEdit::Normal,
     QString::fromStdString(currentAddress.str()), &ok).toStdString();
 
-	if (ok)
-    updateCodePage(static_cast<uint32_t>(std::stoull(newAddress, nullptr, 16)));
+	if (ok) {
+    const u32 addr = static_cast<uint32_t>(std::stoull(newAddress, nullptr, 16));
+    /* Fix: this used to only call updateCodePage(), which looks up a
+     * matching .elf file for source-level display (addr2line) -- useful
+     * for homebrew builds, but for a commercial game ISO (no matching
+     * .elf) it silently returns without changing anything visible, so
+     * "Load Code" appeared to do nothing. Also jump the actual
+     * disassembly view to the requested address. */
+    updateCodeList(addr);
+    updateCodePage(addr);
+  }
 }
 
 void UIDebugSH2::updateCodePage(u32 evaluateAddress)
@@ -498,6 +509,20 @@ bool UIDebugSH2::delMemoryBreakpoint(u32 addr)
     return SH2DelMemoryBreakpoint(debugSH2, addr) == 0;
 }
 
+u32 UIDebugSH2::getMemoryBreakpointFlags(u32 addr)
+{
+	if (!debugSH2)
+		return 0;
+
+	const memorybreakpoint_struct *mbp = SH2GetMemoryBreakpointList(debugSH2);
+	for (int i = 0; i < MAX_BREAKPOINTS; i++)
+	{
+		if (mbp[i].addr == addr)
+			return mbp[i].flags;
+	}
+	return 0;
+}
+
 void UIDebugSH2::stepInto()
 {
    if (debugSH2)
@@ -545,6 +570,40 @@ void UIDebugSH2::reserved1()
       {
          SH2TrackInfLoopStop(debugSH2);
          pbReserved1->setText(QtYabause::translate("Loop Track Start"));
+
+         // Auto-save results to a CSV file next to the executable, since
+         // the results table doesn't support copy/paste. Sorted by count
+         // descending so the hottest loop addresses are at the top.
+         {
+            tilInfo_struct *match = debugSH2->trackInfLoop.match;
+            int num = debugSH2->trackInfLoop.num;
+            std::vector<tilInfo_struct> sorted(match, match + num);
+            std::sort(sorted.begin(), sorted.end(),
+               [](const tilInfo_struct &a, const tilInfo_struct &b) {
+                  return a.count > b.count;
+               });
+
+            const char * procName = (debugSH2 == MSH2) ? "MSH2" : "SSH2";
+            std::stringstream filename;
+            filename << "trackinfloop_" << procName << ".csv";
+
+            std::ofstream out(filename.str(), std::ios_base::out | std::ios_base::trunc);
+            if (out.is_open())
+            {
+               out << "Address,Count\n";
+               for (int i = 0; i < num; i++)
+               {
+                  out << std::hex << std::uppercase << std::setfill('0') << std::setw(8)
+                      << sorted[i].addr << std::dec << "," << sorted[i].count << "\n";
+               }
+               out.close();
+               YuiMsg("Track Inf Loop results saved to %s\n", filename.str().c_str());
+            }
+            else
+            {
+               YuiMsg("Failed to open %s for writing Track Inf Loop results\n", filename.str().c_str());
+            }
+         }
       }
    }
 }
