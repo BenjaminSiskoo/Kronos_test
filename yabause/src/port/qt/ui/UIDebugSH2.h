@@ -44,6 +44,7 @@ public:
    bool delCodeBreakpoint(u32 addr);
    bool addMemoryBreakpoint(u32 addr, u32 flags);
    bool delMemoryBreakpoint(u32 addr);
+   u32 getMemoryBreakpointFlags(u32 addr);
    void stepInto();
    void stepOver();
    void stepOut();
