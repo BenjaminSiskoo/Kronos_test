@@ -47,6 +47,7 @@ public:
    virtual bool delCodeBreakpoint(u32 addr);
    virtual bool addMemoryBreakpoint(u32 addr, u32 flags);
    virtual bool delMemoryBreakpoint(u32 addr);
+   virtual u32 getMemoryBreakpointFlags(u32 addr);
    virtual void stepInto();
    virtual void stepOver();
    virtual void stepOut();
