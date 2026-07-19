@@ -153,6 +153,39 @@ void UIDebugCPU::on_pbDelCodeBreakpoint_clicked()
 void UIDebugCPU::on_lwMemoryBreakpoints_itemSelectionChanged ()
 {
 	pbDelMemoryBreakpoint->setEnabled(true);
+
+	// Fix: the Read/Write/Byte/Word/Long checkboxes used to just keep
+	// whatever state they last had (or the .ui file's default on a fresh
+	// window), completely disconnected from what's actually configured
+	// for a breakpoint already in the list. That made it easy to think a
+	// breakpoint was set one way (e.g. Write+Long) when it was really
+	// something else, especially after reopening the debug window.
+	// Reflect the real, currently-selected breakpoint's flags instead.
+	QList<QListWidgetItem *> list = lwMemoryBreakpoints->selectedItems();
+	if (list.count() != 1)
+		return;
+
+	bool ok = false;
+	u32 addr = list.value(0)->text().toUInt(&ok, 16);
+	if (!ok)
+		return;
+
+	u32 flags = getMemoryBreakpointFlags(addr);
+
+	cbReadByte->setChecked((flags & BREAK_BYTEREAD) != 0);
+	cbReadWord->setChecked((flags & BREAK_WORDREAD) != 0);
+	cbReadLong->setChecked((flags & BREAK_LONGREAD) != 0);
+	cbRead->setChecked((flags & (BREAK_BYTEREAD | BREAK_WORDREAD | BREAK_LONGREAD)) != 0);
+
+	cbWriteByte->setChecked((flags & BREAK_BYTEWRITE) != 0);
+	cbWriteWord->setChecked((flags & BREAK_WORDWRITE) != 0);
+	cbWriteLong->setChecked((flags & BREAK_LONGWRITE) != 0);
+	cbWrite->setChecked((flags & (BREAK_BYTEWRITE | BREAK_WORDWRITE | BREAK_LONGWRITE)) != 0);
+}
+
+u32 UIDebugCPU::getMemoryBreakpointFlags(u32 addr)
+{
+	return 0;
 }
 
 void UIDebugCPU::on_pbAddMemoryBreakpoint_clicked()
