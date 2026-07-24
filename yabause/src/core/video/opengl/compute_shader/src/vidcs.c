@@ -1249,11 +1249,20 @@ static INLINE int Vdp2TimeslotUsable(Vdp2 *regs, int bank)
  * Access command VCSC : NBG0 = 1100b (0xC), NBG1 = 1101b (0xD). */
 static int Vdp2VCSCAccessValid(Vdp2 *regs, int nbg)
 {
+    /* [FIX VCS-1] T0-T3 live in the "L" register, T4-T7 in "U"
+     * (VDP2 Manual Sec.3.3 Fig.3.2; already correctly handled this way
+     * in updateCyclePattern(), vdp2.c). For T0 to land in bits 31-28 of
+     * cyc[] (so that "28 - t*4" below selects T0..T3), L must occupy the
+     * upper half. The previous (U<<16)|L composition had this swapped,
+     * which made this function test T4/T5 instead of T0/T1 for NBG0 -
+     * silently reporting "no valid VCSC access" even when the cycle
+     * pattern legitimately reserved T0/T1 for it (e.g. Mega Man 8 Saturn,
+     * VRAM-B1 T0/T1 = 0xC/0xC). */
     const u32 cyc[4] = {
-        ((u32)regs->CYCA0U << 16) | regs->CYCA0L,
-        ((u32)regs->CYCA1U << 16) | regs->CYCA1L,
-        ((u32)regs->CYCB0U << 16) | regs->CYCB0L,
-        ((u32)regs->CYCB1U << 16) | regs->CYCB1L,
+        ((u32)regs->CYCA0L << 16) | regs->CYCA0U,
+        ((u32)regs->CYCA1L << 16) | regs->CYCA1U,
+        ((u32)regs->CYCB0L << 16) | regs->CYCB0U,
+        ((u32)regs->CYCB1L << 16) | regs->CYCB1U,
     };
     /* §3.2 : bit 9 = VRBMD, bit 8 = VRAMD (1 = partitionnee) */
     const int a_split = (regs->RAMCTL >> 8) & 0x1;
@@ -4329,14 +4338,45 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     sh &= (ctrl->info.cellw - 1);
 
     {
-      const u32 bmpmask = (u32)(ctrl->info.cellw * ctrl->info.cellh) - 1;
-      const u32 lin_base = (u32)sv * ctrl->info.cellw + (u32)sh;
+      const u32 bmpmask    = (u32)(ctrl->info.cellw * ctrl->info.cellh) - 1;
+      const u32 cellw_mask = (u32)ctrl->info.cellw - 1;
+      const u32 cellh_mask = (u32)ctrl->info.cellh - 1;
+      /* [FIX VCS-2] lin_base is no longer const: it must be recomputed
+       * whenever the vertical cell scroll table hands back a different
+       * row for the 8-pixel cell we just entered. Without this, sv stays
+       * pinned to the line-scroll value alone and can legitimately land
+       * on bitmap rows 192-255 (VDP2 Manual Sec.3.3/4.9/5.3) where the
+       * line-scroll and vertical-cell-scroll tables themselves live in
+       * this game's VRAM layout (bitmap = full 512KB VRAM) - reading
+       * those bytes as pixels is exactly the horizontal white streaks
+       * seen on Mega Man 8 (Saturn) NBG0. */
+      u32 lin_base = (u32)sv * ctrl->info.cellw + (u32)sh;
+      int vcsc_cell = -1;
+
+      /* Re-samples the VCSC table only when the 8-pixel cell changes
+       * (same caching strategy as the tile/plane path, Sec.5.3 Fig.5.8),
+       * so this costs one VRAM read per 8 output pixels, not per pixel. */
+#define VCS_UPDATE(jj) \
+      do { \
+        if (ctrl->info.isverticalscroll) { \
+          int cellCol_ = (int)(((u32)sh + (u32)(jj)) & cellw_mask) >> 3; \
+          if (cellCol_ != vcsc_cell) { \
+            vcsc_cell = cellCol_; \
+            s32 vshift_ = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, \
+                            ctrl->info.verticalscrolltbl + \
+                            (u32)cellCol_ * ctrl->info.verticalscrollinc) >> 16; \
+            u32 sv_eff_ = ((u32)sv + (u32)vshift_) & cellh_mask; \
+            lin_base = sv_eff_ * ctrl->info.cellw + (u32)sh; \
+          } \
+        } \
+      } while (0)
 
       switch (ctrl->info.colornumber) {
       case 0: /* 4 bpp — §10.1 : pixel gauche = quartet haut */
         {
           for (j = 0; j < width; j++)
           {
+            VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
             u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + (p >> 1));
             if (!(p & 0x01)) dot >>= 4;
@@ -4358,6 +4398,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         {
           for (j = 0; j < width; j++)
           {
+            VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
             u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + p);
             if (!(dot & 0xFF) && ctrl->info.transparencyenable) {
@@ -4378,6 +4419,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         {
           for (j = 0; j < width; j++)
           {
+            VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel16bpp(ctrl, baseaddr + (p << 1));
@@ -4388,6 +4430,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         {
           for (j = 0; j < width; j++)
           {
+            VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel16bppbmp(ctrl, baseaddr + (p << 1));
@@ -4398,6 +4441,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         {
           for (j = 0; j < width; j++)
           {
+            VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel32bppbmp(ctrl, baseaddr + (p << 2));
@@ -4405,6 +4449,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
         }
         break;
       }
+#undef VCS_UPDATE
     }
 
     ctrl->texture.textdata += ctrl->texture.w;
@@ -4480,6 +4525,28 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     sv = sv & cellh_mask;
     sh = sh & cellw_mask;
  
+    /* [FIX VCS-3] Same rationale as Vdp2DrawBitmapLineScroll: recompute
+     * row_base whenever the vertical cell scroll table hands back a
+     * different row for the 8-pixel cell currently being sampled, so the
+     * zoom/coordinate-increment bitmap path stays consistent with the
+     * plain line-scroll path above (both must avoid drifting into the
+     * bitmap rows that hold the line-scroll/VCSC tables themselves). */
+    int vcsc_cell = -1;
+#define VCS_ROW(h_val, bpr) \
+    do { \
+      if (ctrl->info.isverticalscroll) { \
+        int cellCol_ = (h_val) >> 3; \
+        if (cellCol_ != vcsc_cell) { \
+          vcsc_cell = cellCol_; \
+          s32 vshift_ = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, \
+                          ctrl->info.verticalscrolltbl + \
+                          (u32)cellCol_ * ctrl->info.verticalscrollinc) >> 16; \
+          u32 sv_eff_ = ((u32)sv + (u32)vshift_) & (u32)cellh_mask; \
+          row_base = baseaddr + sv_eff_ * (u32)(bpr); \
+        } \
+      } \
+    } while (0)
+ 
     switch (ctrl->info.colornumber) {
     case 0: /* 4 bpp */
       {
@@ -4487,6 +4554,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
+          VCS_ROW(h, cellw >> 1);
           u32 addr = row_base + (h >> 1);
           int cc = 1;
           u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, addr);
@@ -4517,6 +4585,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
+          VCS_ROW(h, cellw);
           u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
           u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + h);
           if (!dot && ctrl->info.transparencyenable) {
@@ -4548,6 +4617,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
+          VCS_ROW(h, (u32)cellw * 2);
           *ctrl->texture.textdata++ = Vdp2GetPixel16bpp(ctrl, row_base + (h << 1));
         }
       }
@@ -4559,6 +4629,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
+          VCS_ROW(h, (u32)cellw * 2);
           *ctrl->texture.textdata++ = Vdp2GetPixel16bppbmp(ctrl, row_base + (h << 1));
         }
       }
@@ -4570,11 +4641,13 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
+          VCS_ROW(h, (u32)cellw * 4);
           *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, row_base + (h << 2));
         }
       }
       break;
     }
+#undef VCS_ROW
  
     ctrl->texture.textdata += ctrl->texture.w;
   }
