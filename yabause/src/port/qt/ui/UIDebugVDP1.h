@@ -49,9 +49,7 @@ protected slots:
     void on_pbNextButton_clicked();
     void on_lwCommandRaw_itemSelectionChanged();
     void on_lwCommandList_itemSelectionChanged();
-
-private:
-    void clearTextures();
+    void on_pbExportDebugInfo_clicked();
 };
 
 #endif // UIDEBUGVDP1_H
