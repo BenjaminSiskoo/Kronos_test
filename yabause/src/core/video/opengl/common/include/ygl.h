@@ -670,6 +670,17 @@ typedef struct {
   vdp2draw_struct info;
   YglTexture texture;
   Vdp2 *regs;
+  /* Kronos#520 (True Pinball flipper table): NULL for a bank means "read
+   * live Vdp2Ram as usual" (the case for every game that never hands a
+   * VRAM bank back and forth mid-frame). Non-NULL means this bank
+   * underwent a mid-frame CPU<->VDP2 handoff and must be read from this
+   * frame-stable snapshot instead - see Vdp2GetVramBankSnapshot() in
+   * vdp2.c/vdp2.h. Set once per render chunk in Vdp2DrawNBG0() and
+   * copied along with the rest of this struct into the async cell-draw
+   * queue, so each queued job keeps reading the bank state that was
+   * actually current when *that job* was issued, regardless of what the
+   * live VRAM looks like by the time the job actually runs. */
+  const u8 *vram_bank[4];
   u8 order;
 } Vdp2Ctrl;
 
