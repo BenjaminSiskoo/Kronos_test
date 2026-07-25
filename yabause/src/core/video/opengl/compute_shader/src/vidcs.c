@@ -756,6 +756,12 @@ void waitVdp2DrawScreensEnd(int sync) {
   YglCheckFBSwitch(0);
   if (vdp2busy == 1) {
     WaitVdp2Async(sync);
+    /* Kronos#520: WaitVdp2Async() just confirmed every queued NBG0 cell
+     * job from the previous composeFB has finished reading the VRAM
+     * snapshots captured during that frame. Only now is it safe to flip
+     * capture slots and let the *next* frame's HBlank captures start
+     * overwriting the now-unused one. */
+    Vdp2VramSnapshotSwap();
     YglTmPush(YglTM_vdp2);
     if (VIDCore != NULL) {
       VIDCSReadColorOffset();
@@ -1323,6 +1329,10 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   int i;
  
   ctrl.regs = varVdp2Regs;
+  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
+  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
+  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
+  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
@@ -1383,7 +1393,17 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
  
 
-  if (char_access == 0) return;
+  /* Kronos#520: char_access reflects Vdp2External.AC_VRAM, the live/global
+   * cycle pattern state at the moment this whole frame's zones are drawn
+   * (end of frame) - the SAME value for every zone. A game that hands
+   * VRAM banks back and forth mid-frame (see vdp2RamAccessCPUCheck() /
+   * Vdp2VramSnapshots in vdp2.c) can have this read as 0 at that instant
+   * even though some bank legitimately had char access during THIS zone's
+   * own historical window - proven by a recorded snapshot for that bank.
+   * Without this, the entire zone's draw is skipped here, before ever
+   * reaching isVramAccessible()'s own history-aware check below. */
+  if (char_access == 0 && !ctrl.vram_bank[0] && !ctrl.vram_bank[1] &&
+      !ctrl.vram_bank[2] && !ctrl.vram_bank[3]) return;
  
   /* VDP2 Manual §4.2 CHCTLA bits 6-4 : NBG0 color number.
    * Must be assigned BEFORE the isbitmap branch below, which switches on
@@ -1874,6 +1894,10 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   u32 ptn_access = 0;
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
+  ctrl.vram_bank[0] = NULL;
+  ctrl.vram_bank[1] = NULL;
+  ctrl.vram_bank[2] = NULL;
+  ctrl.vram_bank[3] = NULL;
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
   ctrl.info.cor = 0;
@@ -2294,6 +2318,10 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
+  ctrl.vram_bank[0] = NULL;
+  ctrl.vram_bank[1] = NULL;
+  ctrl.vram_bank[2] = NULL;
+  ctrl.vram_bank[3] = NULL;
   ctrl.info.startLine = startLine;
   ctrl.info.endLine = endLine;
   ctrl.info.dst = 0;
@@ -2530,6 +2558,10 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
+  ctrl.vram_bank[0] = NULL;
+  ctrl.vram_bank[1] = NULL;
+  ctrl.vram_bank[2] = NULL;
+  ctrl.vram_bank[3] = NULL;
   ctrl.info.idScreen = NBG3;
   ctrl.info.dst = 0;
   ctrl.info.cor = 0;
@@ -4021,10 +4053,49 @@ static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
 }
 
 
+/* Kronos#520 (True Pinball flipper table): bank-aware VRAM reads for NBG0
+ * bitmap/cell pixel decode. 'addr' is a VDP2 VRAM offset (0..0x7FFFF).
+ * If ctrl carries a historical snapshot for the bank addr falls into (set
+ * once per render chunk in Vdp2DrawNBG0(), see vdp2.h/vdp2.c), read from
+ * that frame-stable buffer instead of the live one; otherwise this is
+ * byte-for-byte identical to calling Vdp2RamRead* directly, so every game
+ * that never hands a VRAM bank back and forth mid-frame is unaffected.
+ * The manual formula (not T1ReadWord/Long's byteswap macros, to avoid any
+ * header-visibility assumption in this file) is endian-independent:
+ * Vdp2Ram is a raw big-endian byte buffer regardless of host endianness,
+ * and reading MSB-first here matches that on any host. */
+static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
+  u32 a = addr & 0x7FFFF;
+  u32 bank = a / VDP2_VRAM_BANK_SIZE;
+  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
+  if (bank < 4 && ctrl->vram_bank[bank])
+    return ctrl->vram_bank[bank][off];
+  return Vdp2RamReadByte(NULL, Vdp2Ram, addr);
+}
+
+static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
+  u32 a = addr & 0x7FFFF;
+  u32 bank = a / VDP2_VRAM_BANK_SIZE;
+  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
+  if (bank < 4 && ctrl->vram_bank[bank] && (off + 1) < VDP2_VRAM_BANK_SIZE)
+    return ((u16)ctrl->vram_bank[bank][off] << 8) | ctrl->vram_bank[bank][off + 1];
+  return Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+}
+
+static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
+  u32 a = addr & 0x7FFFF;
+  u32 bank = a / VDP2_VRAM_BANK_SIZE;
+  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
+  if (bank < 4 && ctrl->vram_bank[bank] && (off + 3) < VDP2_VRAM_BANK_SIZE)
+    return ((u32)ctrl->vram_bank[bank][off] << 24) | ((u32)ctrl->vram_bank[bank][off + 1] << 16) |
+           ((u32)ctrl->vram_bank[bank][off + 2] << 8) | (u32)ctrl->vram_bank[bank][off + 3];
+  return Vdp2RamReadLong(NULL, Vdp2Ram, addr);
+}
+
 static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
 
   u32 cramindex;
-  u16 dotw = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+  u16 dotw = Vdp2CtrlRamReadWord(ctrl, addr);
   u8 dot;
   u32 cc;
   u32 priority = 0;
@@ -4080,7 +4151,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
 static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
 
   u32 cramindex;
-  u16 dotw = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+  u16 dotw = Vdp2CtrlRamReadWord(ctrl, addr);
   u8 dot;
   u32 cc;
   u32 priority = 0;
@@ -4110,7 +4181,7 @@ static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
 static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 cramindex;
   u8 cc;
-  u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+  u16 dot = Vdp2CtrlRamReadWord(ctrl, addr);
   u32 priority = 0;
   if ((dot == 0) && ctrl->info.transparencyenable) return 0x00000000;
   else {
@@ -4123,7 +4194,7 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u32 Vdp2GetPixel16bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
-  u16 dot = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+  u16 dot = Vdp2CtrlRamReadWord(ctrl, addr);
 
   if (!(dot & 0x8000) && ctrl->info.transparencyenable) return 0x00000000;
 
@@ -4142,8 +4213,8 @@ static INLINE u32 Vdp2GetPixel32bppbmp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 color;
   u16 dot1, dot2;
   int cc;
-  dot1 = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-  dot2 = Vdp2RamReadWord(NULL, Vdp2Ram, addr+2);
+  dot1 = Vdp2CtrlRamReadWord(ctrl, addr);
+  dot2 = Vdp2CtrlRamReadWord(ctrl, addr+2);
 
   cc = Vdp2GetCCOn(ctrl, 0, 0);
   
@@ -4194,6 +4265,24 @@ static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
     }
 
     if (bank > 3) return 0;
+
+    /* Kronos#520 (True Pinball flipper table): ctrl->info.char_bank[] is
+     * derived from Vdp2External.AC_VRAM, which reflects whatever the
+     * cycle pattern happens to be at the moment this whole frame's
+     * Vdp2DrawNBG0_zones() loop actually runs - i.e. once, at end of
+     * frame, the SAME value for every zone. A game that hands VRAM banks
+     * back and forth mid-frame (see vdp2RamAccessCPUCheck()/
+     * Vdp2VramSnapshots in vdp2.c) had a DIFFERENT bank granted to the
+     * VDP2 during each zone's own historical window, so gating purely on
+     * the end-of-frame snapshot wrongly treats an entire zone as
+     * inaccessible and skips it (drawn as black/transparent) whenever
+     * that zone's bank is no longer the one the game left accessible by
+     * the time the frame finishes. ctrl->vram_bank[bank] being non-NULL
+     * is direct proof this bank *was* handed to the VDP2 at or before
+     * this zone's start line (that's the only reason a snapshot exists -
+     * see vdp2RamAccessCPUCheck()), regardless of what the global,
+     * current state looks like now. */
+    if (ctrl->vram_bank[bank]) return 1;
     return ctrl->info.char_bank[bank];
 }
 
@@ -4378,7 +4467,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           {
             VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
-            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + (p >> 1));
+            u8 dot = Vdp2CtrlRamReadByte(ctrl, baseaddr + (p >> 1));
             if (!(p & 0x01)) dot >>= 4;
             if (!(dot & 0xF) && ctrl->info.transparencyenable) {
               *ctrl->texture.textdata++ = 0x00000000;
@@ -4400,7 +4489,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           {
             VCS_UPDATE(j);
             u32 p = (lin_base + (u32)j) & bmpmask;
-            u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, baseaddr + p);
+            u8 dot = Vdp2CtrlRamReadByte(ctrl, baseaddr + p);
             if (!(dot & 0xFF) && ctrl->info.transparencyenable) {
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
@@ -4464,7 +4553,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   int i, j;
   int shift = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
- 
+
   float incv_f = (1.0f / ctrl->info.coordincy) * 256.0f;
   float inch_f = (1.0f / ctrl->info.coordincx) * 256.0f;
   int incv = (int)(incv_f + 0.5f);
@@ -4557,7 +4646,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
           VCS_ROW(h, cellw >> 1);
           u32 addr = row_base + (h >> 1);
           int cc = 1;
-          u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, addr);
+          u8 dot = Vdp2CtrlRamReadByte(ctrl, addr);
           u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
           if (!(h & 0x01)) dot = dot >> 4;
           if (!(dot & 0xF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
@@ -4587,7 +4676,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
           VCS_ROW(h, cellw);
           u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
-          u8 dot = Vdp2RamReadByte(NULL, Vdp2Ram, row_base + h);
+          u8 dot = Vdp2CtrlRamReadByte(ctrl, row_base + h);
           if (!dot && ctrl->info.transparencyenable) {
             *ctrl->texture.textdata++ = 0;
             continue;
@@ -5035,7 +5124,9 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       ctrl->info.PlaneAddr(&ctrl->info, ctrl->info.mapwh * mapy + mapx, ctrl->regs);
       if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) != 0) {
         int charAddrBk = (((ctrl->info.charaddr >> 16)& 0xF) >> ((ctrl->regs->VRSIZE >> 15)&0x1)) >> 1;
-        if (ctrl->info.char_bank[charAddrBk] == 1) {
+        /* Kronos#520: see isVramAccessible() above for why char_bank[]
+         * alone can be stale for a zone mid-frame. */
+        if (ctrl->info.char_bank[charAddrBk] == 1 || (charAddrBk >= 0 && charAddrBk < 4 && ctrl->vram_bank[charAddrBk])) {
           int x = h - charx;
           int y = v - chary;
           ctrl->info.draw_line =  y;
@@ -5534,6 +5625,26 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     if (a->LWTA1.all != b->LWTA1.all) return 0;
 	
     if ((a->RAMCTL & 0x8FFF) != (b->RAMCTL & 0x8FFF)) return 0;
+
+    /* Kronos#520 (True Pinball flipper table): VDP2 manual ST-58-R2 p.36
+     * ("VRAM access by the CPU...") and Table 3.5 p.40 - the cycle pattern
+     * registers select, per access timing T0-T7, whether a given VRAM
+     * partition is read by the VDP2 or freed for CPU/SCU read-write. A
+     * game can swap which VRAM-A/B half feeds NBG0 purely by rewriting
+     * these mid-frame, without touching any other NBG0 register compared
+     * in this function (RAMCTL above only covers the *partition* bits,
+     * not the per-timing access commands). Without this check this
+     * function never notices the swap, so the whole frame stays a single
+     * zone and NBG0 gets textured from whichever bank happens to be live
+     * when Vdp2DrawNBG0() actually runs for that (too coarse) zone. */
+    if (a->CYCA0L != b->CYCA0L) return 0;
+    if (a->CYCA0U != b->CYCA0U) return 0;
+    if (a->CYCA1L != b->CYCA1L) return 0;
+    if (a->CYCA1U != b->CYCA1U) return 0;
+    if (a->CYCB0L != b->CYCB0L) return 0;
+    if (a->CYCB0U != b->CYCB0U) return 0;
+    if (a->CYCB1L != b->CYCB1L) return 0;
+    if (a->CYCB1U != b->CYCB1U) return 0;
 
     if ((a->BGON & 0x131) != (b->BGON & 0x131)) return 0;
  
