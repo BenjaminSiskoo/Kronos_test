@@ -110,6 +110,11 @@
     </widget>
    </item>
    <item><layout class="QHBoxLayout" name="hlay_bot">
+    <item><widget class="QPushButton" name="pbExportDebugInfo">
+     <property name="toolTip"><string>Save the Registers tab (raw + decoded) and the Debug tab to a text file</string></property>
+     <property name="text"><string>Export Registers / Debug (.txt)...</string></property>
+    </widget></item>
+    <item><spacer name="hs5"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
     <item><widget class="QDialogButtonBox" name="dbbButtons"><property name="standardButtons"><set>QDialogButtonBox::Close</set></property></widget></item>
    </layout></item>
   </layout>
