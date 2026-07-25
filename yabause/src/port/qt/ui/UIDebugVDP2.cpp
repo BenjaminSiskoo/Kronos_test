@@ -40,8 +40,10 @@ UIDebugVDP2::UIDebugVDP2(QWidget* p, YabauseLocker *lock)
 
 UIDebugVDP2::~UIDebugVDP2()
 {
-    // Le viewer est un enfant de ce dialogue, Qt le gérera, 
-    // mais on s'assure qu'aucune mise à jour ne se produise après destruction.
+    // `viewer` est parenté sur `this` (voir le constructeur) : c'est le
+    // mécanisme parent/enfant de Qt qui se charge de le détruire lors de la
+    // destruction de la classe de base QDialog, pas l'ordre des membres
+    // C++. Rien à faire explicitement ici, ce destructeur reste vide.
 }
 
 void UIDebugVDP2::updateScreenInfos()
@@ -65,6 +67,11 @@ void UIDebugVDP2::updateScreenInfos()
             DebugGrid->removeWidget(items[i].cb);
             items[i].cb->setVisible(false);
         }
+        // Vider aussi la liste des couches du viewer : sans ça, le combo
+        // cbScreen du UIDebugVDP2Viewer garde d'anciennes entrées
+        // (NBG0, NBG1, ...) qui ne correspondent plus à rien de valide
+        // une fois le VDP2 désinitialisé.
+        viewer->clearItems();
         pbViewer->setEnabled(false);
         pbViewer->setToolTip(tr("VDP2 non initialisé"));
         setWindowTitle(tr("VDP2 Debug — inactif"));
