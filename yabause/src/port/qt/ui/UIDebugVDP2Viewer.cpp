@@ -16,6 +16,15 @@
 #include <QTextStream>
 #include <QDateTime>
 
+// Miroir du cas spécial "screen == 0xFF" déjà implémenté côté moteur dans
+// VIDCSGetVdp2ScreenExtract() (vidcs.c) : lit _Ygl->default_fbo, c'est-à-dire
+// l'image finale VDP1+VDP2 déjà composée et mise à l'échelle, telle qu'
+// actuellement affichée à l'écran. Volontairement hors de l'enum enBG
+// (ygl.h) : cette dernière est utilisée pour dimensionner d'autres tableaux
+// via enBGMAX ailleurs dans le renderer, et 0xFF a été choisi côté moteur
+// précisément pour ne jamais entrer en collision avec elle.
+static const int VDP2_SCREEN_FINAL = 0xFF;
+
 extern "C" {
 #include "vdp1.h"
 #include "vdp2.h"
@@ -652,19 +661,25 @@ void UIDebugVDP2Viewer::updateVramHex()
 // ============================================================
 void UIDebugVDP2Viewer::clearItems()
 {
-    // Mémorise la couche actuellement sélectionnée (si existante) pour
-    // pouvoir la restaurer une fois la liste reconstruite par les addItem()
-    // qui suivent. UIDebugVDP2::updateScreenInfos() appelle clearItems()
-    // puis addItem() à CHAQUE frame ("Next Frame") pour tenir la liste des
-    // couches actives à jour ; sans cette restauration, la sélection de
-    // l'utilisateur (ex: RBG1) revenait systématiquement à la première
-    // couche active (ex: NBG0) à chaque frame.
-    mRestoreScreenId = (cbScreen->count() > 0);
+    // "Final" est fixée à l'index 0 (ajoutée une seule fois dans le
+    // constructeur, cf. commentaire là-bas) : elle ne fait jamais partie du
+    // rebuild par-frame et n'est donc jamais retirée ici.
+    //
+    // Mémorise la couche individuelle actuellement sélectionnée (si elle
+    // n'est pas "Final") pour pouvoir la restaurer une fois la liste
+    // reconstruite par les addItem() qui suivent. UIDebugVDP2::updateScreenInfos()
+    // appelle clearItems() puis addItem() à CHAQUE frame ("Next Frame") pour
+    // tenir la liste des couches actives à jour ; sans cette restauration,
+    // la sélection de l'utilisateur (ex: RBG1) revenait systématiquement à
+    // la première couche active (ex: NBG0) à chaque frame. Si "Final" était
+    // sélectionnée (index 0), elle reste en place automatiquement puisqu'on
+    // ne touche jamais à cet index.
+    mRestoreScreenId = (cbScreen->currentIndex() > 0);
     if (mRestoreScreenId)
         mScreenIdToRestore = cbScreen->itemData(cbScreen->currentIndex()).toInt();
 
-    while (cbScreen->count())
-        cbScreen->removeItem(0);
+    while (cbScreen->count() > 1)
+        cbScreen->removeItem(1);
 }
 
 void UIDebugVDP2Viewer::addItem(int id)
@@ -698,6 +713,15 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     QGraphicsScene *sc = new QGraphicsScene(this); gvScreen->setScene(sc);
     QGraphicsScene *sc2= new QGraphicsScene(this); gvColorRam->setScene(sc2);
     vdp2texture=NULL; width=0; height=0;
+
+    // "Final" (sortie déjà composée VDP1+VDP2, cf. VDP2_SCREEN_FINAL) reste
+    // toujours pertinente tant que le VDP2 est initialisé, contrairement aux
+    // couches individuelles (NBG0...SPRITE) qui dépendent de ce qui est
+    // actuellement actif. On l'ajoute donc une seule fois ici, en position
+    // fixe à l'index 0, plutôt que via le rebuild par-frame de
+    // clearItems()/addItem() (voir ces deux méthodes plus bas).
+    cbScreen->addItem(tr("Final (Composite)"), VDP2_SCREEN_FINAL);
+
     QtYabause::retranslateWidget(this);
 }
 
@@ -729,6 +753,13 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         QGraphicsScene *sc=gvScreen->scene();
         QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGB32:QImage::Format_ARGB32;
         QImage img((uchar*)vdp2texture,width,height,fmt);
+        // NOTE : idx != SPRITE couvre aussi VDP2_SCREEN_FINAL (donc miroir
+        // vertical appliqué, comme pour NBG/RBG). C'est une hypothèse : le
+        // cas Final lit via glReadPixels sur _Ygl->default_fbo (vidcs.c),
+        // pas via glGetTexImage sur une texture NBG/RBG classique — même
+        // convention "bas en haut" attendue côté OpenGL, mais pas vérifiée
+        // sur une capture réelle. Si "Final" apparaît à l'envers à l'usage,
+        // inverser explicitement pour VDP2_SCREEN_FINAL ici.
         QPixmap px=QPixmap::fromImage(img.mirrored(false,idx!=SPRITE).rgbSwapped());
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
@@ -826,11 +857,17 @@ void UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked()
     const QString suggested = QString("vdp2_registers_debug_%1.txt")
         .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
 
-    const QString s = CommonDialogs::getSaveFileName(suggested,
+    QString s = CommonDialogs::getSaveFileName(suggested,
         QtYabause::translate("Choose a location for the text file"),
         QtYabause::translate("Text files (*.txt)"));
     if (s.isEmpty())
         return;
+
+    // Certains dialogues natifs n'ajoutent pas automatiquement l'extension
+    // du filtre sélectionné : on la garantit nous-mêmes plutôt que de
+    // dépendre de ce comportement, qui varie selon la plateforme.
+    if (!s.endsWith(".txt", Qt::CaseInsensitive))
+        s += ".txt";
 
     QFile f(s);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
