@@ -34,7 +34,13 @@ public:
 
 protected:
     bool updateInfoDisplay(void (*debugStats)(char *, int *), QGroupBox *cb, QPlainTextEdit *pte);
-    // viewer déclaré avant mLock : Qt le détruira en premier (ordre RAII correct)
+    // `viewer` est un pointeur Qt "brut" (pas un membre RAII) : sa durée de
+    // vie n'a rien à voir avec l'ordre de déclaration des membres C++
+    // ci-dessous. Il est créé avec `this` comme parent (voir le
+    // constructeur), donc c'est le mécanisme parent/enfant de Qt
+    // (QObject::~QObject) qui le détruira automatiquement — cela se produit
+    // lors de la destruction de la classe de base QDialog/QWidget/QObject,
+    // donc APRÈS l'exécution complète du corps de ~UIDebugVDP2().
     UIDebugVDP2Viewer *viewer;
 
 protected slots:
