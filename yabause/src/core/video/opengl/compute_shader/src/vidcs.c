@@ -4569,17 +4569,6 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   const int cellw_mask = cellw - 1;
   const int cellh_mask = cellh - 1;
  
-#ifdef SHELLSHOCK_DEBUG
-  static int log_throttle = 0;
-  if ((log_throttle++ & 0x3F) == 0) {
-    YuiMsg("[NBG0 bitmap draw] zone=[%d..%d] sh=%d sv=%d cellw=%d cellh=%d "
-           "coordincx=%.3f coordincy=%.3f charaddr=0x%X paladdr=0x%X\n",
-           screenY1, screenY2, ctrl->info.sh, ctrl->info.sv, cellw, cellh,
-           ctrl->info.coordincx, ctrl->info.coordincy,
-           ctrl->info.charaddr, ctrl->info.paladdr);
-  }
-#endif
- 
   for (i = screenY1; i < screenY2; i++)
   {
     int sh, sv;
@@ -4592,7 +4581,18 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
      line = &(ctrl->info.lineinfo[i]);
      ctrl->info.draw_line = i;
  
-    v = (i * incv) >> 8;
+    /* Kronos#520: i is a SCREEN-space output row (0.._Ygl->rheight, i.e.
+     * 0-511 when DOUBLE_INTERLACE doubles the display height to show a
+     * 256-line bitmap over 512 lines). v must be a VRAM/register-space
+     * row (0-255) - without the >> shift correction below, v == i for
+     * the top half (correct) but keeps counting into 256-511 for the
+     * bottom half, reading past the bitmap's logical height and
+     * wrapping/repeating its content (visible as the same image
+     * appearing twice with black gaps in between - confirmed via the
+     * Kronos VDP2 debug viewer's per-layer NBG0 view). Same conversion
+     * already applied a few lines below for alpha_per_line indexing;
+     * this was simply missing here. */
+    v = ((i >> shift) * incv) >> 8;
  
     if (VDPLINE_SZ(ctrl->info.islinescroll)) {
       u16 raw_inc = line->CoordinateIncH;
@@ -4874,7 +4874,14 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   ctrl->info.draww = _Ygl->rwidth;
 
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
-  const int res_shift = 0;
+  /* Kronos#520: same missing-interlace-correction bug as
+   * Vdp2DrawBitmapCoordinateInc (see that function's comment) - v below
+   * is a SCREEN-space row (0.._Ygl->rheight, i.e. 0-511 when
+   * DOUBLE_INTERLACE doubles the display height), but must be converted
+   * back to register/VRAM-space (0-255) before driving targetv/incv or
+   * indexing ctrl->info.lineinfo[]. res_shift existed here as an unused
+   * placeholder (always 0); wiring it up. */
+  const int res_shift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
 
   int screenH = _Ygl->rheight;
 
@@ -4892,7 +4899,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
        targetv = ctrl->info.sv + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
-      targetv = ctrl->info.sv + ((v*incv)>>8);
+      targetv = ctrl->info.sv + (((v >> res_shift)*incv)>>8);
     }
 
     const int base_targetv = targetv;
