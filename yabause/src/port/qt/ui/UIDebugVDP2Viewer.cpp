@@ -12,6 +12,9 @@
 #include <iomanip>
 #include <algorithm>
 #include <QWheelEvent>
+#include <QFile>
+#include <QTextStream>
+#include <QDateTime>
 
 extern "C" {
 #include "vdp1.h"
@@ -647,19 +650,46 @@ void UIDebugVDP2Viewer::updateVramHex()
 // ============================================================
 //  Viewer methods
 // ============================================================
-void UIDebugVDP2Viewer::clearItems() { while(cbScreen->count()) cbScreen->removeItem(0); }
-void UIDebugVDP2Viewer::addItem(int id) {
-    switch(id){
-        case NBG0:   cbScreen->addItem("NBG0",  NBG0);  break;
-        case NBG1:   cbScreen->addItem("NBG1",  NBG1);  break;
-        case NBG2:   cbScreen->addItem("NBG2",  NBG2);  break;
-        case NBG3:   cbScreen->addItem("NBG3",  NBG3);  break;
-        case RBG0:   cbScreen->addItem("RBG0",  RBG0);  break;
-        case RBG1:   cbScreen->addItem("RBG1",  RBG1);  break;
-        case SPRITE: cbScreen->addItem("SPRITE",SPRITE);break;
-        default: break;
+void UIDebugVDP2Viewer::clearItems()
+{
+    // Mémorise la couche actuellement sélectionnée (si existante) pour
+    // pouvoir la restaurer une fois la liste reconstruite par les addItem()
+    // qui suivent. UIDebugVDP2::updateScreenInfos() appelle clearItems()
+    // puis addItem() à CHAQUE frame ("Next Frame") pour tenir la liste des
+    // couches actives à jour ; sans cette restauration, la sélection de
+    // l'utilisateur (ex: RBG1) revenait systématiquement à la première
+    // couche active (ex: NBG0) à chaque frame.
+    mRestoreScreenId = (cbScreen->count() > 0);
+    if (mRestoreScreenId)
+        mScreenIdToRestore = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+
+    while (cbScreen->count())
+        cbScreen->removeItem(0);
+}
+
+void UIDebugVDP2Viewer::addItem(int id)
+{
+    const char *label = NULL;
+    switch (id) {
+        case NBG0:   label = "NBG0";   break;
+        case NBG1:   label = "NBG1";   break;
+        case NBG2:   label = "NBG2";   break;
+        case NBG3:   label = "NBG3";   break;
+        case RBG0:   label = "RBG0";   break;
+        case RBG1:   label = "RBG1";   break;
+        case SPRITE: label = "SPRITE"; break;
+        default: return;
+    }
+    cbScreen->addItem(label, id);
+
+    // Restaure la sélection mémorisée par clearItems() si la couche qu'on
+    // vient d'ajouter est celle qui était affichée avant le rebuild.
+    if (mRestoreScreenId && id == mScreenIdToRestore) {
+        cbScreen->setCurrentIndex(cbScreen->count() - 1);
+        mRestoreScreenId = false; // restauration faite
     }
 }
+
 int UIDebugVDP2Viewer::exec() { return QDialog::exec(); }
 
 UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
@@ -671,16 +701,28 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     QtYabause::retranslateWidget(this);
 }
 
+UIDebugVDP2Viewer::~UIDebugVDP2Viewer()
+{
+    // vdp2texture est allouée via Vdp2DebugTexture() (malloc) et n'était
+    // jamais libérée à la fermeture du viewer : fuite mémoire de la
+    // dernière texture générée. On la libère ici explicitement.
+    if (vdp2texture) {
+        free(vdp2texture);
+        vdp2texture = NULL;
+    }
+}
+
 void UIDebugVDP2Viewer::displayCurrentScreen()
 {
     if (!Vdp2Regs) {
         // Libérer la texture précédente avant de rendre le viewer vide
         if (vdp2texture) { free(vdp2texture); vdp2texture = NULL; }
         gvScreen->scene()->clear();
+        pbSaveAsBitmap->setEnabled(false);
         return;
     }
     int idx = cbScreen->itemData(cbScreen->currentIndex()).toInt();
-    if (vdp2texture) free(vdp2texture);
+    if (vdp2texture) { free(vdp2texture); vdp2texture = NULL; }
     vdp2texture = Vdp2DebugTexture(idx, &width, &height);
     if (vdp2texture) {
         pbSaveAsBitmap->setEnabled(true);
@@ -690,40 +732,62 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         QPixmap px=QPixmap::fromImage(img.mirrored(false,idx!=SPRITE).rgbSwapped());
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
+    } else {
+        // La couche sélectionnée n'a pas produit de texture (désactivée,
+        // pas encore de sélection valide pendant un rebuild, etc.) : on vide
+        // la vue au lieu de laisser l'ancienne image affichée, ce qui serait
+        // trompeur (le bouton "Save As Bitmap" est aussi désactivé, cf.
+        // on_pbSaveAsBitmap_clicked qui refusait déjà silencieusement dans
+        // ce cas — il ne pouvait juste jamais être désactivé auparavant).
+        gvScreen->scene()->clear();
+        pbSaveAsBitmap->setEnabled(false);
+    }
+}
+
+// ============================================================
+//  refreshActiveTab — met à jour les données de l'onglet actuellement
+//  affiché. Point d'entrée commun à refresh() (pas de frame), showEvent()
+//  (ré-ouverture du viewer) et on_tabWidget_currentChanged() (changement
+//  manuel d'onglet), pour que les trois se comportent de la même façon.
+//  Avant ce refactor, showEvent() appelait toujours updateVdp2Registers()
+//  sans regarder l'onglet réellement actif : rouvrir le viewer sur
+//  l'onglet Debug (ou Color RAM / VRAM Hex) affichait des données
+//  potentiellement obsolètes tant qu'on ne changeait pas d'onglet.
+// ============================================================
+void UIDebugVDP2Viewer::refreshActiveTab()
+{
+    switch (tabWidget->currentIndex()) {
+        case 1: updateVdp2Registers(); break;
+        case 2: updateStats();         break;
+        case 3: updateColorRam();      break;
+        case 4: updateVramHex();       break;
+        default: break;
     }
 }
 
 void UIDebugVDP2Viewer::refresh()
 {
     displayCurrentScreen();
-    int idx = tabWidget->currentIndex();
-    switch(idx){
-        case 1: updateVdp2Registers(); break;
-        case 2: updateStats();         break;
-        case 3: updateColorRam();      break;
-        case 4: updateVramHex();       break;
-        default: break;
-    }
+    refreshActiveTab();
 }
 
 void UIDebugVDP2Viewer::showEvent(QShowEvent *)
 {
     gvScreen->fitInView(gvScreen->scene()->sceneRect());
-    updateVdp2Registers();
+    refreshActiveTab();
 }
 
-void UIDebugVDP2Viewer::on_tabWidget_currentChanged(int idx)
+void UIDebugVDP2Viewer::on_tabWidget_currentChanged(int)
 {
-    switch(idx){
-        case 1: updateVdp2Registers(); break;
-        case 2: updateStats();         break;
-        case 3: updateColorRam();      break;
-        case 4: updateVramHex();       break;
-        default: break;
-    }
+    refreshActiveTab();
 }
 
-void UIDebugVDP2Viewer::on_cbScreen_currentIndexChanged(int) { displayCurrentScreen(); }
+void UIDebugVDP2Viewer::on_cbScreen_currentIndexChanged(int index)
+{
+    if (index < 0)
+        return; // combo momentanément vide (ex: reconstruction de la liste par clearItems())
+    displayCurrentScreen();
+}
 void UIDebugVDP2Viewer::on_cbOpaque_toggled(bool)             { displayCurrentScreen(); }
 void UIDebugVDP2Viewer::on_cbVramBank_currentIndexChanged(int){ updateVramHex(); }
 void UIDebugVDP2Viewer::on_pbVramGo_clicked()                 { updateVramHex(); }
@@ -744,4 +808,57 @@ void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
     img=img.mirrored(false,idx!=SPRITE).rgbSwapped();
     const QString s=CommonDialogs::getSaveFileName(QString(),QtYabause::translate("Choose a location for your bitmap"),filters.join(";;"));
     if(!s.isEmpty())if(!img.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+}
+
+// ============================================================
+//  on_pbExportDebugInfo_clicked
+//  Sauvegarde le contenu texte des onglets "Registers" (raw + decoded)
+//  et "Debug" dans un unique fichier .txt choisi par l'utilisateur.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked()
+{
+    // On rafraîchit les deux onglets avant export pour être sûr d'écrire
+    // l'état courant, même si l'utilisateur n'a pas visité ces onglets
+    // depuis le dernier "Next Frame".
+    updateVdp2Registers();
+    updateStats();
+
+    const QString suggested = QString("vdp2_registers_debug_%1.txt")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    const QString s = CommonDialogs::getSaveFileName(suggested,
+        QtYabause::translate("Choose a location for the text file"),
+        QtYabause::translate("Text files (*.txt)"));
+    if (s.isEmpty())
+        return;
+
+    QFile f(s);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+        return;
+    }
+
+    QTextStream ts(&f);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    ts.setCodec("UTF-8");
+#endif
+
+    ts << "Yabause VDP2 Debug Export\n";
+    ts << "Generated: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+    ts << "==================================================\n\n";
+
+    ts << "########## REGISTERS - RAW VALUES ##########\n\n";
+    ts << pteRawRegs->toPlainText() << "\n\n";
+
+    ts << "########## REGISTERS - DECODED ##########\n\n";
+    ts << pteDecodedRegs->toPlainText() << "\n\n";
+
+    ts << "########## DEBUG ##########\n\n";
+    ts << pteStats->toPlainText() << "\n";
+
+    ts.flush();
+    f.close();
+
+    if (f.error() != QFile::NoError)
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
