@@ -213,6 +213,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="pbExportDebugInfo">
+       <property name="toolTip">
+        <string>Save the VDP1 registers, command list and selected command info to a text file</string>
+       </property>
+       <property name="text">
+        <string>Export Debug Info (.txt)...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QDialogButtonBox" name="dbbButtons">
        <property name="standardButtons">
         <set>QDialogButtonBox::Close</set>
