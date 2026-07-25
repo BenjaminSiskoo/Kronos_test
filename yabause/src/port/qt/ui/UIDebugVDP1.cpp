@@ -14,8 +14,13 @@
 #include <QScrollBar>
 #include <QGraphicsPixmapItem>
 #include <QListWidgetItem>
+#include <QFile>
+#include <QTextStream>
+#include <QDateTime>
+#include <QApplication>
 #include <sstream>
 #include <iomanip>
+#include <cstring>
 
 // VDP1 system headers
 extern "C" {
@@ -121,7 +126,13 @@ void UIDebugVDP1::fillCommandList()
 
     if (Vdp1Ram)
     {
-        for (int i = 0;; i++)
+        // Plafond de sécurité : une liste de commandes VDP1 corrompue (jeu
+        // buggé, RAM non initialisée, etc.) pourrait ne jamais renvoyer de
+        // marqueur de fin (nameStr == NULL), ce qui bloquerait cette boucle
+        // et gèlerait toute l'interface de Yabause. Une vraie table de
+        // commandes ne s'approche jamais de cette taille.
+        const int kMaxCommands = 65536;
+        for (int i = 0; i < kMaxCommands; i++)
         {
             u32 addr = Vdp1DebugGetCommandAddr(i);
             char *nameStr = Vdp1DebugGetCommandNumberName(addr);
@@ -194,10 +205,15 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     if (cursel < 0 || cursel >= lwCommandList->count()) return;
 
     char tempstr[2048];
+    // Garantir la null-termination même si Vdp1DebugCommand remplit le
+    // buffer en entier ou ne le termine pas explicitement (même précaution
+    // que celle déjà appliquée côté UIDebugVDP2::updateInfoDisplay()).
+    memset(tempstr, 0, sizeof(tempstr));
     lwCommandRaw->setCurrentRow(cursel);
     lwCommandList->setCurrentRow(cursel);
 
     Vdp1DebugCommand(cursel, tempstr);
+    tempstr[sizeof(tempstr) - 1] = '\0';
     pteCommandInfo->setPlainText(QtYabause::translate(tempstr));
 
     // Nettoyage avant nouvelle allocation
@@ -262,7 +278,89 @@ void UIDebugVDP1::on_pbSaveBitmap_clicked()
 void UIDebugVDP1::on_pbNextButton_clicked()
 {
     if (mLock) {
+        // Désactiver le bouton pendant l'exécution pour éviter les
+        // double-clics (même précaution que UIDebugVDP2::on_pbNextButton_clicked)
+        pbNextButton->setEnabled(false);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+
         mLock->step();
         fillCommandList();
+
+        QApplication::restoreOverrideCursor();
+        pbNextButton->setEnabled(true);
     }
+}
+
+// ============================================================
+//  on_pbExportDebugInfo_clicked
+//  Sauvegarde dans un unique fichier .txt : les registres VDP1, le résumé
+//  de la table de commandes, la liste complète des commandes (jump list +
+//  liste détaillée), et le détail de la commande actuellement sélectionnée.
+//  Miroir de UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked().
+// ============================================================
+void UIDebugVDP1::on_pbExportDebugInfo_clicked()
+{
+    // S'assurer que les registres affichés sont à jour avant export
+    updateVdp1Registers();
+
+    const QString suggested = QString("vdp1_debug_%1.txt")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    QString s = CommonDialogs::getSaveFileName(suggested,
+        QtYabause::translate("Choose a location for the text file"),
+        QtYabause::translate("Text files (*.txt)"));
+    if (s.isEmpty())
+        return;
+
+    // Certains dialogues natifs n'ajoutent pas automatiquement l'extension
+    // du filtre sélectionné : on la garantit nous-mêmes.
+    if (!s.endsWith(".txt", Qt::CaseInsensitive))
+        s += ".txt";
+
+    QFile f(s);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+        return;
+    }
+
+    QTextStream ts(&f);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    ts.setCodec("UTF-8");
+#endif
+
+    ts << "Yabause VDP1 Debug Export\n";
+    ts << "Generated: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+    ts << "==================================================\n\n";
+
+    ts << "########## VDP1 REGISTERS ##########\n\n";
+    ts << pteVdp1Regs->toPlainText() << "\n\n";
+
+    ts << "########## SUMMARY ##########\n\n";
+    ts << lVDP1Info->text() << "\n\n";
+
+    const int n = lwCommandList->count();
+    ts << "########## COMMAND LIST (" << n << " entries) ##########\n\n";
+    for (int i = 0; i < n; ++i) {
+        const QString name = lwCommandList->item(i) ? lwCommandList->item(i)->text() : QString();
+        const QString raw  = (i < lwCommandRaw->count() && lwCommandRaw->item(i))
+                                  ? lwCommandRaw->item(i)->text() : QString();
+        ts << "[" << i << "] " << name;
+        if (!raw.isEmpty())
+            ts << "  -  " << raw;
+        ts << "\n";
+    }
+    ts << "\n";
+
+    const int cur = lwCommandList->currentRow();
+    ts << "########## SELECTED COMMAND DETAIL";
+    if (cur >= 0)
+        ts << " (#" << cur << ")";
+    ts << " ##########\n\n";
+    ts << pteCommandInfo->toPlainText() << "\n";
+
+    ts.flush();
+    f.close();
+
+    if (f.error() != QFile::NoError)
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
