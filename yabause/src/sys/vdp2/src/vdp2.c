@@ -58,6 +58,41 @@ u8 Vdp2Ram_Updated = 0;
 struct CellScrollData cell_scroll_data[270];
 Vdp2 Vdp2Lines[270];
 
+/* See vdp2.h for the rationale (Kronos#520, True Pinball) and why this is
+ * double-buffered. Plain global arrays rather than fields on Vdp2External:
+ * Vdp2External already exists for small per-bank flags, and these buffers
+ * are comparatively large (2 * 4 * 40 * 128KB = 40MB worst case, essentially
+ * always far less since the counts stay 0 for the overwhelming majority of
+ * games, which never hand a VRAM bank back and forth mid-frame). */
+Vdp2VramBankSnapshot Vdp2VramSnapshots[2][4][VDP2_MAX_VRAM_SNAPSHOTS];
+int Vdp2VramSnapshotCount[2][4];
+int Vdp2VramCaptureSlot = 0;
+
+const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine) {
+  const u8 *best = NULL;
+  int slot = 1 - Vdp2VramCaptureSlot;
+  int i;
+  if (bank < 0 || bank > 3) return NULL;
+  /* Captured in strictly increasing line order (see vdp2RamAccessCPUCheck),
+   * so the first entry past atLine tells us we've already found the last
+   * applicable one. */
+  for (i = 0; i < Vdp2VramSnapshotCount[slot][bank]; i++) {
+    if (Vdp2VramSnapshots[slot][bank][i].line <= atLine)
+      best = Vdp2VramSnapshots[slot][bank][i].data;
+    else
+      break;
+  }
+  return best;
+}
+
+void Vdp2VramSnapshotSwap(void) {
+  Vdp2VramCaptureSlot = 1 - Vdp2VramCaptureSlot;
+  Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][0] = 0;
+  Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][1] = 0;
+  Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][2] = 0;
+  Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][3] = 0;
+}
+
 int vdp2_is_odd_frame = 0;
 
 int g_frame_count = 0;
@@ -161,6 +196,15 @@ static void vdp2RamAccessCPUCheck(int bank){
         // Visible area, cpu shall have a valid time slot, otherwise it is blocked
         SH2SetCPUConcurrency(MSH2, VDP2_RAM_A0_LOCK << bank);
         SH2SetCPUConcurrency(SSH2, VDP2_RAM_A0_LOCK << bank);
+
+        /* Kronos#520: this bank just went CPU-owned -> VDP2-owned again.
+         * Freeze what's really in it right now (see vdp2.h). */
+        if (Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][bank] < VDP2_MAX_VRAM_SNAPSHOTS) {
+          int slot = Vdp2VramCaptureSlot;
+          Vdp2VramBankSnapshot *snap = &Vdp2VramSnapshots[slot][bank][Vdp2VramSnapshotCount[slot][bank]++];
+          snap->line = yabsys.LineCount;
+          memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+        }
       } else {
         SH2ClearCPUConcurrency(MSH2, VDP2_RAM_A0_LOCK << bank);
         SH2ClearCPUConcurrency(SSH2, VDP2_RAM_A0_LOCK << bank);
@@ -464,6 +508,18 @@ void Vdp2Reset(void) {
 
    nextFrameTime = 0;
    updateCyclePattern();
+
+   /* Kronos#520: clear both capture slots so a fresh boot/reset never
+    * exposes a previous game's leftover VRAM history. */
+   Vdp2VramCaptureSlot = 0;
+   Vdp2VramSnapshotCount[0][0] = 0;
+   Vdp2VramSnapshotCount[0][1] = 0;
+   Vdp2VramSnapshotCount[0][2] = 0;
+   Vdp2VramSnapshotCount[0][3] = 0;
+   Vdp2VramSnapshotCount[1][0] = 0;
+   Vdp2VramSnapshotCount[1][1] = 0;
+   Vdp2VramSnapshotCount[1][2] = 0;
+   Vdp2VramSnapshotCount[1][3] = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
