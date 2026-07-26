@@ -236,8 +236,18 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  H="<<DEC(((r.MZCTL>>8)&0xF)+1)<<"  V="<<DEC(((r.MZCTL>>12)&0xF)+1)<<"\n";
     for(int i=0;i<5;i++) d<<"  "<<mp[i]<<"="<<((r.MZCTL>>i)&1?"ON":"off")<<"\n";}
 
-    // SFSEL/SFCODE
+    // SFSEL/SFCODE (ST-013-R3 §3.23-3.24) : sélectionnent, par couche, lequel
+    // des deux motifs 8 bits de SFCODE (A ou B) pilote la "special function"
+    // (utilisée par SFPRMD/CCCTL en mode per-dot). SFSEL suit le même
+    // idiome bit-par-couche que BGON/LNCLEN plus haut dans cette fonction.
     d<<"\n=== Special Function: SFSEL=0x"<<HEX4(r.SFSEL)<<"  SFCODE=0x"<<HEX4(r.SFCODE)<<" ===\n";
+    {static const char*sf[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
+    for(int i=0;i<6;i++) d<<"  "<<sf[i]<<": pattern "<<((r.SFSEL>>i)&1?"B":"A")<<"\n";
+    // SFCODE : deux motifs bruts de 8 bits (A=bits7-0, B=bits15-8). Le
+    // mapping bit->dot exact du damier n'est pas décodé ici, faute de
+    // référence vérifiée dans ce codebase — valeurs brutes seulement.
+    d<<"  Pattern A (raw)=0x"<<std::hex<<std::uppercase<<std::setw(2)<<std::setfill('0')<<(unsigned)(r.SFCODE&0xFF)
+      <<"  Pattern B (raw)=0x"<<std::setw(2)<<std::setfill('0')<<(unsigned)((r.SFCODE>>8)&0xFF)<<std::dec<<"\n";}
 
     // CHCTLA/B
     d<<"\n=== Character Control ===\n";
