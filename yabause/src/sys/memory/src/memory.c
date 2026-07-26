@@ -542,7 +542,7 @@ static u16 FASTCALL BupRamMemoryReadWord(SH2_struct *context, UNUSED u8* memory,
 static u32 FASTCALL BupRamMemoryReadLong(SH2_struct *context, UNUSED u8* memory, USED_IF_DEBUG u32 addr)
 {
    // LOG("bup\t: BackupRam read long - %08X\n", addr);
-   return ((BupRamMemoryReadByte(context, memory, addr | 0x1) << 8) || (BupRamMemoryReadByte(context, memory, addr | 0x3) << 16));
+   return ((BupRamMemoryReadByte(context, memory, addr | 0x1) << 8) | (BupRamMemoryReadByte(context, memory, addr | 0x3) << 16));
 }
 
 //////////////////////////////////////////////////////////////////////////////
