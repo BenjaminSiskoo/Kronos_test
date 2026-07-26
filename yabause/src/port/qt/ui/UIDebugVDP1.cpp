@@ -102,9 +102,19 @@ void UIDebugVDP1::updateVdp1Registers()
     std::stringstream s;
     s << std::hex << std::uppercase << std::setfill('0');
 
+    // TVMR — RE-VÉRIFIÉ contre VDP1 Manual §4.1 p.36-37 : bit0=profondeur
+    // couleur (0=16bpp,1=8bpp), bit1=rotation (0=off,1=on), bit2=HDTV
+    // (0=NTSC/PAL,1=HDTV/31KC), bit3=VBE. Le "DIE" affiché précédemment
+    // (lu au bit 4 de TVMR) N'EXISTE PAS dans TVMR — DIE est en réalité le
+    // bit 3 de FBCR (voir plus bas). Bug corrigé.
     u16 tvmr = Vdp1Regs->TVMR;
+    int tvm_bpp8 = tvmr & 0x1;           // bit0 : 0=16bpp, 1=8bpp
+    int tvm_rotate = (tvmr >> 1) & 0x1;  // bit1 : rotation
+    int tvm_hdtv = (tvmr >> 2) & 0x1;    // bit2 : HDTV/31KC
     s << "TVMR    = 0x" << std::setw(4) << tvmr << "\n";
-    s << "  Mode: " << (tvmr & 0x7) << " (VBE:" << ((tvmr >> 3) & 1) << " DIE:" << ((tvmr >> 4) & 1) << ")\n";
+    s << "  TVM=" << (tvmr & 0x7) << " (" << (tvm_bpp8 ? "8bpp" : "16bpp")
+      << (tvm_rotate ? " rotation" : "") << (tvm_hdtv ? " HDTV/31KC" : " NTSC/PAL")
+      << ")  VBE:" << ((tvmr >> 3) & 1) << "\n";
 
     // FBCR : le mode réel (érasure/bascule manuelle vs auto) dépend de
     // VBE (TVMR bit 3) + FCM (FBCR bit 1) + FCT (FBCR bit 0) combinés, pas
@@ -118,13 +128,19 @@ void UIDebugVDP1::updateVdp1Registers()
     int fbcr_vbe = (tvmr >> 3) & 0x1;
     int fbcr_fcm = (fbcr >> 1) & 0x1;
     int fbcr_fct =  fbcr       & 0x1;
+    // EOS (bit4) / DIE (bit3) / DIL (bit2) — RE-VÉRIFIÉS §4.2 p.43, absents
+    // de l'affichage jusqu'ici.
+    int fbcr_eos = (fbcr >> 4) & 0x1;
+    int fbcr_die = (fbcr >> 3) & 0x1;
+    int fbcr_dil = (fbcr >> 2) & 0x1;
     int vblankErase=0, manualErase=0, oneCycleErase=0, manualChange=0, oneCycleChange=0;
     if (fbcr_vbe == 1)        { vblankErase = 1; manualChange = 1; }
     else if (fbcr_fcm == 0)   { oneCycleErase = 1; oneCycleChange = 1; }
     else if (fbcr_fct == 0)   { manualErase = 1; }
     else                      { manualChange = 1; }
     s << "\nFBCR    = 0x" << std::setw(4) << fbcr << "\n";
-    s << "  FCM:" << fbcr_fcm << " FCT:" << fbcr_fct << " VBE(TVMR.3):" << fbcr_vbe << "\n";
+    s << "  FCM:" << fbcr_fcm << " FCT:" << fbcr_fct << " VBE(TVMR.3):" << fbcr_vbe
+      << " EOS:" << fbcr_eos << " DIE:" << fbcr_die << " DIL:" << fbcr_dil << "\n";
     s << "  -> VBlankErase:" << vblankErase << " ManualErase:" << manualErase
       << " OneCycleErase:" << oneCycleErase << " ManualChange:" << manualChange
       << " OneCycleChange:" << oneCycleChange << "\n";
@@ -138,16 +154,23 @@ void UIDebugVDP1::updateVdp1Registers()
 
     // EDSR (End/Draw Status Register, lecture seule) : reflète l'état de
     // fin de dessin de la trame courante (CEF) et de la précédente (BEF).
-    // Confirmé par vdp1.c (Vdp1Regs->EDSR >>= 1 à la bascule de trame :
-    // BEF devient CEF, cohérent avec CEF=bit0, BEF=bit1).
+    // RE-VÉRIFIÉ contre VDP1 User's Manual ST-013-R3 : "Current End Bit
+    // Fetch Status (CEF): bit 1" / "Before End Bit Fetch Status (BEF): bit 0"
+    // — CEF et BEF étaient INVERSÉS dans la version précédente (j'avais mis
+    // CEF=bit0, BEF=bit1 ; c'est l'inverse). Le décalage Vdp1Regs->EDSR>>=1
+    // vu dans vdp1.c reste cohérent avec cette correction : à la bascule de
+    // trame, l'ancien CEF (bit1) devient le nouveau BEF (bit0).
     u16 edsr = Vdp1Regs->EDSR;
     s << "\nEDSR    = 0x" << std::setw(4) << edsr << "\n";
-    s << "  CEF (Current End): " << (edsr & 0x1)
-      << "   BEF (Before End): " << ((edsr >> 1) & 0x1) << "\n";
+    s << "  CEF (Current End): " << ((edsr >> 1) & 0x1)
+      << "   BEF (Before End): " << (edsr & 0x1) << "\n";
 
     // COPR/LOPR (Current/Last Operand Pointer Register, lecture seule) :
     // confirmé par vdp1.c -> regs->COPR = (regs->addr & 0x7FFFF) >> 3;
     // donc l'adresse octet réelle en VRAM VDP1 = valeur registre << 3.
+    // RE-CONFIRMÉ mot pour mot par le manuel VDP1 (§4.7 p.55) : "The value
+    // resulting from dividing the command table address ... by 8H is
+    // written to this register."
     u16 copr = Vdp1Regs->COPR;
     u32 coprAddr = (u32)copr << 3;
     s << "\nCOPR    = 0x" << std::setw(4) << copr
@@ -158,28 +181,50 @@ void UIDebugVDP1::updateVdp1Registers()
     s << "\nLOPR    = 0x" << std::setw(4) << lopr
       << "  (command table addr = 0x" << std::setw(5) << loprAddr << ")\n";
 
-    // MODR (Mode Status Register, lecture seule) : version/statut matériel,
-    // fixé une fois au reset côté VDP1 (0x1000 = VDP1 Version 1).
+    // MODR (Mode Status Register, lecture seule, §4.9 p.56-57) : ce n'est
+    // pas juste un "statut" opaque — c'est un miroir documenté bit-à-bit de
+    // plusieurs registres write-only (utile car on ne peut pas relire
+    // TVMR/FBCR/PTMR directement). Décodage complet ajouté (raw hex
+    // seulement jusqu'ici) :
+    //   bits 15-12 = VER (version, doit valoir 1)
+    //   bit 8  = PTM1  (miroir de PTMR bit1)
+    //   bit 7  = EOS   (miroir de FBCR bit4)
+    //   bit 6  = DIE   (miroir de FBCR bit3)
+    //   bit 5  = DIL   (miroir de FBCR bit2)
+    //   bit 4  = FCM   (miroir de FBCR bit1)
+    //   bit 3  = VBE   (miroir de TVMR bit3)
+    //   bits 2-0 = TVM (miroir de TVMR bits2-0)
     u16 modr = Vdp1Regs->MODR;
-    s << "\nMODR    = 0x" << std::setw(4) << modr << "  (version/status, read-only)\n";
+    s << "\nMODR    = 0x" << std::setw(4) << modr << "\n";
+    s << "  VER:" << ((modr >> 12) & 0xF) << " PTM1:" << ((modr >> 8) & 1)
+      << " EOS:" << ((modr >> 7) & 1) << " DIE:" << ((modr >> 6) & 1)
+      << " DIL:" << ((modr >> 5) & 1) << " FCM:" << ((modr >> 4) & 1)
+      << " VBE:" << ((modr >> 3) & 1) << " TVM:" << (modr & 0x7) << "\n";
 
     // EWDR/EWLR/EWRR/ENDR : registres d'effacement du framebuffer.
-    // Layout EWLR/EWRR confirmé par vdp1.c (VDP1 Manual p.47) :
+    // Layout EWLR/EWRR confirmé par vdp1.c ET le manuel VDP1 (§4.4 p.47) :
     //   EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1 (9 bits)
     //   EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3 (9 bits)
-    // Valeurs "unités erase" brutes, avant mise à l'échelle par la
-    // profondeur couleur (facteur géré ailleurs dans vdp1.c).
+    // Coordonnées pixel réelles (manuel p.47) : X1 = valeur x8 (16bpp) ou
+    // x16 (8bpp) ; X3 = valeur x(8 ou 16) - 1. Le facteur dépend de TVMR
+    // bit0 (tvm_bpp8, décodé plus haut). Y est en unités de ligne 1:1 en
+    // mode normal (le manuel signale un doublement en double-interlace,
+    // non pris en compte ici — DIE/DIL sont affichés ci-dessus si besoin).
     u16 ewdr = Vdp1Regs->EWDR;
     s << "\nEWDR    = 0x" << std::setw(4) << ewdr << "  (erase/write fill color)\n";
 
     u16 ewlr = Vdp1Regs->EWLR;
     u16 ewrr = Vdp1Regs->EWRR;
-    int ewX1 = (ewlr >> 9) & 0x3F, ewY1 = ewlr & 0x1FF;
-    int ewX3 = (ewrr >> 9) & 0x7F, ewY3 = ewrr & 0x1FF;
+    int ewX1raw = (ewlr >> 9) & 0x3F, ewY1 = ewlr & 0x1FF;
+    int ewX3raw = (ewrr >> 9) & 0x7F, ewY3 = ewrr & 0x1FF;
+    int ewXfactor = tvm_bpp8 ? 16 : 8;
+    int ewX1px = ewX1raw * ewXfactor;
+    int ewX3px = ewX3raw * ewXfactor - 1;
     s << "EWLR    = 0x" << std::setw(4) << ewlr << "\n";
     s << "EWRR    = 0x" << std::setw(4) << ewrr << "\n";
-    s << "  Erase area (raw units): (" << std::dec << ewX1 << "," << ewY1 << ") - ("
-      << ewX3 << "," << ewY3 << ")" << std::hex << "\n";
+    s << "  Erase area: (" << std::dec << ewX1px << "," << ewY1 << ") - ("
+      << ewX3px << "," << ewY3 << ") px  [x" << ewXfactor << " per TVMR bpp, Y=line units]"
+      << std::hex << "\n";
 
     u16 endr = Vdp1Regs->ENDR;
     s << "\nENDR    = 0x" << std::setw(4) << endr << "  (forced draw termination, write-only)\n";
