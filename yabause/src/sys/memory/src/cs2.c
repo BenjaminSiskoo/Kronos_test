@@ -1652,7 +1652,12 @@ void Cs2EndDataTransfer(void) {
         Cs2SortBlocks(Cs2Area->datatranspartition);
 
         Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
-        Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+        // Meme garde anti-underflow que dans Cs2ReadWord/Cs2ReadLong (cf. lignes
+        // ~324/~488) : numblocks ne doit jamais passer sous 0.
+        if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+           Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+        else
+           Cs2Area->datatranspartition->numblocks = 0;
 
         if (Cs2Area->blockfreespace == MAX_BLOCKS) Cs2Area->isonesectorstored = 0;
 
