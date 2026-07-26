@@ -236,18 +236,27 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  H="<<DEC(((r.MZCTL>>8)&0xF)+1)<<"  V="<<DEC(((r.MZCTL>>12)&0xF)+1)<<"\n";
     for(int i=0;i<5;i++) d<<"  "<<mp[i]<<"="<<((r.MZCTL>>i)&1?"ON":"off")<<"\n";}
 
-    // SFSEL/SFCODE (ST-013-R3 §3.23-3.24) : sélectionnent, par couche, lequel
-    // des deux motifs 8 bits de SFCODE (A ou B) pilote la "special function"
-    // (utilisée par SFPRMD/CCCTL en mode per-dot). SFSEL suit le même
-    // idiome bit-par-couche que BGON/LNCLEN plus haut dans cette fonction.
+    // SFSEL/SFCODE — RE-VÉRIFIÉ contre VDP2 User's Manual ST-058-R2 p.220-221.
+    // SFSEL (§write-only, 180024H) n'a que 5 bits réels, pas 6 : bit0=N0SFCS
+    // ("For NBG0 (or RBG1)" — RBG1 PARTAGE le bit 0 avec NBG0, ce n'est pas
+    // un bit séparé), bit1=N1SFCS, bit2=N2SFCS, bit3=N3SFCS, bit4=R0SFCS.
+    // Mon décodage précédent inventait un 6e bit pour RBG1 : bug corrigé.
     d<<"\n=== Special Function: SFSEL=0x"<<HEX4(r.SFSEL)<<"  SFCODE=0x"<<HEX4(r.SFCODE)<<" ===\n";
-    {static const char*sf[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
-    for(int i=0;i<6;i++) d<<"  "<<sf[i]<<": pattern "<<((r.SFSEL>>i)&1?"B":"A")<<"\n";
-    // SFCODE : deux motifs bruts de 8 bits (A=bits7-0, B=bits15-8). Le
-    // mapping bit->dot exact du damier n'est pas décodé ici, faute de
-    // référence vérifiée dans ce codebase — valeurs brutes seulement.
-    d<<"  Pattern A (raw)=0x"<<std::hex<<std::uppercase<<std::setw(2)<<std::setfill('0')<<(unsigned)(r.SFCODE&0xFF)
-      <<"  Pattern B (raw)=0x"<<std::setw(2)<<std::setfill('0')<<(unsigned)((r.SFCODE>>8)&0xFF)<<std::dec<<"\n";}
+    {static const char*sf[]={"NBG0 (or RBG1)","NBG1","NBG2","NBG3","RBG0"};
+    for(int i=0;i<5;i++) d<<"  "<<sf[i]<<": pattern "<<((r.SFSEL>>i)&1?"B":"A")<<"\n";
+    // SFCODE (p.221, Fig 10.7) : CE N'EST PAS un motif spatial/damier comme
+    // je l'avais supposé la dernière fois — chaque bit SFCDxN active la
+    // fonction spéciale pour les dots dont les 4 bits de poids faible du
+    // CODE COULEUR valent {2N, 2N+1}. SFCDA=bits7-0 (pattern A), SFCDB=
+    // bits15-8 (pattern B). Décodage en plages de code couleur, pas en pixels.
+    auto sfRanges=[&](const char*label,u8 byte){
+        d<<"  "<<label<<": ";
+        bool any=false;
+        for(int b=0;b<8;b++) if((byte>>b)&1){d<<std::hex<<std::uppercase<<(2*b)<<"-"<<(2*b+1)<<"H ";any=true;}
+        if(!any)d<<"none";
+        d<<std::dec<<"\n";};
+    sfRanges("Pattern A (color code low nibble)", r.SFCODE&0xFF);
+    sfRanges("Pattern B (color code low nibble)", (r.SFCODE>>8)&0xFF);}
 
     // CHCTLA/B
     d<<"\n=== Character Control ===\n";
@@ -262,27 +271,30 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"    NBG1: bm="<<n1bm<<"  char="<<(n1sz?"16x16":"8x8")<<"  col="<<cc2[n1cc];
     if(n1bm)d<<"  bmpSz="<<bsz[n1bw];d<<"\n";
     d<<"  CHCTLB=0x"<<HEX4(r.CHCTLB)<<"\n";
-    // CHCTLB (0x25F8002A) — Saturn HW Manual §3.5 :
-    //   bit  0    : NBG2 color (0=16col/4bpp, 1=256col/8bpp)
-    //   bit  2    : NBG2 char size (0=8x8, 1=16x16)
-    //   bit  8    : NBG3 color (0=16col/4bpp, 1=256col/8bpp)
-    //   bit 10    : NBG3 char size (0=8x8, 1=16x16)
-    //   bit 12    : RBG0 bitmap enable
-    //   bits 14-12: RBG0 color count (3 bits, index dans cc5[])
-    //   bit  8(hi): RBG0 char size via CHCTLB upper byte bit 8 → bit 8 du registre
-    d<<"    NBG2: char="<<(((r.CHCTLB>>2)&1)?"16x16":"8x8")<<"  col="<<cc2[r.CHCTLB&1]<<"\n";
-    d<<"    NBG3: char="<<(((r.CHCTLB>>10)&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>8)&1]<<"\n";
-    // RBG0 dans CHCTLB (ST-013-R3 §3.9) :
-    //   bit  4  : char size (0=8x8, 1=16x16)
-    //   bit 12  : bitmap enable
-    //   bits 14-12 : color count (3 bits, index dans cc5[])
-    //   bits 11-10 : bitmap size (index dans bsz[])
-    int r0bm =(r.CHCTLB>>12)&1;         // bit 12 = bitmap enable
-    int r0sz =(r.CHCTLB>>4) &1;         // bit  4 = char size pour RBG0
-    int r0cc =(r.CHCTLB>>12)&7;         // bits 14-12 = color count (3 bits) — ST-013-R3 §3.9
-    int r0bw =(r.CHCTLB>>10)&3;         // bits 11-10 = bitmap size
+    // CHCTLB (0x25F8002A) — RE-VÉRIFIÉ contre VDP2 User's Manual ST-058-R2
+    // §4.5 p.59-61 (texte exact du manuel officiel, plus de "?"/doute) :
+    //   bit  0     : N2CHSZ (char size NBG2, 0=8x8 1=16x16)
+    //   bit  1     : N2CHCN (color NBG2, 0=16col 1=256col)
+    //   bit  4     : N3CHSZ (char size NBG3)
+    //   bit  5     : N3CHCN (color NBG3)
+    //   bit  8     : R0CHSZ (char size RBG0)
+    //   bit  9     : R0BMEN (bitmap enable RBG0)
+    //   bit  10    : R0BMSZ (bitmap size RBG0 — 1 SEUL bit : 0=512x256, 1=512x512 ;
+    //                différent de N0/N1BMSZ qui font 2 bits/4 tailles)
+    //   bits 14-12 : R0CHCN2-0 (color count RBG0, index dans cc5[])
+    // Le code précédent lisait bits 2/4/8/10/12 de façon incohérente : NBG2/
+    // NBG3/RBG0 étaient en fait mélangés entre eux (RBG0 bitmap-enable lu au
+    // mauvais endroit, NBG3 char size lisait en fait le bit de RBG0 bitmap
+    // size, etc). Bug corrigé après vérification directe du manuel officiel.
+    d<<"    NBG2: char="<<((r.CHCTLB&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>1)&1]<<"\n";
+    d<<"    NBG3: char="<<(((r.CHCTLB>>4)&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>5)&1]<<"\n";
+    int r0sz =(r.CHCTLB>>8) &1;   // bit  8 = R0CHSZ
+    int r0bm =(r.CHCTLB>>9) &1;   // bit  9 = R0BMEN
+    int r0bw =(r.CHCTLB>>10)&1;   // bit 10 = R0BMSZ (1 bit)
+    int r0cc =(r.CHCTLB>>12)&7;   // bits 14-12 = R0CHCN2-0
+    static const char*r0bsz[]={"512x256","512x512"};  // table dédiée : R0BMSZ n'a que 2 valeurs, pas 4
     d<<"    RBG0: bm="<<r0bm<<"  char="<<(r0sz?"16x16":"8x8")<<"  col="<<cc5[r0cc&7];
-    if(r0bm)d<<"  bmpSz="<<bsz[r0bw&3];d<<"\n";}
+    if(r0bm)d<<"  bmpSz="<<r0bsz[r0bw&1];d<<"\n";}
 
     // BMPNA/B
     d<<"\n=== Bitmap Palette Numbers ===\n";
@@ -671,9 +683,9 @@ void UIDebugVDP2Viewer::updateVramHex()
 // ============================================================
 void UIDebugVDP2Viewer::clearItems()
 {
-    // "Final" est fixée à l'index 0 (ajoutée une seule fois dans le
-    // constructeur, cf. commentaire là-bas) : elle ne fait jamais partie du
-    // rebuild par-frame et n'est donc jamais retirée ici.
+    // "Final" (index 0) + son séparateur (index 1) sont fixes, ajoutés une
+    // seule fois dans le constructeur : ils ne font jamais partie du
+    // rebuild par-frame et ne sont donc jamais retirés ici.
     //
     // Mémorise la couche individuelle actuellement sélectionnée (si elle
     // n'est pas "Final") pour pouvoir la restaurer une fois la liste
@@ -684,12 +696,12 @@ void UIDebugVDP2Viewer::clearItems()
     // la première couche active (ex: NBG0) à chaque frame. Si "Final" était
     // sélectionnée (index 0), elle reste en place automatiquement puisqu'on
     // ne touche jamais à cet index.
-    mRestoreScreenId = (cbScreen->currentIndex() > 0);
+    mRestoreScreenId = (cbScreen->currentIndex() > 1);
     if (mRestoreScreenId)
         mScreenIdToRestore = cbScreen->itemData(cbScreen->currentIndex()).toInt();
 
-    while (cbScreen->count() > 1)
-        cbScreen->removeItem(1);
+    while (cbScreen->count() > 2)
+        cbScreen->removeItem(2);
 }
 
 void UIDebugVDP2Viewer::addItem(int id)
@@ -731,6 +743,9 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     // fixe à l'index 0, plutôt que via le rebuild par-frame de
     // clearItems()/addItem() (voir ces deux méthodes plus bas).
     cbScreen->addItem(tr("Final (Composite)"), VDP2_SCREEN_FINAL);
+    // Séparateur visuel : "Final" n'est pas une couche parmi d'autres, on le
+    // distingue clairement des entrées NBG0...SPRITE qui suivent.
+    cbScreen->insertSeparator(1);
 
     QtYabause::retranslateWidget(this);
 }
