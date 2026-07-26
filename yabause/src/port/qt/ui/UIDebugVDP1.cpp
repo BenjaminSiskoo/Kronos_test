@@ -106,14 +106,119 @@ void UIDebugVDP1::updateVdp1Registers()
     s << "TVMR    = 0x" << std::setw(4) << tvmr << "\n";
     s << "  Mode: " << (tvmr & 0x7) << " (VBE:" << ((tvmr >> 3) & 1) << " DIE:" << ((tvmr >> 4) & 1) << ")\n";
 
+    // FBCR : le mode réel (érasure/bascule manuelle vs auto) dépend de
+    // VBE (TVMR bit 3) + FCM (FBCR bit 1) + FCT (FBCR bit 0) combinés, pas
+    // du seul bit 0 de FBCR — table exacte reprise de decodeFBCRMode()
+    // (vdp1.c, VDP1 Manual §4.2 Table 4.3 p.41-42) :
+    //   VBE=1                -> (VBlankErase, ManualChange)
+    //   VBE=0, FCM=0         -> (OneCycleErase, OneCycleChange)
+    //   VBE=0, FCM=1, FCT=0  -> ManualErase
+    //   VBE=0, FCM=1, FCT=1  -> ManualChange
     u16 fbcr = Vdp1Regs->FBCR;
+    int fbcr_vbe = (tvmr >> 3) & 0x1;
+    int fbcr_fcm = (fbcr >> 1) & 0x1;
+    int fbcr_fct =  fbcr       & 0x1;
+    int vblankErase=0, manualErase=0, oneCycleErase=0, manualChange=0, oneCycleChange=0;
+    if (fbcr_vbe == 1)        { vblankErase = 1; manualChange = 1; }
+    else if (fbcr_fcm == 0)   { oneCycleErase = 1; oneCycleChange = 1; }
+    else if (fbcr_fct == 0)   { manualErase = 1; }
+    else                      { manualChange = 1; }
     s << "\nFBCR    = 0x" << std::setw(4) << fbcr << "\n";
-    s << "  Change: " << (fbcr & 1 ? "Manual" : "Auto") << "\n";
+    s << "  FCM:" << fbcr_fcm << " FCT:" << fbcr_fct << " VBE(TVMR.3):" << fbcr_vbe << "\n";
+    s << "  -> VBlankErase:" << vblankErase << " ManualErase:" << manualErase
+      << " OneCycleErase:" << oneCycleErase << " ManualChange:" << manualChange
+      << " OneCycleChange:" << oneCycleChange << "\n";
+
+    // PTMR (Plot Trigger Mode Register) : pilote le déclenchement du
+    // dessin des commandes. Bits 1:0 uniquement significatifs.
+    u16 ptmr = Vdp1Regs->PTMR;
+    static const char *ptmrModes[4] = { "Idle", "Start (1-shot)", "Start each frame", "Prohibited" };
+    s << "\nPTMR    = 0x" << std::setw(4) << ptmr << "\n";
+    s << "  Mode: " << (ptmr & 0x3) << " (" << ptmrModes[ptmr & 0x3] << ")\n";
+
+    // EDSR (End/Draw Status Register, lecture seule) : reflète l'état de
+    // fin de dessin de la trame courante (CEF) et de la précédente (BEF).
+    // Confirmé par vdp1.c (Vdp1Regs->EDSR >>= 1 à la bascule de trame :
+    // BEF devient CEF, cohérent avec CEF=bit0, BEF=bit1).
+    u16 edsr = Vdp1Regs->EDSR;
+    s << "\nEDSR    = 0x" << std::setw(4) << edsr << "\n";
+    s << "  CEF (Current End): " << (edsr & 0x1)
+      << "   BEF (Before End): " << ((edsr >> 1) & 0x1) << "\n";
+
+    // COPR/LOPR (Current/Last Operand Pointer Register, lecture seule) :
+    // confirmé par vdp1.c -> regs->COPR = (regs->addr & 0x7FFFF) >> 3;
+    // donc l'adresse octet réelle en VRAM VDP1 = valeur registre << 3.
+    u16 copr = Vdp1Regs->COPR;
+    u32 coprAddr = (u32)copr << 3;
+    s << "\nCOPR    = 0x" << std::setw(4) << copr
+      << "  (command table addr = 0x" << std::setw(5) << coprAddr << ")\n";
+
+    u16 lopr = Vdp1Regs->LOPR;
+    u32 loprAddr = (u32)lopr << 3;
+    s << "\nLOPR    = 0x" << std::setw(4) << lopr
+      << "  (command table addr = 0x" << std::setw(5) << loprAddr << ")\n";
+
+    // MODR (Mode Status Register, lecture seule) : version/statut matériel,
+    // fixé une fois au reset côté VDP1 (0x1000 = VDP1 Version 1).
+    u16 modr = Vdp1Regs->MODR;
+    s << "\nMODR    = 0x" << std::setw(4) << modr << "  (version/status, read-only)\n";
+
+    // EWDR/EWLR/EWRR/ENDR : registres d'effacement du framebuffer.
+    // Layout EWLR/EWRR confirmé par vdp1.c (VDP1 Manual p.47) :
+    //   EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1 (9 bits)
+    //   EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3 (9 bits)
+    // Valeurs "unités erase" brutes, avant mise à l'échelle par la
+    // profondeur couleur (facteur géré ailleurs dans vdp1.c).
+    u16 ewdr = Vdp1Regs->EWDR;
+    s << "\nEWDR    = 0x" << std::setw(4) << ewdr << "  (erase/write fill color)\n";
+
+    u16 ewlr = Vdp1Regs->EWLR;
+    u16 ewrr = Vdp1Regs->EWRR;
+    int ewX1 = (ewlr >> 9) & 0x3F, ewY1 = ewlr & 0x1FF;
+    int ewX3 = (ewrr >> 9) & 0x7F, ewY3 = ewrr & 0x1FF;
+    s << "EWLR    = 0x" << std::setw(4) << ewlr << "\n";
+    s << "EWRR    = 0x" << std::setw(4) << ewrr << "\n";
+    s << "  Erase area (raw units): (" << std::dec << ewX1 << "," << ewY1 << ") - ("
+      << ewX3 << "," << ewY3 << ")" << std::hex << "\n";
+
+    u16 endr = Vdp1Regs->ENDR;
+    s << "\nENDR    = 0x" << std::setw(4) << endr << "  (forced draw termination, write-only)\n";
 
     s << "\n--- Clipping ---\n" << std::dec;
     s << "  System: (" << Vdp1Regs->systemclipX1 << "," << Vdp1Regs->systemclipY1 << ") - (" 
       << Vdp1Regs->systemclipX2 << "," << Vdp1Regs->systemclipY2 << ")\n";
     s << "  Local : (" << Vdp1Regs->localX << "," << Vdp1Regs->localY << ")\n";
+    // User clipping (CMDPMOD bit 9 Cmod : 0=dedans, 1=dehors), absent de
+    // l'affichage jusqu'ici alors que le registre existe (vdp1.h).
+    s << "  User  : (" << Vdp1Regs->userclipX1 << "," << Vdp1Regs->userclipY1 << ") - ("
+      << Vdp1Regs->userclipX2 << "," << Vdp1Regs->userclipY2 << ")"
+      << "  Mode:" << Vdp1Regs->userclipMode
+      << " (" << (Vdp1Regs->userclipMode ? "outside" : "inside") << " drawing)\n";
+
+    // --- État interne moteur (Vdp1External) : PAS des registres matériel,
+    // section clairement distincte pour ne pas les confondre avec l'état
+    // du VDP1 réel — mais très utile pour déboguer le comportement de
+    // l'émulateur lui-même (état de la state machine de dessin, etc.)
+    s << "\n--- Engine State (internal, not hardware registers) ---\n";
+    int stMask = Vdp1External.status & VDP1_STATUS_MASK;
+    s << "  status: " << (stMask == VDP1_STATUS_RUNNING ? "RUNNING" : "IDLE")
+      << "  switching:" << ((Vdp1External.status & VDP1_SWITCHING) ? 1 : 0)
+      << "  switchRequest:" << ((Vdp1External.status & VDP1_SWITCH_REQUEST) ? 1 : 0) << "\n";
+    s << "  blocked:" << Vdp1External.blocked
+      << "  disptoggle:" << Vdp1External.disptoggle
+      << "  checkEDSR:" << Vdp1External.checkEDSR
+      << "  current_frame:" << Vdp1External.current_frame
+      << "  updateVdp1Ram:" << Vdp1External.updateVdp1Ram << "\n";
+    s << "  manualErase:" << Vdp1External.manualerase
+      << "  manualChange:" << Vdp1External.manualchange
+      << "  oneCycleErase:" << Vdp1External.onecycleerase
+      << "  oneLastErase:" << Vdp1External.onelasterase
+      << "  oneCycleChange:" << Vdp1External.onecyclechange
+      << "  useVBlankErase:" << Vdp1External.useVBlankErase << "\n";
+    // Curseur de lecture courant (adresse VRAM octet, pas COPR) : utile
+    // pour voir en direct où en est l'interpréteur de commandes.
+    s << std::hex;
+    s << "  current cmd cursor (addr): 0x" << std::setw(5) << Vdp1Regs->addr << std::dec << "\n";
 
     pteVdp1Regs->setPlainText(QString::fromStdString(s.str()));
 }
