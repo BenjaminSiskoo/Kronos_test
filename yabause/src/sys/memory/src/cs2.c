@@ -2674,9 +2674,19 @@ void Cs2PutSectorData(void) {
 
          putpartition->size = 0;
          int startpos = putpartition->numblocks;
-         for (i = 0; i < psdsectnum; i++)
+         // psdsectnum was only checked against the global free-block count
+         // (blockfreespace), never against this partition's own remaining
+         // capacity in its fixed-size block[]/blocknum[] arrays (MAX_BLOCKS
+         // entries) -- if this partition already held blocks from an
+         // earlier, not fully consumed PutSectorData call, that global
+         // check alone doesn't stop numblocks from running past MAX_BLOCKS.
+         // Also guard the allocation result before dereferencing it, same
+         // as every other Cs2AllocateBlock call site in this file.
+         for (i = 0; i < psdsectnum && putpartition->numblocks < MAX_BLOCKS; i++)
          {
             putpartition->block[putpartition->numblocks] = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], Cs2Area->putsectsize);
+            if (putpartition->block[putpartition->numblocks] == NULL)
+               break;
             putpartition->block[putpartition->numblocks]->FAD = i;
             putpartition->numblocks++;
             putpartition->size += Cs2Area->putsectsize;
@@ -2978,6 +2988,17 @@ void Cs2ReadFile(void) {
   rfoffset    = Cs2Area->reg.CR2;                              // FIXED: était (CR1&0xFF)<<8 | CR2
   rffilternum = Cs2Area->reg.CR3 >> 8;                        // correct, inchangé
   rffid       = ((Cs2Area->reg.CR3 & 0xFF) << 8) | Cs2Area->reg.CR4;  // correct, inchangé
+
+  // rffid and rffilternum are game-supplied register values with no
+  // built-in bound; fileinfo[]/filter[] are only MAX_FILES/MAX_SELECTORS
+  // entries. Every equivalent index elsewhere in this file (rdfilternum,
+  // dsdbufno, casbufno, ...) is checked before use -- this one wasn't.
+  if (rffid >= MAX_FILES || rffilternum >= MAX_SELECTORS)
+  {
+     doCDReport(CDB_STAT_REJECT);
+     Cs2SetIRQ(CDB_HIRQ_CMOK);
+     return;
+  }
 
   rfsize = ((Cs2Area->fileinfo[rffid].size + Cs2Area->getsectsize - 1) /
            Cs2Area->getsectsize) - rfoffset;
@@ -3365,7 +3386,7 @@ void Cs2GetMPEGRom(void) {
         IOCheck_struct check = { 0, 0 };
         mpgpartition->size = 0;
 
-        for (i = 0; i < readsize; i++)
+        for (i = 0; i < readsize && mpgpartition->numblocks < MAX_BLOCKS; i++)
         {
            mpgpartition->block[mpgpartition->numblocks] = Cs2AllocateBlock(&mpgpartition->blocknum[mpgpartition->numblocks], Cs2Area->getsectsize);
 
@@ -3376,6 +3397,8 @@ void Cs2GetMPEGRom(void) {
               mpgpartition->numblocks++;
               mpgpartition->size += Cs2Area->getsectsize;
            }
+           else
+              break; // global block pool exhausted, matches Cs2CopySectorData's convention
         }
 
         Cs2Area->isonesectorstored = 1;
@@ -3416,7 +3439,11 @@ u32 Cs2TrackToFAD(u16 trackandindex) {
      // (really, we should be fetching subcode q's here)
      if ((trackandindex & 0xFF) == 0x01)
         // Return Start of Track
-        return (Cs2Area->TOC[(trackandindex >> 8) - 1] & 0x00FFFFFF);
+        // Cs2TrackToFAD isn't static, so callers outside this file
+        // aren't guaranteed to pre-mask the low byte the way
+        // Cs2PlayDisc does; guard track==0 the same way
+        // Cs2SetupDefaultPlayStats does, to avoid TOC[-1].
+        return (((trackandindex >> 8) == 0) ? 0 : (Cs2Area->TOC[(trackandindex >> 8) - 1] & 0x00FFFFFF));
      else if ((trackandindex & 0xFF) == 0x63)
         // Return End of Track
         return ((Cs2Area->TOC[(trackandindex >> 8)] & 0x00FFFFFF) - 1);
@@ -3758,7 +3785,10 @@ int Cs2CopyDirRecord(u8 * buffer, dirrec_struct * dirrec)
   buffer += dirrec->namelength;
 
   // handle padding
-  buffer += (1 - dirrec->namelength % 2);
+  // ST-040-R4-051795 Table 3.12 / sec 3.2.2: the padding byte exists only
+  // when the file identifier length is ODD (to keep the following field
+  // even-aligned) -- i.e. exactly (namelength % 2) bytes, not the inverse.
+  buffer += (dirrec->namelength % 2);
 
   memset(&dirrec->xarecord, 0, sizeof(dirrec->xarecord));
 
@@ -3992,6 +4022,15 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2SetupFileInfoTransfer(u32 fid) {
+  // fid is caller-supplied straight from a CD Block register (see
+  // Cs2GetFileInfo / Cs2ReadFile) with no upstream bound check, unlike
+  // every other selector/buffer index elsewhere in this file
+  // (rdfilternum, dsdbufno, casbufno, ... all checked against
+  // MAX_SELECTORS). fileinfo[] only has MAX_FILES entries, so an
+  // out-of-range fid was an out-of-bounds read.
+  if (fid >= MAX_FILES)
+     return;
+
   Cs2Area->transfileinfo[0] = (u8)(Cs2Area->fileinfo[fid].lba >> 24);
   Cs2Area->transfileinfo[1] = (u8)(Cs2Area->fileinfo[fid].lba >> 16);
   Cs2Area->transfileinfo[2] = (u8)(Cs2Area->fileinfo[fid].lba >> 8);
