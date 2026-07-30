@@ -694,7 +694,7 @@ void Vdp2StartVisibleLine(void) {
     //Copier la ligne 0 avec la derniere ligne
     if ((_Ygl->colorRamIndex!= 0)||(nbAddrToUpdate != 0)) {
       syncVDP2ColorLine(0);
-      memset(_Ygl->colorRamIndexFull,0,512);
+      memset(_Ygl->colorRamIndexFull,0,sizeof(_Ygl->colorRamIndexFull));
       nbAddrToUpdate = 0;
     }
   } else {
