@@ -1894,10 +1894,13 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   u32 ptn_access = 0;
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
-  ctrl.vram_bank[0] = NULL;
-  ctrl.vram_bank[1] = NULL;
-  ctrl.vram_bank[2] = NULL;
-  ctrl.vram_bank[3] = NULL;
+  /* Kronos#520: was hardcoded NULL (live VRAM only) for this
+   * layer - Vdp2DrawNBG0() already consulted the frame-stable
+   * snapshot below. Extended for consistency. */
+  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
+  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
+  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
+  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
   ctrl.info.cor = 0;
@@ -2318,10 +2321,11 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
-  ctrl.vram_bank[0] = NULL;
-  ctrl.vram_bank[1] = NULL;
-  ctrl.vram_bank[2] = NULL;
-  ctrl.vram_bank[3] = NULL;
+  /* Kronos#520: see Vdp2DrawNBG1() for the full note. */
+  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
+  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
+  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
+  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
   ctrl.info.startLine = startLine;
   ctrl.info.endLine = endLine;
   ctrl.info.dst = 0;
@@ -2558,10 +2562,11 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
 {
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
-  ctrl.vram_bank[0] = NULL;
-  ctrl.vram_bank[1] = NULL;
-  ctrl.vram_bank[2] = NULL;
-  ctrl.vram_bank[3] = NULL;
+  /* Kronos#520: see Vdp2DrawNBG1() for the full note. */
+  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
+  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
+  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
+  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
   ctrl.info.idScreen = NBG3;
   ctrl.info.dst = 0;
   ctrl.info.cor = 0;
@@ -2693,6 +2698,15 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
     return;
   }
   // //If no VRAM access is granted to RBG0, just abort.
+  /* VDP2 Manual §6.2 p.148-149: RAMCTL bits RDBSx1/RDBSx0 designate, per
+   * VRAM bank, its use for RBG0 (00=unused, 01=coefficient table,
+   * 10=pattern name table, 11=character pattern/bitmap). Confirmed
+   * hardware-accurate: without a bank designated, real hardware can't
+   * read RBG0 data either. Kept as diagnostic log to help spot when
+   * this fires unexpectedly. */
+  LOG("RBG0_RAMCTL_DIAG line=%d RAMCTL=0x%04X (%s)\n",
+      rbg->ctrl.info.startLine, rbg->ctrl.regs->RAMCTL,
+      ((rbg->ctrl.regs->RAMCTL & 0xFF) == 0) ? "SKIP" : "proceed");
   if ((rbg->ctrl.regs->RAMCTL & 0xFF) == 0) {
     LOG("No RAMCTL for RBG0\n");
     pushRBG(rbg);
@@ -3257,6 +3271,15 @@ LOG_ASYN("===================================\n");
   Vdp2DrawNBG1_zones();
   Vdp2DrawNBG0_zones();
   Vdp2DrawRBG1();
+
+  /* Reverted: _Ygl->rbg_compute_fbotex[0]/[1] are already created and
+   * attached to _Ygl->rbg_compute_fbo at init (commongl.c,
+   * YglGenerateScreenBuffer) and are populated every frame by
+   * DrawVDP2Screen()'s draw into that FBO (yglcs.c VIDCSRender loop,
+   * called later from composeFB). Overwriting them here with
+   * RBGGenerator_getTexture() pointed reads at the raw, unprocessed
+   * compute buffer instead of the properly color-ram/mosaic-processed
+   * result DrawVDP2Screen produces -- wrong fix, removed. */
 
 LOG_ASYN("*********************************\n");
 
