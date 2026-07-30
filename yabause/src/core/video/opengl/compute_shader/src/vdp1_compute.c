@@ -761,6 +761,10 @@ static void drawQuad(vdp1cmd_struct* cmd) {
             /* VDP1 §4.2 FBCR bit 4 = EOS. Placed at bit 10 in misc (consistent
              * with drawLine) so the shader reads it from the same position. */
             u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
+            /* VDP1 §6.3 CMDPMOD bit 12 = HSS. Real hardware ignores end
+             * codes when HSS=1; cmd->hss was already parsed but never
+             * reached the shader. Bit 11, right after eos. */
+            u32 hss_bit = (cmd->hss & 0x1) << 11;
 
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
@@ -771,7 +775,7 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 					.CMDXB = dataR[idr].x,
 					.CMDYB = dataR[idr].y,
 					.CMDCOLR = cmd->CMDCOLR,
-					.misc = (cmd->flip & 0x3) | eos_bit,
+					.misc = (cmd->flip & 0x3) | eos_bit | hss_bit,
 					.idx = i
 				};
 				// printf("(%d) %d,%d => %d,%d\n",i,
@@ -812,6 +816,8 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 				/* VDP1 §4.2 FBCR bit 4 = EOS. Must match shift used in
 				 * drawLine() and the li>ri branch above: bit 10. */
 				u32 eos_bit = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
+				/* See li>ri branch above for the full HSS note. */
+				u32 hss_bit = (cmd->hss & 0x1) << 11;
 
 				cmd_pol[add] = (cmd_poly){
 					.CMDPMOD = cmd->CMDPMOD,
@@ -822,7 +828,7 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 					.CMDXB = dataR[idr].x,
 					.CMDYB = dataR[idr].y,
 					.CMDCOLR = cmd->CMDCOLR,
-					.misc = (cmd->flip & 0x3) | eos_bit,
+					.misc = (cmd->flip & 0x3) | eos_bit | hss_bit,
 					.idx = i
 				};
 				// printf("(%d) %d,%d => %d,%d\n",i,
@@ -869,6 +875,9 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
     /* VDP1 §4.2 FBCR bit 4 = EOS. Place at bit 10 to avoid collision with
      * the s-orientation field which occupies bits 9:6 via (s<<6). */
     u32 eos_bit_line = ((Vdp1Regs->FBCR >> 4) & 0x1) << 10;
+    /* Same bit 11 packing as drawQuad(), for consistency (LINE commands
+     * don't hit getColor()'s textured path, so this is inert here). */
+    u32 hss_bit_line = (cmd->hss & 0x1) << 11;
         
 
 	cmd_pol[0] = (cmd_poly){
@@ -885,7 +894,7 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 		 * bit 10 = EOS. The previous (s<<2) term duplicated the
 		 * orientation at bits 5:2 and collided with reserved bits.
 		 * Remove the duplicate to match drawQuad() misc layout. */
-		.misc = (cmd->flip & 0x3) | ((s & 0xF) << 6) | eos_bit_line,
+		.misc = (cmd->flip & 0x3) | ((s & 0xF) << 6) | eos_bit_line | hss_bit_line,
  		.idx = 0
 
 	};
