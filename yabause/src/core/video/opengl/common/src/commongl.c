@@ -1985,6 +1985,14 @@ void YglShowTexture(void) {
 }
 
 u32 * YglGetColorRamPointer(int line) {
+  // cram_tex_buf is malloc'd for exactly 512 rows (2048*4*512 bytes).
+  // 'line' is _Ygl->colorRamIndex, which increments once per distinct
+  // scanline that sees a Color RAM change and is only reset to 0
+  // conditionally (see Vdp2StartVisibleLine() in vdp2.c). Nothing
+  // previously stopped it from exceeding 511 within a single busy frame
+  // and writing past the end of the allocation.
+  if (line < 0) line = 0;
+  if (line >= 512) line = 511;
   return &_Ygl->cram_tex_buf[2048*line];
 }
 
