@@ -24,6 +24,7 @@
 
 #include <stdlib.h>
 #include <ctype.h>
+#include <math.h>
 #include "cs2.h"
 #include "debug.h"
 #include "error.h"
@@ -72,7 +73,108 @@
 
 extern void resetSyncVideo(void);
 
-static int blckNb[46875];
+//////////////////////////////////////////////////////////////////////////////
+// Modele de temps de recherche (seek) du bloc optique
+//
+// Reprend l'intention du commit FCare/Kronos 8328b5e ("Fix CS2 seeking and
+// reading time"), mais corrige deux regressions apparues avec le modele
+// geometrique qui l'a remplace :
+//
+//   1. le temps de seek etait calcule entre FAD et *playendFAD*, c.-a-d.
+//      proportionnel a la LONGUEUR de la zone a lire, alors qu'il doit
+//      dependre de la DISTANCE PARCOURUE par le bloc optique, donc de
+//      l'ecart entre la position courante de la tete et la position visee
+//      (c'est exactement ce que faisait 8328b5e avec current_fad) ;
+//   2. la table blckNb[] saturait autour de FAD 113000 : au-dela (~25 min
+//      de disque, soit les 2/3 exterieurs), les deux boucles retournaient
+//      la meme valeur 46875, l'ecart tombait a 0 et le seek devenait
+//      instantane.
+//
+// Le modele ci-dessous est ferme (O(1), plus de table de 187 Ko ni de
+// double balayage de 46875 iterations a chaque commande Play) et
+// physiquement coherent :
+//
+//   pas de piste p = 1.6 um, zone programme de r0 = 23 mm a 58 mm
+//   piste i au rayon        r(i) = r0 + i*p                (spirale d'Archimede)
+//   longueur cumulee        L(n) = somme_{i<n} 2*pi*r(i)
+//                                = 2*pi*( n*r0 + p*n*(n-1)/2 )
+//   densite lineaire constante (CLV) => FAD(n) = FAD_MAX * L(n)/L(N)
+//
+// Verification : L(N) ~= 5.57 km pour N = 21875 pistes, soit ~16.7 mm par
+// secteur a 333000 FAD -- ce qui correspond bien a la vitesse lineaire CLV
+// de 1.2-1.4 m/s a 75 secteurs/s. L'ancien modele annoncait 107 mm/bloc.
+//
+// Le temps est ensuite suppose lineaire en deplacement radial (mouvement du
+// chariot), borne par CS2_SEEK_TIME_MAX_US (course complete) et
+// CS2_SEEK_TIME_MIN_US (latence de rotation + reaccrochage de la PLL).
+//
+// >>> Ces deux constantes sont les seuls boutons a tourner si un jeu regresse.
+//     Elles sont calees sur la plage qui existait dans le code AVANT la
+//     regression de 2022 :
+//         #define SEEK_TIME     (60000*5)   ->  100 ms de course complete
+//         #define SEEK_TIME_MIN (60000)     ->   20 ms de plancher
+//     Le plancher de 20 ms a ete revalide sur Zero Divide (issue #1417).
+//     L'ancien commentaire du code notait par ailleurs qu'Athlete King
+//     exige au minimum 2856 unites, soit ~0.95 ms : compatible.
+//     Pour memoire, master donnait de facto ~0.8 ms pour une course
+//     complete, c.-a-d. aucune simulation de seek.
+#define CS2_SEEK_FAD_MAX        333000u   /* 74 min * 4500 FAD/min           */
+#define CS2_SEEK_TIME_MAX_US    100000u   /* course complete : 100 ms        */
+#define CS2_SEEK_TIME_MIN_US     20000u   /* plancher : 20 ms                */
+
+/* _periodictiming est exprime en microsecondes * 3 (cf. Cs2Exec_unit) */
+#define CS2_US_TO_PERIODIC(us)  ((u32)(us) * 3u)
+#define SEEK_TIME               CS2_US_TO_PERIODIC(CS2_SEEK_TIME_MAX_US)
+
+#define CS2_SEEK_R0             23.0      /* mm : debut de la zone programme */
+#define CS2_SEEK_PITCH          0.0016    /* mm : pas de piste (1.6 um)      */
+#define CS2_SEEK_NB_TRACKS      21875.0   /* (58 - 23) / 0.0016              */
+
+// Position radiale (exprimee en nombre de pistes depuis le bord interieur)
+// correspondant a un FAD donne. Inversion analytique de L(n).
+static double Cs2FADToTrackIndex(u32 fad)
+{
+   const double r0 = CS2_SEEK_R0;
+   const double p  = CS2_SEEK_PITCH;
+   const double N  = CS2_SEEK_NB_TRACKS;
+   double ltot, l, b, disc;
+
+   /* un FAD invalide (0xFFFFFFFF apres un Stop) est traite comme le bord
+      exterieur : la tete est parkee, il faudra une course complete */
+   if (fad > CS2_SEEK_FAD_MAX)
+      fad = CS2_SEEK_FAD_MAX;
+
+   /* le facteur 2*pi se simplifie entre ltot et l : inutile de le porter */
+   ltot = N * r0 + p * N * (N - 1.0) / 2.0;
+   l    = ltot * ((double)fad / (double)CS2_SEEK_FAD_MAX);
+
+   /* resolution de  (p/2)*n^2 + (r0 - p/2)*n - l = 0,  racine positive */
+   b    = r0 - p / 2.0;
+   disc = b * b + 2.0 * p * l;
+   if (disc < 0.0) disc = 0.0;
+   return (sqrt(disc) - b) / p;
+}
+
+// Duree du seek entre deux FAD, en unites de _periodictiming (us * 3).
+static u32 Cs2ComputeSeekTiming(u32 from_fad, u32 to_fad)
+{
+   double dtracks, us;
+   u32 timing;
+
+   dtracks = fabs(Cs2FADToTrackIndex(to_fad) - Cs2FADToTrackIndex(from_fad));
+   if (dtracks > CS2_SEEK_NB_TRACKS)
+      dtracks = CS2_SEEK_NB_TRACKS;
+
+   us = (double)CS2_SEEK_TIME_MIN_US
+      + (double)(CS2_SEEK_TIME_MAX_US - CS2_SEEK_TIME_MIN_US)
+        * (dtracks / CS2_SEEK_NB_TRACKS);
+
+   timing = CS2_US_TO_PERIODIC((u32)us);
+   if (timing > SEEK_TIME)          /* garde-fou perdu depuis 8328b5e */
+      timing = SEEK_TIME;
+   return timing;
+}
+
 
 enum CDB_DATATRANSTYPE
 {
@@ -568,11 +670,8 @@ int Cs2Init(int coreid, const char *cdpath, const char *mpegpath) {
 
    Cs2Reset();
 
-   int last = 0;
-   for (int i=0; i< 46875; i++) {
-     blckNb[i] = last + ((45 + i * 0.0016)*3.14) / 107;
-     last = blckNb[i];
-   }
+   /* la table blckNb[] est remplacee par Cs2FADToTrackIndex() : plus rien a
+      precalculer ici (cf. modele de seek en haut du fichier) */
 
 #if 0
    // This stuff need to go elsewhere
@@ -1775,41 +1874,21 @@ void Cs2PlayDisc(void) {
     Cs2SetTiming(0); //Need a big delay to restart
     Cs2Area->_seekToStop = 0;
   } else {
-    // Calculate Seek time
-    // Note: a generic 74-min CD-ROM blank holds up to 74*4500 = 333000 FAD,
-    // but Sega's own spec caps a Saturn Game-CD at 63 minutes / no
-    // multisession (Disc Format Standards Specification Sheet ST-040-R4-
-    // 051795, section 1.2), i.e. a lead-out start at FAD ~283800. This
-    // doesn't change the geometry-based blckNb[] model below (its size and
-    // contents come from the physical radius/track-pitch constants, not
-    // from this capacity figure), so it's corrected here only as an
-    // accurate reference, not a functional change.
-    // The CD has a track of data every 1.6µm, from 4.5 cm diameter to 12 cm diameter, so 46875 circles of data
-    // We can evaluate
-    // 46875 * 2 *pi *45 + 2 *pi * (46875 * 46874) *0.0016 = 35324529 mm to cover 330000 block
-    // => 1 block every 107 mm
-    // A medium seek time is around 400 ms, we assume 400 ms is then from the middle of the disc to one of the limit
-    // It means 2x Mean time to move from lowest to highest track
-    int nbFAD = 46875;
-    int nbplayendFAD = 46875;
-    for (int i = 0; i< 46875; i++) {
-      if (blckNb[i]>Cs2Area->FAD) {
-        nbFAD = i;
-        CDLOG("Fad on %d tracks\n", i);
-        break;
-      }
-    }
-    for (int i = 0; i< 46875; i++) {
-      if (blckNb[i]>Cs2Area->playendFAD) {
-        nbplayendFAD = i;
-        CDLOG("Fad on %d tracks\n", i);
-        break;
-      }
-    }
+    // Calcul du temps de seek.
+    //
+    // Le deplacement reel du bloc optique va de la position PHYSIQUE de la
+    // tete a la nouvelle position de lecture. Apres un secteur lu, FAD
+    // designe deja le secteur *suivant* : la tete est donc sur FAD-1, d'ou
+    // le decalage (repris de 8328b5e). playendFAD n'intervient pas : la fin
+    // de la zone a lire ne dit rien de la distance parcourue par la tete.
+    u32 head_fad = current_fad;
+    if (head_fad != 0 && head_fad != 0xFFFFFFFF)
+      head_fad--;
 
-    CDLOG("FAD and playendFad are separated from %f µm\n", abs(nbFAD-nbplayendFAD) * 1.6);
-    Cs2Area->_periodictiming = (int)(800.0 / 37500.0 *  abs(nbFAD-nbplayendFAD) * 1.6 * 3);
-    CDLOG("Wait %d ms\n", Cs2Area->_periodictiming);
+    Cs2Area->_periodictiming = Cs2ComputeSeekTiming(head_fad, Cs2Area->FAD);
+
+    CDLOG("cs2\t: seek %x -> %x : %d us\n",
+          head_fad, Cs2Area->FAD, Cs2Area->_periodictiming / 3);
   }
   setStatus(CDB_STAT_SEEK);      // need to be seek
   Cs2Area->nextStatus = 0xFF;
@@ -3785,10 +3864,18 @@ int Cs2CopyDirRecord(u8 * buffer, dirrec_struct * dirrec)
   buffer += dirrec->namelength;
 
   // handle padding
-  // ST-040-R4-051795 Table 3.12 / sec 3.2.2: the padding byte exists only
-  // when the file identifier length is ODD (to keep the following field
-  // even-aligned) -- i.e. exactly (namelength % 2) bytes, not the inverse.
-  buffer += (dirrec->namelength % 2);
+  // ECMA-119 / ISO 9660 sec 9.1.12 "Padding Field": present ONLY when the
+  // Length of File Identifier (LEN_FI) is EVEN, and then exactly 1 byte.
+  // The used part of the record is 33 + LEN_FI + padding, and must stay of
+  // even length -- hence (1 - LEN_FI % 2), not (LEN_FI % 2).
+  //
+  // Getting this wrong shifts the cursor by one byte and breaks the XA
+  // record detection just below: recordsize - (buffer - temp_pointer)
+  // then yields 13 or 15 instead of 14, so xarecord (groupid, userid,
+  // attributes, "XA" signature, filenumber) is never parsed and stays
+  // zeroed. Games lose the CD-XA file number used to filter Mode 2 Form 2
+  // streams -- i.e. no FMV (cf. Deep Fear with the real BIOS).
+  buffer += (1 - dirrec->namelength % 2);
 
   memset(&dirrec->xarecord, 0, sizeof(dirrec->xarecord));
 
