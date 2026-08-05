@@ -36,8 +36,14 @@ extern "C" {
 // ============================================================
 //  Helpers
 // ============================================================
-#define HEX4(v) std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<(unsigned)(v)
-#define HEX8(v) std::hex<<std::uppercase<<std::setw(8)<<std::setfill('0')<<(unsigned)(v)
+// std::right est indispensable : l'alignement est un etat PERSISTANT du
+// flux, et la macro R() ci-dessous pose std::left pour aligner la colonne
+// du nom sans jamais le retablir. Sans std::right ici, les zeros de
+// remplissage partaient a DROITE : BGON=0x0201 s'affichait "2010" et
+// TVSTAT=0x0007 s'affichait "7000". Seules les valeurs occupant deja
+// toute la largeur (TVMD=0x8120, RAMCTL=0x1327...) echappaient au bug.
+#define HEX4(v) std::hex<<std::uppercase<<std::right<<std::setw(4)<<std::setfill('0')<<(unsigned)(v)
+#define HEX8(v) std::hex<<std::uppercase<<std::right<<std::setw(8)<<std::setfill('0')<<(unsigned)(v)
 #define DEC(v)  std::dec<<(v)
 
 static std::string decodeVramTiming(u8 n) {
@@ -96,7 +102,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     std::ostringstream raw;
     raw<<"Address    Name     Value\n"
        <<"---------- -------- ------\n";
-#define R(a,n,v) raw<<"0x"<<HEX8(a)<<"  "<<std::left<<std::setw(8)<<std::setfill(' ')<<(n)<<" = 0x"<<HEX4(v)<<"\n"
+#define R(a,n,v) raw<<"0x"<<HEX8(a)<<"  "<<std::left<<std::setw(8)<<std::setfill(' ')<<(n)<<std::right<<" = 0x"<<HEX4(v)<<"\n"
     R(0x25F80000,"TVMD",  r.TVMD);   R(0x25F80002,"EXTEN", r.EXTEN);
     R(0x25F80004,"TVSTAT",r.TVSTAT); R(0x25F80006,"VRSIZE",r.VRSIZE);
     R(0x25F80008,"HCNT",  r.HCNT);   R(0x25F8000A,"VCNT",  r.VCNT);
@@ -260,8 +266,15 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // CHCTLA/B
     d<<"\n=== Character Control ===\n";
-    {static const char*cc5[]={"16(4bpp)","16(4bpp)","256(8bpp)","2048(11bpp)","32768(15bpp)","16M(24bpp)","?","?"};
-    static const char*cc2[]={"16(4bpp)","256(8bpp)","?","?"};
+    // ST-058-R2 4.5 : N0CHCN/R0CHCN (3 bits) 000=16, 001=256, 010=2048,
+    // 011=32768, 100=16.77M, 101-111 interdit. Il y avait un doublon
+    // "16(4bpp)" en index 1 : toute la table etait donc decalee d'un cran a
+    // partir de la, et un NBG0 en 256 couleurs (CHCTLA=0x1010, N0CHCN=1)
+    // etait annonce en 16 couleurs.
+    {static const char*cc5[]={"16(4bpp)","256(8bpp)","2048(11bpp)","32768(15bpp)","16M(24bpp)","(interdit)","(interdit)","(interdit)"};
+    // N1CHCN (2 bits) : 00=16, 01=256, 10=2048, 11=32768. Les deux dernieres
+    // valeurs sont licites, elles etaient rendues "?".
+    static const char*cc2[]={"16(4bpp)","256(8bpp)","2048(11bpp)","32768(15bpp)"};
     static const char*bsz[]={"512x256","512x512","1024x256","1024x512"};
     d<<"  CHCTLA=0x"<<HEX4(r.CHCTLA)<<"\n";
     int n0bm=(r.CHCTLA>>1)&1,n0sz=r.CHCTLA&1,n0cc=(r.CHCTLA>>4)&7,n0bw=(r.CHCTLA>>2)&3;
