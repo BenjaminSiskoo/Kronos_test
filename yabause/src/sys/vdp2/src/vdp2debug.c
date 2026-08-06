@@ -415,6 +415,20 @@ static int getBlur(Vdp2 *varVdp2Regs, int layer) {
 }
 //////////////////////////////////////////////////////////////////////////////
 
+/* ST-058-R2 6.4 : KTCTL (1800B4H) bit 0 = RAKTE, bits 3-2 = RAKMD,
+ * bit 8 = RBKTE, bits 11-10 = RBKMD. Necessaire pour RPMD 2 et 3,
+ * ou les deux jeux de parametres sont actifs simultanement. */
+static char *AddRotCoefInfo(char *outstring)
+{
+   if (Vdp2Regs->KTCTL & 0x1)
+      AddString(outstring, "Parameter A Coefficient Table Enabled(Mode %d)\r\n", (Vdp2Regs->KTCTL >> 2) & 0x3);
+   if (Vdp2Regs->KTCTL & 0x100)
+      AddString(outstring, "Parameter B Coefficient Table Enabled(Mode %d)\r\n", (Vdp2Regs->KTCTL >> 10) & 0x3);
+   return outstring;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
 {
    int patternwh=((Vdp2Regs->CHCTLB & 0x100) >> 8) + 1;
@@ -449,10 +463,15 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
          case 2:
             // Parameter A+B switched via coefficients
             AddString(outstring, "Parameter A/B switched via coefficients\r\n");
+            /* ST-058-R2 6.3/6.4 : en RPMD 2 et 3 les deux jeux de
+             * parametres ont chacun leur table (RAKTE / RBKTE).
+             * coeftbl restait a 0 : rien n'etait affiche. */
+            outstring = AddRotCoefInfo(outstring);
             break;
          case 3:
             // Parameter A+B switched via rotation parameter window
             AddString(outstring, "Parameter A/B switched parameter window\r\n");
+            outstring = AddRotCoefInfo(outstring);
             if (Vdp2Regs->WCTLD & 0x2)
             {
                AddString(outstring, "Rotation Window 0 Enabled\r\n");
@@ -462,7 +481,9 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
                AddString(outstring, "Horizontal end = %d\r\n", hend);
                AddString(outstring, "Vertical end = %d\r\n", vend);
             }
-            else if (Vdp2Regs->WCTLD & 0x4)
+            /* ST-058-R2 1800D6H : bit 3 = RPW1E (enable), bit 2 = RPW1A
+             * (inside/outside). Le test portait sur le bit de zone. */
+            else if (Vdp2Regs->WCTLD & 0x8)
             {
                AddString(outstring, "Rotation Window 1 Enabled\r\n");
                CalcWindowCoordinates(1, &hstart, &vstart, &hend, &vend);
@@ -522,7 +543,8 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
          else
          {
             // Parameter B
-            Vdp2GetPlaneSize((Vdp2Regs->PLSZ & 0x3000) >> 8, &planew, &planeh);
+            /* ST-058-R2 18003AH : RBPLSZ = PLSZ bits 13-12. */
+            Vdp2GetPlaneSize((Vdp2Regs->PLSZ & 0x3000) >> 12, &planew, &planeh);
          }
 
          AddString(outstring, "Plane Size = %dH x %dV\r\n", planew, planeh);
@@ -535,7 +557,7 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
          else
          {
             AddString(outstring, "Pattern Name data size = 1 word\r\n");
-            AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+            AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCR >> 14) & 0x1);
             AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
             AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
             AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
@@ -726,7 +748,7 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
          else
          {
             AddString(outstring, "Pattern Name data size = 1 word\r\n");
-            AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+            AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCN0 >> 14) & 0x1);
             AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
             AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
             AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
@@ -878,7 +900,10 @@ void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
 
        AddString(outstring, "Tile(%dH x %dV)\r\n", patternwh, patternwh);
 
-       Vdp2GetPlaneSize(Vdp2Regs->PLSZ & 0x3, &planew, &planeh);
+       /* RBG1 est toujours dessine avec le parametre de rotation B
+        * (ST-058-R2 6.1) : sa taille de plan est RBPLSZ (PLSZ bits
+        * 13-12), pas N0PLSZ. */
+       Vdp2GetPlaneSize((Vdp2Regs->PLSZ >> 12) & 0x3, &planew, &planeh);
        AddString(outstring, "Plane Size = %dH x %dV\r\n", planew, planeh);
 
        // Pattern Name Control stuff
@@ -889,7 +914,7 @@ void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
        else
        {
           AddString(outstring, "Pattern Name data size = 1 word\r\n");
-          AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+          AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCN0 >> 14) & 0x1);
           AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
           AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
           AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
@@ -1034,7 +1059,7 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
          else
          {
             AddString(outstring, "Pattern Name data size = 1 word\r\n");
-            AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+            AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCN1 >> 14) & 0x1);
             AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
             AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
             AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
@@ -1237,7 +1262,7 @@ void Vdp2DebugStatsNBG2(char *outstring, int *isenabled)
       else
       {
          AddString(outstring, "Pattern Name data size = 1 word\r\n");
-         AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+         AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCN2 >> 14) & 0x1);
          AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
          AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
          AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
@@ -1378,7 +1403,7 @@ void Vdp2DebugStatsNBG3(char *outstring, int *isenabled)
       else
       {
          AddString(outstring, "Pattern Name data size = 1 word\r\n");
-         AddString(outstring, "Character Number Supplement bit = %d\r\n", (supplementdata >> 14) & 0x1);
+         AddString(outstring, "Character Number Supplement bit = %d\r\n", (Vdp2Regs->PNCN3 >> 14) & 0x1);
          AddString(outstring, "Special Priority bit = %d\r\n", (supplementdata >> 9) & 0x1);
          AddString(outstring, "Special Color Calculation bit = %d\r\n", (supplementdata >> 8) & 0x1);
          AddString(outstring, "Supplementary Palette number = %d\r\n", (supplementdata >> 5) & 0x7);
