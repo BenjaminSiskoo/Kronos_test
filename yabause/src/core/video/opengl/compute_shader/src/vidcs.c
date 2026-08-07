@@ -285,6 +285,25 @@ static void VIDCSEndVdp1RenderUpscale(void) {
 #define CELL_SINGLE 0x1
 #define CELL_QUAD   0x2
 
+/* Index de bank VRAM VDP2 (0=A0, 1=A1, 2=B0, 3=B1) pour une adresse.
+ *
+ * ST-58-R2 3.2 / p.149 : sans partition de bank (VRAMD/VRBMD = 0), les bits
+ * VRAM-A0 valent pour toute la VRAM-A et les bits VRAM-B0 pour toute la
+ * VRAM-B. L'index ne se deduit donc pas de l'adresse seule. Vdp2GetBank()
+ * applique cette regle et honore aussi VRSIZE.
+ *
+ * Le clamp final n'est pas cosmetique : MPOFN/MPOFR peuvent exprimer une
+ * adresse hors VRAM (jusqu'a 0xE0000 en 4 Mbit). L'arithmetique
+ * ((addr>>16)&0xF)>>...>>1 utilisee auparavant renvoyait alors un index
+ * jusqu'a 7, indexant hors de char_bank[4] / pname_bank[4]. */
+static INLINE int Vdp2VramBankIndex(Vdp2 *regs, u32 addr)
+{
+    const u32 mask = (regs->VRSIZE & 0x8000) ? 0xFFFFF : 0x7FFFF;
+    int bank = Vdp2GetBank(regs, addr & mask);
+    if (bank < 0 || bank > 3) bank = 0;
+    return bank;
+}
+
 static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int lines)
 {
   u64 cacheaddr = (ctrl->info.paladdr << 20) | ctrl->info.charaddr | ctrl->info.transparencyenable |
@@ -389,7 +408,7 @@ static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int
       ctrl->info.pagewh*y +
       x)*ctrl->info.patterndatasize * 2;
 
-  int ptnAddrBk = (((addr >> 16)& 0xF) >> ((ctrl->regs->VRSIZE >> 15)&0x1)) >> 1;
+  int ptnAddrBk = Vdp2VramBankIndex(ctrl->regs, addr);
   if (ctrl->info.pname_bank[ptnAddrBk] == 0) return 0;
 
   switch (ctrl->info.patterndatasize)
@@ -1465,8 +1484,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
      * [FIX 5] Apply the restriction to ALL color numbers, like NBG1
      * (l.1619-1627). §3.1 does not limit this check to colornumber < 3 ;
      * any bitmap mode can be disabled by a RAMCTL cycle-pattern conflict. */
-    int charAddrBk = (((ctrl.info.charaddr >> 16) & 0xF)
-                      >> ((ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
+    int charAddrBk = Vdp2VramBankIndex(ctrl.regs, ctrl.info.charaddr);
     int needUpdate = 0;
     const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
     for (int k = 0; k < line_max; k++) {
@@ -2000,7 +2018,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     }
     ctrl.info.bitmap_base = ctrl.info.charaddr;
 
-    int charAddrBk = (((ctrl.info.charaddr >> 16)& 0xF) >> ((ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
+    int charAddrBk = Vdp2VramBankIndex(ctrl.regs, ctrl.info.charaddr);
     int needUpdate = 0;
     for (int i = 0; i < line_max; i++) {
       /* VDP2 Manual §4.1 BGON p.49: NBG1 enable bit is N1ON = BGON bit 1
@@ -2678,9 +2696,42 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* VDP2 §6.2 p.148 RAMCTL RDBS
+ * En mode rotation, le type d'usage de chaque bank VRAM pour RBG0
+ * est donné UNIQUEMENT par RDBSx1/RDBSx0 du RAM control register :
+ *   00 = non utilisé par RBG0
+ *   01 = coefficient table
+ *   10 = pattern name table
+ *   11 = character pattern / bitmap pattern
+ * Le VRAM cycle pattern register de la bank est ignoré (§3.3 p.31). */
+enum { RDBS_UNUSED = 0, RDBS_COEF = 1, RDBS_PNAME = 2, RDBS_CHAR = 3 };
+
+static int Vdp2RBG0BankType(Vdp2 *regs, int bank)   /* bank : 0=A0 1=A1 2=B0 3=B1 */
+{
+    return (regs->RAMCTL >> (bank * 2)) & 0x3;
+}
+
+/* Validation : l'adresse character/pattern de RBG0 doit tomber dans
+ * une bank dont le RDBS correspond. Sinon le hardware ne lit rien
+ * d'utile (§3.3 p.31 "access won't be done and the correct screen
+ * will not be displayed"). */
+static int Vdp2RBG0CharBankValid(Vdp2 *regs, u32 charaddr)
+{
+    int bank = Vdp2GetBank(regs, charaddr);
+    int t = Vdp2RBG0BankType(regs, bank);
+    return (t == RDBS_CHAR);
+}
+
 static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
 {
   vdp2draw_struct* info = &rbg->ctrl.info;
+
+  /* Les slots RBGDrawInfo sont recycles par popRBG()/pushRBG() et calloc'es
+   * une seule fois dans VIDCSInit(). useb n'etait jamais remis a 0 :
+   * Vdp2DrawRotation() ne fait que "if (RPMD & 3) useb = 1" sans else, donc
+   * un passage de RPMD != 0 a RPMD = 0 laissait le parametre B actif avec
+   * les valeurs du slot precedent. */
+  rbg->useb = 0;
 
   info->dst = 0;
   info->idScreen = RBG0;
@@ -2697,21 +2748,15 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
     pushRBG(rbg);
     return;
   }
-  // //If no VRAM access is granted to RBG0, just abort.
-  /* VDP2 Manual §6.2 p.148-149: RAMCTL bits RDBSx1/RDBSx0 designate, per
-   * VRAM bank, its use for RBG0 (00=unused, 01=coefficient table,
-   * 10=pattern name table, 11=character pattern/bitmap). Confirmed
-   * hardware-accurate: without a bank designated, real hardware can't
-   * read RBG0 data either. Kept as diagnostic log to help spot when
-   * this fires unexpectedly. */
-  LOG("RBG0_RAMCTL_DIAG line=%d RAMCTL=0x%04X (%s)\n",
+  /* ST-58-R2 p.283 (RDBSxx, 18000EH) : 00 = "Not used as RAM for RBG0".
+   * On n'abandonne pas le calque pour autant : quand AUCUNE bank n'est
+   * designee, le RDBS ne porte aucune information et les controles qui en
+   * dependent n'ont rien a valider. Des qu'au moins une bank est designee,
+   * on fait confiance au reglage du jeu et les controles s'appliquent. */
+  const int rbg0BankSelectUsed = ((rbg->ctrl.regs->RAMCTL & 0xFF) != 0);
+  LOG("RBG0_RAMCTL line=%d RAMCTL=0x%04X (%s)\n",
       rbg->ctrl.info.startLine, rbg->ctrl.regs->RAMCTL,
-      ((rbg->ctrl.regs->RAMCTL & 0xFF) == 0) ? "SKIP" : "proceed");
-  if ((rbg->ctrl.regs->RAMCTL & 0xFF) == 0) {
-    LOG("No RAMCTL for RBG0\n");
-    pushRBG(rbg);
-    return;
-  }
+      rbg0BankSelectUsed ? "bank checks on" : "bank checks off");
 
   for (int i=info->startLine; i<info->endLine; i++) {
     info->display[i] = info->enable;
@@ -2827,12 +2872,16 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
       // Parameter B
       info->charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
 
-    //If no VRAM access is granted to RBG0 character pattern table , just abort.
-      int charAddrBk = (((info->charaddr >> 16)& 0xF) >> ((rbg->ctrl.regs->VRSIZE >> 15)&0x1)) >> 1;
-      if ((((rbg->ctrl.regs->RAMCTL>>(charAddrBk<<1))&0x3) != 0x3) && ((rbg->ctrl.regs->RPMD & 0x3) < 0x2)) {
-        pushRBG(rbg);
-        return;
-      }
+    /* Sans bank designee (rbg0BankSelectUsed) ce controle n'a rien a
+     * valider. Sinon l'index de bank passe par Vdp2GetBank(), qui honore
+     * VRAMD/VRBMD (ST-58-R2 p.149), et non par l'arithmetique sur
+     * charaddr>>16 qui supposait la partition toujours active. */
+    if (rbg0BankSelectUsed
+        && !Vdp2RBG0CharBankValid(rbg->ctrl.regs, info->charaddr)
+        && ((rbg->ctrl.regs->RPMD & 0x3) < 0x2)) {
+      pushRBG(rbg);
+      return;
+    }
 
     info->paladdr = (rbg->ctrl.regs->BMPNB & 0x7) << 4;
     info->flipfunction = 0;
@@ -2922,32 +2971,6 @@ info->mapwh  = saved_mapwh;
   info->coordincy_raw = 0x100;
 
   Vdp2DrawRotation(rbg);
-}
-
-/* VDP2 §6.2 p.148 RAMCTL RDBS
- * En mode rotation, le type d'usage de chaque bank VRAM pour RBG0
- * est donné UNIQUEMENT par RDBSx1/RDBSx0 du RAM control register :
- *   00 = non utilisé par RBG0
- *   01 = coefficient table
- *   10 = pattern name table
- *   11 = character pattern / bitmap pattern
- * Le VRAM cycle pattern register de la bank est ignoré (§3.3 p.31). */
-enum { RDBS_UNUSED = 0, RDBS_COEF = 1, RDBS_PNAME = 2, RDBS_CHAR = 3 };
-
-static int Vdp2RBG0BankType(Vdp2 *regs, int bank)   /* bank : 0=A0 1=A1 2=B0 3=B1 */
-{
-    return (regs->RAMCTL >> (bank * 2)) & 0x3;
-}
-
-/* Validation : l'adresse character/pattern de RBG0 doit tomber dans
- * une bank dont le RDBS correspond. Sinon le hardware ne lit rien
- * d'utile (§3.3 p.31 "access won't be done and the correct screen
- * will not be displayed"). */
-static int Vdp2RBG0CharBankValid(Vdp2 *regs, u32 charaddr)
-{
-    int bank = Vdp2GetBank(regs, charaddr);
-    int t = Vdp2RBG0BankType(regs, bank);
-    return (t == RDBS_CHAR);
 }
 
 static void Vdp2DrawRBG0()
@@ -4267,27 +4290,9 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
 }
 
 static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
-    int vrama_split = (ctrl->regs->RAMCTL >> 8) & 0x1; /* §3.1 VRAMD */
-    int vramb_split = (ctrl->regs->RAMCTL >> 9) & 0x1; /* §3.1 VRBMD */
-
-    addr &= 0x7FFFF;
-
-    int bank;
-    if (addr < 0x40000) {
-        if (vrama_split) {
-            bank = (addr < 0x20000) ? 0 : 1;
-        } else {
-            bank = 0;
-        }
-    } else {
-        if (vramb_split) {
-            bank = (addr < 0x60000) ? 2 : 3;
-        } else {
-            bank = 2;
-        }
-    }
-
-    if (bank > 3) return 0;
+    /* Meme calcul que les cinq autres sites du fichier : la logique
+     * VRAMD/VRBMD etait dupliquee ici en dur, et seulement pour 4 Mbit. */
+    int bank = Vdp2VramBankIndex(ctrl->regs, addr);
 
     /* Kronos#520 (True Pinball flipper table): ctrl->info.char_bank[] is
      * derived from Vdp2External.AC_VRAM, which reflects whatever the
@@ -5153,7 +5158,7 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       }
       ctrl->info.PlaneAddr(&ctrl->info, ctrl->info.mapwh * mapy + mapx, ctrl->regs);
       if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) != 0) {
-        int charAddrBk = (((ctrl->info.charaddr >> 16)& 0xF) >> ((ctrl->regs->VRSIZE >> 15)&0x1)) >> 1;
+        int charAddrBk = Vdp2VramBankIndex(ctrl->regs, ctrl->info.charaddr);
         /* Kronos#520: see isVramAccessible() above for why char_bank[]
          * alone can be stale for a zone mid-frame. */
         if (ctrl->info.char_bank[charAddrBk] == 1 || (charAddrBk >= 0 && charAddrBk < 4 && ctrl->vram_bank[charAddrBk])) {
@@ -5427,6 +5432,19 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
   info->dst = 0;
   info->idScreen = RBG1;
+
+  /* RBG1 est par definition dessine avec le parametre de rotation B
+   * (ST-58-R2 6.1). Vdp2DrawRotation_in_sync() ne calcule paraB.Xp/Yp/dx/dy
+   * que "if (rbg->useb)" ; sans cette ligne, quand RPMD & 3 == 0 le drapeau
+   * gardait la valeur du slot recycle et RBG1 echantillonnait avec des
+   * parametres perimes, de facon intermittente selon l'ordre de la file. */
+  rbg->useb = 1;
+
+  /* Vdp2DrawRBG0_part() reinitialise ces deux champs en entree ; RBG1 ne le
+   * faisait pas et ne les assigne jamais, heritant de la fenetre de
+   * rotation du dernier RBG0 ayant occupe ce slot. */
+  info->RotWin = NULL;
+  info->RotWinMode = 0;
   info->cor = 0;
   info->cog = 0;
   info->cob = 0;
@@ -5452,6 +5470,13 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
   // Read in Parameter B
   Vdp2ReadRotationTable(1, &rbg->paraB, rbg->ctrl.regs, Vdp2Ram);
 
+  /* ST-58-R2 : CHCTLA bits 6-4 = N0CHCN, partage par NBG0 et RBG1.
+   * DOIT etre assigne AVANT la branche isbitmap ci-dessous, dont le test
+   * d'exemption du format RGB direct lit info->colornumber. info pointe
+   * dans rbg->ctrl.info issu de popRBG() : le test portait sinon sur la
+   * valeur laissee par l'utilisation precedente du slot. */
+  info->colornumber = (rbg->ctrl.regs->CHCTLA & 0x70) >> 4;
+
   if ((info->isbitmap = rbg->ctrl.regs->CHCTLA & 0x2) != 0)
   {
     // Bitmap Mode
@@ -5460,14 +5485,11 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
 
     info->charaddr = (rbg->ctrl.regs->MPOFR & 0x70) * 0x2000;
 
-    {
-	int charAddrBk = (((info->charaddr >> 16) & 0xF)
-					  >> ((rbg->ctrl.regs->VRSIZE >> 15) & 0x1)) >> 1;
-	if (info->colornumber != 3 &&  /* RGB format bypasses VRAM bank restriction */
-		((rbg->ctrl.regs->RAMCTL >> (charAddrBk << 1)) & 0x3) != 0x3) {
-		pushRBG(rbg);
-		return;
-	}
+    if ((rbg->ctrl.regs->RAMCTL & 0xFF) != 0 &&
+        info->colornumber != 3 &&  /* le format RGB direct est exempte */
+        !Vdp2RBG0CharBankValid(rbg->ctrl.regs, info->charaddr)) {
+      pushRBG(rbg);
+      return;
     }
 
     info->paladdr = (rbg->ctrl.regs->BMPNA & 0x7) << 4;
@@ -5511,7 +5533,6 @@ static void Vdp2DrawRBG1_part(RBGDrawInfo *rbg)
   else
     info->specialcode = rbg->ctrl.regs->SFCODE & 0xFF;
 
-  info->colornumber = (rbg->ctrl.regs->CHCTLA & 0x70) >> 4;
 
   int dest_alpha = ((rbg->ctrl.regs->CCCTL >> 9) & 0x01);
 
