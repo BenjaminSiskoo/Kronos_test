@@ -60,6 +60,7 @@ void SH2InfiniteLoop(SH2_struct * sh)
 void SH2undecoded(SH2_struct * sh)
 {
    int vectnum;
+   u32 stackedPC;
 
    if (BackupHandled(sh, sh->regs.PC) != 0) {
      return;
@@ -73,17 +74,41 @@ void SH2undecoded(SH2_struct * sh)
 
    YabSetError(YAB_ERR_SH2INVALIDOPCODE, sh);
 
+   /* SH7095 manual, sec. 4.5.3 / 4.5.4 and table 4.11 ("Stack Status after
+    * Exception Processing Ends"):
+    *
+    *   - General illegal instruction  -> vector 4, the stacked PC is the
+    *     *start address of the undefined code* itself.
+    *   - Illegal slot instruction     -> vector 6, the stacked PC is the
+    *     *jump destination of the delay branch* that owns the slot.
+    *
+    * The old code always used vector 4 and always stacked PC+2, so an
+    * undefined opcode in a delay slot both took the wrong vector and pushed a
+    * return address two bytes past the branch target.
+    *
+    * Note on the PC convention used by this interpreter: while a delay slot is
+    * being executed, regs.PC already holds (branch target - 2), because the
+    * slot instruction itself contributes the final "+2". So the branch
+    * destination is regs.PC + 2 here, and the address of a normal instruction
+    * is regs.PC. */
+   if (sh->isDelayed)
+   {
+      vectnum = 6;                 // illegal slot instruction
+      stackedPC = sh->regs.PC + 2; // jump destination of the delay branch
+   }
+   else
+   {
+      vectnum = 4;                 // general illegal instruction
+      stackedPC = sh->regs.PC;     // start address of the undefined code
+   }
+
    // Save regs.SR on stack
    sh->regs.R[15]-=4;
    SH2MappedMemoryWriteLong(sh, sh->regs.R[15],sh->regs.SR.all);
 
    // Save regs.PC on stack
    sh->regs.R[15]-=4;
-   SH2MappedMemoryWriteLong(sh, sh->regs.R[15],sh->regs.PC + 2);
-
-   // What caused the exception? The delay slot or a general instruction?
-   // 4 for General Instructions, 6 for delay slot
-   vectnum = 4; //  Fix me
+   SH2MappedMemoryWriteLong(sh, sh->regs.R[15],stackedPC);
 
    // Jump to Exception service routine
    sh->regs.PC = SH2MappedMemoryReadLong(sh, sh->regs.VBR+(vectnum<<2));
@@ -829,6 +854,13 @@ static void SH2ldcvbr(SH2_struct * sh, u32 m)
    sh->regs.VBR = sh->regs.R[m];
    sh->regs.PC += 2;
    sh->cycles++;
+   /* SH7095 manual, sec. 4.6 / table 4.10: LDC, LDC.L, LDS, LDS.L, STC,
+    * STC.L, STS and STS.L are "interrupt-disabled instructions" - an
+    * interrupt generated while the *following* instruction is decoded is not
+    * accepted. Every other member of that family already called SH2next();
+    * these four were missed, so an interrupt could slip in between e.g.
+    * "LDS Rm,PR" and the RTS that consumes PR. */
+   SH2next(sh);
 }
 
 
@@ -874,6 +906,13 @@ static void SH2ldsmmacl(SH2_struct * sh, u32 m)
    sh->regs.R[m] += 4;
    sh->regs.PC += 2;
    sh->cycles++;
+   /* SH7095 manual, sec. 4.6 / table 4.10: LDC, LDC.L, LDS, LDS.L, STC,
+    * STC.L, STS and STS.L are "interrupt-disabled instructions" - an
+    * interrupt generated while the *following* instruction is decoded is not
+    * accepted. Every other member of that family already called SH2next();
+    * these four were missed, so an interrupt could slip in between e.g.
+    * "LDS Rm,PR" and the RTS that consumes PR. */
+   SH2next(sh);
 }
 
 
@@ -886,6 +925,13 @@ static void SH2ldsmpr(SH2_struct * sh, u32 m)
    sh->regs.R[m] += 4;
    sh->regs.PC += 2;
    sh->cycles++;
+   /* SH7095 manual, sec. 4.6 / table 4.10: LDC, LDC.L, LDS, LDS.L, STC,
+    * STC.L, STS and STS.L are "interrupt-disabled instructions" - an
+    * interrupt generated while the *following* instruction is decoded is not
+    * accepted. Every other member of that family already called SH2next();
+    * these four were missed, so an interrupt could slip in between e.g.
+    * "LDS Rm,PR" and the RTS that consumes PR. */
+   SH2next(sh);
 }
 
 
@@ -897,6 +943,13 @@ static void SH2ldspr(SH2_struct * sh, u32 m)
    sh->regs.PR = sh->regs.R[m];
    sh->regs.PC += 2;
    sh->cycles++;
+   /* SH7095 manual, sec. 4.6 / table 4.10: LDC, LDC.L, LDS, LDS.L, STC,
+    * STC.L, STS and STS.L are "interrupt-disabled instructions" - an
+    * interrupt generated while the *following* instruction is decoded is not
+    * accepted. Every other member of that family already called SH2next();
+    * these four were missed, so an interrupt could slip in between e.g.
+    * "LDS Rm,PR" and the RTS that consumes PR. */
+   SH2next(sh);
 }
 
 
@@ -917,9 +970,23 @@ static void SH2macl(SH2_struct * sh, u32 n, u32 m)
    b = (s64)m0 * m1;
    sum = a+b;
    if (sh->regs.SR.part.S == 1) {
+     /* With S=1 the MAC unit saturates to 48 signed bits (SH7095 manual,
+      * sec. 2.2.3 / the MAC.L description: "the addition to the MAC register
+      * is a saturation operation of 48 bits").
+      *
+      * The out-of-range test below is correct, but the *direction* of the
+      * clamp used to be picked from the sign of the product b. That is only
+      * valid while the accumulator is already inside the 48-bit window; it is
+      * not, for instance, right after software has loaded an arbitrary 32-bit
+      * value into MACH with LDS, or after a run of MAC.L executed with S=0.
+      * In those cases a+b can leave the window on the side opposite to b and
+      * the old code clamped to the wrong end.
+      *
+      * Since |a| < 2^63 and |b| <= 2^62, the 64-bit sum cannot itself wrap,
+      * so its own sign is the reliable indicator. */
      if (sum > 0x00007FFFFFFFFFFFULL && sum < 0xFFFF800000000000ULL)
      {
-       if ((s64)b < 0)
+       if ((s64)sum < 0)
          sum = 0xFFFF800000000000ULL;
        else
          sum = 0x00007FFFFFFFFFFFULL;
@@ -2054,7 +2121,17 @@ static void SH2tas(SH2_struct * sh, u32 n)
 {
    s32 temp;
 
-   temp=(s32) SH2MappedMemoryReadByte(sh, 0X20000000|sh->regs.R[n]);
+   /* TAS.B is a read-modify-write that bypasses the cache (it is the SH2's
+    * only atomic primitive, and on the Saturn it is what the two CPUs use to
+    * arbitrate shared semaphores). The read was already forced through the
+    * uncached mirror (0x20000000), but the write-back was not: the modified
+    * byte went into the cached view while the next read came from the
+    * uncached one, so the "test" half and the "set" half could disagree and
+    * a semaphore could be acquired by both CPUs at once.
+    * Both halves must address the same uncached location. */
+   const u32 tasaddr = 0x20000000 | sh->regs.R[n];
+
+   temp=(s32) SH2MappedMemoryReadByte(sh, tasaddr);
 
    if (temp==0)
       sh->regs.SR.part.T=1;
@@ -2062,7 +2139,7 @@ static void SH2tas(SH2_struct * sh, u32 n)
       sh->regs.SR.part.T=0;
 
    temp|=0x00000080;
-   SH2MappedMemoryWriteByte(sh, sh->regs.R[n],temp);
+   SH2MappedMemoryWriteByte(sh, tasaddr, temp);
    sh->regs.PC+=2;
    sh->cycles += 4;
 }
@@ -2180,4 +2257,3 @@ static void SH2sleep(SH2_struct * sh)
 }
 
 #include "sh2_functions.inc"
-
