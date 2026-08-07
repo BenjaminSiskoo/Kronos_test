@@ -113,7 +113,41 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
     sh->intPriority = ((sh->onchip.IPRA >> 4) & 0xF);
   }
   //BSC not implemented
-  //SCI not implemented
+  /* SCI (SH7095 manual, sec. 5.2.4 and the SCI chapter). Four sources share
+   * the SCI priority field, IPRB bits 15-12 (SCIIP3-SCIIP0), and they rank
+   * ERI > RXI > TXI > TEI among themselves. Vectors come from VCRA/VCRB:
+   *   VCRA 14-8  SERV  receive-error       (ERI)
+   *   VCRA  6-0  SRXV  receive-data-full   (RXI)
+   *   VCRB 14-8  STXV  transmit-data-empty (TXI)
+   *   VCRB  6-0  STEV  transmit-end        (TEI)
+   * Enables live in SCR (bit 7 TIE, bit 6 RIE, bit 2 TEIE) and the status
+   * flags in SSR (bit 7 TDRE, bit 6 RDRF, bit 5 ORER, bit 4 FER, bit 3 PER,
+   * bit 2 TEND).
+   *
+   * These were previously stubbed out entirely. Note this cannot fire on its
+   * own: it needs software to have assigned a non-zero SCI priority in IPRB
+   * *and* enabled the source in SCR, so code that never touches the SCI - i.e.
+   * essentially every retail Saturn title - is unaffected. */
+  else if (((sh->onchip.SCR & 0x40)!=0) && ((sh->onchip.SSR & 0x38)!=0) && (((sh->onchip.IPRB >> 12) & 0xF) > sh->regs.SR.part.I)) //SCI ERI
+  {
+    sh->intVector = (sh->onchip.VCRA >> 8) & 0x7F;
+    sh->intPriority = ((sh->onchip.IPRB >> 12) & 0xF);
+  }
+  else if (((sh->onchip.SCR & 0x40)!=0) && ((sh->onchip.SSR & 0x40)!=0) && (((sh->onchip.IPRB >> 12) & 0xF) > sh->regs.SR.part.I)) //SCI RXI
+  {
+    sh->intVector = sh->onchip.VCRA & 0x7F;
+    sh->intPriority = ((sh->onchip.IPRB >> 12) & 0xF);
+  }
+  else if (((sh->onchip.SCR & 0x80)!=0) && ((sh->onchip.SSR & 0x80)!=0) && (((sh->onchip.IPRB >> 12) & 0xF) > sh->regs.SR.part.I)) //SCI TXI
+  {
+    sh->intVector = (sh->onchip.VCRB >> 8) & 0x7F;
+    sh->intPriority = ((sh->onchip.IPRB >> 12) & 0xF);
+  }
+  else if (((sh->onchip.SCR & 0x04)!=0) && ((sh->onchip.SSR & 0x04)!=0) && (((sh->onchip.IPRB >> 12) & 0xF) > sh->regs.SR.part.I)) //SCI TEI
+  {
+    sh->intVector = sh->onchip.VCRB & 0x7F;
+    sh->intPriority = ((sh->onchip.IPRB >> 12) & 0xF);
+  }
   else if (((sh->onchip.TIER & 0x80)!=0) && ((sh->onchip.FTCSR & 0x80)!=0) && (((sh->onchip.IPRB >> 8) & 0xF) > sh->regs.SR.part.I)) //FRT ICI
   {
     sh->intVector = (sh->onchip.VCRC >> 8) & 0x7F;
@@ -430,7 +464,11 @@ void FASTCALL SH2Exec(SH2_struct *context, u32 cycles)
    context->SH2InterruptibleExec(context, cycles);
    FRTExec(context);
    WDTExec(context);
-   DMAProc(context, context->cycles-sh2start);
+   /* WDTExec() can now reset the CPU (watchdog-mode overflow with RSTE set),
+    * and SH2Reset() zeroes context->cycles. Guard the elapsed-cycle
+    * computation so DMAProc is never handed a negative count. */
+   if ((int)context->cycles >= sh2start)
+      DMAProc(context, context->cycles-sh2start);
 }
 
 void FASTCALL SH2OnFrame(SH2_struct *context) {
@@ -631,6 +669,19 @@ void SH2HandleTrackInfLoop(SH2_struct *context)
 void SH2NMI(SH2_struct *context)
 {
    context->onchip.ICR |= 0x8000;
+
+   /* SH7095 manual, sec. 9.2.7 (DMAOR bit 1, NMIF): "This flag indicates that
+    * an NMI interrupt has occurred. When the NMIF bit is set to 1, the DMA
+    * transfer cannot be enabled even if the DE bit in the CHCR and the DME bit
+    * are set to 1. [...] When the NMI interrupt is input while the DMAC is not
+    * operating, the NMIF bit is set to 1."
+    *
+    * DMAProc() already refuses to transfer while NMIF is set, but nothing ever
+    * set it, so an NMI did not actually halt an in-flight DMA. Software is
+    * expected to clear NMIF (read 1, write 0) before restarting a channel;
+    * that path already exists in the DMAOR write handler. */
+   context->onchip.DMAOR |= 0x2;
+
    SH2IntcSetNmi(context);
    SH2EvaluateInterrupt(context);
 }
@@ -1353,6 +1404,120 @@ void FASTCALL OnchipWriteWord(SH2_struct *context, u32 addr, u16 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////////////
+// Division unit (DIVU) - SH7095 manual, section 10
+//////////////////////////////////////////////////////////////////////////////
+
+/* Set to 0 to keep the old, simpler behaviour of always leaving the saturated
+ * value in DVDNTL on overflow, whatever OVFIE says. See DivuExecute(). */
+#define DIVU_STRICT_OVFIE_INTERMEDIATE 1
+
+/* Model of the state the divider is left in by the early exit taken on
+ * overflow. Sec. 10.3.3: the operation "will then end with the result after 6
+ * cycles of operation stored in the DVDNTH and DVDNTL registers [...] The
+ * first three of the 6 cycles executed when an overflow occurs are used for
+ * flag setting within the division unit and the next three for division."
+ *
+ * Each division step shifts the 64-bit dividend one place to the left, so
+ * three steps leave (dividend << 3); DVDNTH receives its upper word. This is
+ * the same model the divide-by-zero path already used, except that the
+ * negative branch there shifted by two instead of three
+ * (0xFFFFFFFC | 2 bits of val) while the positive branch shifted by three -
+ * the two disagreed on the sign extension by one bit. */
+static u32 DivuIntermediateH(s64 dividend)
+{
+   return (u32)(((u64)dividend) >> 29);
+}
+
+static u32 DivuIntermediateL(s64 dividend)
+{
+   return (u32)(((u64)dividend) << 3);
+}
+
+static void DivuExecute(SH2_struct *context, s64 dividend)
+{
+   s32 divisor = (s32)context->onchip.DVSR;
+   s64 quotient = 0;
+   int overflow;
+   int negative;
+
+   /* Sec. 10.3.3: an overflow is raised "when the results of operations exceed
+    * the ranges expressed as signed 32 bits [...] or when the divisor is 0". */
+   if (divisor == 0)
+   {
+      /* The quotient runs off to +/-infinity; the sign of the dividend picks
+       * which end DVDNTL saturates to. */
+      overflow = 1;
+      negative = (dividend < 0);
+   }
+   else if ((divisor == -1) && (dividend == (s64)0x8000000000000000LL))
+   {
+      /* -2^63 / -1 is not representable. In C this is undefined behaviour and
+       * on x86 the idiv traps (#DE), so it has to be caught *before* the
+       * division is issued rather than by inspecting the result afterwards.
+       * The same trap used to be reachable from the 32-bit path through
+       * (s32)0x80000000 / -1, which is how a game could take the emulator
+       * down with a perfectly legal - if overflowing - divide. */
+      overflow = 1;
+      negative = 0;
+   }
+   else
+   {
+      quotient = dividend / divisor;
+      overflow = (quotient > 0x7FFFFFFFLL) || (quotient < -0x80000000LL);
+      negative = (quotient < 0);
+   }
+
+   if (overflow)
+   {
+      /* Sec. 10.3.1 / 10.3.2: a normal operation takes 39 cycles, but "when an
+       * overflow occurs, however, the operation ends in 6 cycles". Both paths
+       * used to be charged the full 39. */
+      context->divcycles = context->cycles + 6;
+
+      context->onchip.DVCR |= 1;   // OVF
+
+      /* Table 10.2, "Overflow Processing": DVDNTH always holds the
+       * intermediate result. DVDNTL (and its DVDNT alias) holds the
+       * intermediate result as well when the overflow interrupt is enabled,
+       * and is forced to the maximum value for a positive overflow or the
+       * minimum for a negative one when it is disabled. The old code always
+       * wrote the saturated value.
+       *
+       * Only the OVFIE = 0 column is precisely specified; the manual says no
+       * more about the OVFIE = 1 case than "the operation intermediate
+       * result", so what lands in DVDNTL there is the shift model above.
+       * Software that enables OVFIE does so to trap the error and normally
+       * ignores the value, but set DIVU_STRICT_OVFIE_INTERMEDIATE to 0 to fall
+       * back to writing the saturated value unconditionally. */
+      context->onchip.DVDNTH = DivuIntermediateH(dividend);
+#if DIVU_STRICT_OVFIE_INTERMEDIATE
+      if (context->onchip.DVCR & 0x2)   // OVFIE
+         context->onchip.DVDNTL = DivuIntermediateL(dividend);
+      else
+#endif
+         context->onchip.DVDNTL = negative ? 0x80000000 : 0x7FFFFFFF;
+   }
+   else
+   {
+      context->divcycles = context->cycles + 39;
+      context->onchip.DVDNTL = (u32)quotient;
+      context->onchip.DVDNTH = (u32)(dividend % divisor);
+   }
+
+   /* DVDNT is the same physical register as DVDNTL (sec. 10.2.6). The old
+    * divide-by-zero paths forgot to refresh it, so a program that started a
+    * division that overflowed and then read DVDNT got the quotient of the
+    * *previous* division. */
+   context->onchip.DVDNT = context->onchip.DVDNTL;
+   context->onchip.DVDNTUL = context->onchip.DVDNTL;
+   context->onchip.DVDNTUH = context->onchip.DVDNTH;
+
+   SH2EvaluateInterrupt(context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
   switch(addr) {
     case 0x10:
@@ -1387,58 +1552,18 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          return;
       case 0x104: // 32-bit / 32-bit divide operation
       case 0x124:
-      {
-         s32 divisor = (s32) context->onchip.DVSR;
-         context->divcycles = context->cycles + 39;
-         if (divisor == 0)
-         {
-            // Regardless of what DVDNTL is set to, the top 3 bits
-            // are used to create the new DVDNTH value
-            if (val & 0x80000000)
-            {
-               context->onchip.DVDNTL = 0x80000000;
-               context->onchip.DVDNTH = 0xFFFFFFFC | ((val >> 29) & 0x3);
-            }
-            else
-            {
-               context->onchip.DVDNTL = 0x7FFFFFFF;
-               context->onchip.DVDNTH = 0 | (val >> 29);
-            }
-            context->onchip.DVDNTUL = context->onchip.DVDNTL;
-            context->onchip.DVDNTUH = context->onchip.DVDNTH;
-            context->onchip.DVCR |= 1;
-            SH2EvaluateInterrupt(context);
-         }
-         else
-         {
-            s32 quotient = ((s32) val) / divisor;
-            s32 remainder = ((s32) val) % divisor;
-
-            if (quotient > 0x7FFFFFFF)
-            {
-               context->onchip.DVCR |= 1;
-               context->onchip.DVDNTL = 0x7FFFFFFF;
-               context->onchip.DVDNTH = 0xFFFFFFFE; // fix me
-               SH2EvaluateInterrupt(context);
-            }
-            else if ((s32)((s64)quotient >> 32) < -1)
-            {
-               context->onchip.DVCR |= 1;
-               context->onchip.DVDNTL = 0x80000000;
-               context->onchip.DVDNTH = 0xFFFFFFFE; // fix me
-               SH2EvaluateInterrupt(context);
-            }
-            else
-            {
-               context->onchip.DVDNTL = quotient;
-               context->onchip.DVDNTH = remainder;
-            }
-            context->onchip.DVDNT = context->onchip.DVDNTL;
-            context->onchip.DVDNTUL = context->onchip.DVDNTL;
-            context->onchip.DVDNTUH = context->onchip.DVDNTH;
-         }
+         /* Sec. 10.2.2: writing DVDNT starts the 32/32 operation, "the same
+          * value is written in the DVDNTL register [and] the MSB written is
+          * sign extended to the DVDNTH register" - so the operand really is a
+          * 64-bit sign-extended dividend and the 64/32 machinery applies.
+          *
+          * The two overflow tests that used to live here were dead code: the
+          * quotient was an s32, so "quotient > 0x7FFFFFFF" and
+          * "(s32)((s64)quotient >> 32) < -1" could never be true. The one case
+          * that does overflow a 32/32 division, H'80000000 / -1, therefore
+          * fell through to the plain C division and trapped. */
+         DivuExecute(context, (s64)(s32)val);
          return;
-      }
       case 0x108:
       case 0x128:
          context->onchip.DVCR = val & 0x3;
@@ -1456,57 +1581,16 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          return;
       case 0x114:
       case 0x134: { // 64-bit / 32-bit divide operation
-         s32 divisor = (s32) context->onchip.DVSR;
-         s64 dividend = context->onchip.DVDNTH;
-         dividend = (s64)(((u64)dividend) << 32);
-         dividend |= val;
-         context->divcycles = context->cycles + 39;
-         if (divisor == 0)
-         {
-            if (context->onchip.DVDNTH & 0x80000000)
-            {
-               context->onchip.DVDNTL = 0x80000000;
-               context->onchip.DVDNTH = context->onchip.DVDNTH << 3; // fix me
-            }
-            else
-            {
-               context->onchip.DVDNTL = 0x7FFFFFFF;
-               context->onchip.DVDNTH = context->onchip.DVDNTH << 3; // fix me
-            }
-
-            context->onchip.DVDNTUL = context->onchip.DVDNTL;
-            context->onchip.DVDNTUH = context->onchip.DVDNTH;
-            context->onchip.DVCR |= 1;
-            SH2EvaluateInterrupt(context);
-         }
-         else
-         {
-            s64 quotient = dividend / divisor;
-            s32 remainder = dividend % divisor;
-
-            if (quotient > 0x7FFFFFFF)
-            {
-               context->onchip.DVCR |= 1;
-               context->onchip.DVDNTL = 0x7FFFFFFF;
-               context->onchip.DVDNTH = 0xFFFFFFFE; // fix me
-               SH2EvaluateInterrupt(context);
-            }
-            else if ((s32)(quotient >> 32) < -1)
-            {
-               context->onchip.DVCR |= 1;
-               context->onchip.DVDNTL = 0x80000000;
-               context->onchip.DVDNTH = 0xFFFFFFFE; // fix me
-               SH2EvaluateInterrupt(context);
-            }
-            else
-            {
-               context->onchip.DVDNTL = quotient;
-               context->onchip.DVDNTH = remainder;
-            }
-            context->onchip.DVDNT = context->onchip.DVDNTL;
-            context->onchip.DVDNTUL = context->onchip.DVDNTL;
-            context->onchip.DVDNTUH = context->onchip.DVDNTH;
-         }
+         /* Sec. 10.3.1: DVDNTH holds the upper half, and writing DVDNTL both
+          * supplies the lower half and starts the operation.
+          *
+          * The negative-overflow test used to be "(s32)(quotient >> 32) < -1",
+          * which never fires for the quotients that actually overflow: for
+          * anything in [-2^63, -2^31) down to about -2^32 the arithmetic shift
+          * still yields -1. Negative overflows were therefore written out as
+          * truncated quotients with no OVF flag at all. */
+         s64 dividend = (s64)((((u64)context->onchip.DVDNTH) << 32) | val);
+         DivuExecute(context, dividend);
          return;
       }
       case 0x118:
@@ -2017,11 +2101,32 @@ void FASTCALL DataArrayWriteLong(SH2_struct *context,u32 addr, u32 val)  {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Was the OCR value crossed during this step?
+ *
+ * frctemp is the *un-wrapped* counter, so it can exceed 0xFFFF; a match
+ * happened if the half-open interval (frcold, frctemp] contains the OCR value,
+ * either on this pass round the counter or on the next one.
+ *
+ * The second term is what the old inline test was missing: a compare match
+ * scheduled just above the current FRC that only came due after the counter
+ * wrapped through H'FFFF -> H'0000 was silently dropped, because the test read
+ * "frcold < OCRA" and frcold was by then larger than OCRA. It also means an
+ * OCR of 0 - previously unmatchable, since nothing is "< 0" - now matches on
+ * the wrap, which is what the comparator does in hardware. */
+static INLINE int FRTCompareMatch(u32 frcold, u32 frctemp, u32 ocr)
+{
+   if ((ocr > frcold) && (ocr <= frctemp))
+      return 1;
+   ocr += 0x10000;
+   return ((ocr > frcold) && (ocr <= frctemp));
+}
+
 void FRTExec(SH2_struct *context)
 {
    u32 frcold;
    u32 frctemp;
    u32 mask;
+   int matchA, matchB;
 
    u32 cycles = context->cycles - context->frtcycles;
 
@@ -2034,8 +2139,15 @@ void FRTExec(SH2_struct *context)
    frctemp += ((cycles + context->frc.leftover) >> context->frc.shift);
    context->frc.leftover = (cycles + context->frc.leftover) & mask;
 
+   /* Both comparators watch the same counter, so they are evaluated against
+    * the same window before anything modifies it. The old code tested OCRB
+    * against a frctemp that CCLRA may already have zeroed on the OCRA match,
+    * which lost the OCRB match whenever OCRB sat below OCRA. */
+   matchA = FRTCompareMatch(frcold, frctemp, context->onchip.OCRA);
+   matchB = FRTCompareMatch(frcold, frctemp, context->onchip.OCRB);
+
    // Check to see if there is or was a Output Compare A match
-   if ((frctemp >= context->onchip.OCRA) && (frcold < context->onchip.OCRA) && ((context->onchip.FTCSR & 0x8)==0))
+   if (matchA)
    {
       // Do we need to clear the FRC?
       if (context->onchip.FTCSR & 0x1)
@@ -2057,7 +2169,7 @@ void FRTExec(SH2_struct *context)
    }
 
    // Check to see if there is or was a Output Compare B match
-   if ((frctemp >= context->onchip.OCRB) && (frcold < context->onchip.OCRB) && ((context->onchip.FTCSR & 0x4)==0))
+   if (matchB)
    {
       // Set OCFB flag
       context->onchip.FTCSR |= 0x4;
@@ -2073,8 +2185,19 @@ void FRTExec(SH2_struct *context)
        context->onchip.FTCSRM |= 0x2;
        SH2EvaluateInterrupt(context);
      }
-     frctemp = 0;
-     context->frc.leftover = (context->frc.leftover+((frctemp>>16) << context->frc.shift));
+     /* SH7095 manual, sec. 11.2.1: the FRC is a free-running *up-counter* and
+      * "when the FRC overflows (H'FFFF -> H'0000), the overflow flag (OVF) of
+      * the FTCSR is set to 1". It wraps modulo 65536 - it does not restart
+      * from zero discarding whatever counts had already accumulated past the
+      * wrap point.
+      *
+      * The old code zeroed frctemp outright, so e.g. FRC=H'FFF0 plus H'20
+      * ticks landed on H'0000 instead of H'0010: up to 65535 counts could be
+      * silently dropped on every wrap, making the FRC run slow. The line that
+      * was meant to carry the excess was also dead - it read (frctemp >> 16)
+      * *after* frctemp had been set to 0, so it always added exactly nothing.
+      * Masking is both simpler and correct, and it needs no leftover fixup. */
+     frctemp &= 0xFFFF;
    }
 
    // Write new FRC value
@@ -2115,8 +2238,44 @@ void WDTExec(SH2_struct *context) {
         }
         else
         {
-          // Watchdog Timer Mode(untested)
-          YabErrorMsg("Watchdog timer(WDT mode) overflow not implemented\n");
+          /* Watchdog Timer Mode.
+           *
+           * SH7095 manual, sec. 12.2.3 and 12.3.1/12.3.5: on a WTCNT overflow
+           * in watchdog mode the WOVF flag (RSTCSR bit 7) is set - it is
+           * explicitly "not set in the interval timer mode" - and a WDTOVF
+           * signal is emitted. "If the RSTE bit in the RSTCSR is set to 1, a
+           * signal to reset the chip will be generated internally [...] Either
+           * a power-on reset or a manual reset can be selected by the RSTS
+           * bit."
+           *
+           * When RSTE is 0 the chip is not reset, but sec. 12.2.3 notes that
+           * "WTCNT and WTCSR reset within WDT" all the same.
+           *
+           * This used to be a bare YabErrorMsg(), so a game that armed the
+           * watchdog and then genuinely hung simply hung inside the emulator
+           * too instead of resetting the way real hardware would. */
+          context->onchip.RSTCSR |= 0x80;   // WOVF
+
+          if (context->onchip.RSTCSR & 0x40)   // RSTE
+          {
+            /* RSTS (bit 5) picks power-on vs manual reset. The distinction
+             * only matters for on-chip modules the Saturn does not rely on
+             * here, so both are serviced by the same reset path; SH2Reset()
+             * re-runs OnchipReset() and would clear WOVF, so the flag is
+             * restored afterwards for the benefit of software that reads it
+             * to tell a watchdog reset from a RES reset (sec. 12.3.1). */
+            SH2Reset(context);
+            context->onchip.RSTCSR |= 0x80;
+            return;
+          }
+          else
+          {
+            context->onchip.WTCNT = 0;
+            context->onchip.WTCSR = 0x18;
+            context->wdt.isenable = 0;
+            context->wdt.leftover = 0;
+            return;
+          }
         }
       }
    }
@@ -2133,7 +2292,16 @@ void DMAExec(SH2_struct *context) {
 
 int DMAProc(SH2_struct *context, int cycles ){
 
+   /* DMAOR (SH7095 manual, sec. 9.2.6): bit 0 DME, bit 1 NMIF, bit 2 AE,
+    * bit 3 PR. NMIF and AE halt every channel, which was already handled, but
+    * DME - the master enable - was never consulted: a channel whose DE bit was
+    * left set would keep transferring even with the DMAC globally disabled.
+    * Per sec. 9.3.1 a transfer runs only when "DE = 1, DME = 1, TE = 0"
+    * (and NMIF = AE = 0). */
    if (context->onchip.DMAOR & 0x6)
+      return 0;
+
+   if (!(context->onchip.DMAOR & 0x1))
       return 0;
 
 
@@ -2277,6 +2445,12 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
      return;
    }
 
+   /* TCR is a 24-bit counter (sec. 9.2.3: "the bottom 24 bits of the 32 are
+    * effective"), and a stored value of 0 means the maximum count of
+    * 16,777,216 rather than "no transfer". The decrements below therefore wrap
+    * within 24 bits; previously TCR = 0 underflowed to H'FFFFFFFF and the
+    * "TCR <= 0" end test - which on an unsigned register only ever meant
+    * "== 0" - then took roughly 2^32 iterations to be reached. */
    if (!(*dmac->CHCR & 0x2)) { // TE is not set
       int srcInc;
       int destInc;
@@ -2308,9 +2482,9 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 				       DMAMappedMemoryWriteByte(*dmac->DAR, DMAMappedMemoryReadByte(*dmac->SAR));
                *dmac->SAR += srcInc;
                *dmac->DAR += destInc;
-               *dmac->TCR -= 1;
+               *dmac->TCR = (*dmac->TCR - 1) & 0xFFFFFF;
                i++;
-               if( *dmac->TCR <= 0 ){
+               if( *dmac->TCR == 0 ){
                  LOG("DMA finished");
                   // Set Transfer End bit
                   *dmac->CHCR |= 0x2;
@@ -2329,9 +2503,9 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 				      DMAMappedMemoryWriteWord(*dmac->DAR, DMAMappedMemoryReadWord(*dmac->SAR));
                *dmac->SAR += srcInc;
                *dmac->DAR += destInc;
-               *dmac->TCR -= 1;
+               *dmac->TCR = (*dmac->TCR - 1) & 0xFFFFFF;
                i++;
-               if( *dmac->TCR <= 0 ){
+               if( *dmac->TCR == 0 ){
                   LOG("DMA finished");
                   // Set Transfer End bit
                   *dmac->CHCR |= 0x2;
@@ -2352,9 +2526,9 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 				       DMAMappedMemoryWriteLong(*dmac->DAR,val);
                *dmac->DAR += destInc;
                *dmac->SAR += srcInc;
-               *dmac->TCR -= 1;
+               *dmac->TCR = (*dmac->TCR - 1) & 0xFFFFFF;
                i++;
-               if( *dmac->TCR <= 0 ){
+               if( *dmac->TCR == 0 ){
                  LOG("DMA finished");
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
@@ -2365,18 +2539,35 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
             }
             break;
          case 3:
-           destInc *= 4;
-           srcInc *= 4;
+           /* 16-byte block transfer. Per sec. 9.1.1 this is a "16-byte unit
+            * (16-byte transfers first perform four longword reads and then
+            * four longword writes)", and the CHCR register table gives the
+            * address step as "+16 / -16 for 16-byte transfer size".
+            *
+            * TCR counts *units*, i.e. 16-byte blocks - not longwords. The old
+            * code stepped SAR/DAR by only 4 and decremented TCR once per
+            * longword, so a 16-byte-mode transfer moved a quarter of the
+            * requested data over a quarter of the requested address range.
+            * Everything past the first quarter of the destination was simply
+            * never written. */
+           destInc *= 16;
+           srcInc *= 16;
            while (dmac->copy_clock >= 0) {
-             dmac->copy_clock -= (eat>>2);
-             u32 val = DMAMappedMemoryReadLong(*dmac->SAR);
-             //printf("CPU DMA src:%08X dst:%08X val:%08X\n", *SAR, *DAR, val);
-             DMAMappedMemoryWriteLong(*dmac->DAR, val);
+             int k;
+             u32 src = *dmac->SAR;
+             u32 dst = *dmac->DAR;
+             dmac->copy_clock -= eat;
+             /* The hardware issues the four reads before the four writes; the
+              * distinction only matters for overlapping source and
+              * destination, which the manual prohibits anyway, so a simple
+              * read/write pairing per longword is kept here. */
+             for (k = 0; k < 4; k++)
+               DMAMappedMemoryWriteLong(dst + (k * 4), DMAMappedMemoryReadLong(src + (k * 4)));
              *dmac->DAR += destInc;
              *dmac->SAR += srcInc;
-             *dmac->TCR -= 1;
+             *dmac->TCR = (*dmac->TCR - 1) & 0xFFFFFF;
              i++;
-             if (*dmac->TCR <= 0) {
+             if (*dmac->TCR == 0) {
                LOG("DMA finished");
                *dmac->CHCR |= 0x2;
                *dmac->CHCRM |= 0x2;
