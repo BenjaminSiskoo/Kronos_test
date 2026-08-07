@@ -129,6 +129,13 @@ SHADER_VERSION_COMPUTE
 "  uint lncl_table_addr;\n"
 "  uint cram_mode;\n"
 "  uint vrsize;\n"
+"  uint mosaicxmask;\n"        // ST-58-R2 4.11 : taille de bloc mosaique horizontale (1 = desactive)
+"  uint mzpad0_;\n"
+"  uint mzpad1_;\n"
+"  uint mzpad2_;\n"
+"  uint mzpad3_;\n"           // std140 : la taille du bloc est arrondie au multiple de 16.
+                              // 32 scalaires x 4 = 128 octets : sizeof(RBGUniform) et la
+                              // taille reelle du bloc coincident, plus de sur-lecture.
 "};\n"
 "layout(std430, binding = 5) readonly buffer VDP2C { uint cram[]; };\n"
 "layout(std430, binding = 6) readonly buffer ROTW { uint  rotWin[]; };\n"
@@ -137,19 +144,23 @@ SHADER_VERSION_COMPUTE
 " uint specialfunction;\n"
 " uint specialcolorfunction;\n"
 
+" uint vmask(uint a) { return a & (((vrsize & 0x8000u) != 0u) ? 0xFFFFFu : 0x7FFFFu); }\n"
+
 " int GetKValue( int paramid, vec2 pos, out float ky, out float kx, out uint lineaddr ){ \n"
 "  uint kdata;\n"
 "  int kindex = int(para[paramid].deltaKAst*pos.y)+int(para[paramid].deltaKAx*pos.x); \n"
 "  if (para[paramid].coefdatasize == 2) { \n"
 //Revoir la gestion de la vram
-"    uint addr = ( uint( int(para[paramid].coeftbladdr) + (kindex<<1)) &0x7FFFFu); \n"
+"    uint addr = vmask( uint( int(para[paramid].coeftbladdr) + (kindex<<1)) ); \n"
 "    if( para[paramid].k_mem_type == 0) { \n"
 "	     kdata = vram[ addr>>2 ]; \n"
 "      if( (addr & 0x02u) != 0u ) { kdata >>= 16; } \n"
 "      kdata = (((kdata) >> 8 & 0xFFu) | ((kdata) & 0xFFu) << 8);\n"
 "    }else{\n"
-"      if (cram_mode != 2u) addr |= 0x800u;\n"
-"      kdata = cram[ (addr&0xFFFu)>>2  ]; \n"
+"      // ST-058-R2 p.148-149 : CRKTE=1 => CRMD=1, table en 100800H-100FFFH.\n"
+"      // Offset, pas un OR : un coeftbladdr ayant deja le bit 11 aliasait.\n"
+"      addr = 0x800u + (addr & 0x7FFu);\n"
+"      kdata = cram[ addr>>2 ]; \n"
 "      if( (addr & 0x02u) != 0u ) { kdata >>= 16; } \n"
 "    }\n"
 "    if ( (kdata & 0x8000u) != 0u) { return -1; }\n"
@@ -166,13 +177,13 @@ SHADER_VERSION_COMPUTE
 "    } \n"
 "  }else{\n"
 //powerslave
-"    uint addr = ( uint( int(para[paramid].coeftbladdr) + (kindex<<2))&0x7FFFFu); \n"
+"    uint addr = vmask( uint( int(para[paramid].coeftbladdr) + (kindex<<2)) ); \n"
 "    if( para[paramid].k_mem_type == 0) { \n"
 "	     kdata = vram[ addr>>2 ]; \n"
 "      kdata = ((kdata&0xFF000000u) >> 24 | ((kdata) >> 8 & 0xFF00u) | ((kdata) & 0xFF00u) << 8 | (kdata&0x000000FFu) << 24);\n"
 "    }else{\n"
-"      if (cram_mode != 2u) addr |= 0x800u;\n"
-"      kdata = cram[ (addr&0xFFFu)>>2 ]; \n"
+"      addr = 0x800u + (addr & 0x7FFu);\n"
+"      kdata = cram[ addr>>2 ]; \n"
 "      kdata = ((kdata&0xFFFF0000u)>>16|(kdata&0x0000FFFFu)<<16);\n"
 "    }\n"
 "	 if( para[paramid].linecoefenab != 0) lineaddr = (kdata >> 24) & 0x7Fu; else lineaddr = 0u;\n"
@@ -314,7 +325,17 @@ const char prg_continue_rbg[] =
 "  if (texel.x >= size.x || texel.y >= size.y ) return;\n"
 "  if (texel.y < (startLine * vres_scale) || texel.y >= (endLine * vres_scale) ) return;\n"
 "  vec2 pos = vec2(texel) / vec2(hres_scale, vres_scale);\n"
-"  vec2 original_pos = floor(vec2(texel) / vec2(hres_scale, vres_scale));\n";
+"  vec2 original_pos = floor(vec2(texel) / vec2(hres_scale, vres_scale));\n"
+// ST-58-R2 4.11 p.117-118 : sur un ecran de rotation la mosaique n'agit qu'en
+// horizontal. La couleur du dot le plus a gauche du bloc est reprise sur toute
+// sa largeur : on echantillonne donc a la position de debut de bloc. pos et
+// original_pos sont deja en dots Saturn (division par hres_scale), le bloc se
+// quantifie donc directement en dots, independamment de la resolution interne.
+"  if (mosaicxmask > 1u) {\n"
+"    float mzh = float(mosaicxmask);\n"
+"    original_pos.x = floor(original_pos.x / mzh) * mzh;\n"
+"    pos.x = original_pos.x;\n"
+"  }\n";
 
 const char prg_rbg_rpmd0_2w[] =
 "//prg_rbg_rpmd0_2w\n"
@@ -359,7 +380,15 @@ const char prg_rbg_rpmd2_2w[] =
 "      kx = para[1].kx; \n"
 "      lineaddr = para[1].lineaddr; \n"
 "      // B garde SA propre table de coef (RBKTE) pour son scaling par-dot\n"
-"      if (para[1].coefenab != 0) { GetKValue(1, pos, ky, kx, lineaddr); } \n"
+"      // ST-058-R2 6.4 fig.6.7 : une fois bascule sur B, le MSB du coef\n"
+"      // de B garde sa signification 'dot transparent'.\n"
+"      if (para[1].coefenab != 0) { \n"
+"        if (GetKValue(1, pos, ky, kx, lineaddr) == -1) { \n"
+"          if (para[1].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
+"          else imageStore(lnclSurface,texel,vec4(0.0));\n"
+"          imageStore(outSurface,texel,vec4(0.0)); return; \n"
+"        } \n"
+"      } \n"
 "    } \n"
 "  }\n";
 
@@ -436,7 +465,7 @@ const char prg_rbg_get_bitmap[] =
 "    y = int(fv) & (cellh_-1);\n"
 "    break;\n"
 "  case 2: // OVERMODE_TRANSE \n"
-"    if ((fh < 0.0) || (fh > float(cellw_)) || (fv < 0.0) || (fv > float(cellh_)) ) {\n"
+"    if ((fh < 0.0) || (fh >= float(cellw_)) || (fv < 0.0) || (fv >= float(cellh_)) ) {\n"
 "     if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
 "     else imageStore(lnclSurface,texel,vec4(0.0));\n"
 "   	imageStore(outSurface,texel,vec4(0.0)); \n"
@@ -446,7 +475,7 @@ const char prg_rbg_get_bitmap[] =
 "    y = int(fv);\n"
 "    break;\n"
 "  case 3: // OVERMODE_512 \n"
-"    if ((fh < 0.0) || (fh > 512.0) || (fv < 0.0) || (fv > 512.0)) {\n"
+"    if ((fh < 0.0) || (fh >= 512.0) || (fv < 0.0) || (fv >= 512.0)) {\n"
 "     if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
 "     else imageStore(lnclSurface,texel,vec4(0.0));\n"
 "   	imageStore(outSurface,texel,vec4(0.0)); \n"
@@ -472,7 +501,7 @@ const char prg_rbg_overmode_repeat[] =
 "    y = int(fv) & (para[paramid].MaxV - 1);\n"
 "    break;\n"
 "  case 2: // OVERMODE_TRANSE \n"
-"    if ((fh < 0.0) || (fh > float(para[paramid].MaxH) ) || (fv < 0.0) || (fv > float(para[paramid].MaxV)) ) {\n"
+"    if ((fh < 0.0) || (fh >= float(para[paramid].MaxH) ) || (fv < 0.0) || (fv >= float(para[paramid].MaxV)) ) {\n"
 "     if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
 "     else imageStore(lnclSurface,texel,vec4(0.0));\n"
 "   	imageStore(outSurface,texel,vec4(0.0)); \n"
@@ -482,7 +511,7 @@ const char prg_rbg_overmode_repeat[] =
 "    y = int(fv);\n"
 "    break;\n"
 "  case 3: // OVERMODE_512 \n"
-"    if ((fh < 0.0) || (fh > 512.0) || (fv < 0.0) || (fv > 512.0)) {\n"
+"    if ((fh < 0.0) || (fh >= 512.0) || (fv < 0.0) || (fv >= 512.0)) {\n"
 "     if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
 "     else imageStore(lnclSurface,texel,vec4(0.0));\n"
 "   	imageStore(outSurface,texel,vec4(0.0)); \n"
@@ -504,7 +533,7 @@ const char prg_rbg_get_patternaddr[] =
 "  ((x >> 9) * pagesize) + \n"
 "  (((y & 511) >> patternshift) * pagewh) + \n"
 "  ((x & 511) >> patternshift)) << patterndatasize ); \n"
-"  addr &= 0x7FFFFu;\n";
+"  addr = vmask(addr);\n";
 
 const char prg_rbg_get_pattern_data_1w[] =
 "//prg_rbg_get_pattern_data_1w\n"
@@ -608,7 +637,7 @@ const char prg_rbg_getcolor_4bpp[] =
 //Jeu de test Dead or Alive
 "  uint dot = 0u;\n"
 "  uint cramindex = 0u;\n"
-"  uint dotaddr = ((charaddr + uint(((y * cellw) + x) >> 1)) & 0x7FFFFu);\n"
+"  uint dotaddr = vmask(charaddr + uint(((y * cellw) + x) >> 1));\n"
 "  dot = vram[ dotaddr >> 2];\n"
 "  if( (dotaddr & 0x3u) == 0u ) dot >>= 0;\n"
 "  else if( (dotaddr & 0x3u) == 1u ) dot >>= 8;\n"
@@ -629,7 +658,7 @@ const char prg_rbg_getcolor_8bpp[] =
 "//prg_rbg_getcolor_8bpp\n"
 "  uint dot = 0u;\n"
 "  uint cramindex = 0u;\n"
-"  uint dotaddr = (charaddr + uint((y*cellw)+x))&0x7FFFFu;\n"
+"  uint dotaddr = vmask(charaddr + uint((y*cellw)+x));\n"
 "  dot = vram[ dotaddr >> 2];\n"
 "  if( (dotaddr & 0x3u) == 0u ) dot >>= 0;\n"
 "  else if( (dotaddr & 0x3u) == 1u ) dot >>= 8;\n"
@@ -649,7 +678,7 @@ const char prg_rbg_getcolor_16bpp_palette[] =
 "//prg_rbg_getcolor_16bpp_palette\n"
 "  uint dot = 0u;\n"
 "  uint cramindex = 0u;\n"
-"  uint dotaddr = (charaddr + uint((y*cellw)+x) * 2u)&0x7FFFFu;\n"
+"  uint dotaddr = vmask(charaddr + uint((y*cellw)+x) * 2u);\n"
 "  dot = vram[dotaddr>>2]; \n"
 "  if( (dotaddr & 0x02u) != 0u ) { dot >>= 16; } \n"
 "  dot = (((dot) >> 8 & 0xFF) | ((dot) & 0xFF) << 8);\n"
@@ -665,7 +694,7 @@ const char prg_rbg_getcolor_16bpp_rbg[] =
 "//prg_rbg_getcolor_16bpp_rbg\n"
 "  uint dot = 0u;\n"
 "  uint cramindex = 0u;\n"
-"  uint dotaddr = (charaddr + uint((y*cellw)+x) * 2u)&0x7FFFFu;\n"
+"  uint dotaddr = vmask(charaddr + uint((y*cellw)+x) * 2u);\n"
 "  dot = vram[dotaddr>>2]; \n"
 "  if( (dotaddr & 0x02u) != 0u ) { dot >>= 16; } \n"
 "  dot = (((dot >> 8) & 0xFFu) | ((dot) & 0xFFu) << 8);\n"
@@ -681,7 +710,7 @@ const char prg_rbg_getcolor_32bpp_rbg[] =
 "//prg_rbg_getcolor_32bpp_rbg\n"
 "  uint dot = 0u;\n"
 "  uint cramindex = 0u;\n"
-"  uint dotaddr = (charaddr + uint((y*cellw)+x) * 4u)&0x7FFFFu;\n"
+"  uint dotaddr = vmask(charaddr + uint((y*cellw)+x) * 4u);\n"
 "  dot = vram[dotaddr>>2]; \n"
 "  dot = ((dot&0xFF000000u) >> 24 | ((dot >> 8) & 0xFF00u) | ((dot) & 0xFF00u) << 8 | (dot&0x000000FFu) << 24);\n"
 "  if ( (dot&0x80000000u) == 0u && transparencyenable != 0 ) { \n"
@@ -1038,6 +1067,17 @@ struct RBGUniform {
 	unsigned int lncl_table_addr;
 	unsigned int cram_mode;
 	unsigned int vrsize;
+	/* ST-58-R2 4.11 p.117 : « mosaic processing of RBG0 and RBG1 can only be
+	 * done in the horizontal direction ». MZSZV (MZCTL bits 15-12) ne
+	 * s'applique donc pas aux calques de rotation, seul MZSZH compte.
+	 * 1 = pas de mosaique (ReadMosaicData renvoie deja 1 quand R0MZE/N0MZE
+	 * est a 0). Les 3 champs suivants ne servent qu'a garder la taille du
+	 * bloc std140 multiple de 16 octets. */
+	unsigned int mosaicxmask;
+	unsigned int mzpad0_;
+	unsigned int mzpad1_;
+	unsigned int mzpad2_;
+	unsigned int mzpad3_;
 };
 
 class RBGGenerator{
@@ -2221,6 +2261,17 @@ DEBUGWIP("Init\n");
     int work_groups_x = ceil(float(tex_width_) / float(local_size_x));
     int work_groups_y = ceil(float(tex_height_) / float(local_size_y));
 
+		/* NE PAS remettre Vdp2Ram_Updated a 0 ici. Le flag est positionne par les
+		 * ecritures CPU sur le thread d'emulation alors que update() tourne sur le
+		 * thread de rendu : le relacher depuis ici ouvre une course ou une copie
+		 * prise au milieu d'une ecriture VRAM devient definitive, le flag ayant
+		 * deja ete efface quand l'ecriture se termine. Le SSBO reste alors fige
+		 * sur une VRAM partielle (constate sur World Cup '98 : plan RBG0 lu comme
+		 * du bruit alors que Vdp2Ram est correcte).
+		 * Recopier a chaque frame est le comportement sur : la frame suivante
+		 * rattrape systematiquement toute ecriture concurrente. Optimiser cela
+		 * demande un compteur de generation ou une plage sale geree cote ecrivain,
+		 * pas un booleen global partage entre deux threads. */
 		u8 VRAMNeedAnUpdate = Vdp2RamIsUpdated();
 
     error = glGetError();
@@ -2325,6 +2376,11 @@ DEBUGWIP("Init\n");
 	 uniform.lncl_table_addr = Vdp2RamReadWord(NULL, Vdp2Ram, (varVdp2Regs->LCTA.all & 0x7FFFF)<<1);
 	 uniform.cram_mode = Vdp2Internal.ColorMode;
 	 uniform.vrsize = varVdp2Regs->VRSIZE;
+	 /* Horizontal uniquement pour RBG0/RBG1 (ST-58-R2 4.11) : mosaicymask est
+	  * volontairement ignore ici. ReadMosaicData() a deja lu MZSZH (MZCTL
+	  * bits 11-8, +1) et renvoie 1 si le bit d'activation du calque est a 0. */
+	 uniform.mosaicxmask = (unsigned int)rbg->ctrl.info.mosaicxmask;
+	 uniform.mzpad0_ = uniform.mzpad1_ = uniform.mzpad2_ = uniform.mzpad3_ = 0u;
 
   glBindBuffer(GL_UNIFORM_BUFFER, scene_uniform);
        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(RBGUniform), (void*)&uniform);
