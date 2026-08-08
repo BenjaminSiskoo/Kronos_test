@@ -238,7 +238,13 @@ void UIDebugVDP1::updateVdp1Registers()
     s << "  User  : (" << Vdp1Regs->userclipX1 << "," << Vdp1Regs->userclipY1 << ") - ("
       << Vdp1Regs->userclipX2 << "," << Vdp1Regs->userclipY2 << ")"
       << "  Mode:" << Vdp1Regs->userclipMode
-      << " (" << (Vdp1Regs->userclipMode ? "outside" : "inside") << " drawing)\n";
+      /* vdp1_compute.c : userclipMode = clip_enable ? Cmod : 2, ou 2 signifie
+       * "pas de clipping utilisateur". Trois etats, pas deux -- le test
+       * booleen affichait "outside" pour la valeur 2, c'est-a-dire quand le
+       * clipping utilisateur est justement inactif. */
+      << " (" << (Vdp1Regs->userclipMode == 0 ? "inside drawing"
+                 : Vdp1Regs->userclipMode == 1 ? "outside drawing"
+                 : "disabled") << ")\n";
 
     // --- État interne moteur (Vdp1External) : PAS des registres matériel,
     // section clairement distincte pour ne pas les confondre avec l'état
