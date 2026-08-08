@@ -331,9 +331,19 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"\n=== PLSZ=0x"<<HEX4(r.PLSZ)<<" (Plane Size) ===\n";
     // ST-013-R3 §3.14 : N0[1:0], N1[3:2], N2[5:4], N3[7:6], R0A[9:8], R0B[11:10], R1[15:14]
     {static const char*ps[]={"1Hx1V","2Hx1V","(rsvd)","2Hx2V"};
+    /* ST-58-R2 18003AH :
+     *   1-0 N0PLSZ   3-2 N1PLSZ   5-4 N2PLSZ   7-6 N3PLSZ
+     *   9-8 RAPLSZ   11-10 RAOVR  13-12 RBPLSZ  15-14 RBOVR
+     * R0B lisait les bits 11-10 (RAOVR) et R1 les bits 15-14 (RBOVR) : deux
+     * screen-over affiches comme des tailles de plan. RBPLSZ est en 13-12,
+     * et RBG1 etant toujours dessine avec le parametre B (6.1), R0B et R1
+     * valent tous deux RBPLSZ. */
+    static const char*ov[]={"repeat","transparent","charPat","512x512"};
     d<<"  N0="<<ps[r.PLSZ&3]<<"  N1="<<ps[(r.PLSZ>>2)&3]<<"  N2="<<ps[(r.PLSZ>>4)&3]
       <<"  N3="<<ps[(r.PLSZ>>6)&3]<<"  R0A="<<ps[(r.PLSZ>>8)&3]
-      <<"  R0B="<<ps[(r.PLSZ>>10)&3]<<"  R1="<<ps[(r.PLSZ>>14)&3]<<"\n";}
+      <<"  R0B="<<ps[(r.PLSZ>>12)&3]<<"  R1="<<ps[(r.PLSZ>>12)&3]<<"\n";
+    d<<"  screen-over: RAOVR="<<DEC((r.PLSZ>>10)&3)<<"("<<ov[(r.PLSZ>>10)&3]<<")"
+      <<"  RBOVR="<<DEC((r.PLSZ>>14)&3)<<"("<<ov[(r.PLSZ>>14)&3]<<")\n";}
 
     // Map offsets
     d<<"\n=== Map Offsets ===\n";
@@ -409,9 +419,20 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
         if(b&1)d<<"Xst ";if(b&2)d<<"Yst ";if(b&4)d<<"KAst ";if(b&8)d<<"KAstInc ";if(!b)d<<"none";d<<"\n";};
     rpr("ParamA",0);rpr("ParamB",8);
     d<<"  KTCTL=0x"<<HEX4(r.KTCTL)<<"\n";
+    /* ST-58-R2 p.283, KTCTL (1800B4H), parametre A (parametre B decale de 8) :
+     *   bit 0    RAKTE   activation
+     *   bit 1    RAKDBS  taille : 0 = 2 mots (32 bits), 1 = 1 mot (16 bits)
+     *   bits 3-2 RAKMD   mode : kx&ky / kx / ky / Xp
+     *   bit 4    RAKLCE  donnee de couleur de ligne
+     * L'ancien decodage lisait 3 bits a partir du bit 2, melangeant RAKMD
+     * et RAKLCE, et ignorait RAKDBS alors que sa table pretendait afficher
+     * une taille. */
     auto kt=[&](const char*n,int sh){
-        static const char*km[]={"16b","16b+addr","32b","32b+addr","16b/line","16b+addr/line","??","??"};
-        d<<"    "<<n<<": en="<<((r.KTCTL>>sh)&1)<<"  mode="<<DEC((r.KTCTL>>(sh+2))&7)<<"("<<km[(r.KTCTL>>(sh+2))&7]<<")\n";};
+        static const char*kmd[]={"kx&ky","kx","ky","Xp"};
+        d<<"    "<<n<<": en="<<((r.KTCTL>>sh)&1)
+         <<"  taille="<<(((r.KTCTL>>(sh+1))&1)?"1 mot (16b)":"2 mots (32b)")
+         <<"  mode="<<DEC((r.KTCTL>>(sh+2))&3)<<"("<<kmd[(r.KTCTL>>(sh+2))&3]<<")"
+         <<"  lineCol="<<((r.KTCTL>>(sh+4))&1)<<"\n";};
     kt("ParamA",0);kt("ParamB",8);
     d<<"  KTAOF=0x"<<HEX4(r.KTAOF)<<"  A-off="<<DEC(r.KTAOF&7)<<"  B-off="<<DEC((r.KTAOF>>8)&7)<<"\n";
     d<<"  OVPNRA=0x"<<HEX4(r.OVPNRA)<<"  OVPNRB=0x"<<HEX4(r.OVPNRB)<<"\n";
