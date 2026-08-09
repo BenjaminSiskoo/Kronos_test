@@ -101,6 +101,14 @@ SHADER_VERSION_COMPUTE
 "layout(rgba8, binding = 1) writeonly uniform image2D outMesh;\n"
 "layout(location = 2) uniform vec4 col;\n"
 "layout(location = 3) uniform ivec4 limits;\n"
+/* ST-013-R3 p.46 : en frame buffer 8 bits/pixel, EWDR bits 15~8
+ * est la donnee des X PAIRS et bits 7~0 celle des X IMPAIRS.
+ * colOdd porte la seconde valeur, xdiv le nombre de texels par
+ * pixel de frame buffer VDP1 (la parite se juge en coordonnees
+ * frame buffer, pas en texels). En 16 bits/pixel colOdd == col
+ * et le test est neutre. */
+"layout(location = 4) uniform vec4 colOdd;\n"
+"layout(location = 5) uniform int xdiv;\n"
 "void main()\n"
 "{\n"
 "  ivec2 size = imageSize(outSurface);\n"
@@ -110,7 +118,8 @@ SHADER_VERSION_COMPUTE
 "  if (texel.y < limits.y) return;\n"
 "  if (texel.x > limits.z) return;\n"
 "  if (texel.y > limits.w) return;\n"
-"  imageStore(outSurface,texel,col);\n"
+"  int fbx = (xdiv > 1) ? (texel.x / xdiv) : texel.x;\n"
+"  imageStore(outSurface, texel, ((fbx & 1) == 0) ? col : colOdd);\n"
 "  imageStore(outMesh, texel, vec4(0.0));\n"
 "}\n";
 
@@ -585,7 +594,11 @@ SHADER_VERSION_COMPUTE
 "    default:\n"
 "      break;\n"
 "   }\n"
-"   if (nbEnd > 2) return x;"
+"   // ST-013-R3 6.3 : \"Drawing in the horizontal direction is\n"
+"   // terminated when an end code is read twice.\" Le test etait\n"
+"   // \"nbEnd > 2\", donc terminaison au 3e end-code : tout ce qui\n"
+"   // separe le 2e du 3e etait dessine a tort.\n"
+"   if (nbEnd >= 2) return x;"
 "  }\n"
 " return 1024;\n"
 "}\n"
