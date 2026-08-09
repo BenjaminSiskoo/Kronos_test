@@ -474,10 +474,31 @@ int Vdp1Init(void) {
    Vdp1Regs->FBCR = 0;
    Vdp1Regs->PTMR = 0;
 
+   /* Chapitre 9 du manuel VDP1 : le coin haut-gauche du clipping systeme est
+    * fixe a (0,0) par le materiel, et la plage de coordonnees de clipping va
+    * de (0,0) a (1023,511) -- bornes INCLUSIVES, comme le confirme l'usage
+    * en pre-clipping (x1 > scx2).
+    *
+    * Ces champs n'etaient ecrits nulle part dans vdp1.c : les seules
+    * affectations de l'arbre sont dans VIDCSVdp1SystemClipping (vidcs.c),
+    * donc apres la premiere commande de clipping systeme du jeu. Comme
+    * Vdp1Init() alloue Vdp1Regs par malloc() sans memset, le pre-clipping
+    * lisait jusque-la des valeurs de tas : selon leur contenu, tout etait
+    * rejete ou rien ne l'etait, de facon non deterministe. */
+   Vdp1Regs->systemclipX1 = 0;
+   Vdp1Regs->systemclipY1 = 0;
+   Vdp1Regs->systemclipX2 = 1023;
+   Vdp1Regs->systemclipY2 = 511;
+
    Vdp1Regs->userclipX1 = 0;
    Vdp1Regs->userclipY1 = 0;
-   Vdp1Regs->userclipX2 = 1024;
-   Vdp1Regs->userclipY2 = 512;
+   /* Bornes INCLUSIVES : ces champs recoivent ensuite cmd->CMDXC / CMDYC,
+    * qui sont inclusives, et sont consommes comme telles par CAP(). Le reset
+    * a 1024/512 melangeait donc deux conventions et pouvait borner une part
+    * a x=1024, une colonne au-dela du dernier index d'un frame buffer 1024
+    * de large. Chapitre 9 : plage de clipping (0,0)-(1023,511). */
+   Vdp1Regs->userclipX2 = 1023;
+   Vdp1Regs->userclipY2 = 511;
    Vdp1Regs->userclipMode = 0; // VDP1 Manual §6.3 Cmod: default = inside drawing mode
 
    Vdp1Regs->localX = 0;
@@ -1142,6 +1163,25 @@ if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
   // Entirely outside → skip
   if (x1 > scx2 || y1 > scy2 || x2 < 0 || y2 < 0) { return 0; }
 	}
+  /* Chapitre 9 du manuel VDP1 -- combinaisons interdites avec un frame
+   * buffer 8 bits/pixel (TVMR bit 0 = 1). Le materiel n'a pas de
+   * comportement defini pour elles ; on les signale sans changer le rendu.
+   *
+   *  - MON = 1 (CMDPMOD bit 15) est interdit en 8bpp : le bit de poids
+   *    fort ecrit dans le frame buffer pour l'ombre/fenetre VDP2 n'a pas
+   *    la meme signification dans ce format.
+   *  - le mode couleur RGB (CMDPMOD bits 5-3 = 5) est interdit en 8bpp :
+   *    seuls les modes 0 a 4 sont possibles. Le shader tronque alors la
+   *    valeur RGB 16 bits a son octet de poids faible. */
+  if (Vdp1Regs->TVMR & 0x1) {
+    if (cmd->CMDPMOD & 0x8000)
+      LOG("VDP1: MON=1 interdit en frame buffer 8bpp (CMDPMOD=%04X)\n",
+          cmd->CMDPMOD);
+    if (((cmd->CMDPMOD >> 3) & 0x7) == 5)
+      LOG("VDP1: mode couleur RGB interdit en frame buffer 8bpp (CMDPMOD=%04X)\n",
+          cmd->CMDPMOD);
+  }
+
   /* VDP1 Manual §6.3 Color Calculation bits 2~0:
    * Mode 101B (5) = "Setting prohibited (do not set)"
    * Skip the command silently to avoid undefined behavior. */
@@ -1218,6 +1258,23 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 
   x = cmd->CMDXA;
   y = cmd->CMDYA;
+  /* Chapitre 9 du manuel VDP1 : seules les valeurs 0H, 5H, 6H, 7H, 9H, AH,
+   * BH, DH, EH, FH sont possibles pour le zoom point ; les autres sont
+   * interdites. Le champ se decompose en deux sous-champs de 2 bits (X en
+   * bits 9-8, Y en bits 11-10) et la regle revient a : les deux sont nuls,
+   * ou aucun ne l'est. Les six valeurs interdites (1, 2, 3, 4, 8, CH) sont
+   * exactement celles ou un seul des deux est nul.
+   *
+   * Les deux switch ci-dessous ont chacun un "default: break;", donc ces
+   * combinaisons recoivent un comportement defini que le materiel n'a pas.
+   * On ne change pas ce comportement -- il est peut-etre porteur pour un
+   * titre qui produit ces valeurs -- on se contente de les signaler. */
+  {
+    const u32 zp = (cmd->CMDCTRL >> 8) & 0xF;
+    if (((zp & 0x3) == 0) != (((zp >> 2) & 0x3) == 0))
+      LOG("VDP1: zoom point interdit %XH (CMDCTRL=%04X)\n", zp, cmd->CMDCTRL);
+  }
+
   // Setup Zoom Point
   switch ((cmd->CMDCTRL & 0x300) >> 8) {
     case 1: //Left
