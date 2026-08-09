@@ -1932,7 +1932,15 @@ int setupShadow(Vdp2 *varVdp2Regs, int layer) {
         return ((varVdp2Regs->SDCTL >> 4)&0x1);
     break;
     case SPRITE:
-        return ((varVdp2Regs->SDCTL >> 5)&0x1);
+        /* ST-58-R2 1800E2H : le bit 5 est BKSDEN, l'activation d'ombre de
+         * l'ECRAN DE FOND, pas du sprite. Les bits SDEN designent les ecrans
+         * qui RECOIVENT l'ombre ; le sprite en est la SOURCE et n'a pas de
+         * bit d'activation. Lire le bit 5 ici faisait recevoir l'ombre au
+         * calque sprite des qu'un jeu activait BKSDEN.
+         *
+         * L'ecran de fond reste non couvert : enBG (ygl.h) n'a pas d'entree
+         * pour lui. Son bit n'est plus consomme a tort, c'est deja ca. */
+        return 0;
     break;
     default:
        return 0;
