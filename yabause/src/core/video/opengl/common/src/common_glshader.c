@@ -2003,6 +2003,25 @@ int setupVDP2Prog(Vdp2* varVdp2Regs, int nb_screen, int CS) {
   int colormode =  (varVdp2Regs->SPCTL & 0x20) != 0; // 2x
   int spritetype =  (varVdp2Regs->SPCTL & 0xF); // 16x
 
+  /* ST-58-R2 9.1 p.200 : les types 0-7 sont les types "frame buffer 16
+   * bits/pixel", les types 8-F les types 8 bits/pixel. p.202, Sprite Color
+   * Mode : quand palette et RGB sont melanges, c'est le BIT 15 du mot du
+   * frame buffer qui discrimine les deux formats. SPCLMD = 1 signifie
+   * exactement ce melange -- or un type 8 bits n'a pas de bit 15, la
+   * combinaison est donc sans objet materiellement.
+   *
+   * Hyper 3D Pinball ecrit SPCTL = 0x303C (type C, SPCLMD = 1) pendant que
+   * TVMR = 1, ce qui est coherent a cet instant, puis remet TVMR a 0 sans
+   * que rien ne revalide la paire. Le frame buffer contient alors des
+   * pixels 16 bits lus par un type 8 bits : texte illisible.
+   *
+   * On ramene la categorie dans 0-7 uniquement dans ce cas precis. Les
+   * autres discordances gardent les chemins fb_mode 1 et 2, qui existent
+   * deliberement pour elles (cf. Kunoichi Torimonochou plus haut). */
+  if (colormode && spritetype > 0x7 && ((Vdp1Regs->TVMR & 0x1) == 0)) {
+    spritetype &= 0x7;
+  }
+
   int screen_nb = nb_screen; //14x
   if (Vdp1External.disptoggle != 0) {
     screen_nb += 7;
