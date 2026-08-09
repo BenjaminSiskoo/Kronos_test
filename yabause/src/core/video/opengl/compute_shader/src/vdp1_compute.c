@@ -689,7 +689,7 @@ static int generateComputeBuffer(int w, int h) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	vdp1_clear(0, col, limits);
+	vdp1_clear(0, col, col, 1, limits);
   glBindTexture(GL_TEXTURE_2D, compute_tex[1]);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
   glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
@@ -697,7 +697,7 @@ static int generateComputeBuffer(int w, int h) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	vdp1_clear(1, col, limits);
+	vdp1_clear(1, col, col, 1, limits);
   return 0;
 }
 
@@ -1765,7 +1765,7 @@ void endVdp1RenderUpscale() {
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void vdp1_clear(int id, float *col, int* lim) {
+void vdp1_clear(int id, float *col, float *colOdd, int xdiv, int* lim) {
 	int progId = CLEAR;
 	int limits[4];
 	memcpy(limits, lim, 4*sizeof(int));
@@ -1784,6 +1784,10 @@ void vdp1_clear(int id, float *col, int* lim) {
 	glBindImageTexture(1, get_vdp1_mesh(id), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glUniform4fv(2, 1, col);
 	glUniform4iv(3, 1, limits);
+	/* ST-013-R3 p.46 : seconde donnee d'erase (X impairs) et
+	 * rapport texels / pixel de frame buffer VDP1. */
+	glUniform4fv(4, 1, colOdd);
+	glUniform1i(5, xdiv);
 	glDispatchCompute(work_groups_x, work_groups_y, 1); //might be better to launch only the right number of workgroup
 	glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
