@@ -385,8 +385,23 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     // ST-058-R2 §3.18 : 0=1/1, 1=H:1/2, 2=H+V:1/4, 3=(rsvd)
     {static const char*zm[]={"1/1","H:1/2","H+V:1/4","(rsvd)"};
     d<<"  NBG0="<<zm[r.ZMCTL&3]<<"  NBG1="<<zm[(r.ZMCTL>>8)&3]<<"\n";
-    d<<"  ZMX0="<<DEC(r.ZMXN0.part.I)<<"."<<DEC(r.ZMXN0.part.D)<<"  ZMY0="<<DEC(r.ZMYN0.part.I)<<"."<<DEC(r.ZMYN0.part.D)<<"\n";
-    d<<"  ZMX1="<<DEC(r.ZMXN1.part.I)<<"."<<DEC(r.ZMXN1.part.D)<<"  ZMY1="<<DEC(r.ZMYN1.part.I)<<"."<<DEC(r.ZMYN1.part.D)<<"\n";}
+    /* ST-058-R2 ch.5.2 p.126, Figure 5.2 : l'increment de coordonnee est un
+     * point fixe = partie entiere sur 3 bits dans ZMxINn[2:0] + partie
+     * fractionnaire sur 8 bits dans ZMxDNn[15:8].
+     *
+     * L'ancien affichage concatenait la partie entiere, un point, puis la
+     * VALEUR BRUTE du registre fractionnaire : ZMXN1I=0x0000 / ZMXN1D=0x8000
+     * sortait "0.32768" au lieu de 0.5. Ce n'etait pas un nombre.
+     *
+     * On imprime maintenant l'increment reel, plus le facteur de zoom
+     * correspondant (1/increment), qui est ce que le renderer manipule sous
+     * le nom coordincx/coordincy. */
+    {auto inc=[](u16 I,u16 D){ return (double)(I & 0x7) + (double)((D >> 8) & 0xFF) / 256.0; };
+    auto zoom=[](double v){ return (v > 0.0) ? 1.0/v : 0.0; };
+    double ix0=inc(r.ZMXN0.part.I,r.ZMXN0.part.D), iy0=inc(r.ZMYN0.part.I,r.ZMYN0.part.D);
+    double ix1=inc(r.ZMXN1.part.I,r.ZMXN1.part.D), iy1=inc(r.ZMYN1.part.I,r.ZMYN1.part.D);
+    d<<"  NBG0 inc: x="<<ix0<<" y="<<iy0<<"  (zoom x"<<zoom(ix0)<<" / x"<<zoom(iy0)<<")\n";
+    d<<"  NBG1 inc: x="<<ix1<<" y="<<iy1<<"  (zoom x"<<zoom(ix1)<<" / x"<<zoom(iy1)<<")\n";}}
 
     // SCRCTL
     d<<"\n=== SCRCTL=0x"<<HEX4(r.SCRCTL)<<" (Scroll Control) ===\n";
@@ -846,7 +861,25 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
     if (vdp2texture) {
         pbSaveAsBitmap->setEnabled(true);
         QGraphicsScene *sc=gvScreen->scene();
-        QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGB32:QImage::Format_ARGB32;
+        /* Les extracteurs de vidcs.c remplissent le tampon via
+         * glGetTexImage/glReadPixels avec GL_RGBA + GL_UNSIGNED_BYTE :
+         * l'ordre en memoire est donc [R][G][B][A], quel que soit
+         * l'endianness de la machine.
+         *
+         * Format_ARGB32 / Format_RGB32 sont des formats *entiers* : un pixel
+         * y vaut 0xAARRGGBB, dont la disposition en octets depend de
+         * l'endianness. En little-endian cela donne [B][G][R][A], soit R et B
+         * inverses par rapport a ce que GL a ecrit -- ce que le .rgbSwapped()
+         * plus bas venait rattraper. Les deux erreurs s'annulaient, mais
+         * seulement sur little-endian : en big-endian la lecture donne
+         * [A][R][G][B] et le rgbSwapped() aggrave le probleme au lieu de le
+         * corriger.
+         *
+         * Format_RGBA8888 / Format_RGBX8888 sont definis par leur ordre
+         * d'OCTETS ([R][G][B][A]) et correspondent donc directement a la
+         * sortie de GL, sur toutes les plateformes. Le .rgbSwapped() devient
+         * inutile et est retire. */
+        QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGBX8888:QImage::Format_RGBA8888;
         QImage img((uchar*)vdp2texture,width,height,fmt);
         // NOTE : idx != SPRITE couvre aussi VDP2_SCREEN_FINAL (donc miroir
         // vertical appliqué, comme pour NBG/RBG). C'est une hypothèse : le
@@ -855,7 +888,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         // convention "bas en haut" attendue côté OpenGL, mais pas vérifiée
         // sur une capture réelle. Si "Final" apparaît à l'envers à l'usage,
         // inverser explicitement pour VDP2_SCREEN_FINAL ici.
-        QPixmap px=QPixmap::fromImage(img.mirrored(false,idx!=SPRITE).rgbSwapped());
+        QPixmap px=QPixmap::fromImage(img.mirrored(false,idx!=SPRITE));
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
     } else {
@@ -929,9 +962,13 @@ void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
             filters << QString("%1 Images (*.%2)").arg(fmt.toUpper()).arg(fmt);
     }
     if(!vdp2texture)return;
-    QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGB32:QImage::Format_ARGB32;
+    /* Meme convention d'octets que displayCurrentScreen() : GL a ecrit
+     * [R][G][B][A], donc format Qt a ordre d'octets explicite et pas de
+     * rgbSwapped(). L'image enregistree etait jusqu'ici correcte par
+     * compensation de deux erreurs, uniquement en little-endian. */
+    QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGBX8888:QImage::Format_RGBA8888;
     QImage img((uchar*)vdp2texture,width,height,fmt);
-    img=img.mirrored(false,idx!=SPRITE).rgbSwapped();
+    img=img.mirrored(false,idx!=SPRITE);
     const QString s=CommonDialogs::getSaveFileName(QString(),QtYabause::translate("Choose a location for your bitmap"),filters.join(";;"));
     if(!s.isEmpty())if(!img.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
