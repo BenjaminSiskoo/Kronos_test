@@ -402,11 +402,20 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  VCSTA=0x"<<HEX8(0x05E00000|((r.VCSTA.all&0x7FFFE)<<1))<<"\n";
     d<<"  LSTA0=0x"<<HEX8(0x05E00000|((r.LSTA0.all&0x7FFFE)<<1))<<"\n";
     d<<"  LSTA1=0x"<<HEX8(0x05E00000|((r.LSTA1.all&0x7FFFE)<<1))<<"\n";
-    d<<"  LCTA =0x"<<HEX8(0x05E00000|((r.LCTA.all&0x7FFFE)<<1));
+    // ST-058-R2 ch.7.1 p.174 : LCTA18~LCTA16 = LCTAU[2:0], LCTA15~LCTA0 =
+    // LCTAL[15:0] -- LCTA0 EXISTE (contrairement a LSTA/VCSTA ou le bit 0
+    // est inutilise). Le masque 0x7FFFE l'ecrasait : une table a adresse
+    // impaire etait mal decodee.
+    d<<"  LCTA =0x"<<HEX8(0x05E00000|((r.LCTA.all&0x7FFFF)<<1));
     d<<(r.LCTA.part.U&0x8000?"  (per-line)":"  (single)")<<"\n";
-    // BKTA : addr = {BKTAU[2:0], BKTAL[15:1], 1b0} (Saturn HW Manual §3.23)
-    //   = ((BKTAU & 7) << 17) | (BKTAL & 0xFFFE)
-    {u32 bk = 0x05E00000 | (((u32)(r.BKTAU & 0x7) << 17) | (r.BKTAL & 0xFFFE));
+    // ST-058-R2 ch.7.2 p.176-177 : BKTA18~BKTA16 = BKTAU[2:0],
+    // BKTA15~BKTA0 = BKTAL[15:0], et
+    //   (adresse VRAM) = (valeur 19 bits du registre) x 2
+    // L'ancienne formule ((BKTAU&7)<<17) | (BKTAL & 0xFFFE) oubliait le x2
+    // sur le mot bas et perdait BKTA0, ce qui donnait une adresse fausse
+    // (et en contradiction avec celle imprimee par vdp2debug.c plus bas
+    // dans le meme export).
+    {u32 bk = 0x05E00000 | (((((u32)(r.BKTAU & 0x7) << 16) | r.BKTAL) & 0x7FFFF) << 1);
     d<<"  BKTA =0x"<<HEX8(bk)<<(r.BKTAU&0x8000?"  (per-line)":"  (single)")<<"\n";}
     d<<std::dec;
 
