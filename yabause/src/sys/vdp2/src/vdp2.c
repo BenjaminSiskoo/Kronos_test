@@ -221,7 +221,7 @@ static void vdp2RamAccessCPUCheck(int bank){
 
 u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -239,7 +239,7 @@ u8 FASTCALL Vdp2RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
 
 u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -257,7 +257,7 @@ u16 FASTCALL Vdp2RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
 
 u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -275,7 +275,7 @@ u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
 
 void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -293,7 +293,7 @@ void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 
 void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -311,7 +311,7 @@ void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
 
 void FASTCALL Vdp2RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
-    addr &= 0xEFFFF;
+    addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
 
@@ -1200,42 +1200,32 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       case 0x0DE:
          Vdp2Regs->LWTA1.part.L = val;
          return;
-      case 0x0E0: {
-         u16 spctl_oldval = Vdp2Regs->SPCTL;
-         u16 spctl_newval = val;
-
-         // --- Fix for Kronos issue #1503 (VDP2 SPCTL / VDP1 TVMR desync) ---
-         // The game writes SPCTL (sprite type, bits 0-3) and VDP1's TVMR
-         // (bit 0: is the VDP1 framebuffer 8-bit or 16-bit) from two
-         // different points in its own code, tens of frames apart. In the
-         // window where they disagree about "8-bit vs 16-bit", VDP2 ends up
-         // decoding pixels VDP1 wrote in one width as if they were the
-         // other width, producing visible noise (confirmed via
-         // instrumentation: SPCTL flips to an 8-bit-category type while
-         // TVMR is still 16-bit, or vice versa). This mirrors FCare's own
-         // diagnostic finding on issue #1503 ("if SPCT stays at 0x3, image
-         // is nice").
-         //
-         // Rather than dropping the SPCTL write outright, only the SPTYPE
-         // nibble's 8-bit/16-bit *category* is held at its previous value
-         // when the new category doesn't match VDP1's current TVMR --
-         // every other SPCTL bit (SPWINEN, SPCLMD, SPCCN, SPCCCS...) still
-         // updates normally. Once TVMR itself flips to match, the game's
-         // own periodic register-block DMA sync will re-send the same
-         // SPCTL value and it will go through unheld.
-         {
-            int old_is8bit = (spctl_oldval & 0xF) > 7;
-            int new_is8bit = (spctl_newval & 0xF) > 7;
-            int tvmr_is8bit = (Vdp1Regs->TVMR & 0x1) != 0;
-            if ((new_is8bit != old_is8bit) && (new_is8bit != tvmr_is8bit)) {
-               spctl_newval = (spctl_newval & ~0xF) | (spctl_oldval & 0xF);
-            }
-         }
-         // --- End fix ---
-
-         Vdp2Regs->SPCTL = spctl_newval;
+      case 0x0E0:
+         /* Le garde-fou du commit 694a0d28 tenait la categorie 8/16 bits du
+          * nibble SPTYPE a sa valeur precedente quand elle ne concordait pas
+          * avec TVMR au moment de l'ecriture. L'instrumentation montre qu'il
+          * ne protege rien et corrompt l'etat :
+          *
+          *  - Hyper 3D Pinball, le jeu pour lequel il a ete ecrit : il ne se
+          *    declenche jamais. Le jeu ecrit SPCTL pendant que TVMR concorde
+          *    deja, puis bascule TVMR ensuite -- ce que le garde-fou ne
+          *    revalide jamais.
+          *  - Pro Yakyuu Greatest Nine '97 : il se declenche a repetition et
+          *    dans les deux sens. Le jeu ecrit SPCTL=0x0023 (type 3) et le
+          *    registre retient 0x002C (type C), une valeur jamais demandee.
+          *
+          * La discordance 8/16 bits n'est pas une anomalie a bloquer a
+          * l'ecriture : common_glshader.c encode deja les quatre
+          * combinaisons dans fb_mode et porte des variantes de shader
+          * dediees aux cas discordants. Pro Yakyuu s'affiche correctement
+          * via fb_mode = 1, avec un type 16 bits sur un frame buffer 8 bits.
+          *
+          * Le seul cas que le manuel exclut physiquement -- SPCLMD = 1 avec
+          * un type 8 bits, qui n'a pas de bit 15 pour discriminer le format
+          * de couleur (ST-58-R2 9.1 p.202) -- est traite au moment du
+          * decodage, dans common_glshader.c. */
+         Vdp2Regs->SPCTL = val;
          return;
-      }
       case 0x0E2:
          Vdp2Regs->SDCTL = val;
          return;
