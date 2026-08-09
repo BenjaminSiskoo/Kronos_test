@@ -771,7 +771,10 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
      AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXIN0 & 0x7FF) % 512), - ((Vdp2Regs->SCYIN0 & 0x7FF) % 512));
 
      // Coordinate Increments
-     AddString(outstring, "Coordinate Increments x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN0.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMYN0.all & 0x7FF00));
+     /* ST-058-R2 ch.5.2 p.126 : ce que l'on imprime ici est 1/increment,
+      * c'est-a-dire le FACTEUR DE ZOOM (pixels ecran par pixel de motif), pas
+      * l'increment de coordonnee lui-meme. Le libelle disait l'inverse. */
+     AddString(outstring, "Zoom factor x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN0.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMYN0.all & 0x7FF00));
 
      // Reduction Enable
      switch (Vdp2Regs->ZMCTL & 3)
@@ -1132,7 +1135,11 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
          AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXIN1 & 0x7FF) % 512), - ((Vdp2Regs->SCYIN1 & 0x7FF) % 512));
 
       // Coordinate Increments
-      AddString(outstring, "Coordinate Increments x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN1.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMXN1.all & 0x7FF00));
+      /* ST-058-R2 ch.5.2 p.126 : valeur imprimee = 1/increment, soit le
+       * facteur de zoom. Le libelle disait "Coordinate Increments", l'inverse.
+       * Et l'axe Y lisait ZMXN1 au lieu de ZMYN1 : NBG1 affichait toujours le
+       * meme zoom sur les deux axes, quel que soit ZMYN1. */
+      AddString(outstring, "Zoom factor x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN1.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMYN1.all & 0x7FF00));
 
       // Reduction Enable
       switch ((Vdp2Regs->ZMCTL >> 8) & 3)
