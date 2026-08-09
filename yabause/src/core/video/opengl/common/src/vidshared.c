@@ -245,6 +245,17 @@ void setupPerdot(vdp2rotationparameter_struct *parameter, u32 addr, Vdp2* regs, 
   // hard/vdp2/hon/p06_20.htm#no6_21
   int perdot = 0;
 
+  /* ST-58-R2 p.283 (RDBSxx) : 00 = "Not used as RAM for RBG0". Quand AUCUNE
+   * bank n'est designee, le RDBS ne porte aucune information et on ne peut
+   * pas en deduire per-line vs per-dot. Ecraser deltaKAx a 0 dans ce cas
+   * force le per-line et ecrase la valeur lue a +5CH de la table de
+   * parametres (fig. 6.3), d'ou une distorsion horizontale du calque.
+   * World Cup '98 France - Road to Win : RAMCTL=0x0000, KTCTL=0x0001
+   * (RAKTE=1, RAKDBS=0 -> coefficients 2 mots), KTAOF=0x0001.
+   * On conserve alors deltaKAx tel qu'il a ete lu : s'il est nul on est de
+   * toute facon en per-line, sans avoir eu besoin du RDBS pour le decider. */
+  if ((regs->RAMCTL & 0xFF) == 0) return;
+
   //Use the effective adress of the coeficien table to determine if it is per dot.
   int bank = Vdp2GetBank(regs, parameter->coeftbladdr);
   switch (bank)
@@ -435,7 +446,13 @@ void Vdp2ReadRotationTable(int which, vdp2rotationparameter_struct *parameter, V
       tmp = (regs->KTCTL & 0x2 ? 2 : 4);
       parameter->coefdatasize = tmp;
 
-      tmp = ((regs->KTAOF & 0x7) * 0x10000 + (int)(parameter->KAst)) * parameter->coefdatasize;
+      /* ST-58-R2 p.170 : l'adresse de tete de la table de coefficients vaut
+       *   coef 2 mots : (KTAOF, 2 bits de poids faible) x 40000H + KAst x 4H
+       *   coef 1 mot  : (KTAOF, 3 bits)                 x 20000H + KAst x 2H
+       * Le nombre de bits retenus de KTAOF depend donc de la taille du
+       * coefficient ; 0x7 en dur repliait mal les offsets 4 a 7 en 2 mots. */
+      tmp = ((regs->KTAOF & (parameter->coefdatasize == 4 ? 0x3 : 0x7)) * 0x10000
+             + (int)(parameter->KAst)) * parameter->coefdatasize;
       parameter->coeftbladdr = tmp;
 
       tmp = (regs->KTCTL >> 2) & 0x3;
@@ -452,7 +469,8 @@ void Vdp2ReadRotationTable(int which, vdp2rotationparameter_struct *parameter, V
       tmp = (regs->KTCTL & 0x200 ? 2 : 4);
       parameter->coefdatasize = tmp;
 
-      tmp = (((regs->KTAOF >> 8) & 0x7) * 0x10000 + (int)(parameter->KAst)) * parameter->coefdatasize;
+      tmp = (((regs->KTAOF >> 8) & (parameter->coefdatasize == 4 ? 0x3 : 0x7)) * 0x10000
+             + (int)(parameter->KAst)) * parameter->coefdatasize;
       parameter->coeftbladdr = tmp;
 
       tmp = (regs->KTCTL >> 10) & 0x3;
@@ -815,4 +833,3 @@ fixed32 Vdp2ReadCoefficientMode0_2FP(vdp2rotationparameterfp_struct *parameter, 
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
