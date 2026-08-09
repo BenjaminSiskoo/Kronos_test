@@ -88,13 +88,25 @@ int VIDCSEraseWriteVdp1(int id) {
   col[0] = (color & 0xFF) / 255.0f;
   col[1] = ((color >> 8) & 0xFF) / 255.0f;
 
-  if (color != 0x0) {
-    if (((Vdp1Regs->TVMR & 0x1) == 1) && (col[0] != col[1])){
-      YuiMsg("Unsupported clear process\n\tin 8 bits upper part of EWDR is for even coordinates and lower part for odd coordinates\n");
-    }
+  /* ST-013-R3 p.46 (EWDR) : en frame buffer 8 bits/pixel l'effacement se
+   * fait 2 pixels a la fois, les bits 15~8 servant aux coordonnees X
+   * PAIRES et les bits 7~0 aux X IMPAIRES. En 16 bits/pixel les 16 bits
+   * forment une seule donnee : colOdd vaut alors col et le shader ne fait
+   * aucune distinction. */
+  float colOdd[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int   xdiv = 1;
+  if ((Vdp1Regs->TVMR & 0x1) == 1) {
+    col[0]    = ((color >> 8) & 0xFF) / 255.0f;  /* X pairs   : octet haut */
+    col[1]    = 0.0f;
+    colOdd[0] = (color & 0xFF) / 255.0f;         /* X impairs : octet bas  */
+    colOdd[1] = 0.0f;
+    xdiv = (_Ygl->vdp1width > 512) ? (_Ygl->vdp1width / 512) : 1;
+  } else {
+    colOdd[0] = col[0];
+    colOdd[1] = col[1];
   }
 
-  vdp1_clear(id, col, limits);
+  vdp1_clear(id, col, colOdd, xdiv, limits);
 
   //Get back to drawframe
   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
