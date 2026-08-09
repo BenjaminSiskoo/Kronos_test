@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -32,7 +31,7 @@ extern "C" {
 //YuiMsg
 #define ROTATED 1
 
-#define NB_STV_GAMES 103
+#define NB_STV_GAMES 106
 
 GameLink availableGames[NB_STV_GAMES];
 BiosLink biosLink;
@@ -356,7 +355,7 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "mpr21973.5",    0x1000000, 0x0400000, 0xb0f23f14,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    STVMP, /* FIX: mahjong-panel game, was STV */
   },
   {
     "danchiq",
@@ -518,7 +517,7 @@ Game GameList[NB_STV_GAMES]={
     STV,
   },
   {
-    "fantazonem",
+    "fanzonem", /* FIX: was misspelled "fantazonem" */
     NULL,
     "Fantasy Zone (J 990202 V1.000)",
     STV_REGION_JP,
@@ -567,7 +566,7 @@ Game GameList[NB_STV_GAMES]={
   {
     "ffreveng",
     NULL,
-    "Final Fight Revenge (JUET 990714 V1.000)",
+    "Final Fight Revenge (JUET 990930 V1.100)", /* FIX: was showing ffrevng10's date/version */
     STV_REGION_JP | STV_REGION_US | STV_REGION_EU | STV_REGION_TW,
     0x0524ac01,
     0,
@@ -589,7 +588,7 @@ Game GameList[NB_STV_GAMES]={
   {
     "ffrevng10",
     "ffreveng",
-    "Final Fight Revenge (JUET 990930 V1.100)",
+    "Final Fight Revenge (JUET 990714 V1.000)", /* FIX: was showing ffreveng's date/version */
     STV_REGION_JP | STV_REGION_US | STV_REGION_EU | STV_REGION_TW,
     0x0524ac01,
     0,
@@ -902,6 +901,31 @@ Game GameList[NB_STV_GAMES]={
     },
     STV,
   },
+  { /* ADDED: was missing from the game table (MAME has this romset) */
+    "nclubv4",
+    NULL,
+    "Name Club Ver.4 (J 971202 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NULL,
+    {
+        GAME_WORD_BLOB, "ic22",		0x0200000, 0x0200000, 0x80eba7e9,
+        GAME_WORD_BLOB, "ic24",		0x0400000, 0x0200000, 0x6bbb1b0c,
+        GAME_WORD_BLOB, "ic26",		0x0600000, 0x0200000, 0x5352ade3,
+        GAME_WORD_BLOB, "ic28",		0x0800000, 0x0200000, 0x44f4b15a,
+        GAME_WORD_BLOB, "ic30",		0x0a00000, 0x0200000, 0xfc4e56e6,
+        GAME_WORD_BLOB, "ic32",		0x0c00000, 0x0200000, 0x6f825b87,
+        GAME_WORD_BLOB, "ic34",		0x0e00000, 0x0200000, 0x62114a08,
+        GAME_WORD_BLOB, "ic36",		0x1000000, 0x0200000, 0x9a4109e5,
+        GAME_WORD_BLOB, "ic23",		0x1200000, 0x0200000, 0x9a4109e5,
+        GAME_WORD_BLOB, "ic25",		0x1400000, 0x0200000, 0x9a4109e5,
+        EEPROM_BLOB, "nclubv4.nv",  0x0000, 0x0080, 0x7efc9c6a,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
   {
     "nclubdis",
     NULL,
@@ -945,7 +969,27 @@ Game GameList[NB_STV_GAMES]={
         EEPROM_BLOB, 	"supgoal.nv",	0x0000, 0x0080, 0x63806aae,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    PATOCAR, /* FIX: shares the hopper+patocar input port with patocar/skychal/techbowl, was STV */
+  },
+  { /* ADDED: was missing from the game table (MAME has this romset) */
+    "chalgolf",
+    NULL,
+    "Challenge Golf (J 990326 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "ic22.bin",		0x0200000, 0x0200000, 0x1d887acc,
+        GAME_WORD_BLOB, "ic24.bin",		0x0400000, 0x0200000, 0x6091ee88,
+        GAME_WORD_BLOB, "ic26.bin",		0x0600000, 0x0200000, 0xaff38d56,
+        GAME_WORD_BLOB, "ic28.bin",		0x0800000, 0x0200000, 0x571cc8da,
+        GAME_WORD_BLOB, "ic30.bin",		0x0a00000, 0x0200000, 0xa67eabb0,
+        EEPROM_BLOB,	"chalgolf.nv",	0x0000, 0x0080, 0x6e89815f,
+        GAME_END, "", 0, 0, 0
+    },
+    PATOCAR,
   },
   {
     "othellos",
@@ -1192,9 +1236,9 @@ Game GameList[NB_STV_GAMES]={
     NV_1P,
     {
         GAME_WORD_BLOB, "ic22.bin",		0x0200000, 0x0200000, 0xa88e117d,
-        GAME_WORD_BLOB, "ic24.bin",		0x0600000, 0x0200000, 0xd98371e2,
+        GAME_WORD_BLOB, "ic24.bin",		0x0400000, 0x0200000, 0xd98371e2, /* FIX: was 0x0600000 */
         GAME_WORD_BLOB, "ic26.bin",		0x0600000, 0x0200000, 0xd0412c8d,
-        GAME_WORD_BLOB, "ic28.bin",		0x0600000, 0x0200000, 0x3c330c9b,
+        GAME_WORD_BLOB, "ic28.bin",		0x0800000, 0x0200000, 0x3c330c9b, /* FIX: was 0x0600000 */
         GAME_WORD_BLOB, "ic30.bin",		0x0a00000, 0x0200000, 0x00a0c702,
         EEPROM_BLOB,	"pclub26w.nv",	0x0000, 0x0080, 0x448f770d,
         GAME_END, "", 0, 0, 0
@@ -1283,11 +1327,11 @@ Game GameList[NB_STV_GAMES]={
     NULL,
     NV_1P,
     {
-        GAME_WORD_BLOB, "ic22.bin",		0x0200000, 0x0200000, 0x2faed82a,
-        GAME_WORD_BLOB, "ic24.bin",		0x0400000, 0x0200000, 0x9cacfb7b,
-        GAME_WORD_BLOB, "ic26.bin",		0x0600000, 0x0200000, 0x533a189e,
-        GAME_WORD_BLOB, "ic28.bin",		0x0800000, 0x0200000, 0x1f0c9113,
-        GAME_WORD_BLOB, "ic30.bin",		0x0a00000, 0x0200000, 0x0e188b8c,
+        GAME_WORD_BLOB, "pclb2elk_ic22",		0x0200000, 0x0200000, 0x2faed82a, /* FIX: was ic22.bin */
+        GAME_WORD_BLOB, "pclb2elk_ic24",		0x0400000, 0x0200000, 0x9cacfb7b, /* FIX: was ic24.bin */
+        GAME_WORD_BLOB, "pclb2elk_ic26",		0x0600000, 0x0200000, 0x533a189e, /* FIX: was ic26.bin */
+        GAME_WORD_BLOB, "pclb2elk_ic28",		0x0800000, 0x0200000, 0x1f0c9113, /* FIX: was ic28.bin */
+        GAME_WORD_BLOB, "pclb2elk_ic30",		0x0a00000, 0x0200000, 0x0e188b8c, /* FIX: was ic30.bin */
         EEPROM_BLOB,	"pclb2elk.nv",	0x0000, 0x0080, 0x54c7564f,
         GAME_END, "", 0, 0, 0
     },
@@ -1475,7 +1519,7 @@ Game GameList[NB_STV_GAMES]={
     NV_1P,
     {
         GAME_WORD_BLOB, "pclubpok_ic22",	0x0200000, 0x0200000, 0x48ab8371,
-        GAME_WORD_BLOB, "pclubpok_ic22",	0x0400000, 0x0200000, 0x9915faea,
+        GAME_WORD_BLOB, "pclubpok_ic24",	0x0400000, 0x0200000, 0x9915faea, /* FIX: was named pclubpok_ic22 (duplicate) */
         GAME_WORD_BLOB, "pclubpok_ic26",	0x0600000, 0x0200000, 0x054ad120,
         GAME_WORD_BLOB, "pclubpok_ic28",	0x0800000, 0x0200000, 0x3a654b2a,
         GAME_WORD_BLOB, "pclubpok_ic30",	0x0a00000, 0x0200000, 0x98747bef,
@@ -1502,6 +1546,7 @@ Game GameList[NB_STV_GAMES]={
         EEPROM_BLOB,    "pclub2pf.nv",      0x0000, 0x0080, 0x447bb3bd,
         GAME_END, "", 0, 0, 0
     },
+    STV, /* FIX: field was missing, silently zero-init'd to STV before */
   },
   {
     "pclub2v3",
@@ -1594,10 +1639,10 @@ Game GameList[NB_STV_GAMES]={
     NV_1P,
     {
         GAME_WORD_BLOB, "pclbyov1.ic22",    0x0200000, 0x0200000, 0x769468d1,
-        GAME_WORD_BLOB, "pclbyov2.ic24",    0x0400000, 0x0200000, 0xb25885bf,
-        GAME_WORD_BLOB, "pclbyov2.ic26",    0x0600000, 0x0200000, 0xcefc697f,
-        GAME_WORD_BLOB, "pclbyov2.ic28",    0x0800000, 0x0200000, 0x3c330c9b,
-        GAME_WORD_BLOB, "pclbyov2.ic30",    0x0a00000, 0x0200000, 0x00a0c702,
+        GAME_WORD_BLOB, "pclbyov1.ic24",    0x0400000, 0x0200000, 0xb25885bf, /* FIX: was pclbyov2.ic24 */
+        GAME_WORD_BLOB, "pclbyov1.ic26",    0x0600000, 0x0200000, 0xcefc697f, /* FIX: was pclbyov2.ic26 */
+        GAME_WORD_BLOB, "pclbyov1.ic28",    0x0800000, 0x0200000, 0x3c330c9b, /* FIX: was pclbyov2.ic28 */
+        GAME_WORD_BLOB, "pclbyov1.ic30",    0x0a00000, 0x0200000, 0x00a0c702, /* FIX: was pclbyov2.ic30 */
         EEPROM_BLOB,	"pclubyo2.nv",		0x0000, 0x0080, 0x2021e0e5,
         // EEPROM_BLOB,	"315-6055.ic12",	0x0000, 0x0000, 0x00000000, // PALCE16V8H-10JC on the front side of the cart
         // EEPROM_BLOB,	"315-6056.ic13",	0x0000, 0x0200, 0x01170000, // PALCE16V8H-10JC on the back side of the cart
@@ -1643,7 +1688,7 @@ Game GameList[NB_STV_GAMES]={
         EEPROM_BLOB,	"kiwames.nv",	0x0000, 0x0080, 0xc7002732,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    STVMP, /* FIX: mahjong-panel game, was STV */
   },
   {
     "puyosun",
@@ -1998,6 +2043,26 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB,	"mpr-21297.ic9",	0x2000000, 0x0400000, 0x4bff7469,
         GAME_WORD_BLOB,	"mpr-21298.ic10",	0x2400000, 0x0400000, 0x68d07144,
         GAME_WORD_BLOB,	"mpr-21299.ic11",	0x2800000, 0x0400000, 0xecc521c6,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  { /* ADDED: was missing from the game table (MAME has this romset) */
+    "tsuribor",
+    NULL,
+    "Tsuribori Taikai (JAE 980605 V1.000)",
+    STV_REGION_JP | STV_REGION_EU,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut.ic22",	0x0200000, 0x0200000, 0xf18764a5,
+        GAME_WORD_BLOB, "lh28f016sut.ic24",	0x0400000, 0x0200000, 0x47810ffc,
+        GAME_WORD_BLOB, "lh28f016sut.ic26",	0x0600000, 0x0200000, 0xd36a3b4c,
+        GAME_WORD_BLOB, "lh28f016sut.ic28",	0x0800000, 0x0200000, 0x341fb80e,
+        GAME_WORD_BLOB, "lh28f016sut.ic30",	0x0a00000, 0x0200000, 0x03b9eacf,
+        EEPROM_BLOB,	"tsuribor.nv",	0x0000, 0x0080, 0x47c7fa6e,
         GAME_END, "", 0, 0, 0
     },
     STV,
@@ -2888,8 +2953,9 @@ int STVGetRomList(const char* path, int force){
   memset(availableGames, 0x0, sizeof(GameLink)*NB_STV_GAMES);
   snprintf(savefile, MAX_LENGTH_FILEPATH, "%s/gamelistv2.save", path);
   if (force == 0) {
+    // Load the existing cache first, but do not return yet.
+    // We still scan the ROM directory so newly added games are detected.
     nbGames = loadGames(savefile);
-    if (nbGames != 0) return nbGames;
   }
   struct dirent *dir;
   d = opendir(path);
@@ -2936,8 +3002,9 @@ int STVGetRomList(const char* path, int force){
   snprintf(savefile, MAX_LENGTH_FILEPATH, "%s/gamelistv2.save", path);
   snprintf(pathfile, MAX_LENGTH_FILEPATH, "%s/*.zip", path);
   if (force == 0) {
+    // Load the existing cache first, but do not return yet.
+    // We still scan the ROM directory so newly added games are detected.
     nbGames = loadGames(savefile);
-    if (nbGames != 0) return nbGames;
   }
   HANDLE hFind;
   WIN32_FIND_DATAA FindFileData;
@@ -3032,7 +3099,9 @@ int loadGames(char* path) {
 int STVGetSingle(const char *pathfile, const char *biospath, char **romset){
   int i, nbGames = 0;
   memset(availableGames, 0x0, sizeof(GameLink)*NB_STV_GAMES);
-  struct dirent *dir;
+  /* FIX: removed unused "struct dirent *dir;" - it was never used here,
+     and dirent.h is only included under #ifndef WIN32, so this line
+     failed to compile on WIN32 builds. */
   //Force a detection of the bios first
   updateGameList(biospath, &nbGames);
   *romset = updateGameList(pathfile, &nbGames);
@@ -3092,4 +3161,3 @@ int STVDeInit(){
 #ifdef __cplusplus
 }
 #endif
-
