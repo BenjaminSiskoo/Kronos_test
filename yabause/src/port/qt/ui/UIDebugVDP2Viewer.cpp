@@ -201,7 +201,14 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  ODD="<<((r.TVSTAT>>1)&1)<<"  PAL="<<(r.TVSTAT&1)<<"\n";
     // ST-058-R2 §3.3 : bit2=HBSY (H-blank busy), bit3=VBSY (V-blank busy)
     d<<"  HBSY="<<((r.TVSTAT>>2)&1)<<"  VBSY="<<((r.TVSTAT>>3)&1)<<"\n";
-    d<<"  H="<<DEC(r.HCNT)<<"  V="<<DEC(r.VCNT)<<"\n";
+    // ST-058-R2 ch.2 p.23-24 + EXLTEN (p.19) : HCNT/VCNT ne sont PAS des
+    // compteurs live. Avec EXLTEN=0 ils sont latches a la lecture du
+    // registre EXTEN par le jeu ; avec EXLTEN=1, par un signal externe.
+    // Les afficher a cote de HBSY/VBSY (qui, eux, sont live) laissait
+    // croire a une incoherence quand le jeu n'avait pas relu EXTEN depuis
+    // longtemps. L'etiquette dit maintenant d'ou vient la valeur.
+    d<<"  HCNT="<<DEC(r.HCNT)<<"  VCNT="<<DEC(r.VCNT)
+      <<"  (valeurs latchees, "<<((r.EXTEN&0x200)?"EXLTEN=1: signal externe":"EXLTEN=0: derniere lecture de EXTEN")<<")\n";
 
     // EWDR — External Write Data Register (ST-058-R2 §3.4 / addr 0x25F8000C)
     // Contient la donnée écrite lors d'un accès externe au VDP2. 16 bits, écriture seule.
