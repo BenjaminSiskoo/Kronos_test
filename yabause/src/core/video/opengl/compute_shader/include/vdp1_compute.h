@@ -70,7 +70,7 @@ extern int get_vdp1_tex(int);
 extern int get_vdp1_mesh(int);
 extern int vdp1_add(vdp1cmd_struct* cmd, int clipcmd);
 extern int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd);
-extern void vdp1_clear(int id, float *col, int* limits);
+extern void vdp1_clear(int id, float *col, float *colOdd, int xdiv, int* limits);
 extern u32* vdp1_get_directFB();
 extern void vdp1_setup(void);
 extern void vdp1_compute_reset(void);
