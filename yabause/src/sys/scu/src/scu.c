@@ -31,7 +31,6 @@
 #include "vdp1.h"
 #include "yabause.h"
 #include <inttypes.h>
-
 Scu * ScuRegs;
 scudspregs_struct * ScuDsp;
 scubp_struct * ScuBP;
@@ -166,10 +165,30 @@ static void DoDMA(u32 ReadAddress, unsigned int ReadAdd,
       // DMA fill
       // Is it a constant source or a register whose value can change from
       // read to read?
-      int constant_source = ((ReadAddress & 0x1FF00000) == 0x00200000)
-                         || ((ReadAddress & 0x1E000000) == 0x06000000)
-                         || ((ReadAddress & 0x1FF00000) == 0x05A00000)
-                         || ((ReadAddress & 0x1DF00000) == 0x05C00000);
+      /* "Source constante" = remplissage : la branche correspondante lit UN
+       * seul long word et le reecrit jusqu'a la fin du transfert. Ce n'est
+       * legitime que lorsque la valeur d'incrementation de lecture est nulle
+       * (SCU : D0R/D1R/D2R read add value = 0), cas ou l'adresse source ne
+       * bouge pas et ou le materiel relit indefiniment le meme mot.
+       *
+       * Le test portait sur la REGION de l'adresse source -- Work RAM haute
+       * et basse, Sound RAM, VRAM VDP1 -- ce qui n'a aucun rapport. Toute
+       * copie normale depuis la Work RAM vers le B-Bus etait donc convertie
+       * en remplissage et perdait ses donnees.
+       *
+       * Cas reel (J.League Victory Goal '97) : le jeu transfere 98 octets de
+       * 0x06026952 vers 0x25F8000E, soit le bloc de registres VDP2 a partir
+       * de RAMCTL, avec readAdd=4 writeAdd=2. La source etant en HWRAM, le
+       * bloc entier recevait le meme long word repete ; BGON heritait ainsi
+       * de 0xFFFF, ce qui met R0ON et R1ON a 1. ST-058-R2 ch.4.1 p.68 :
+       * "When both R0ON and R1ON are 1, the normal scroll screen can no
+       * longer be displayed" -- NBG0 et NBG1 disparaissaient donc
+       * legitimement, faute d'un BGON correct.
+       *
+       * Noter que la branche de copie traite deja correctement le cas
+       * ReadAdd == 0 : elle ajoute 0 a chaque tour et relit la meme adresse.
+       * La branche "constante" n'est qu'une optimisation. */
+      int constant_source = (ReadAdd == 0);
 
       if ((WriteAddress & 0x1FFFFFFF) >= 0x5A00000
             && (WriteAddress & 0x1FFFFFFF) < 0x5FF0000) {
@@ -195,7 +214,20 @@ static void DoDMA(u32 ReadAddress, unsigned int ReadAdd,
          } else {
             u32 counter = 0;
             while (counter < TransferSize) {
-               u32 tmp = DMAMappedMemoryReadLong(ReadAddress);
+               /* Meme precaution d'alignement que dans la branche
+                * constant_source ci-dessus : depuis que constant_source ne
+                * capture plus toutes les sources en Work RAM, ce chemin est
+                * atteint avec des adresses source impaires en mots. Les jeux
+                * en produisent -- J.League Victory Goal '97 transfere depuis
+                * 0x06026952 -- et un acces 32 bits mal aligne fait planter
+                * certaines plateformes. */
+               u32 tmp;
+               if (ReadAddress & 2) {
+                  tmp = DMAMappedMemoryReadWord(ReadAddress) << 16
+                      | DMAMappedMemoryReadWord(ReadAddress + 2);
+               } else {
+                  tmp = DMAMappedMemoryReadLong(ReadAddress);
+               }
                DMAMappedMemoryWriteWord(WriteAddress, (u16)(tmp >> 16));
                WriteAddress += WriteAdd;
                DMAMappedMemoryWriteWord(WriteAddress, (u16)tmp);
@@ -992,10 +1024,31 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       // wrong halfword ends up written to a given register. This is how an
       // unrelated value can land in, e.g., VDP2's SPCTL (Sprite Type)
       // register, corrupting sprite rendering (Kronos issue #1503).
+      //
+      // La lecture 32 bits ci-dessous doit tolerer une source qui n'est pas
+      // alignee sur 4, comme le font deja les trois autres branches de ce
+      // fichier et DoDMA(). DMAMappedMemoryReadLong() descend sur
+      // T2ReadLong() pour la Work RAM, qui masque l'adresse avec ~0x3 : une
+      // lecture a une adresse impaire en mots rend le long word PRECEDENT,
+      // donc le mot d'avant suivi du mot voulu. Tout le flux glisse alors
+      // d'un mot et chaque registre recoit la valeur destinee au precedent.
+      //
+      // Cas reel (J.League Victory Goal '97) : bloc de 98 octets depuis
+      // 0x0602B2C6 vers 0x25F8000E, soit les registres VDP2 a partir de
+      // RAMCTL. Decale d'un mot, BGON recevait le 0xFFFF destine a CYCB1U
+      // au lieu de son 0x001F, ce qui mettait R0ON et R1ON a 1 ; d'apres
+      // ST-058-R2 ch.4.1 p.68 les quatre couches NBG cessent alors d'etre
+      // affichees, d'ou la disparition du fond.
       u32 start = dma->WriteAddress;
       while (*time > 0) {
         *time -= 1;
-        u32 tmp = DMAMappedMemoryReadLong(dma->ReadAddress);
+        u32 tmp;
+        if (dma->ReadAddress & 2) {  // Avoid misaligned access
+          tmp = DMAMappedMemoryReadWord(dma->ReadAddress) << 16
+              | DMAMappedMemoryReadWord(dma->ReadAddress + 2);
+        } else {
+          tmp = DMAMappedMemoryReadLong(dma->ReadAddress);
+        }
         DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(tmp >> 16));
         dma->WriteAddress += dma->WriteAdd;
         DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)tmp);
