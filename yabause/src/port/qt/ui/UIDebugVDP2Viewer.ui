@@ -98,6 +98,10 @@
         <item><widget class="QLabel" name="lVramOff"><property name="text"><string>  Offset (hex):</string></property></widget></item>
         <item><widget class="QLineEdit" name="leVramOffset"><property name="text"><string>0</string></property><property name="maximumWidth"><number>80</number></property></widget></item>
         <item><widget class="QPushButton" name="pbVramGo"><property name="text"><string>Go</string></property><property name="maximumWidth"><number>50</number></property></widget></item>
+        <item><widget class="QPushButton" name="pbVramExport">
+         <property name="toolTip"><string>Save the selected VRAM bank to a raw .bin file</string></property>
+         <property name="text"><string>Export bank (.bin)...</string></property>
+        </widget></item>
         <item><spacer name="hs4"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout></item>
        <item><widget class="QPlainTextEdit" name="pteVramHex">
