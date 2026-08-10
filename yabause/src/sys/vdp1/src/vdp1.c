@@ -1120,7 +1120,19 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
    * to render end codes as transparent pixels. §10 p.155: the hardware
    * internally ignores end codes when HSS=1 but does NOT rewrite
    * CMDPMOD; the renderer relies on cmd->hss to know this. */
+  /* ST-013-R3 §6.3 p.86, tableau HSS/ECD : HSS=1 ne neutralise les end
+   * codes QU'EN REDUCTION horizontale.
+   *   HSS=0           , ECD=0 -> end code actif
+   *   HSS=1 & enlarge , ECD=0 -> end code ACTIF
+   *   HSS=1 & reduce  , ECD=0 -> end code neutralise
+   *   HSS=1           , ECD=1 -> end code neutralise
+   * Le code recopiait CMDPMOD bit 12 tel quel, ce qui neutralisait les
+   * end codes aussi en agrandissement : les pixels de code de fin
+   * etaient alors dessines comme des pixels de couleur. */
   cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+  /* Un sprite normal est trace a l'echelle 1:1 : jamais de reduction
+   * horizontale, donc les end codes restent actifs. */
+  if (cmd->hss) cmd->hss = 0;
   cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
 
 
@@ -1406,7 +1418,20 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	// VDP1 Manual §4.2 EOS bit (FBCR bit 4):
 	// When HSS=1, EOS selects even(0) or odd(1) pixel sampling
 	// cmd->hss already set; add eos field:
+  /* ST-013-R3 §6.3 p.86, tableau HSS/ECD : HSS=1 ne neutralise les end
+   * codes QU'EN REDUCTION horizontale.
+   *   HSS=0           , ECD=0 -> end code actif
+   *   HSS=1 & enlarge , ECD=0 -> end code ACTIF
+   *   HSS=1 & reduce  , ECD=0 -> end code neutralise
+   *   HSS=1           , ECD=1 -> end code neutralise
+   * Le code recopiait CMDPMOD bit 12 tel quel, ce qui neutralisait les
+   * end codes aussi en agrandissement : les pixels de code de fin
+   * etaient alors dessines comme des pixels de couleur. */
 	cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+	if (cmd->hss) {
+		int dispw = abs((int)cmd->CMDXB - (int)cmd->CMDXA) + 1;
+		if (dispw >= (int)MAX(1u, cmd->w)) cmd->hss = 0; /* agrandissement ou 1:1 */
+	}
 	// EOS is only meaningful when HSS=1
 	cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1; // 0=even coords, 1=odd coords
 	 /* VDP1 §6.3: color calculation mode 101B is prohibited */
@@ -1453,7 +1478,23 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
    * and never assigned: since 'cmd' is reused across the command loop, a
    * distorted sprite inherited the previous command's hss/eos, mis-handling
    * end codes on HSS=1 distorted sprites. */
+  /* ST-013-R3 §6.3 p.86, tableau HSS/ECD : HSS=1 ne neutralise les end
+   * codes QU'EN REDUCTION horizontale.
+   *   HSS=0           , ECD=0 -> end code actif
+   *   HSS=1 & enlarge , ECD=0 -> end code ACTIF
+   *   HSS=1 & reduce  , ECD=0 -> end code neutralise
+   *   HSS=1           , ECD=1 -> end code neutralise
+   * Le code recopiait CMDPMOD bit 12 tel quel, ce qui neutralisait les
+   * end codes aussi en agrandissement : les pixels de code de fin
+   * etaient alors dessines comme des pixels de couleur. */
   cmd->hss = (cmd->CMDPMOD >> 12) & 0x1;
+  if (cmd->hss) {
+    /* Quadrilatere quelconque : on compare la plus grande arete
+     * horizontale affichee a la largeur du caractere. */
+    int wAB = abs((int)cmd->CMDXB - (int)cmd->CMDXA) + 1;
+    int wDC = abs((int)cmd->CMDXC - (int)cmd->CMDXD) + 1;
+    if (MAX(wAB, wDC) >= (int)MAX(1u, cmd->w)) cmd->hss = 0;
+  }
   cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
 
   if ( CONVERTCMD(&cmd->CMDXA) ||
@@ -3065,7 +3106,10 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
       case 0:
       {
          // 4 bpp Bank mode
-         u32 colorBank = cmd.CMDCOLR;
+         /* ST-013-R3 §6.3 : en mode banque les bits bas de CMDCOLR sont
+          * ignores par le materiel (4 bits de code couleur ici). Le
+          * shader masquait deja correctement, pas cette fonction. */
+         u32 colorBank = cmd.CMDCOLR & 0xFFF0;
          u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i;
 
@@ -3073,6 +3117,13 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
          {
             u16 j;
             j = 0;
+               /* ST-013-R3 §6.3 p.86 : "Drawing in the horizontal direction
+                * is terminated when an end code is read twice" -- le compte
+                * est PAR LIGNE. 'code' etait initialise une seule fois avant
+                * la boucle : une ligne contenant un nombre impair d'end codes
+                * laissait le compteur a 1, et la ligne suivante se faisait
+                * couper des son premier end code. */
+               code = 0;
             while(j < w[0])
             {
                dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
@@ -3120,6 +3171,13 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
          {
             u16 j;
             j = 0;
+               /* ST-013-R3 §6.3 p.86 : "Drawing in the horizontal direction
+                * is terminated when an end code is read twice" -- le compte
+                * est PAR LIGNE. 'code' etait initialise une seule fois avant
+                * la boucle : une ligne contenant un nombre impair d'end codes
+                * laissait le compteur a 1, et la ligne suivante se faisait
+                * couper des son premier end code. */
+               code = 0;
             while(j < w[0])
             {
                dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
@@ -3174,20 +3232,53 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
       case 2:
       {
          // 8 bpp(64 color) Bank mode
-         u32 colorBank = cmd.CMDCOLR;
+         /* ST-013-R3 §6.3 : 6 bits de code couleur -> CMDCOLR & 0xFFC0. */
+         u32 colorBank = cmd.CMDCOLR & 0xFFC0;
          u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
-
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
          {
-            for(j = 0;j < w[0];j++)
+            j = 0;
+               /* ST-013-R3 §6.3 p.86 : "Drawing in the horizontal direction
+                * is terminated when an end code is read twice" -- le compte
+                * est PAR LIGNE. 'code' etait initialise une seule fois avant
+                * la boucle : une ligne contenant un nombre impair d'end codes
+                * laissait le compteur a 1, et la ligne suivante se faisait
+                * couper des son premier end code. */
+               code = 0;
+            while(j < w[0])
             {
-               dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF) & 0x3F;
+               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
+                * code est FFH sur 8 bits. Il doit etre teste sur l'octet
+                * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
+                * 0x7F (mode 3) le detruiraient.
+                * Ces trois cas ne traitaient PAS du tout les end codes,
+                * contrairement aux cas 0, 1 et 5. L'apercu affichait donc
+                * un caractere complet la ou le moteur de rendu tronque
+                * correctement chaque ligne, ce qui rendait cet apercu
+                * inutilisable pour diagnostiquer un sprite tronque. */
+               if (isendcode && (ret = CheckEndcode(raw, 0xFF, &code)) > 0)
+               {
+                  /* count>1 : DoEndcode remplit la fin de ligne de pixels
+                   * transparents, avance charAddr et renvoie 1 -> on sort.
+                   * count==1 : il a deja emis le pixel transparent du
+                   * premier end code, on poursuit la ligne. */
+                  if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 0, 8))
+                     break;
+                  charAddr++;
+                  j += 1;
+                  continue;
+               }
+
+               dot = raw & 0x3F;
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+
+               j += 1;
             }
          }
          break;
@@ -3195,19 +3286,53 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
       case 3:
       {
          // 8 bpp(128 color) Bank mode
-         u32 colorBank = cmd.CMDCOLR;
+         /* ST-013-R3 §6.3 : 7 bits de code couleur -> CMDCOLR & 0xFF80. */
+         u32 colorBank = cmd.CMDCOLR & 0xFF80;
          u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
          {
-            for(j = 0;j < w[0];j++)
+            j = 0;
+               /* ST-013-R3 §6.3 p.86 : "Drawing in the horizontal direction
+                * is terminated when an end code is read twice" -- le compte
+                * est PAR LIGNE. 'code' etait initialise une seule fois avant
+                * la boucle : une ligne contenant un nombre impair d'end codes
+                * laissait le compteur a 1, et la ligne suivante se faisait
+                * couper des son premier end code. */
+               code = 0;
+            while(j < w[0])
             {
-               dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF) & 0x7F;
+               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
+                * code est FFH sur 8 bits. Il doit etre teste sur l'octet
+                * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
+                * 0x7F (mode 3) le detruiraient.
+                * Ces trois cas ne traitaient PAS du tout les end codes,
+                * contrairement aux cas 0, 1 et 5. L'apercu affichait donc
+                * un caractere complet la ou le moteur de rendu tronque
+                * correctement chaque ligne, ce qui rendait cet apercu
+                * inutilisable pour diagnostiquer un sprite tronque. */
+               if (isendcode && (ret = CheckEndcode(raw, 0xFF, &code)) > 0)
+               {
+                  /* count>1 : DoEndcode remplit la fin de ligne de pixels
+                   * transparents, avance charAddr et renvoie 1 -> on sort.
+                   * count==1 : il a deja emis le pixel transparent du
+                   * premier end code, on poursuit la ligne. */
+                  if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 0, 8))
+                     break;
+                  charAddr++;
+                  j += 1;
+                  continue;
+               }
+
+               dot = raw & 0x7F;
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+
+               j += 1;
             }
          }
          break;
@@ -3215,19 +3340,53 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
       case 4:
       {
          // 8 bpp(256 color) Bank mode
-         u32 colorBank = cmd.CMDCOLR;
+         /* ST-013-R3 §6.3 : 8 bits de code couleur -> CMDCOLR & 0xFF00. */
+         u32 colorBank = cmd.CMDCOLR & 0xFF00;
          u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
          {
-            for(j = 0;j < w[0];j++)
+            j = 0;
+               /* ST-013-R3 §6.3 p.86 : "Drawing in the horizontal direction
+                * is terminated when an end code is read twice" -- le compte
+                * est PAR LIGNE. 'code' etait initialise une seule fois avant
+                * la boucle : une ligne contenant un nombre impair d'end codes
+                * laissait le compteur a 1, et la ligne suivante se faisait
+                * couper des son premier end code. */
+               code = 0;
+            while(j < w[0])
             {
-               dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
+                * code est FFH sur 8 bits. Il doit etre teste sur l'octet
+                * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
+                * 0x7F (mode 3) le detruiraient.
+                * Ces trois cas ne traitaient PAS du tout les end codes,
+                * contrairement aux cas 0, 1 et 5. L'apercu affichait donc
+                * un caractere complet la ou le moteur de rendu tronque
+                * correctement chaque ligne, ce qui rendait cet apercu
+                * inutilisable pour diagnostiquer un sprite tronque. */
+               if (isendcode && (ret = CheckEndcode(raw, 0xFF, &code)) > 0)
+               {
+                  /* count>1 : DoEndcode remplit la fin de ligne de pixels
+                   * transparents, avance charAddr et renvoie 1 -> on sort.
+                   * count==1 : il a deja emis le pixel transparent du
+                   * premier end code, on poursuit la ligne. */
+                  if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 0, 8))
+                     break;
+                  charAddr++;
+                  j += 1;
+                  continue;
+               }
+
+               dot = raw;
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+
+               j += 1;
             }
          }
          break;
@@ -3239,6 +3398,8 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
 
          for(i = 0;i < h[0];i++)
          {
+            /* ST-013-R3 §6.3 p.86 : le compte d'end codes est PAR LIGNE. */
+            code = 0;
             for(j = 0;j < w[0];j++)
             {
                dot = T1ReadWord(Vdp1Ram, charAddr & 0x7FFFF);
