@@ -40,6 +40,10 @@ private:
     void updateStats();
     void updateColorRam();
     void updateVramHex();
+    // Base et taille de la banque VRAM selectionnee dans cbVramBank.
+    // Factorise entre updateVramHex() et on_pbVramExport_clicked() pour
+    // que l'affichage hexa et le fichier exporte ne puissent pas diverger.
+    void vramBankRange(u32 *base, u32 *size) const;
     // Met à jour les données de l'onglet actuellement affiché dans
     // tabWidget (Registers/Debug/Color RAM/VRAM Hex). L'onglet Screen
     // Viewer (index 0) n'est pas géré ici : son rendu est piloté par les
@@ -71,6 +75,7 @@ protected slots:
     void on_tabWidget_currentChanged(int index);
     void on_cbVramBank_currentIndexChanged(int index);
     void on_pbVramGo_clicked();
+    void on_pbVramExport_clicked();
     void on_cbCramHex_toggled(bool checked);
     void on_pbExportDebugInfo_clicked();
 };
