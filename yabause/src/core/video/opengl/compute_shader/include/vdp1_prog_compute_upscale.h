@@ -396,7 +396,10 @@ SHADER_VERSION_COMPUTE
 "  uint dot;\n"
 "  bool SPD = ((pixcmd.CMDPMOD & 0x40u) != 0);\n"
 "  bool END = ((pixcmd.CMDPMOD & 0x80u) != 0);\n"
-"  if ((!END) && (x > endIndex[y])) {discarded = true; return vec4(0.0);}\n"
+/* ST-013-R3 6.3 p.87 : la coupure suit le sens de trace. Avec H-flip
+ * la colonne de coupure est une borne BASSE en espace texture. */
+"  bool hflipEC = ((pixcmd.flip & 0x1u) == 0x1u);\n"
+"  if ((!END) && (hflipEC ? (x < endIndex[y]) : (x > endIndex[y]))) {discarded = true; return vec4(0.0);}\n"
 "  discarded = false;\n"
 "  switch ((pixcmd.CMDPMOD >> 3) & 0x7u)\n"
 "  {\n"
@@ -519,8 +522,18 @@ SHADER_VERSION_COMPUTE
 "  uint color = 0;\n"
 "  uint nbEnd = 0;\n"
 "  ivec2 texSize = ivec2(((pixcmd.CMDSIZE >> 8) & 0x3F)<<3,pixcmd.CMDSIZE & 0xFF );\n"
-"  for (uint x=0; x<texSize.x; x++) {\n"
-"   uint pos = y*texSize.x+x;\n"
+/* ST-013-R3 6.3 p.86-87 :
+ *  - le comptage des 2 end codes suit le sens de trace (H-flip) ;
+ *  - HSS=1 ne neutralise les end codes qu'en REDUCTION horizontale.
+ *    En agrandissement (largeur affichee >= largeur du caractere) ils
+ *    restent actifs. Ce test manquait completement ici alors qu'il
+ *    existait dans vdp1_prog_compute.h. */
+"  bool hflip = ((pixcmd.flip & 0x1u) == 0x1u);\n"
+"  uint dispw = uint(abs(pixcmd.CMDXB - pixcmd.CMDXA)) + 1u;\n"
+"  bool hss = (((pixcmd.CMDPMOD >> 12) & 0x1u) != 0u) && (dispw < pixcmd.w);\n"
+"  for (uint i=0; i<uint(texSize.x); i++) {\n"
+"   uint x = hflip ? (uint(texSize.x)-1u) - i : i;\n"
+"   uint pos = y*uint(texSize.x)+x;\n"
 "   uint charAddr = ((pixcmd.CMDSRCA * 8)& 0x7FFFFu) + pos;\n"
 "   uint dot;\n"
 "   switch ((pixcmd.CMDPMOD >> 3) & 0x7u)\n"
@@ -533,7 +546,7 @@ SHADER_VERSION_COMPUTE
 "      dot = Vdp1RamReadByte(charAddr);\n"
 "      if ((x & 0x1u) == 0u) dot = (dot>>4)&0xFu;\n"
 "      else dot = (dot)&0xFu;\n"
-"      if (dot == 0x0Fu) {\n"
+"      if ((dot == 0x0Fu) && !hss) {\n"
 "       nbEnd += 1;\n"
 "      }\n"
 "      break;\n"
@@ -545,7 +558,7 @@ SHADER_VERSION_COMPUTE
 "       dot = Vdp1RamReadByte(charAddr);\n"
 "       if ((x & 0x1u) == 0u) dot = (dot>>4)&0xFu;\n"
 "       else dot = (dot)&0xFu;\n"
-"       if (dot == 0x0Fu) {\n"
+"       if ((dot == 0x0Fu) && !hss) {\n"
 "        nbEnd += 1;\n"
 "       }\n"
 "       break;\n"
@@ -555,7 +568,7 @@ SHADER_VERSION_COMPUTE
 "      // 8 bpp(64 color) Bank mode\n"
 "      uint colorBank = pixcmd.CMDCOLR & 0xFFC0u;\n"
 "      dot = Vdp1RamReadByte(charAddr);\n"
-"      if (dot == 0xFFu) {\n"
+"      if ((dot == 0xFFu) && !hss) {\n"
 "       nbEnd += 1;\n"
 "      }\n"
 "      break;\n"
@@ -565,7 +578,7 @@ SHADER_VERSION_COMPUTE
 "      // 8 bpp(128 color) Bank mode\n"
 "      uint colorBank = pixcmd.CMDCOLR & 0xFF80u;\n"
 "      dot = Vdp1RamReadByte(charAddr);\n"
-"      if (dot == 0xFFu) {\n"
+"      if ((dot == 0xFFu) && !hss) {\n"
 "       nbEnd += 1;\n"
 "      }\n"
 "      break;\n"
@@ -575,7 +588,7 @@ SHADER_VERSION_COMPUTE
 "      // 8 bpp(256 color) Bank mode\n"
 "      uint colorBank = pixcmd.CMDCOLR & 0xFF00u;\n"
 "      dot = Vdp1RamReadByte(charAddr);\n"
-"      if (dot == 0xFFu) {\n"
+"      if ((dot == 0xFFu) && !hss) {\n"
 "       nbEnd += 1;\n"
 "      }\n"
 "      break;\n"
@@ -586,7 +599,7 @@ SHADER_VERSION_COMPUTE
 "      uint temp;\n"
 "      charAddr += pos;\n"
 "      temp = Vdp1RamReadWord(charAddr);\n"
-"      if (temp == 0x7FFFu) {\n"
+"      if ((temp == 0x7FFFu) && !hss) {\n"
 "       nbEnd += 1;\n"
 "      }\n"
 "      break;\n"
@@ -600,7 +613,8 @@ SHADER_VERSION_COMPUTE
 "   // separe le 2e du 3e etait dessine a tort.\n"
 "   if (nbEnd >= 2) return x;"
 "  }\n"
-" return 1024;\n"
+/* Sentinelle orientee : voir vdp1_prog_compute.h. */
+" return hflip ? 0u : 1024u;\n"
 "}\n"
 
 "void main()\n"
