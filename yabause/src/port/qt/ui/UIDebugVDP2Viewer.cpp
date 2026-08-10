@@ -710,6 +710,35 @@ void UIDebugVDP2Viewer::updateColorRam()
 // ============================================================
 //  updateVramHex  — hex dump of a VRAM bank region
 // ============================================================
+// ============================================================
+//  vramBankRange - base et taille de la banque selectionnee.
+//
+//  L'ordre des cas doit suivre celui des entrees de cbVramBank dans le
+//  .ui, qui est A, B, A0, A1, B0, B1. L'ancien code supposait
+//  A0, A1, B0, B1, A, B : cinq entrees sur six pointaient sur la mauvaise
+//  banque. Choisir "VRAM-B1 (0x60000-0x7FFFF)" affichait 0x40000 et
+//  "VRAM-B0 (0x40000-0x5FFFF)" affichait 0x00000, l'en-tete "VRAM @ ..."
+//  reportant cette fausse adresse sans rien signaler.
+//
+//  Les libelles decrivent la configuration 4 Mbit (VRSIZE bit 15 a 0) :
+//  A = 0x00000-0x3FFFF, B = 0x40000-0x7FFFF, chacune divisible en deux
+//  moities de 128 Ko. En 8 Mbit tout double, d'ou le facteur ci-dessous ;
+//  les libelles du .ui, eux, restent ceux du 4 Mbit.
+// ============================================================
+void UIDebugVDP2Viewer::vramBankRange(u32 *base, u32 *size) const
+{
+    const u32 mul = (Vdp2Regs && ((Vdp2Regs->VRSIZE >> 15) & 1)) ? 2u : 1u;
+    switch (cbVramBank->currentIndex()) {
+        case 0: *base=0x00000;     *size=0x40000*mul; break; // VRAM-A
+        case 1: *base=0x40000*mul; *size=0x40000*mul; break; // VRAM-B
+        case 2: *base=0x00000;     *size=0x20000*mul; break; // VRAM-A0
+        case 3: *base=0x20000*mul; *size=0x20000*mul; break; // VRAM-A1
+        case 4: *base=0x40000*mul; *size=0x20000*mul; break; // VRAM-B0
+        case 5: *base=0x60000*mul; *size=0x20000*mul; break; // VRAM-B1
+        default: *base=0x00000;    *size=0x40000*mul; break;
+    }
+}
+
 void UIDebugVDP2Viewer::updateVramHex()
 {
     pteVramHex->clear();
@@ -720,18 +749,8 @@ void UIDebugVDP2Viewer::updateVramHex()
     //   VRSIZE bit 15 = 0 → 4Mbit (A0=256KB, B0=256KB, pas de A1/B1)
     //   VRSIZE bit 15 = 1 → 8Mbit (A0=A1=B0=B1=128KB chacun)
     // Les banques 2-5 (divisions en 128KB) ne sont valides qu'en 8Mbit.
-    bool is8Mbit = Vdp2Regs && ((Vdp2Regs->VRSIZE >> 15) & 1);
-    int bank = cbVramBank->currentIndex();
     u32 base=0, bSize=0;
-    switch(bank){
-        case 0: base=0x00000; bSize=is8Mbit?0x20000:0x40000; break; // A0
-        case 1: base=is8Mbit?0x20000:0x40000; bSize=is8Mbit?0x20000:0x40000; break; // A1 or B0
-        case 2: base=0x40000; bSize=0x20000; break; // B0-lo (8Mbit only)
-        case 3: base=0x60000; bSize=0x20000; break; // B0-hi (8Mbit only)
-        case 4: base=0x00000; bSize=0x40000; break; // Full A (4Mbit view)
-        case 5: base=0x40000; bSize=0x40000; break; // Full B (4Mbit view)
-        default: base=0x00000; bSize=0x40000; break;
-    }
+    vramBankRange(&base, &bSize);
 
     bool ok=false;
     u32 offset = leVramOffset->text().toUInt(&ok,16);
@@ -950,6 +969,62 @@ void UIDebugVDP2Viewer::on_cbScreen_currentIndexChanged(int index)
 void UIDebugVDP2Viewer::on_cbOpaque_toggled(bool)             { displayCurrentScreen(); }
 void UIDebugVDP2Viewer::on_cbVramBank_currentIndexChanged(int){ updateVramHex(); }
 void UIDebugVDP2Viewer::on_pbVramGo_clicked()                 { updateVramHex(); }
+
+// ============================================================
+//  on_pbVramExport_clicked - enregistre la banque VRAM selectionnee dans
+//  un fichier binaire brut.
+//
+//  L'onglet hexa n'affiche que 512 octets a la fois, ce qui suffit pour
+//  jeter un oeil mais pas pour comparer une table de noms de motifs ou un
+//  jeu de tuiles entier. Le fichier brut permet de traiter la banque avec
+//  n'importe quel outil externe.
+//
+//  La base et la taille viennent de vramBankRange(), la meme fonction que
+//  l'affichage hexa : les deux ne peuvent pas diverger.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbVramExport_clicked()
+{
+    if (!Vdp2Ram) {
+        CommonDialogs::error(QtYabause::translate("VDP2 RAM not available."));
+        return;
+    }
+
+    u32 base=0, bSize=0;
+    vramBankRange(&base, &bSize);
+
+    /* Le tableau fait 512 Ko en 4 Mbit et 1 Mo en 8 Mbit ; on borne pour ne
+     * jamais lire au-dela, y compris si VRSIZE a change entre-temps. */
+    const u32 ramSize = (Vdp2Regs && ((Vdp2Regs->VRSIZE >> 15) & 1)) ? 0x100000u : 0x80000u;
+    if (base >= ramSize) return;
+    if (base + bSize > ramSize) bSize = ramSize - base;
+
+    /* Nom par defaut portant la banque et son adresse : en comparant
+     * plusieurs captures on retrouve tout de suite laquelle est laquelle. */
+    const QString label = cbVramBank->currentText().section(' ', 0, 0);
+    const QString suggested = QString("vdp2_vram_%1_0x%2_%3.bin")
+        .arg(label)
+        .arg(base, 5, 16, QChar('0'))
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    QString path = CommonDialogs::getSaveFileName(suggested,
+        QtYabause::translate("Choose a location for the VRAM dump"),
+        QtYabause::translate("Binary files (*.bin)"));
+    if (path.isEmpty())
+        return;
+
+    if (!path.endsWith(".bin", Qt::CaseInsensitive))
+        path += ".bin";
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+        return;
+    }
+    const qint64 written = f.write(reinterpret_cast<const char *>(Vdp2Ram + base), bSize);
+    f.close();
+    if (written != (qint64)bSize)
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+}
 void UIDebugVDP2Viewer::on_cbCramHex_toggled(bool)            { updateColorRam(); }
 
 void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
