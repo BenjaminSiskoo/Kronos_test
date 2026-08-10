@@ -1320,6 +1320,33 @@ static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, 
 
 static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
 {
+  LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
+  u8 decryptCmd = addr & 0xF;
+  /* FIX: this handler used to always fall through to a raw ROM write,
+     silently dropping any 32-bit (longword) access to the 315-5881
+     protection block. Games that configure the crypto device with a
+     single MOV.L instead of two MOV.W never reached decryptOn /
+     cyptoSetLowAddr / cyptoSetHighAddr / cyptoSetSubkey, so the address
+     and subkey registers stayed at their reset values and cryptoDecrypt()
+     produced garbage. Mirrors MAME's common_prot_w, which reacts to
+     ACCESSING_BITS_16_31 and ACCESSING_BITS_0_15 independently so a full
+     longword write updates both halves of a register in one go. */
+  if (decryptCmd == 0x0)
+  {
+    decryptOn = (val >> 16) & 0x1;
+    return;
+  }
+  else if (decryptCmd == 0x8)
+  {
+    cyptoSetLowAddr(val >> 16);
+    cyptoSetHighAddr(val & 0xFFFF);
+    return;
+  }
+  else if (decryptCmd == 0xc)
+  {
+    cyptoSetSubkey(val >> 16);
+    return;
+  }
   T1WriteLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
 }
 
@@ -1615,6 +1642,12 @@ int CartInit(const char * filename, int type)
         CartridgeArea->Cs1ReadLong = &DevCs1ReadLong;
         CartridgeArea->Cs1WriteByte = &DevCs1WriteByte;
         CartridgeArea->Cs1WriteWord = &DevCs1WriteWord;
+        /* FIX: this assignment used to sit after the case's break/return
+           path (as dead code following an earlier `break;`), so it never
+           ran and Cs1WriteLong silently stayed on DummyCs1WriteLong for
+           CART_DEV. Moved next to the other Cs1Write* assignments so it
+           actually takes effect. */
+        CartridgeArea->Cs1WriteLong = &DevCs1WriteLong;
 
          if ((CartridgeArea->dram = T1MemoryInit(0x400000)) == NULL)
               return -1;
@@ -1629,8 +1662,6 @@ int CartInit(const char * filename, int type)
          CartridgeArea->Cs0WriteWord = &DRAM32MBITCs0WriteWord;
          CartridgeArea->Cs0WriteLong = &DRAM32MBITCs0WriteLong;
          break;
-        CartridgeArea->Cs1WriteLong = &DevCs1WriteLong;
-        break;
       }
 
       default: // No Cart
