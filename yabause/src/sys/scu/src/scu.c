@@ -31,6 +31,7 @@
 #include "vdp1.h"
 #include "yabause.h"
 #include <inttypes.h>
+
 Scu * ScuRegs;
 scudspregs_struct * ScuDsp;
 scubp_struct * ScuBP;
@@ -167,27 +168,18 @@ static void DoDMA(u32 ReadAddress, unsigned int ReadAdd,
       // read to read?
       /* "Source constante" = remplissage : la branche correspondante lit UN
        * seul long word et le reecrit jusqu'a la fin du transfert. Ce n'est
-       * legitime que lorsque la valeur d'incrementation de lecture est nulle
-       * (SCU : D0R/D1R/D2R read add value = 0), cas ou l'adresse source ne
-       * bouge pas et ou le materiel relit indefiniment le meme mot.
+       * legitime que lorsque la valeur d'incrementation de lecture est nulle,
+       * cas ou l'adresse source ne bouge pas et ou le materiel relit le meme
+       * mot. SucDmaExec() garde d'ailleurs deja la sienne sous ReadAdd == 0.
        *
        * Le test portait sur la REGION de l'adresse source -- Work RAM haute
        * et basse, Sound RAM, VRAM VDP1 -- ce qui n'a aucun rapport. Toute
        * copie normale depuis la Work RAM vers le B-Bus etait donc convertie
        * en remplissage et perdait ses donnees.
        *
-       * Cas reel (J.League Victory Goal '97) : le jeu transfere 98 octets de
-       * 0x06026952 vers 0x25F8000E, soit le bloc de registres VDP2 a partir
-       * de RAMCTL, avec readAdd=4 writeAdd=2. La source etant en HWRAM, le
-       * bloc entier recevait le meme long word repete ; BGON heritait ainsi
-       * de 0xFFFF, ce qui met R0ON et R1ON a 1. ST-058-R2 ch.4.1 p.68 :
-       * "When both R0ON and R1ON are 1, the normal scroll screen can no
-       * longer be displayed" -- NBG0 et NBG1 disparaissaient donc
-       * legitimement, faute d'un BGON correct.
-       *
-       * Noter que la branche de copie traite deja correctement le cas
-       * ReadAdd == 0 : elle ajoute 0 a chaque tour et relit la meme adresse.
-       * La branche "constante" n'est qu'une optimisation. */
+       * La branche de copie traite correctement ReadAdd == 0 : elle ajoute 0
+       * a chaque tour et relit la meme adresse. La branche "constante" n'est
+       * qu'une optimisation, aucun cas n'est perdu. */
       int constant_source = (ReadAdd == 0);
 
       if ((WriteAddress & 0x1FFFFFFF) >= 0x5A00000
@@ -217,10 +209,7 @@ static void DoDMA(u32 ReadAddress, unsigned int ReadAdd,
                /* Meme precaution d'alignement que dans la branche
                 * constant_source ci-dessus : depuis que constant_source ne
                 * capture plus toutes les sources en Work RAM, ce chemin est
-                * atteint avec des adresses source impaires en mots. Les jeux
-                * en produisent -- J.League Victory Goal '97 transfere depuis
-                * 0x06026952 -- et un acces 32 bits mal aligne fait planter
-                * certaines plateformes. */
+                * atteint avec des adresses source impaires en mots. */
                u32 tmp;
                if (ReadAddress & 2) {
                   tmp = DMAMappedMemoryReadWord(ReadAddress) << 16
@@ -888,6 +877,10 @@ void ScuSetAddValue(scudmainfo_struct * dmainfo) {
         dmainfo->TransferNumber = 0x1000;
     }
     else {
+      /* Manuel fig.3.3 : D0C occupe les bits 19-0, soit 1 Mo au maximum.
+       * Le masque manquait au niveau 0 alors qu'il est applique aux niveaux
+       * 1 et 2 juste au-dessus (& 0xFFF, 12 bits, 4 Ko). */
+      dmainfo->TransferNumber &= 0xFFFFF;
       if (dmainfo->TransferNumber == 0)
         dmainfo->TransferNumber = 0x100000;
     }
@@ -1025,13 +1018,13 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       // unrelated value can land in, e.g., VDP2's SPCTL (Sprite Type)
       // register, corrupting sprite rendering (Kronos issue #1503).
       //
-      // La lecture 32 bits ci-dessous doit tolerer une source qui n'est pas
-      // alignee sur 4, comme le font deja les trois autres branches de ce
-      // fichier et DoDMA(). DMAMappedMemoryReadLong() descend sur
-      // T2ReadLong() pour la Work RAM, qui masque l'adresse avec ~0x3 : une
-      // lecture a une adresse impaire en mots rend le long word PRECEDENT,
-      // donc le mot d'avant suivi du mot voulu. Tout le flux glisse alors
-      // d'un mot et chaque registre recoit la valeur destinee au precedent.
+      // La lecture 32 bits ci-dessous doit tolerer une source non alignee
+      // sur 4, comme le font deja les trois autres branches de ce fichier
+      // et DoDMA(). DMAMappedMemoryReadLong() descend sur T2ReadLong() pour
+      // la Work RAM, qui masque l'adresse avec ~0x3 : une lecture a une
+      // adresse impaire en mots rend le long word PRECEDENT, donc le mot
+      // d'avant suivi du mot voulu. Tout le flux glisse alors d'un mot et
+      // chaque registre recoit la valeur destinee au precedent.
       //
       // Cas reel (J.League Victory Goal '97) : bloc de 98 octets depuis
       // 0x0602B2C6 vers 0x25F8000E, soit les registres VDP2 a partir de
@@ -2746,7 +2739,19 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D0AD = val;
          break;
       case 0x10:
-      if ((val & 0x1) && ((ScuRegs->D0MD&0x7)==0x7) )
+      /* SCU User's Manual 3e ed., fig.3.9 et tableau 3.4 :
+       *   DxEN (bit 8) = bit d'autorisation, DxGO (bit 0) = bit de demarrage,
+       * et le facteur de declenchement 111B est decrit comme
+       *   「許可ビットのセット and DMA起動ビットのセット」
+       * soit les DEUX bits, pas seulement celui de demarrage.
+       *
+       * Le test ne regardait que le bit 0. Une ecriture posant DxGO sans
+       * DxEN lancait donc un transfert que le materiel ignore, avec les
+       * valeurs presentes dans DxR/DxW/DxC. Or un compteur a zero vaut le
+       * transfert MAXIMAL (manuel, 転送バイト数の'0'設定時の動作 : 1 Mo au
+       * niveau 0), d'ou un transfert d'1 Mo depuis l'adresse 0 qui deborde
+       * la VRAM VDP2 de 512 Ko. */
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D0MD&0x7)==0x7) )
          {
             if (ScuRegs->dma0.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma0, 0x7FFFFFFF);
@@ -2779,7 +2784,8 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D1AD = val;
          break;
       case 0x30:
-      if ((val & 0x1) && ((ScuRegs->D1MD&0x07) == 0x7))
+      /* Meme regle qu'au niveau 0 : DxEN (bit 8) ET DxGO (bit 0). */
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D1MD&0x07) == 0x7))
          {
             if (ScuRegs->dma1.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma1, 0x7FFFFFFF);
@@ -2813,7 +2819,8 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->D2AD = val;
          break;
       case 0x50:
-      if ((val & 0x1) && ((ScuRegs->D2MD & 0x7) == 0x7))
+      /* Meme regle qu'au niveau 0 : DxEN (bit 8) ET DxGO (bit 0). */
+      if ((val & 0x101) == 0x101 && ((ScuRegs->D2MD & 0x7) == 0x7))
          {
 
             if (ScuRegs->dma2.TransferNumber != 0) {
