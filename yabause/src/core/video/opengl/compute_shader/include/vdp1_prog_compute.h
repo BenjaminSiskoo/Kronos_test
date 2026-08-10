@@ -141,8 +141,16 @@ static const char vdp1_get_textured_f[] =
 "  uint nbEnd = 0;\n"
 "  bool hss = ((pixcmd.misc & 0x800) == 0x800);\n"
 "  ivec2 texSize = ivec2(((pixcmd.CMDSIZE >> 8) & 0x3F)<<3,pixcmd.CMDSIZE & 0xFF );\n"
-"  for (uint x=0; x<texSize.x; x++) {\n"
-"   uint pos = y*texSize.x+x;\n"
+/* ST-013-R3 6.3 p.87 : "Since drawing is not allowed toward the outside
+ * from the end code when read from the left or right" et "The drawing
+ * direction may be inverted by pre-clipping". Les deux end codes qui
+ * encadrent le motif doivent donc etre comptes dans le sens de TRACE,
+ * pas dans le sens de stockage du caractere. Avec CMDCTRL.HF=1 le
+ * balayage part de la droite. */
+"  bool hflip = ((pixcmd.misc & 0x1) == 0x1);\n"
+"  for (uint i=0; i<uint(texSize.x); i++) {\n"
+"   uint x = hflip ? (uint(texSize.x)-1u) - i : i;\n"
+"   uint pos = y*uint(texSize.x)+x;\n"
 "   uint charAddr = ((pixcmd.CMDSRCA * 8)& 0x7FFFFu) + pos;\n"
 "   uint dot;\n"
 "   switch ((pixcmd.CMDPMOD >> 3) & 0x7u)\n"
@@ -222,7 +230,10 @@ static const char vdp1_get_textured_f[] =
 "   // separe le 2e du 3e etait dessine a tort.\n"
 "   if (nbEnd >= 2) return x;"
 "  }\n"
-" return 1024;\n"
+/* Sentinelle "pas de coupure" : en balayage normal la comparaison est
+ * x <= endIndex, il faut donc une borne haute ; en balayage inverse
+ * (H-flip) elle devient x >= endIndex, il faut une borne basse. */
+" return hflip ? 0u : 1024u;\n"
 "}\n"
 "uint getColor(cmdparameter_struct pixcmd, vec2 uv, out bool valid)\n"
 "{\n"
@@ -349,7 +360,12 @@ static const char vdp1_get_textured_f[] =
 "    default:\n"
 "      break;\n"
 "  }\n"
-" valid = valid && ((!END) || (END && (x <= endIndex[y])));\n"
+/* ST-013-R3 6.3 p.87 : la coupure suit le sens de trace. endIndex[]
+ * contient desormais la colonne (en espace texture) du 2e end code
+ * rencontre dans ce sens ; la comparaison doit etre orientee de la
+ * meme maniere. */
+" bool hflipEC = ((pixcmd.misc & 0x1u) == 0x1u);\n"
+" valid = valid && ((!END) || (END && (hflipEC ? (x >= endIndex[y]) : (x <= endIndex[y]))));\n"
 " if (is8bit)"
 "  return (color&0xFF);\n"
 " else"
