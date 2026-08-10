@@ -724,7 +724,11 @@ void Vdp2StartVisibleLine(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 Vdp2 * Vdp2RestoreRegs(int line, Vdp2* lines) {
-   return line > 270 ? NULL : lines + line;
+   /* Vdp2Lines[] est declare [270], donc les indices valides vont de 0 a
+    * 269. Le test "line > 270" laissait passer line == 270 et renvoyait
+    * lines + 270, un pointeur juste apres la fin du tableau : tout
+    * dereferencement lisait la memoire voisine. */
+   return line >= 270 ? NULL : lines + line;
 }
 
 //////////////////////////////////////////////////////////////////////////////
