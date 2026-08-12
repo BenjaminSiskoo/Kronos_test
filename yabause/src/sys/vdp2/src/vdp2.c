@@ -108,79 +108,172 @@ u8 Vdp2RamIsUpdated(void)
   return Vdp2Ram_Updated;
 }
 
+/* ---------------------------------------------------------------------------
+ * CPU access to a VDP2 VRAM bank during the display period.
+ *
+ * Source: VDP2 User's Manual ST-058-R2, "3.3 VRAM Access during Display
+ * Period" -> "Read/Write Access by the CPU", pp. 35-37, and Table 3.5
+ * (access commands) p.34.
+ *
+ * The manual states three distinct rules; the previous implementation
+ * implemented only a rough approximation of the first one.
+ *
+ * (1) Number of valid timings. T0-T7 are all valid in Normal mode only;
+ *     "only T0 to T3 are in effect for the high-resolution or special
+ *     monitor mode; T4 to T7 are ignored" (p.32). Normal mode is HRESO=000
+ *     or 001, so the test is (TVMD & 6) != 0, not (TVMD & 6) == 2 -- the
+ *     old test matched 640/704 hi-res but silently missed all four
+ *     exclusive-monitor modes (HRESO 100..111), which kept using 8 timings.
+ *
+ * (2) VRAM not partitioned. CPU access is granted at any timing carrying
+ *     the CPU read/write command (1110B). The manual adds two equivalences:
+ *     "Selecting an access command that does not access [1111B] in place of
+ *     the CPU read/write access command is the same as before", and "when
+ *     the access command [...] used for a screen not set to be displayed is
+ *     also set, it becomes the CPU read/write access". Hence 1111B counts,
+ *     and a scroll-screen command whose screen is off in BGON counts too.
+ *
+ * (3) VRAM partitioned into two banks. This is the rule that was missing.
+ *     "the CPU read/write access command must be set in the VRAM cycle
+ *     pattern register of BOTH bank 0 and bank 1 of the timing performing
+ *     access. Further, in the registers of both bank 0 and bank 1 of the
+ *     timing BEFORE the set CPU read/write access command timing, the
+ *     access command that won't access must be selected. However, when
+ *     selecting CPU read/write access in linked timing, only the timing
+ *     before the lead of the linked access timing may be selected." (p.36,
+ *     illustrated by Figure 3.7.)
+ *
+ *     So a bank pair must contain a run of consecutive timings where BOTH
+ *     banks hold 1110B, immediately preceded -- in both banks -- by 1111B.
+ *     The old code evaluated each bank in isolation and accepted any 1111B
+ *     followed at any later distance by any accepting state, in either
+ *     order, which granted CPU access to patterns the hardware refuses.
+ *
+ * (4) Banks claimed by RBG0. "VRAM cycle pattern register settings of the
+ *     VRAM bank selected in RAM used for the rotational scroll are ignored"
+ *     (RAMCTL RDBSx1/RDBSx0, bits 7-0, p.149). Such a bank is monopolised
+ *     for the whole cycle: no CPU slot exists.
+ *
+ * Returns 1 when the bank is BLOCKED for the CPU, 0 when accessible.
+ * ------------------------------------------------------------------------- */
+
+/* Access commands, VDP2 Manual Table 3.5 p.34. */
+#define VDP2_AC_CPU_RW    0xE
+#define VDP2_AC_NO_ACCESS 0xF
+
+/* A0<->A1 and B0<->B1 are the two halves of one partitioned VRAM. */
+#define VDP2_BANK_PARTNER(b) ((b) ^ 1)
+
+/* Rule (4) is the strictest of the four and the only one with no upstream
+ * equivalent, so it is guarded: define VDP2_IGNORE_ROTATION_BANK_LOCK to
+ * fall back to the previous behaviour while bisecting a regression. */
+#ifndef VDP2_IGNORE_ROTATION_BANK_LOCK
+#define VDP2_ROTATION_BANK_LOCK 1
+#else
+#define VDP2_ROTATION_BANK_LOCK 0
+#endif
+
+/* Is this bank monopolised by a rotation scroll screen?
+ *
+ * RBG0: RAMCTL rotation data bank select, bits 1,0 = VRAM-A0, 3,2 = VRAM-A1,
+ * 5,4 = VRAM-B0, 7,6 = VRAM-B1 (VDP2 Manual p.149). A non-zero 2-bit field
+ * assigns the bank to the RBG0 coefficient table, pattern name table or
+ * character pattern table, and "VRAM cycle pattern register settings of the
+ * VRAM bank selected in RAM used for the rotational scroll are ignored".
+ * Technical Bulletin SOA-6 restates this plainly: "The rotating backgrounds
+ * do not use the cycle pattern registers. Data that will be used by a
+ * rotating background may not share a VRAM bank with data that will be used
+ * by a normal background."
+ *
+ * RBG1: VDP2 Manual 3.3, access types 9 and 10. Each occupies every timing
+ * of a whole cycle and the assignment is hardwired -- pattern name data to
+ * VRAM-B1, character pattern data to VRAM-B0. It happens automatically as
+ * soon as RBG1 is displayed, and the cycle pattern registers for VRAM-B0
+ * and VRAM-B1 become invalid. There is no RAMCTL field to consult.
+ *
+ * BGON bit 4 = R0ON, bit 5 = R1ON (VDP2 Manual p.174). */
+static int bankOwnedByRotation(int bank)
+{
+  if (!VDP2_ROTATION_BANK_LOCK) return 0;
+
+  /* RBG1 takes both halves of VRAM-B unconditionally. */
+  if ((Vdp2Regs->BGON & 0x20) != 0 &&
+      ((bank == VDP2_VRAM_B0) || (bank == VDP2_VRAM_B1)))
+    return 1;
+
+  /* RBG0 claims only the banks named in RAMCTL, and only while displayed. */
+  if ((Vdp2Regs->BGON & 0x10) == 0) return 0;
+  return ((Vdp2Regs->RAMCTL >> (bank * 2)) & 0x3) != 0;
+}
+
+/* Does the command at timing t of this bank free the slot for the CPU?
+ * Only meaningful for non-partitioned VRAM -- see rule (2). */
+static int slotIsCpuUsable(int bank, int t)
+{
+  switch (Vdp2External.AC_VRAM[bank][t]) {
+    case VDP2_AC_CPU_RW:                 return 1;
+    case VDP2_AC_NO_ACCESS:              return 1;
+    /* NBG0: pattern name / character pattern / vertical cell scroll */
+    case 0x0: case 0x4: case 0xC:        return (Vdp2Regs->BGON & 0x1) == 0;
+    /* NBG1: pattern name / character pattern / vertical cell scroll */
+    case 0x1: case 0x5: case 0xD:        return (Vdp2Regs->BGON & 0x2) == 0;
+    /* NBG2: pattern name / character pattern */
+    case 0x2: case 0x6:                  return (Vdp2Regs->BGON & 0x4) == 0;
+    /* NBG3: pattern name / character pattern.
+     * The 0x3 case used to fall through with an empty body, leaving the
+     * accumulator state of the previous iteration untouched -- NBG3's
+     * pattern name slot was simply never evaluated. */
+    case 0x3: case 0x7:                  return (Vdp2Regs->BGON & 0x8) == 0;
+    /* 1000B..1011B: setting prohibited (Table 3.5). */
+    default:                             return 0;
+  }
+}
+
 static int updateBlockedBank(int bank){
-  int hasWaitState = 0;
-  int hasAccessState = 0;
   int usedTimings = 8;
+  int partner = VDP2_BANK_PARTNER(bank);
   int partitioned =
     ((bank == VDP2_VRAM_A0) || (bank == VDP2_VRAM_A1))?
       (Vdp2Regs->RAMCTL>>8)&0x1:
       (Vdp2Regs->RAMCTL>>9)&0x1;
-  if ((Vdp2Regs->TVMD & 0x6)==0x2) usedTimings>>=1;
-  for (int i = 0; i<usedTimings; i++) {
-    switch (Vdp2External.AC_VRAM[bank][i]) {
-      case 0x0:
-      // NBG0 Pattern Name Data Read
-      case 0x4:
-      // NBG0 Character Pattern Data Read
-      case 0xC:
-      // NBG0 Vertical Cell Scroll Table Data Read
-        // CPU can access if NBG0 is disabled
-        hasAccessState = ((Vdp2Regs->BGON&0x1)==0);
-        if (!hasAccessState) hasWaitState = 0;
-      break;
-      case 0x1:
-      // NBG1 Pattern Name Data Read
-      case 0x5:
-      // NBG1 Character Pattern Data Read
-      case 0xD:
-      // NBG1 Vertical Cell Scroll Table Data Read
-        // CPU can access if NBG1 is disabled
-        hasAccessState = ((Vdp2Regs->BGON&0x2)==0);
-        if (!hasAccessState) hasWaitState = 0;
-      break;
-      case 0x2:
-      // NBG2 Pattern Name Data Read
-      case 0x6:
-      // NBG2 Character Pattern Data Read
-        // CPU can access if NBG2 is disabled
-        hasAccessState = ((Vdp2Regs->BGON&0x4)==0);
-        if (!hasAccessState) hasWaitState = 0;
-      break;
-      case 0x3:
-      // NBG3 Pattern Name Data Read
-      break;
-      case 0x7:
-      // NBG3 Character Pattern Data Read
-        // CPU can access if NBG3 is disabled
-        hasAccessState = ((Vdp2Regs->BGON&0x8)==0);
-        if (!hasAccessState) hasWaitState = 0;
-      break;
-      case 0xE:
-      // CPU Read/Write
-        hasAccessState = 1;
-      break;
-      case 0xF:
-      // No
-        if (hasWaitState || (!partitioned)) hasAccessState = 1;
-        else
-        hasWaitState = 1;
-      break;
-      case 0x8:
-      // Setting not allowed
-      case 0x9:
-      // Setting not allowed
-      case 0xA:
-      // Setting not allowed
-      case 0xB:
-      // Setting not allowed
-      default:
-        hasWaitState = 0;
-        hasAccessState = 0;
-      break;
-    }
-    if (hasAccessState && !partitioned) return 0;
-    if (hasAccessState && hasWaitState && partitioned) return 0;
+
+  /* Rule (1): T4-T7 exist only in Normal mode (HRESO 000/001). */
+  if ((Vdp2Regs->TVMD & 0x6) != 0) usedTimings >>= 1;
+
+  /* Rule (4): a bank monopolised by RBG0 has no CPU slot at all. */
+  if (bankOwnedByRotation(bank)) return 1;
+
+  if (!partitioned) {
+    /* Rule (2). When VRAM is not partitioned, the bank-0 register is used
+     * for the whole VRAM, so only even bank indices carry a pattern; the
+     * odd half is mirrored into AC_VRAM by updateCyclePattern(). */
+    for (int t = 0; t < usedTimings; t++)
+      if (slotIsCpuUsable(bank, t)) return 0;
+    return 1;
+  }
+
+  /* Rule (3). Look for a timing where both banks hold the CPU read/write
+   * command and which starts a run, i.e. whose predecessor is "no access"
+   * in both banks. The cycle pattern repeats every `usedTimings` slots, so
+   * T0's predecessor is the last timing of the cycle. */
+  if (bankOwnedByRotation(partner)) return 1;
+
+  for (int t = 0; t < usedTimings; t++) {
+    int prev = (t + usedTimings - 1) % usedTimings;
+
+    if (Vdp2External.AC_VRAM[bank][t]    != VDP2_AC_CPU_RW) continue;
+    if (Vdp2External.AC_VRAM[partner][t] != VDP2_AC_CPU_RW) continue;
+
+    /* Middle of a linked run: the lead of the run carries the requirement,
+     * so this timing is covered by whichever iteration found the lead. */
+    if (Vdp2External.AC_VRAM[bank][prev]    == VDP2_AC_CPU_RW &&
+        Vdp2External.AC_VRAM[partner][prev] == VDP2_AC_CPU_RW)
+      continue;
+
+    /* Lead of a run: both banks must hold "no access" just before it. */
+    if (Vdp2External.AC_VRAM[bank][prev]    == VDP2_AC_NO_ACCESS &&
+        Vdp2External.AC_VRAM[partner][prev] == VDP2_AC_NO_ACCESS)
+      return 0;
   }
   return 1;
 }
@@ -853,7 +946,10 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
            yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
            if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
          }
-         Vdp1SetRaster(Vdp2Regs->TVMD & 0x1);
+         /* Pass the full HRESO2-0 field, not just bit 0: the per-raster
+          * VDP1 budget differs for normal (1708/1820) and exclusive
+          * monitor modes (852/848). VDP1 Manual Table 4.4 p.49. */
+         Vdp1SetRaster(Vdp2Regs->TVMD & 0x7);
          updateCyclePattern();
          return;
       case 0x002:
