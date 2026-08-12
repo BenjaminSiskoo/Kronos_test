@@ -122,6 +122,72 @@ static void abortVdp1() {
 //////////////////////////////////////////////////////////////////////////////
 static u32 lastVRamBankCol = 0;
 
+/* ---------------------------------------------------------------------------
+ * VDP1 busy / idle and the cost of touching its memories.
+ *
+ * VDP1 User's Manual ST-013-R3 p.19 (VRAM) and p.20 (frame buffer) describe
+ * one arbitration rule for both memories:
+ *
+ *   "The order of priority of access of the VRAM is always: system controller
+ *    (system controller IC) > drawing."
+ *   "The order of priority of access of the frame buffer is always: system
+ *    controller IC > drawing."
+ *   "When access from the system controller is performed during drawing,
+ *    drawing is interrupted and must wait."
+ *   "Because access is performed after assigning an order of priority, there
+ *    may be more than 10 wait cycles according to that timing, depending on
+ *    the operating clock of the CPU."
+ *   "Perform access from the CPU when drawing is not being performed in order
+ *    to prevent interruption of drawing. To determine if drawing is being
+ *    performed, poll the system registers, or use an interrupt signal."
+ *
+ * §4.4 p.52 states the idle half of the same rule from the other side: while
+ * CEF = 1, "VRAM can be accessed without the overhead for stopping drawing
+ * and without causing the CPU to wait."
+ *
+ * So both effects -- the VDP1 losing drawing cycles, and the CPU stalling --
+ * exist only while the VDP1 is actually drawing. Neither happens when it is
+ * idle. The rule applies to reads as well as writes ("read-write access"),
+ * and to the SCU as much as the CPU, since the manual names the system
+ * controller IC rather than the CPU as the higher-priority agent.
+ * ------------------------------------------------------------------------- */
+
+static INLINE int vdp1IsDrawing(void) {
+  return (Vdp1External.status & VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING;
+}
+
+/* p.19 gives "more than 10 wait cycles" as the figure for an access that
+ * collides with drawing, without an exact number. 10 is the manual's own
+ * lower bound and is used here as a conservative value; override at build
+ * time to experiment. */
+#ifndef VDP1_CPU_WAIT_WHILE_DRAWING
+#define VDP1_CPU_WAIT_WHILE_DRAWING 10
+#endif
+
+/* Charge one access to the VDP1 VRAM or frame buffer.
+ * `cycles` is the bus occupancy of the access itself, always paid.
+ * A collision with drawing adds the arbitration stall on top, and steals
+ * the same occupancy from the VDP1's own per-line budget. */
+static INLINE void vdp1BusAccess(SH2_struct *context, int cycles) {
+  int drawing = vdp1IsDrawing();
+  if (context != NULL) {
+    context->cycles += cycles;
+    if (drawing) context->cycles += VDP1_CPU_WAIT_WHILE_DRAWING;
+  }
+  if (drawing) vdp1_clock -= cycles;
+}
+
+/* Read variant. The row-bank crossing penalty at each read site already
+ * accounts for the SH2-side bus cost, so only the drawing collision is added
+ * here. A cached read hides the latency from the SH2 but not the bus
+ * transaction from the VDP1, so the drawing budget is charged either way. */
+static INLINE void vdp1BusRead(SH2_struct *context, int cycles) {
+  if (!vdp1IsDrawing()) return;
+  vdp1_clock -= cycles;
+  if ((context != NULL) && (!context->cacheOn))
+    context->cycles += VDP1_CPU_WAIT_WHILE_DRAWING;
+}
+
 u8 FASTCALL Vdp1RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x7FFFF;
    int rowBank = ((addr>>9)&0x3FF);
@@ -129,6 +195,9 @@ u8 FASTCALL Vdp1RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
     lastVRamBankCol = rowBank;
     if ((context) && (!context->cacheOn)) context->cycles += 2;
    }
+   /* p.19 covers "read-write access": a read collides with drawing exactly
+    * as a write does. This path stole no drawing cycles at all. */
+   vdp1BusRead(context, 2);
    return T1ReadByte(mem, addr);
 }
 
@@ -141,7 +210,10 @@ u16 FASTCALL Vdp1RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
      lastVRamBankCol = rowBank;
      if ((context) && (!context->cacheOn)) context->cycles += 2;
     }
-    return T1ReadWord(mem, addr);
+    /* p.19 covers "read-write access": a read collides with drawing exactly
+    * as a write does. This path stole no drawing cycles at all. */
+   vdp1BusRead(context, 2);
+   return T1ReadWord(mem, addr);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -153,6 +225,9 @@ u32 FASTCALL Vdp1RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
     lastVRamBankCol = rowBank;
     if ((context) && (!context->cacheOn)) context->cycles += 2;
    }
+   /* p.19 covers "read-write access": a read collides with drawing exactly
+    * as a write does. This path stole no drawing cycles at all. */
+   vdp1BusRead(context, 2);
    return T1ReadLong(mem, addr);
 }
 
@@ -170,7 +245,7 @@ void FASTCALL Vdp1RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 
    // printf("Write 0x%x @ 0x%x (%d %d)\n", val, addr, yabsys.LineCount, yabsys.DecilineCount);
    Vdp1External.updateVdp1Ram = 1;
-   if( (Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING) vdp1_clock -= 1;
+   vdp1BusAccess(context, 1);
    if (vdp1Ram_update_start > addr) vdp1Ram_update_start = addr;
    if (vdp1Ram_update_end < addr+1) vdp1Ram_update_end = addr + 1;
    T1WriteByte(mem, addr, val);
@@ -188,7 +263,7 @@ void FASTCALL Vdp1RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
    if (context)context->cycles += 1;
    // printf("Write 0x%x @ 0x%x (%d %d)\n", val, addr, yabsys.LineCount, yabsys.DecilineCount);
    Vdp1External.updateVdp1Ram = 1;
-   if( (Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING) vdp1_clock -= 2;
+   vdp1BusAccess(context, 2);
    if (vdp1Ram_update_start > addr) vdp1Ram_update_start = addr;
    if (vdp1Ram_update_end < addr+2) vdp1Ram_update_end = addr + 2;
    T1WriteWord(mem, addr, val);
@@ -206,7 +281,7 @@ void FASTCALL Vdp1RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) 
    if (context)context->cycles += 3;
    // printf("Write 0x%x @ 0x%x (%d %d)\n", val, addr, yabsys.LineCount, yabsys.DecilineCount);
    Vdp1External.updateVdp1Ram = 1;
-   if( (Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING) vdp1_clock -= 4;
+   vdp1BusAccess(context, 4);
    if (vdp1Ram_update_start > addr) vdp1Ram_update_start = addr;
    if (vdp1Ram_update_end < addr+4) vdp1Ram_update_end = addr + 4;
    T1WriteLong(mem, addr, val);
@@ -260,8 +335,7 @@ u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    u32 pixIdx = addr>>1;
    if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
 }
@@ -273,8 +347,7 @@ u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) 
    u32 pixIdx = addr>>1;
    if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    PRINT_FB("R W 0x%x@0x%x (%d, %d)\n", T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF, addr, yabsys.LineCount, yabsys.DecilineCount);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF;
 }
@@ -285,8 +358,7 @@ u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) 
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 4;
-   if (context != NULL) context->cycles += 4;
+   vdp1BusAccess(context, 4);
    /* Validation par pixel : un accès long au bord bas du FB peut avoir
     * pixIdx valide mais pixIdx+1 hors limites. */
    u16 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFFFF) : 0;
@@ -304,8 +376,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
    syncVdp1FBBuffer(pixIdx);
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -320,8 +391,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr
    PRINT_FB("W W 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFFFF)|0xFF000000;
    syncVdp1FBBuffer(pixIdx);
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -341,8 +411,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr
      buf[pixIdx+1] = ((val    )&0xFFFF)|0xFF000000;
      syncVdp1FBBuffer(pixIdx+1);
    }
-   vdp1_clock -= 4;
-   if (context != NULL) context->cycles += 4;
+   vdp1BusAccess(context, 4);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -354,8 +423,7 @@ u8 FASTCALL Vdp1FrameBuffer8bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    u32 pixIdx = addr;                       /* 8 bpp : 1 octet = 1 pixel */
    if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
 }
@@ -366,8 +434,7 @@ u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    PRINT_FB("R W 0x%x@0x%x (%d, %d)\n", T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF, addr, yabsys.LineCount, yabsys.DecilineCount);
    u8 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
    u8 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
@@ -380,8 +447,7 @@ u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr;
    u32* buf = getVDP1ReadFramebuffer();
-   vdp1_clock -= 4;
-   if (context != NULL) context->cycles += 4;
+   vdp1BusAccess(context, 4);
    u8 val1 = vdp1FBPixInBounds(pixIdx)   ? (T1ReadLong((u8*)buf, (pixIdx  )*4) & 0xFF) : 0;
    u8 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
    u8 val3 = vdp1FBPixInBounds(pixIdx+2) ? (T1ReadLong((u8*)buf, (pixIdx+2)*4) & 0xFF) : 0;
@@ -400,8 +466,7 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr,
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
    buf[pixIdx] = (val&0xFF)|0xFF000000;
    syncVdp1FBBuffer(pixIdx);
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -421,8 +486,7 @@ void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr,
      buf[pixIdx+1] = ( val    &0xFF)|0xFF000000;
      syncVdp1FBBuffer(pixIdx+1);
    }
-   vdp1_clock -= 2;
-   if (context != NULL) context->cycles += 2;
+   vdp1BusAccess(context, 2);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -450,8 +514,7 @@ void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr,
      buf[pixIdx+3] = ( val     &0xFF)|0xFF000000;
      syncVdp1FBBuffer(pixIdx+3);
    }
-   vdp1_clock -= 4;
-   if (context != NULL) context->cycles += 4;
+   vdp1BusAccess(context, 4);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
@@ -778,13 +841,21 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       if (val == 0x3) val = 0x2;
       Vdp1Regs->PTMR = val;
       if (val == 1){
-        /* VDP1 Manual §4.4 p.54: EDSR.CEF (bit 1) is set by the
-         * hardware when drawing FINISHES, not when it starts.
-         * On a fresh draw trigger we clear CEF so that polling
-         * code correctly sees "not finished" until the draw-end
-         * command is fetched. BEF (bit 0) is unaffected — it's
-         * a one-frame-delayed copy of CEF, shifted at frame change. */
-        Vdp1Regs->EDSR &= ~0x0002;
+        /* Do NOT clear CEF here.
+         *
+         * VDP1 Manual §4.4 pp.52-53 defines a single atomic action at the
+         * start of drawing: BEF takes the value of CEF, and CEF is reset
+         * to 0. Vdp1TryDraw() already performs exactly that, as EDSR >>= 1,
+         * on the idle -> drawing transition -- and it is called three lines
+         * below, in the same register write.
+         *
+         * Clearing CEF first made that shift copy an already-zeroed CEF into
+         * BEF, so on every PTMR = 1 trigger BEF came out 0 no matter what the
+         * previous frame had done. BEF = 0 means "the end bit in previous
+         * frame has not been fetched", i.e. transfer-over, so the register
+         * permanently reported an overrun to any title polling it. The
+         * comment that stood here asserted BEF was unaffected; the call to
+         * Vdp1TryDraw() on the next lines is what made that untrue. */
         checkFBSync();
         abortVdp1();
         vdp1_clock += getVdp1CyclesPerLine();
@@ -1715,42 +1786,78 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   return 1;
 }
 
-/* VDP1 Manual §4.3 Table 4.4 (p.49): pixels per raster by screen mode.
- * "Drawing is performed in sync with the CPU operating clock.
- *  The CPU operating clock is 28 MHz, and the data for 1 pixel is
- *  drawn in sync with this." (VDP1 Manual §2.5 p.20)
+/* ---------------------------------------------------------------------------
+ * VDP1 per-raster drawing budget.
  *
- * NTSC (320px / 640px) : 1708 pixels/raster
- * PAL  (320px / 640px) : 1820 pixels/raster  (PAL has more blanking)
- * NTSC (352px / 704px) : 1708 pixels/raster  (same dot clock, wider display)
- * PAL  (352px / 704px) : 1820 pixels/raster
- * 31KC / Hi-Res        :  852 pixels/raster  (Table 4.4)
- * HDTV                 :  848 pixels/raster  (Table 4.4)
+ * Source: VDP1 User's Manual ST-013-R3, Table 4.4 p.49 + Table 4.5 p.50.
  *
- * Note: 352px mode does NOT have a different raster value from 320px —
- * both use the same pixel clock. The manual gives a single NTSC value
- * (1708) and a single PAL value (1820) regardless of H resolution.
- * The previous code incorrectly used 1820 for 352px NTSC.
- */
-static int rasterValueNTSC = 1708;
-static int rasterValuePAL  = 1820;
+ * Table 4.4 lists four "screen modes" (NTSC / PAL / 31KC / HDTV) with a
+ * "number of pixels in 1 raster" column: 1708 / 1820 / 852 / 848. Read
+ * naively, the NTSC row (320 px) and the PAL row (352 px) suggest the value
+ * is selected by TV standard. It is NOT. The rows pair each standard with a
+ * *different horizontal resolution*, and it is the horizontal resolution --
+ * i.e. the dot-clock family -- that picks the value.
+ *
+ * Proof, from Table 4.5, which tabulates the V-blank erase capacity for a
+ * 16 bpp frame buffer. The manual (p.49) gives that capacity as
+ *     {(pixels in 1 raster) - 200} x {(rasters in 1 field) - (display rasters)}
+ * Solving for "pixels in 1 raster" against every entry of Table 4.5:
+ *
+ *   NTSC 320x224 :  58812 / (263-224) = 1508  -> 1708   (320 -> 1708)
+ *   NTSC 352x224 :  63180 / (263-224) = 1620  -> 1820   (352 -> 1820, NTSC!)
+ *   PAL  320x224 : 134212 / (313-224) = 1508  -> 1708   (320 -> 1708, PAL!)
+ *   PAL  352x224 : 144180 / (313-224) = 1620  -> 1820
+ *   PAL  320x256 :  85956 / (313-256) = 1508  -> 1708
+ *   31KC 320x480 :  29340 / (525-480) =  652  ->  852
+ *   HDTV 352x480 :  53136 / (562-480) =  648  ->  848
+ *
+ * Every 320-mode entry yields 1708 and every 352-mode entry yields 1820,
+ * on BOTH NTSC and PAL. The TV standard only selects the number of rasters
+ * per field (263 vs 313), never the pixels per raster.
+ *
+ * Physically this is just the two Saturn video clocks:
+ *   26.8741 MHz / 15734.26 Hz = 1708   (320 / 640 modes)
+ *   28.6364 MHz / 15734.26 Hz = 1820   (352 / 704 modes)
+ *
+ * The previous implementation selected on yabsys.IsPal and discarded the
+ * is352 argument entirely, so it was wrong in exactly the two common cases:
+ * a PAL 320 game got 1820 (+6.6% draw budget) and an NTSC 352 game got 1708
+ * (-6.2%), and the 31KC/HDTV values were never reachable at all.
+ *
+ * Selection is by HRESO2-0 (VDP2 TVMD bits 2-0, VDP2 Manual p.28):
+ *   000 320 normal     001 352 normal
+ *   010 640 hi-res     011 704 hi-res
+ *   100 320 excl.norm  101 352 excl.norm   (31KC / Hi-Vision)
+ *   110 640 excl.hires 111 704 excl.hires
+ * Hi-res (640/704) is the same master clock as its normal counterpart, so it
+ * inherits the same per-raster value; Table 4.4 lists no separate row for it.
+ * ------------------------------------------------------------------------- */
+#define VDP1_RASTER_320   1708  /* Table 4.4 "NTSC" row  */
+#define VDP1_RASTER_352   1820  /* Table 4.4 "PAL"  row  */
+#define VDP1_RASTER_31KC   852  /* Table 4.4 "31KC" row  */
+#define VDP1_RASTER_HDTV   848  /* Table 4.4 "HDTV" row  */
 
-void Vdp1SetRaster(int is352) {
-    /* VDP1 Manual Table 4.4: raster count is independent of H resolution
-     * (320 vs 352). Only NTSC vs PAL matters for the pixel/raster value.
-     * is352 parameter kept for API compatibility — value unused. */
-    (void)is352;
-    /* Actual selection between NTSC/PAL is done in getVdp1CyclesPerLine()
-     * via yabsys.IsPal. */
+static int rasterValue = VDP1_RASTER_320;
+
+/* hreso = VDP2 TVMD bits 2-0 (HRESO2-0). */
+void Vdp1SetRaster(int hreso) {
+    switch (hreso & 0x7) {
+        case 0x0: /* 320 normal     */
+        case 0x2: /* 640 hi-res     */ rasterValue = VDP1_RASTER_320;  break;
+        case 0x1: /* 352 normal     */
+        case 0x3: /* 704 hi-res     */ rasterValue = VDP1_RASTER_352;  break;
+        case 0x4: /* 320 excl. norm */
+        case 0x6: /* 640 excl. hi-r */ rasterValue = VDP1_RASTER_31KC; break;
+        case 0x5: /* 352 excl. norm */
+        case 0x7: /* 704 excl. hi-r */ rasterValue = VDP1_RASTER_HDTV; break;
+        default:                       rasterValue = VDP1_RASTER_320;  break;
+    }
 }
 
 static int getVdp1CyclesPerLine(void)
 {
     if (Vdp1External.blocked != 0) return 0;
-    /* VDP1 Manual §4.3 Table 4.4 (p.49):
-     * NTSC: 1708 pixels per raster
-     * PAL : 1820 pixels per raster */
-    return yabsys.IsPal ? rasterValuePAL : rasterValueNTSC;
+    return rasterValue;
 }
 
 /* État persistant entre appels de Vdp1DrawCommands : le rendu VDP1
@@ -1904,13 +2011,17 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
 
    Vdp1External.status &= ~VDP1_STATUS_MASK;
    Vdp1External.status |= VDP1_STATUS_RUNNING;
-   if (regs->addr > 0x7FFFF) {
-     FRAMELOG("Address Error\n");
-      Vdp1External.status &= ~VDP1_STATUS_MASK;
-      Vdp1External.status |= VDP1_STATUS_IDLE;
-      if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
-      return; // address error
-    }
+
+   /* VDP1 Manual ST-013-R3 p.19: "When fetching of the command table goes
+    * beyond the end address (07FFFFH) of VRAM, fetching wraps to the top
+    * address (000000H) of VRAM."
+    *
+    * Running off the end of VRAM is therefore not an error condition and
+    * must not stop the list: the address simply wraps. Dropping to
+    * VDP1_STATUS_IDLE here made the VDP1 report itself free while a list
+    * was still live, which then let a CPU access believe it was hitting an
+    * idle chip and skip the arbitration stall. Wrap instead. */
+   regs->addr &= 0x7FFFF;
 
     u16 command = Vdp1RamReadWord(NULL, ram, regs->addr);
 
@@ -2021,8 +2132,26 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
              Vdp1External.status |= VDP1_STATUS_IDLE;
              if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
              regs->COPR = (regs->addr & 0x7FFFF) >> 3;
-             FRAMELOG("Clear EDSR\n");
-             regs->EDSR = 0;
+             /* Do NOT touch EDSR here.
+              *
+              * CEF (bit 1) is already 0: VDP1 Manual §4.4 p.52 says it "is
+              * reset to 0 when the frame buffers are changed or when drawing
+              * is started", and only the fetch of a draw end command sets it.
+              * An invalid command is not an end-bit fetch, so CEF correctly
+              * stays 0 and there is nothing to clear.
+              *
+              * BEF (bit 0) belongs to the PREVIOUS frame. §4.4 p.53: it "is
+              * written with the value of the CEF value when the frame buffer
+              * is changed or at the start of drawing, and is maintained until
+              * the next frame buffer change". Nothing in the spec lets a
+              * malformed command of the current frame disturb it.
+              *
+              * The old `regs->EDSR = 0` cleared both. Since BEF = 0 is the
+              * transfer-over indication ("the end bit in previous frame has
+              * not been fetched"), it did not merely lose information, it
+              * fabricated a transfer-over report -- a title that polls BEF to
+              * decide whether to shorten its command list would throttle
+              * itself for a frame that in fact completed. */
              return;
            }
       } else {
@@ -2208,12 +2337,35 @@ static int Vdp1Draw(void)
 {
   FRAMELOG_CMD("Vdp1Draw %d\n", yabsys.LineCount);
   VIDCore->Vdp1Draw();
-   if ((Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_IDLE) {
-     FRAMELOG("Vdp1Draw end at line %d \n", yabsys.LineCount);
-     ScuSendDrawEnd();
-   }
-   if ((Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_IDLE) return 0;
-   else return 1;
+
+  if ((Vdp1External.status & VDP1_STATUS_MASK) != VDP1_STATUS_IDLE)
+    return 1;
+
+  FRAMELOG("Vdp1Draw end at line %d \n", yabsys.LineCount);
+
+  /* VDP1 Manual §4.4 p.52: "When the draw end command is fetched, the VDP1
+   * sets CEF to 1 and generates an interrupt signal." The interrupt and
+   * CEF are two faces of the same event -- the fetch of the end bit -- and
+   * the manual offers them as the two interchangeable ways of detecting the
+   * end of drawing ("one confirms the fetch status of the end bit with CEF
+   * (polling) and the other uses the interrupt signal"). They must agree.
+   *
+   * Going idle is a weaker condition than fetching the end bit.
+   * Vdp1DrawCommands() also drops to VDP1_STATUS_IDLE on four failure
+   * paths -- address error past 0x7FFFF, unknown command code, and an
+   * out-of-range ASSIGN or CALL target -- none of which fetch an end bit
+   * and none of which set CEF. Firing unconditionally sent the SCU Sprite
+   * Draw End interrupt (vector 0x4D, level 2, SCU Manual ST-097-R5 §2.2)
+   * on a list that never completed, telling a title its frame was ready
+   * while EDSR simultaneously told it the opposite.
+   *
+   * Gate on CEF so the interrupt and the register cannot disagree. CEF is
+   * cleared at the start of every draw, so it can only be 1 here because
+   * this list reached its draw end command. */
+  if (Vdp1Regs->EDSR & 0x2)
+    ScuSendDrawEnd();
+
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3535,27 +3687,26 @@ void ToggleVDP1(void)
 }
 //////////////////////////////////////////////////////////////////////////////
 
+/* Number of display lines the V-blank erase/write overruns by.
+ *
+ * Sources: VDP1 User's Manual ST-013-R3, EWDR p.46, EWLR/EWRR pp.47-48,
+ * erase/write rules pp.48-49, Tables 4.4 and 4.5 pp.49-50.
+ *
+ * Register layout (p.47):
+ *   EWLR bit 15 = 0, bits 14-9 = X1, bits 8-0 = Y1
+ *   EWRR bits 15-9 = X3, bits 8-0 = Y3
+ * The X coordinate is set in 8-pixel units at 16 bpp and 16-pixel units at
+ * 8 bpp, and the lower-right X is "8 or 16 times the register setting and
+ * from which 1 is subtracted" (p.48).
+ *
+ * Required pixels, 16 bpp (p.49): (X3 - X1) x (Y3 - Y1 + 1) x 8, where X3
+ * and X1 are register values. Converting to pixel coordinates first, as we
+ * do here, folds the x8 in: x3px - x1px + 1 = (X3reg x 8 - 1) - X1reg x 8
+ * + 1 = (X3reg - X1reg) x 8. The two forms agree.
+ *
+ * Capacity (p.49): {(pixels in 1 raster) - 200} per non-display raster.
+ */
 static int getVdp1ErasePixelLine() {
-    /* VDP1 Manual p.47: EWLR/EWRR register layout
-     *   EWLR bits 14-9 = X1 (6 bits), bits 8-0 = Y1 (9 bits)
-     *   EWRR bits 15-9 = X3 (7 bits), bits 8-0 = Y3 (9 bits)
-     * The X register value is scaled to pixels: x8 for 16bpp, x16 for 8bpp
-     * (and X3 has 1 subtracted). The Y value is in 1-line units. So the
-     * x1/x3 below are already expressed in real pixels via 'xunit'.
-     *
-     * VDP1 Manual p.49: pixels required for V-blank erase (16bpp) =
-     *   (X3 - X1) x (Y3 - Y1 + 1) x 8, where X3/X1 are the *register*
-     *   values; the x8 is precisely the register->pixel scaling. Since we
-     *   already scale by xunit, area_w x area_h is that pixel count and must
-     *   NOT be multiplied by 8 again. The write rate then converts pixels
-     *   to cycles (see below).
-     *
-     * VDP1 Manual p.49: pixels usable for erase per raster = (pixels in
-     *   1 raster) - 200, i.e. NTSC 1708-200=1508, PAL 1820-200=1620.
-     *
-     * VDP1 Manual p.20: drawing is synced to the 28 MHz CPU clock,
-     *   "the data for 1 pixel is drawn in sync with this" -> 1 word/cycle.
-     */
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
 
@@ -3564,34 +3715,60 @@ static int getVdp1ErasePixelLine() {
     int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
     int y3 =  (Vdp1Regs->EWRR) & 0x1FF;
 
-    /* VDP1 Manual §4.3: "If X1 >= X3 or Y1 > Y3, erase/write is performed
-     * for 1 dot only" */
-    if ((x3 < 0) || (y3 == 0))    return 0;
-    if ((x1 >= x3) || (y1 > y3))  return 0;
+    /* p.48: "Because the register setting for the Y coordinate is doubled
+     * during double interlace, the actual coordinate value should be set to
+     * one half. For example, when the setting is 223, the coordinate
+     * becomes 447." Double interlace is FBCR bit 3, DIE = 1 (p.53). The
+     * erased area -- and therefore the time it takes -- doubles vertically.
+     * This scaling was missing entirely, so every double-interlace title
+     * had its erase cost halved. */
+    if ((Vdp1Regs->FBCR & 0x8) != 0) {
+        y1 *= 2;
+        y3 = y3 * 2 + 1;
+    }
 
-    int area_w = x3 - x1 + 1;
-    int area_h = y3 - y1 + 1;
+    /* p.49: "If the setting is X1 >= X3 or Y1 > Y3, then erase/write is
+     * performed for 1 dot in the normal or high-resolution mode and for
+     * 8 dots in the case of rotation or HDTV. In these cases, erase/write
+     * is performed under the assumption that the area (X1, Y1) is set to
+     * (X3 = X1 + 1, Y3 = Y1)."
+     *
+     * So a degenerate rectangle is not "no erase": it is a minimal one.
+     * The old code returned 0 on this path, and also rejected y3 == 0
+     * outright -- but Y1 = Y3 = 0 is a perfectly legal single-line erase,
+     * not a degenerate setting. TVMR bits 2-1 select the TV mode: 10b is
+     * rotation 16 and 11b rotation 8, and TVM bit 3 (HDTV) likewise draws
+     * 8 dots (p.36). */
+    int area_w, area_h;
+    if ((x1 >= x3) || (y1 > y3)) {
+        int isRotOrHdtv = ((Vdp1Regs->TVMR & 0x6) != 0) ||
+                          ((Vdp1Regs->TVMR & 0x8) != 0);
+        area_w = isRotOrHdtv ? 8 : 1;
+        area_h = 1;
+    } else {
+        area_w = x3 - x1 + 1;
+        area_h = y3 - y1 + 1;
+    }
 
-    /* VDP1 Manual p.46 (EWDR register): "Erase/write is performed 2 pixels
-     * at a time when the frame buffer depth is 8 bits/pixel." The frame
-     * buffer is accessed one 16-bit word per cycle, so:
-     *    8bpp FB: 2 pixels per word  -> 2 pixels per cycle
-     *   16bpp FB: 1 pixel  per word  -> 1 pixel  per cycle
-     * (The previous code used 4/2, doubling the real erase throughput.)
-     * Cross-check: Table 4.5 (p.50) gives NTSC 320x224 16bpp = 58812 px,
-     * which equals (1708-200) x (263-224) = 1508 x 39, i.e. 1 px/cycle.
-     * VDP1 Manual p.20: 1 cycle = 1 bus word drawn at the 28 MHz clock. */
-    int area_pixels = area_w * area_h;
+    /* EWDR p.46: "Erase/write is performed 2 pixels at a time when the frame
+     * buffer depth is 8 bits/pixel." The frame buffer moves one 16-bit word
+     * per cycle (p.20), so 8 bpp clears 2 pixels per cycle and 16 bpp one.
+     * Cross-check against Table 4.5: NTSC 320x224 16 bpp gives 58812, which
+     * is (1708-200) x (263-224) = 1508 x 39 -- one pixel per cycle. */
+    int area_pixels     = area_w * area_h;
     int pixels_per_cycle = is8bpp ? 2 : 1;
-    int total_cycles = (area_pixels + pixels_per_cycle - 1)
-                       / pixels_per_cycle;
+    int total_cycles     = (area_pixels + pixels_per_cycle - 1)
+                           / pixels_per_cycle;
 
-    /* VDP1 Manual p.49: the number of pixels usable for erase per raster is
-     * {(pixels in 1 raster) - 200}; the 200 covers the per-raster overhead
-     * (H-blank/refresh) during which the frame buffer cannot be erased.
-     * The usable budget per line is therefore (cyclesPerLine - 200). */
-    int cycles_per_line = getVdp1CyclesPerLine();
-    int usable_per_line = cycles_per_line - 200;
+    /* p.49: usable pixels per raster = (pixels in 1 raster) - 200.
+     *
+     * Read rasterValue directly rather than going through
+     * getVdp1CyclesPerLine(), which returns 0 while Vdp1External.blocked is
+     * set for DMA concurrency. That made usable_per_line come out at -200
+     * and the function bail out with 0, reporting an instantaneous erase
+     * precisely when the bus was most contended. The erase capacity is a
+     * property of the video mode, not of who currently owns the bus. */
+    int usable_per_line = rasterValue - 200;
     if (usable_per_line <= 0) return 0;
 
     return (total_cycles + usable_per_line - 1) / usable_per_line;
@@ -3606,7 +3783,6 @@ static void Vdp1EraseWrite(int id){
 
 void Vdp1HBlankIN(void)
 {
-  int changeDelay = 0;
   if (yabsys.LineCount == (yabsys.VBlankLineCount + 1)) {
     //First HBlankIn after VBlankIn // Evaluate erase
     updateFBCRVBE();
@@ -3616,10 +3792,32 @@ void Vdp1HBlankIN(void)
       //Vblank time - VBE on, erase read frame
       FRAMELOG("##### VBlank on %d (%d %d)\n", eraseId, yabsys.LineCount, yabsys.DecilineCount);
       Vdp1EraseWrite(eraseId);
-      changeDelay = getVdp1ErasePixelLine();
-      if ((yabsys.VBlankLineCount + 1 + changeDelay) > (yabsys.MaxLineCount - 1)) {
-        changeDelay = yabsys.MaxLineCount - 1 - (yabsys.VBlankLineCount + 1);
+
+      /* VDP1 Manual p.49: the erase/write finishes only if the pixels it
+       * needs fit within the V-blank capacity of Tables 4.4 and 4.5. Past
+       * that the hardware stops mid-erase and the remainder of the frame
+       * buffer keeps the previous field's contents -- the classic residue
+       * left by a title that erases more than blanking allows.
+       *
+       * The result of getVdp1ErasePixelLine() used to be assigned to a
+       * local, clamped to the length of the blanking period, and then
+       * discarded without ever being read. Clamping first is also what hid
+       * the interesting case: after the clamp the value can never exceed
+       * what blanking offers, so the overrun it was meant to expose was
+       * arithmetically unreachable. Compare before clamping and record the
+       * shortfall instead. */
+      int eraseLines     = getVdp1ErasePixelLine();
+      int availableLines = (yabsys.MaxLineCount - 1)
+                         - (yabsys.VBlankLineCount + 1);
+
+      Vdp1External.eraseOverrun      = (eraseLines > availableLines);
+      Vdp1External.eraseOverrunLines = Vdp1External.eraseOverrun
+                                     ? (eraseLines - availableLines) : 0;
+      if (Vdp1External.eraseOverrun) {
+        FRAMELOG("V-blank erase overruns by %d lines (needs %d, has %d)\n",
+                 Vdp1External.eraseOverrunLines, eraseLines, availableLines);
       }
+
       updateFBCRChange();
     }
   }
@@ -3650,8 +3848,6 @@ void Vdp1HBlankIN(void)
     }
     Vdp1External.manualerase = 0;
   }
-  int needToCompose = 0;
-
   int cyclesPerLine  = getVdp1CyclesPerLine();
   if (vdp1_clock > 0) vdp1_clock = 0;
   vdp1_clock += cyclesPerLine;
