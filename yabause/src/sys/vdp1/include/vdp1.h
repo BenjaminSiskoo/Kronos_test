@@ -84,6 +84,15 @@ typedef struct {
    int checkEDSR;
    int status;
    int blocked;
+   /* Set when a V-blank erase/write cannot finish inside the vertical
+    * blanking period. VDP1 Manual ST-013-R3 p.49: the erase completes only
+    * "if this is within the number of pixels that can be used in V-blank
+    * erase" (Tables 4.4 and 4.5). Beyond that the hardware simply stops
+    * where it got to and the rest of the frame buffer keeps its previous
+    * contents. eraseOverrunLines holds how many display lines short the
+    * blanking period fell. */
+   int eraseOverrun;
+   int eraseOverrunLines;
 } Vdp1External_struct;
 
 extern Vdp1External_struct Vdp1External;
@@ -207,7 +216,9 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8*, u32, u8);
 void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8*, u32, u16);
 void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8*, u32, u32);
 
-extern void Vdp1SetRaster(int is352);
+/* hreso = VDP2 TVMD bits 2-0 (HRESO2-0). Selects the per-raster VDP1 drawing
+ * budget from VDP1 Manual ST-013-R3 Table 4.4 p.49. NOT a PAL/NTSC switch. */
+extern void Vdp1SetRaster(int hreso);
 
 void Vdp1DrawCommands(u8 * ram, Vdp1 * regs);
 void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs);
