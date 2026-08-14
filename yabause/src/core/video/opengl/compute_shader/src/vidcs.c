@@ -4902,14 +4902,35 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
   ctrl->info.draww = _Ygl->rwidth;
 
   const int incv = (int)(256.0f / ctrl->info.coordincy + 0.5f);
-  /* Kronos#520: same missing-interlace-correction bug as
-   * Vdp2DrawBitmapCoordinateInc (see that function's comment) - v below
-   * is a SCREEN-space row (0.._Ygl->rheight, i.e. 0-511 when
-   * DOUBLE_INTERLACE doubles the display height), but must be converted
-   * back to register/VRAM-space (0-255) before driving targetv/incv or
-   * indexing ctrl->info.lineinfo[]. res_shift existed here as an unused
-   * placeholder (always 0); wiring it up. */
-  const int res_shift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+  /* Pas de correction de resolution sur v.
+   *
+   * Une version precedente posait ici
+   *     const int res_shift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+   * puis targetv = sv + (((v >> res_shift) * incv) >> 8), au motif que v est
+   * une ligne d'ECRAN et devrait etre ramene en "espace registre 0-255", par
+   * analogie avec Vdp2DrawBitmapCoordinateInc.
+   *
+   * L'analogie ne tient pas. Deux espaces coexistent ici :
+   *
+   *  - les instantanes de registres, Vdp2Lines[] et alpha_per_line[], sont
+   *    captures a chaque H-blank, donc indexes par ligne de CHAMP
+   *    (0..VBlankLineCount). C'est la que le decalage de 1 est justifie.
+   *  - lineinfo[] est rempli par Vdp2GenLineinfo() sur _Ygl->rheight entrees,
+   *    donc en lignes d'AFFICHAGE, et la geometrie du plan se lit dans le
+   *    meme espace.
+   *
+   * Et l'entrelacement double double justement la resolution verticale : le
+   * tableau des modes ecran p.12 donne 320 x 448 pour ce mode, soit 448
+   * lignes source distinctes reparties sur les deux champs. Kronos les rend
+   * dans un seul tampon de rheight = 448 (verifie a l'execution), donc v
+   * correspond 1:1 a une ligne source.
+   *
+   * Avec le decalage, targetv n'avancait que d'une ligne source toutes les
+   * deux lignes d'ecran : la couche etait etiree deux fois et seule la
+   * moitie haute du plan etait jamais atteinte. Sur Sonic Jam en ecran
+   * partage, NBG0 se reduisait au motif repetitif du ciel et NBG1 a deux
+   * filets de sol, alors que les memes plans s'affichent correctement en un
+   * joueur -- ou le mode est non entrelace et ou le decalage valait 0. */
 
   int screenH = _Ygl->rheight;
 
@@ -4927,7 +4948,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
        targetv = ctrl->info.sv + ctrl->info.lineinfo[v].LineScrollValV;
     }
     else {
-      targetv = ctrl->info.sv + (((v >> res_shift)*incv)>>8);
+      targetv = ctrl->info.sv + ((v*incv)>>8);
     }
 
     const int base_targetv = targetv;
@@ -4964,12 +4985,60 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       int hh = ((j*inch) >> 8);
 
       if (ctrl->info.isverticalscroll) {
-        int cellCol = (hh + sx) >> 3;
+        /* Index de colonne : cellule de l'ECRAN, pas du plan.
+         * §5.3 p.134, sous la Figure 5.6 : "Data of the vertical cell scroll
+         * table is treated as a table in the order from data in the left side
+         * cell of the TV screen", et la figure numerote 1st Cell, 2nd Cell...
+         * depuis le bord gauche de l'ecran.
+         *
+         * Ajouter sx -- qui porte le defilement horizontal, line scroll
+         * compris -- faisait deriver l'index au fil du scroll : chaque colonne
+         * recuperait le decalage vertical d'une voisine, et au-dela de la 40e
+         * (320 px / 8) l'adresse sortait de la table. D'ou un bloc de colonnes
+         * decale verticalement, qui se deplace quand le joueur avance. */
+        int cellCol = hh >> 3;
         if (cellCol != vcsc_cell) {
           vcsc_cell = cellCol;
-          s32 vshift = (s32)Vdp2RamReadLong(NULL, Vdp2Ram,
-                          ctrl->info.verticalscrolltbl
-                          + cellCol * ctrl->info.verticalscrollinc) >> 16;
+          /* La table de vertical cell scroll est relue A L'INSTANT DU TRACE
+           * dans la VRAM, alors qu'elle est capturee ligne par ligne au
+           * H-blank dans cell_scroll_data[] (vdp2.c, Vdp2HBlankIN). Ce
+           * tableau, declare extern dans vdp2.h, n'etait lu nulle part :
+           * tout jeu qui reecrit sa table VCS en cours de trame se voyait
+           * appliquer la DERNIERE valeur ecrite sur la totalite de l'ecran.
+           *
+           * C'est le cas de Sonic Jam en ecran partage : chaque moitie a son
+           * propre cadrage vertical, porte uniquement par la table VCS --
+           * SCYIN reste a 0 sur toutes les trames et dans les deux champs,
+           * LSCY est desactive, et le decoupage en zones ne voit aucun
+           * changement de registre. La moitie basse sortait donc juste et la
+           * haute recevait le decalage de la basse.
+           *
+           * On lit l'instantane de la ligne courante. L'index se calcule en
+           * longwords depuis la base de la table, ce qui preserve le
+           * decalage de +4 applique a NBG1 quand les deux couches partagent
+           * la table (§5.3 Figure 5.8 p.136).
+           *
+           * cell_scroll_data[] est indexe par ligne de CHAMP, comme tous les
+           * instantanes pris au H-blank : d'ou le decalage en entrelacement
+           * double, contrairement a la geometrie du plan qui, elle, se lit en
+           * lignes d'affichage. */
+          s32 vshift;
+          {
+            const u32 vcsBase = (ctrl->regs->VCSTA.all & 0x7FFFE) << 1;
+            const u32 addr    = ctrl->info.verticalscrolltbl
+                              + (u32)cellCol * ctrl->info.verticalscrollinc;
+            const int fieldShift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+            int line = v >> fieldShift;
+            int idx  = (int)((addr - vcsBase) >> 2);
+            const int lineMax = (yabsys.VBlankLineCount >= 270)
+                                ? 270 : yabsys.VBlankLineCount;
+            if (line < 0) line = 0;
+            if (line >= lineMax) line = lineMax - 1;
+            if ((addr >= vcsBase) && (idx >= 0) && (idx < 88))
+              vshift = (s32)cell_scroll_data[line].data[idx] >> 16;
+            else
+              vshift = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, addr) >> 16;
+          }
           int tv = base_targetv + vshift;
           mapy = tv >> planeh_shift;
           dot_on_planey = tv - (mapy << planeh_shift);
