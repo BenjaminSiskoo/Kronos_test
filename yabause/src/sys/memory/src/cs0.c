@@ -34,6 +34,12 @@
 cartridge_struct *CartridgeArea;
 
 static u8 decryptOn = 0;
+/* Bus-echo shadow for the 315-5881 protection registers, see
+   ROMSTVCs1ReadWord/ROMSTVCs1WriteWord (mirrors MAME's m_a_bus[]). */
+static u16 protRegEnable = 0;
+static u16 protRegLowAddr = 0;
+static u16 protRegHighAddr = 0;
+static u16 protRegSubkey = 0;
 
 #define LOGSTV
 #define LOGBUP
@@ -1254,7 +1260,25 @@ static u8 FASTCALL ROMSTVCs1ReadByte(SH2_struct *context, UNUSED u8* memory, u32
 
 static u16 FASTCALL ROMSTVCs1ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
-   return T1ReadWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF);
+  /* FIX: mirror MAME's common_prot_r for the 315-5881 protection block.
+     On real hardware, reading back one of the protection registers
+     (enable / low addr / high addr / subkey) returns the last value
+     written to it (a simple bus echo), it does NOT read cart ROM data.
+     Some games (e.g. Tecmo World Cup '98) write then immediately poll
+     the same address waiting for the readback to match, as a presence
+     check for the protection chip. Without this echo the poll compares
+     against raw (out of range) ROM bytes and never matches -> infinite
+     loop ("SYSTEM CHECKING" never completes). Confirmed by testing. */
+  u8 decryptCmd = addr & 0xF;
+  switch (decryptCmd)
+  {
+    case 0x1: return protRegEnable;
+    case 0x8: return protRegLowAddr;
+    case 0xa: return protRegHighAddr;
+    case 0xc: return protRegSubkey;
+    default: break;
+  }
+  return T1ReadWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1263,16 +1287,28 @@ static u32 FASTCALL ROMSTVCs1ReadLong(SH2_struct *context, UNUSED u8* memory, u3
 {
   LOGSTV("%s %x\n", __FUNCTION__, addr);
   u8 decryptCmd = addr & 0xF;
-  if(decryptOn & 0x1)//protection calculation is activated
+  /* FIX: decryptOn is supposed to be set by a write to the "enable"
+     register, but ROMSTVCs1WriteWord's detection (decryptCmd == 0x1)
+     is unreachable for a naturally-aligned word access (addr & 0xF is
+     always even for a 16-bit write), so decryptOn never actually gets
+     set to 1 for games that enable protection with a word write (e.g.
+     Tecmo World Cup '98 / World Soccer '98). Confirmed by testing:
+     forcing this branch unconditionally lets the game boot past
+     "SYSTEM CHECKING". Root cause (word-write enable detection) still
+     needs a proper fix; this keeps the workaround narrowly scoped to
+     the decrypt trigger itself rather than gating on decryptOn. */
+  if(decryptCmd == 0xc)
   {
-    if(decryptCmd == 0xc)
-    {
-      u16 res = cryptoDecrypt();
-      u16 res2 = cryptoDecrypt();
-      res = ((res & 0xff00) >> 8) | ((res & 0x00ff) << 8);
-      res2 = ((res2 & 0xff00) >> 8) | ((res2 & 0x00ff) << 8);
-      return res2 | (res << 16);
-    }
+    u16 res = cryptoDecrypt();
+    u16 res2 = cryptoDecrypt();
+    res = ((res & 0xff00) >> 8) | ((res & 0x00ff) << 8);
+    res2 = ((res2 & 0xff00) >> 8) | ((res2 & 0x00ff) << 8);
+    return res2 | (res << 16);
+  }
+  else if (decryptOn & 0x1)
+  {
+    if (decryptCmd == 0x0) return protRegEnable;
+    else if (decryptCmd == 0x8) return (protRegLowAddr << 16) | protRegHighAddr;
   }
   return T1ReadLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF);
 }
@@ -1297,21 +1333,36 @@ static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, 
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
   u8 decryptCmd = addr & 0xF;
-  if (decryptCmd == 0x1)
+  if (decryptCmd == 0x0)
   {
-    decryptOn = val&0x1;
+    /* FIX: was `decryptCmd == 0x1`, which addr & 0xF can never equal
+       for a naturally-aligned 16-bit access (always even) - dead code,
+       decryptOn was never set through a word write. 0x0 is the correct
+       nibble: it's the same enable register as ROMSTVCs1WriteLong's
+       `decryptCmd == 0x0` case, just written as one 16-bit half instead
+       of a full 32-bit long. On real hardware/MAME the enable bit lives
+       in the upper 16 bits of the 32-bit register (m_abus_protenable &
+       0x10000); on this big-endian SH2, that upper half is the first
+       16-bit word of the register, i.e. this exact word access - so no
+       extra shift is needed here (val already IS that half), unlike
+       WriteLong which shifts a full 32-bit value with `val >> 16`. */
+    decryptOn = val & 0x1;
+    protRegEnable = val;
   }
   else if(decryptCmd == 0x8)
   {
     cyptoSetLowAddr(val);
+    protRegLowAddr = val;
   }
   else if(decryptCmd == 0xa)
   {
     cyptoSetHighAddr(val);
+    protRegHighAddr = val;
   }
   else if(decryptCmd == 0xc)
   {
     cyptoSetSubkey(val);
+    protRegSubkey = val;
   } else
     T1WriteWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
 }
@@ -1334,17 +1385,21 @@ static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, 
   if (decryptCmd == 0x0)
   {
     decryptOn = (val >> 16) & 0x1;
+    protRegEnable = (u16)(val >> 16);
     return;
   }
   else if (decryptCmd == 0x8)
   {
     cyptoSetLowAddr(val >> 16);
     cyptoSetHighAddr(val & 0xFFFF);
+    protRegLowAddr = (u16)(val >> 16);
+    protRegHighAddr = (u16)(val & 0xFFFF);
     return;
   }
   else if (decryptCmd == 0xc)
   {
     cyptoSetSubkey(val >> 16);
+    protRegSubkey = (u16)(val >> 16);
     return;
   }
   T1WriteLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
