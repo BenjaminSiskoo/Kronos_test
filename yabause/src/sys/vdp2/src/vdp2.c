@@ -55,8 +55,9 @@ u8 Vdp2ColorRamUpdated[512] = {0};
 u8 Vdp2ColorRamToSync[512] = {0};
 u8 Vdp2Ram_Updated = 0;
 
-struct CellScrollData cell_scroll_data[270];
-Vdp2 Vdp2Lines[270];
+struct CellScrollData cell_scroll_data[VDP2_LINE_SNAPSHOT_MAX];
+Vdp2 Vdp2Lines[VDP2_LINE_SNAPSHOT_MAX];
+struct LineScrollData line_scroll_data[VDP2_LINE_SNAPSHOT_MAX];
 
 /* See vdp2.h for the rationale (Kronos#520, True Pinball) and why this is
  * double-buffered. Plain global arrays rather than fields on Vdp2External:
@@ -364,59 +365,61 @@ u32 FASTCALL Vdp2RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
    return T1ReadLong(mem, addr);
 }
 
-//////////////////////////////////////////////////////////////////////////////
 
 void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
     addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
-
+ 
   if (context) {
     int bank = Vdp2GetBank(Vdp2Regs, addr);
     if (Vdp2External.vdp2_blocked[bank]) {
       SH2SetVRamAccess(context, VDP2_RAM_A0_LOCK << bank);
     }
   }
+ 
+ 
   Vdp2Ram_Updated = 1;
   T1WriteByte(mem, addr, val);
 }
-
-//////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
     addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
-
+ 
   if (context) {
     int bank = Vdp2GetBank(Vdp2Regs, addr);
     if (Vdp2External.vdp2_blocked[bank]) {
       SH2SetVRamAccess(context, VDP2_RAM_A0_LOCK << bank);
     }
   }
+ 
+ 
   Vdp2Ram_Updated = 1;
   T1WriteWord(mem, addr, val);
 }
-
-//////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp2RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
   if (Vdp2Regs->VRSIZE & 0x8000)
     addr &= 0xFFFFF;
   else
     addr &= 0x7FFFF;
-
+ 
   if (context) {
     int bank = Vdp2GetBank(Vdp2Regs, addr);
     if (Vdp2External.vdp2_blocked[bank]) {
       SH2SetVRamAccess(context, VDP2_RAM_A0_LOCK << bank);
     }
   }
+ 
+ 
   Vdp2Ram_Updated = 1;
   T1WriteLong(mem, addr, val);
 }
+
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -762,14 +765,189 @@ void Vdp2HBlankIN_It(void) {
   SH2ClearCPUConcurrency(MSH2, VDP2_RAM_LOCK);
   SH2ClearCPUConcurrency(SSH2, VDP2_RAM_LOCK);
 }
+
+/* ---------------------------------------------------------------------------
+ * Extent of the vertical cell scroll table, in longwords.
+ *
+ * ST-058-R2 §5.3 p.134, Figure 5.6: one entry per displayed cell column,
+ * read in the order of the cells starting from the left side cell of the TV
+ * screen. Figure 5.8 p.136: when both NBG0 and NBG1 use the table their
+ * entries alternate, NBG0 first, hence 2 x columns entries and the +1
+ * longword offset for NBG1. SCRCTL bit 0 = N0VCSC, bit 8 = N1VCSC (§3.20).
+ *
+ * Vdp2HBlankIN() copied a hardcoded 88 longwords. At 320x224 with both
+ * layers scrolling only 80 of those are table entries; the remaining 8 fall
+ * past its end -- in Sonic Jam straight into the per-line back screen table,
+ * which starts 0x150 bytes after VCSTA. Harmless as a read, but it puts
+ * foreign data in cell_scroll_data[] where a debugger or a later consumer
+ * would take it for scroll values, and it costs 224 x 8 pointless VRAM reads
+ * per frame.
+ * ------------------------------------------------------------------------- */
+#define VDP2_CELL_SCROLL_MAX \
+  ((int)(sizeof(cell_scroll_data[0].data) / sizeof(cell_scroll_data[0].data[0])))
+
+int Vdp2VCellScrollLongwordsFor(Vdp2 *regs)
+{
+  /* Displayed cell columns per HRESO (§2.1), 8 dots per cell: 320/352/640/704,
+   * the same four widths repeating for the exclusive monitor modes (100-111). */
+  static const int cols[8] = { 40, 44, 80, 88, 40, 44, 80, 88 };
+  int n = 0;
+  if (regs == NULL) return 0;
+  if (regs->SCRCTL & 0x0001) n++;   /* N0VCSC */
+  if (regs->SCRCTL & 0x0100) n++;   /* N1VCSC */
+  if (n == 0) return 0;
+  n *= cols[regs->TVMD & 0x7];
+  if (n > VDP2_CELL_SCROLL_MAX) n = VDP2_CELL_SCROLL_MAX;
+  return n;
+}
+
+/* Wrapper sur les registres vivants, pour la capture au H-blank. */
+int Vdp2VCellScrollLongwords(void)
+{
+  return Vdp2VCellScrollLongwordsFor(Vdp2Regs);
+}
+
+/* ---------------------------------------------------------------------------
+ * Vertical cell scroll access timing, derived from the cycle patterns.
+ *
+ * ST-058-R2 Table 3.5 p.34 assigns two commands, 1100B and 1101B, to the NBG0
+ * and NBG1 vertical cell scroll table reads. Which *timing slot* they land on
+ * is not cosmetic: the VDP2 fetches the table during that slot, and a fetch
+ * issued late in the line cannot be applied to the cell it was meant for.
+ *
+ * Three consequences, matching the model in Ymir (vdp_state.hpp,
+ * CalcVCellScrollDelay), which was derived from hardware testing:
+ *
+ *   - the stride between consecutive entries is the number of VCS commands
+ *     actually programmed, not what SCRCTL alone suggests. Kronos derived it
+ *     from SCRCTL only, which is right for the common case but wrong for the
+ *     "illegal" patterns some games program;
+ *   - the per-layer offset within an entry follows the ORDER of the slots, so
+ *     NBG1 sits at +4 only because its command usually comes after NBG0's;
+ *   - a read on a late slot is applied one cell late (delay), and on a
+ *     slightly-less-late slot the previous cell's value is reused (repeat).
+ *
+ * The thresholds are NBG0 delay from T3, NBG0 repeat from T2, NBG1 delay from
+ * T4. Note there is no NBG1 repeat: the asymmetry is in the hardware.
+ *
+ * Sonic Jam programs CYCA1L = 0xCD45, i.e. VC0 on T0 and VC1 on T1, so none
+ * of the three flags fire -- this function changes nothing for that game.
+ * ------------------------------------------------------------------------- */
+void Vdp2VCellScrollTimingFor(Vdp2 *regs, Vdp2VCellScrollTiming *out)
+{
+  int slot, bank, off = 0;
+
+  out->inc        = 0;
+  out->offset[0]  = 0;
+  out->offset[1]  = 0;
+  out->delay[0]   = 0;
+  out->delay[1]   = 0;
+  out->repeat[0]  = 0;
+  out->repeat[1]  = 0;
+  if (regs == NULL) return;
+
+  for (slot = 0; slot < 8; slot++) {
+    int acc0 = 0, acc1 = 0;
+    for (bank = 0; bank < 4; bank++) {
+      /* CYCxnL porte T0-T3, CYCxnU porte T4-T7, quatre bits par creneau,
+       * du plus significatif au moins significatif. */
+      const u16 *cyc = &regs->CYCA0L;         /* A0L,A0U,A1L,A1U,B0L,B0U,B1L,B1U */
+      const u16 word = cyc[bank * 2 + (slot >> 2)];
+      const int cmd  = (word >> (12 - 4 * (slot & 3))) & 0xF;
+      if (cmd == 0xC) acc0 = 1;
+      else if (cmd == 0xD) acc1 = 1;
+    }
+    if ((regs->SCRCTL & 0x0001) && acc0) {     /* N0VCSC */
+      out->inc       += 4;
+      out->offset[0]  = off;
+      out->delay[0]   = (slot >= 3);
+      out->repeat[0]  = (slot >= 2);
+      off += 4;
+    }
+    if ((regs->SCRCTL & 0x0100) && acc1) {     /* N1VCSC */
+      out->inc       += 4;
+      out->offset[1]  = off;
+      out->delay[1]   = (slot >= 3);
+      off += 4;
+    }
+  }
+}
+
+void Vdp2VCellScrollTiming_Current(Vdp2VCellScrollTiming *out)
+{
+  Vdp2VCellScrollTimingFor(Vdp2Regs, out);
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-line capture of the NBG0/NBG1 line scroll tables.
+ *
+ * Same rationale as cell_scroll_data[] above, applied to the neighbouring
+ * table. Vdp2GenLineinfo() re-read the table straight from VRAM at draw
+ * time, which happens once the whole frame has been scanned, so a game that
+ * rewrites the table mid-frame had its last written state applied to every
+ * line. Sonic Jam's two-player mode does exactly that: it sweeps all 1792
+ * bytes of both tables in about three lines, at a line that drifts from
+ * frame to frame with code load (observed at 39-53, 175-177, 212-213 and
+ * 249-256), so the split screen picked up scroll values meant for the next
+ * frame and tore wherever either player moved.
+ *
+ * Only the entry the hardware uses at this line is captured, not the whole
+ * table -- one entry per line is what a per-line snapshot means. The two
+ * sub-slots cover LSS=0 (one entry per display line) in double-density,
+ * where a single field line spans two display lines with distinct entries.
+ *
+ * SCRCTL (ST-058-R2 3.20): bit sh+1 = LSCX, sh+2 = LSCY, sh+3 = LZMX,
+ * bits sh+5..sh+4 = LSS (1, 2, 4 or 8 lines per entry); sh is 0 for NBG0
+ * and 8 for NBG1. The enabled fields are packed in that order, so an entry
+ * is 4, 8 or 12 bytes wide (5.2 Fig 5.3 p.130).
+ * ------------------------------------------------------------------------- */
+static void Vdp2CaptureLineScroll(u32 base, u16 ctl, int sh,
+                                  int dispLine, int nsub, u32 out[2][3])
+{
+  const int lineinc = 1 << ((ctl >> (sh + 4)) & 3);
+  int bound = 0, k;
+
+  if (ctl & (1 << (sh + 1))) bound += 4;   /* LSCX */
+  if (ctl & (1 << (sh + 2))) bound += 4;   /* LSCY */
+  if (ctl & (1 << (sh + 3))) bound += 4;   /* LZMX */
+
+  for (k = 0; k < 2; k++) {
+    int i = 0;
+    if (bound != 0 && k < nsub) {
+      const u32 addr = base + (u32)((dispLine + k) / lineinc) * (u32)bound;
+      for (; i < bound / 4; i++)
+        out[k][i] = Vdp2RamReadLong(NULL, Vdp2Ram, addr + i * 4);
+    }
+    for (; i < 3; i++) out[k][i] = 0;
+  }
+}
+
 void Vdp2HBlankIN(void) {
 
   if (yabsys.LineCount < yabsys.VBlankLineCount) {
     u32 cell_scroll_table_start_addr = (Vdp2Regs->VCSTA.all & 0x7FFFE) << 1;
+    int vcs_n = Vdp2VCellScrollLongwords();
     memcpy(Vdp2Lines + yabsys.LineCount, Vdp2Regs, sizeof(Vdp2));
-    for (int i = 0; i < 88; i++)
+    /* Zero first: when VCS is turned off, or the mode narrows mid-frame, the
+     * tail must not keep last frame's values -- a consumer bounded by the
+     * same helper never looks there, but a debug dump does. */
+    memset(&cell_scroll_data[yabsys.LineCount], 0,
+           sizeof(cell_scroll_data[0]));
+    for (int i = 0; i < vcs_n; i++)
     {
       cell_scroll_data[yabsys.LineCount].data[i] = Vdp2RamReadLong(NULL, Vdp2Ram, cell_scroll_table_start_addr + i * 4);
+    }
+    {
+      /* LSMD = 11B (TVMD bits 7-6) : double-density, une ligne de champ porte
+       * deux lignes d'affichage, donc deux entrees potentiellement distinctes. */
+      const int ilace = ((Vdp2Regs->TVMD & 0xC0) == 0xC0) ? 2 : 1;
+      const int disp  = yabsys.LineCount * ilace;
+      Vdp2CaptureLineScroll((Vdp2Regs->LSTA0.all & 0x7FFFE) << 1,
+                            Vdp2Regs->SCRCTL, 0, disp, ilace,
+                            line_scroll_data[yabsys.LineCount].n0);
+      Vdp2CaptureLineScroll((Vdp2Regs->LSTA1.all & 0x7FFFE) << 1,
+                            Vdp2Regs->SCRCTL, 8, disp, ilace,
+                            line_scroll_data[yabsys.LineCount].n1);
     }
   } else {
 // Fix : Function doesn't exist without those defines
@@ -829,11 +1007,54 @@ void Vdp2VBlankOUT_It(void) {
   Vdp2Regs->TVSTAT = ((Vdp2Regs->TVSTAT & ~0x0008) & ~0x0002) | (vdp2_is_odd_frame << 1);
   ScuSendVBlankOUT();
 }
+
+/* ---------------------------------------------------------------------------
+ * Number of display rasters, from VRESO1-0 (TVMD bits 5-4).
+ *
+ * VDP2 User's Manual ST-058-R2 §2.1, TV Screen Mode Register: VRESO selects
+ * 224, 240, 256 or 480 display lines. VDP1 Manual ST-013-R3 Table 4.5 p.50
+ * uses the same four values (320x224, 320x240, 320x256, 320x480).
+ *
+ * The steps are 16, 16 and 224, so `225 + (TVMD & 0x30)` -- which adds 0,
+ * 16, 32 or 48 -- is only right for the first two settings. It produced 257
+ * for the 256-line mode and 273 for the 480-line mode, and the guard that
+ * followed then clamped both to 256. That silently turned every 256-line PAL
+ * title's V-blank one line early, and made the 480-line modes unrepresentable.
+ * ------------------------------------------------------------------------- */
+static int Vdp2DisplayLineCount(void)
+{
+  switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
+    case 0:  return 224;
+    case 1:  return 240;
+    case 2:  return 256;
+    default: return 480;
+  }
+}
+
+/* V-blank IN fires on the raster after the last display raster. Two ceilings
+ * apply, and both are hard:
+ *   - the field length (a prohibited resolution/standard pairing must not
+ *     push V-blank past the end of the field);
+ *   - the depth of the per-line snapshot arrays. Vdp2Lines[] and
+ *     cell_scroll_data[] are both [270] (vdp2.h) and Vdp2HBlankIN() indexes
+ *     them by LineCount for every line below VBlankLineCount, with no bound
+ *     of its own. In PAL, MaxLineCount-1 is 312; a VRESO=480 write -- even a
+ *     transient one during a mode change -- would let the H-blank capture
+ *     run 42 entries past the end of both arrays, which sit adjacent in BSS.
+ *     The old `> 256` clamp masked this by being narrower than 270. */
+static int Vdp2VBlankLine(void)
+{
+  int v = Vdp2DisplayLineCount() + 1;
+  if (v > yabsys.MaxLineCount - 1) v = yabsys.MaxLineCount - 1;
+  if (v > VDP2_LINE_SNAPSHOT_MAX)  v = VDP2_LINE_SNAPSHOT_MAX;
+  if (v < 1)                       v = 1;
+  return v;
+}
+
 void Vdp2VBlankOUT(void) {
 
   g_frame_count++;
-  yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
-  if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
+  yabsys.VBlankLineCount = Vdp2VBlankLine();
 
   FRAMELOG("***** VOUT %d *****", g_frame_count);
 
@@ -941,10 +1162,13 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    {
       case 0x000:
          Vdp2Regs->TVMD = val;
-         if ((yabsys.LineCount < yabsys.VBlankLineCount) && (yabsys.LineCount < 225+(Vdp2Regs->TVMD & 0x30)) && ((Vdp2Regs->TVMD & 0x30)<(yabsys.VBlankLineCount - 225))) {
+         /* A mid-frame VRESO change may only SHORTEN the current field, and
+          * only while we are still above the new last display raster. */
+         if ((yabsys.LineCount < yabsys.VBlankLineCount) &&
+             (yabsys.LineCount < Vdp2VBlankLine()) &&
+             (Vdp2VBlankLine() < yabsys.VBlankLineCount)) {
            //Safe to change right now
-           yabsys.VBlankLineCount = 225+(Vdp2Regs->TVMD & 0x30);
-           if (yabsys.VBlankLineCount > 256) yabsys.VBlankLineCount = 256;
+           yabsys.VBlankLineCount = Vdp2VBlankLine();
          }
          /* Pass the full HRESO2-0 field, not just bit 0: the per-raster
           * VDP1 budget differs for normal (1708/1820) and exclusive
