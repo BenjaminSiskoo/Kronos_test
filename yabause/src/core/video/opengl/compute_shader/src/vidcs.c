@@ -36,6 +36,20 @@
 #include "yui.h"
 #include "vdp1_compute.h"
 
+/* Valeur d'une entree de la table de vertical cell scroll -- ST-058-R2 §5.3.
+ * Meme format que les tables de scroll : partie entiere sur 11 bits en 26-16,
+ * fraction en 15-8, bits 31-27 reserves. Un simple >>16 laissait passer les
+ * bits reserves dans le decalage ; le masque 0x7FF les ecarte. Le
+ * (x ^ 0x400) - 0x400 etend le signe du bit 10, exactement comme le fait
+ * Vdp2GenLineinfo() sur le line scroll -- sans effet sur la geometrie de
+ * plan, qui replie modulo la hauteur, mais correct partout ailleurs.
+ *
+ * Macro et non fonction : l'argument n'est evalue qu'une fois, et ni l'ordre
+ * de definition ni le linkage d'un static inline ne peuvent poser probleme
+ * (MSVC en C n'emet pas de corps pour un INLINE non static -> LNK2019). */
+#define VCS_VALUE(raw) \
+  ((s32)(((((u32)(raw)) >> 16) & 0x7FFu) ^ 0x400u) - 0x400)
+
 #define Y_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define Y_MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -1328,7 +1342,7 @@ static void Vdp2DrawNBG0_zones(void)
 {
   int lastLine = 0;
   int line;
-  int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+  int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
   for (line = 1; line < max; line++) {
     if (!sameVDP2Reg(NBG0, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
@@ -1373,12 +1387,12 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
  
-  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser 270 pendant les
+  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser VDP2_LINE_SNAPSHOT_MAX pendant les
    * transitions de mode vidéo. display[]/alpha_per_line[] (vdp2draw_struct)
-   * et Vdp2Lines[] (dimensionné [270], cf. vdp2.h) doivent être bornés à
-   * 270 pour éviter un débordement de tableau. Identique à Vdp2DrawNBG1. */
-  const int line_max = (yabsys.VBlankLineCount >= 270)
-                       ? 270 : yabsys.VBlankLineCount;
+   * et Vdp2Lines[] (dimensionné [VDP2_LINE_SNAPSHOT_MAX], cf. vdp2.h) doivent être bornés à
+   * VDP2_LINE_SNAPSHOT_MAX pour éviter un débordement de tableau. Identique à Vdp2DrawNBG1. */
+  const int line_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                       ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
 
   for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG0, &Vdp2Lines[i]);
@@ -1392,7 +1406,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
    * beyond line_max-1. */
 
   /* enable is the OR of display[i] over the same range as the
-   * fill loop above (clamped to 270 lines, see line_max). */
+   * fill loop above (clamped to VDP2_LINE_SNAPSHOT_MAX lines, see line_max). */
   if (!ctrl.info.enable) return;
 
  
@@ -1486,7 +1500,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
      * any bitmap mode can be disabled by a RAMCTL cycle-pattern conflict. */
     int charAddrBk = Vdp2VramBankIndex(ctrl.regs, ctrl.info.charaddr);
     int needUpdate = 0;
-    const int line_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    const int line_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
     for (int k = 0; k < line_max; k++) {
       /* VDP2 Manual §4.1 BGON p.49: bits map to scroll screens as:
        *   bit 0 = N0ON (NBG0)
@@ -1591,14 +1605,17 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
    * valide du cycle pattern register. Sinon le hardware ne lit pas
    * la table -> ne pas appliquer de V-shift fantome. */
   if ((ctrl.regs->SCRCTL & 1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
+    /* Pas et offset deduits des cycle patterns et non de SCRCTL seul : le pas
+     * est le nombre de commandes VCS reellement programmees, et l'offset suit
+     * l'ORDRE des creneaux. NBG1 n'est a +4 que parce que sa commande vient
+     * d'ordinaire apres celle de NBG0 ; un jeu qui les inverse doit voir les
+     * offsets inverses. Cf. Vdp2VCellScrollTimingFor() dans vdp2.c. */
+    Vdp2VCellScrollTiming vcst;
+    Vdp2VCellScrollTimingFor(ctrl.regs, &vcst);
     ctrl.info.isverticalscroll = 1;
-    ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
-	/* §5.3 Figure 5.8 p.136 : pas NBG0 = 8 UNIQUEMENT si
-	 * NBG1 fait reellement de la VCSC (enable + access command valide).
-	 * Sinon la table n'est pas entrelacee et le pas reste 4. */
-	int nbg1_vcs_real = (ctrl.regs->SCRCTL & 0x100)
-						&& Vdp2VCSCAccessValid(ctrl.regs, NBG1);
-	ctrl.info.verticalscrollinc = nbg1_vcs_real ? 8 : 4;
+    ctrl.info.verticalscrolltbl = ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1)
+                                + (u32)vcst.offset[0];
+    ctrl.info.verticalscrollinc = vcst.inc ? vcst.inc : 4;
   }
   else {
     ctrl.info.isverticalscroll = 0;
@@ -1894,7 +1911,7 @@ static void Vdp2DrawNBG1_zones(void)
 {
     int lastLine = 0;
     int line;
-    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
         if (!sameVDP2RegNBG1(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
@@ -1936,11 +1953,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.bitmap_base      = 0;
   ctrl.info.bitmap_wrap_size = 0;
   
-  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser 270 pendant les
+  /* [P2] §2.1 Table 2.1 : VBlankLineCount peut dépasser VDP2_LINE_SNAPSHOT_MAX pendant les
    * transitions de mode vidéo. display[]/alpha_per_line[] et Vdp2Lines[]
-   * (dimensionné [270], cf. vdp2.h) doivent être bornés. Identique à NBG0. */
-  const int line_max = (yabsys.VBlankLineCount >= 270)
-                       ? 270 : yabsys.VBlankLineCount;
+   * (dimensionné [VDP2_LINE_SNAPSHOT_MAX], cf. vdp2.h) doivent être bornés. Identique à NBG0. */
+  const int line_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                       ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
 					   
   for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG1, &Vdp2Lines[i]);
@@ -1949,7 +1966,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
 
   /* enable is the OR of display[i] over the same range as the
-   * fill loop above (clamped to 270 lines, see line_max). */
+   * fill loop above (clamped to VDP2_LINE_SNAPSHOT_MAX lines, see line_max). */
   if (!ctrl.info.enable) return;
 
   for (int i=0; i < 4; i++) {
@@ -2101,15 +2118,13 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   Vdp2GenLineinfo(&ctrl.info);
 
   if ((ctrl.regs->SCRCTL & 0x100) && Vdp2VCSCAccessValid(ctrl.regs, NBG1)) {
+    /* Meme derivation que NBG0 : voir Vdp2VCellScrollTimingFor(). */
+    Vdp2VCellScrollTiming vcst;
+    Vdp2VCellScrollTimingFor(ctrl.regs, &vcst);
     ctrl.info.isverticalscroll = 1;
-    if ((ctrl.regs->SCRCTL & 0x1) && Vdp2VCSCAccessValid(ctrl.regs, NBG0)) {
-      ctrl.info.verticalscrolltbl = 4 + ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1);
-      ctrl.info.verticalscrollinc = 8;
-    }
-    else {
-      ctrl.info.verticalscrolltbl = (ctrl.regs->VCSTA.all & 0x7FFFE) << 1;
-      ctrl.info.verticalscrollinc = 4;
-    }
+    ctrl.info.verticalscrolltbl = ((ctrl.regs->VCSTA.all & 0x7FFFE) << 1)
+                                + (u32)vcst.offset[1];
+    ctrl.info.verticalscrollinc = vcst.inc ? vcst.inc : 4;
   }
   else ctrl.info.isverticalscroll = 0;
 
@@ -2324,7 +2339,7 @@ static void Vdp2DrawNBG2_zones(void)
 {
     int lastLine = 0;
     int line;
-    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
         if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
@@ -2354,8 +2369,8 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.specialcolorfunction = 0;
   ctrl.info.enable = 0;
 
-  const int line_max = (yabsys.VBlankLineCount >= 270)
-                       ? 270 : yabsys.VBlankLineCount;
+  const int line_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                       ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
   for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG2, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
@@ -2565,7 +2580,7 @@ static void Vdp2DrawNBG3_zones(void)
 {
     int lastLine = 0;
     int line;
-    int max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
         if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
@@ -2596,8 +2611,8 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.startLine = startLine;
   ctrl.info.endLine   = endLine;
  
-  const int line_max = (yabsys.VBlankLineCount >= 270)
-                       ? 270 : yabsys.VBlankLineCount;
+  const int line_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                       ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
   for (int i = 0; i < line_max; i++) {
     ctrl.info.display[i] = isEnabled(NBG3, &Vdp2Lines[i]);
     ctrl.info.enable |= ctrl.info.display[i];
@@ -2978,7 +2993,7 @@ static void Vdp2DrawRBG0()
   int nbZone = 1;
   int lastLine = 0;
   int line;
-  int max = (yabsys.VBlankLineCount >= 270)?270:yabsys.VBlankLineCount;
+  int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)?VDP2_LINE_SNAPSHOT_MAX:yabsys.VBlankLineCount;
   RBGDrawInfo* rbg = NULL;
    /* Detection starts at line 1 like NBG0..NBG3 — comparing
     * Vdp2Lines[0] vs Vdp2Lines[1] catches register writes done
@@ -3122,8 +3137,8 @@ void VIDCSReadColorOffset(void) {
      * exclusive (rheight=480, VBL=240), DDI (rheight=512,
      * VBL=256), and any future mode. */
     const int phys_h = _Ygl->rheight;
-    const int log_h  = (yabsys.VBlankLineCount >= 270)
-                       ? 270 : yabsys.VBlankLineCount;
+    const int log_h  = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                       ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
     u32 * linebuf = YglGetPerlineBuf();
     for (int line = 0; line < phys_h; line++) {
         const int li = (line * log_h) / phys_h;
@@ -3993,33 +4008,55 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
     for (i = 0; i < height; i++) {
         int sub_line    = i % info->lineinc;
         int table_entry = i / info->lineinc;
-        int byte_offset = table_entry * bound;
-        int field_off   = 0;
+        (void)table_entry; (void)bound;   /* l'index vit desormais dans la capture */
 
         if (sub_line == 0) {
+            /* Instantane pris au H-blank plutot que relecture de la VRAM.
+             * La table de line scroll est reecrite en cours de trame par
+             * certains jeux (Sonic Jam 2 joueurs balaie les deux tables en
+             * trois lignes, a une ligne qui derive d'une trame a l'autre) ;
+             * relire la VRAM ici, en fin de trame, appliquait le dernier
+             * etat ecrit -- souvent celui destine a la trame SUIVANTE -- aux
+             * 448 lignes. Voir Vdp2CaptureLineScroll() dans vdp2.c.
+             *
+             * cell_scroll_data[] et line_scroll_data[] sont indexes par ligne
+             * de CHAMP ; i parcourt les lignes d'AFFICHAGE. En double-density
+             * la sous-ligne distingue les deux entrees possibles d'une meme
+             * ligne de champ (cas LSS=0). */
+            const int ilace = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+            int fl  = i >> ilace;
+            const int sub = ilace ? (i & 1) : 0;
+            const u32 *snap;
+            int fi = 0;
+
+            if (fl >= VDP2_LINE_SNAPSHOT_MAX) fl = VDP2_LINE_SNAPSHOT_MAX - 1;
+            if (fl < 0) fl = 0;
+            snap = (info->idScreen == NBG1) ? line_scroll_data[fl].n1[sub]
+                                            : line_scroll_data[fl].n0[sub];
+
+            /* Vdp2RamReadWord(addr) valait le mot HAUT du longword a addr,
+             * et (addr + 2) son mot bas. */
             if (VDPLINE_SX(info->islinescroll)) {
-                val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+                val1 = (u16)(snap[fi++] >> 16);
                 s32 ival = (s32)(val1 & 0x07FF);
                 if (val1 & 0x0400) ival -= 0x0800;   /* sign-extend bit 10 */
                 last_sh = (s16)ival;
-                field_off += 4;
             } else {
                 last_sh = 0;
             }
 
             if (VDPLINE_SY(info->islinescroll)) {
-                val1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
+                val1 = (u16)(snap[fi++] >> 16);
                 s32 ival = (s32)(val1 & 0x07FF);
                 if (val1 & 0x0400) ival -= 0x0800;   /* sign-extend bit 10 */
                 last_sv = (s16)ival;
-                field_off += 4;
             } else {
                 last_sv = 0;
             }
 
             if (VDPLINE_SZ(info->islinescroll)) {
-                u16 z1 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off);
-                u16 z2 = Vdp2RamReadWord(NULL, Vdp2Ram, info->linescrolltbl + byte_offset + field_off + 2);
+                u16 z1 = (u16)(snap[fi] >> 16);
+                u16 z2 = (u16)(snap[fi] & 0xFFFF);
                 last_inc = ((int)(z1 & 0x07) << 8) | (int)(z2 >> 8);
             } else {
                 last_inc = 0x0100;
@@ -4283,7 +4320,7 @@ static u32 getAlpha(vdp2draw_struct *info, int id) {
     if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
     int idx = info->draw_line + id;
     if (idx < 0) idx = 0;
-    const int alpha_max = (yabsys.VBlankLineCount >= 270) ? 270 : yabsys.VBlankLineCount;
+    const int alpha_max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
     int li = idx >> shift;
     if (li >= alpha_max) li = alpha_max - 1;
     return info->alpha_per_line[li];
@@ -4479,9 +4516,9 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           int cellCol_ = (int)(((u32)sh + (u32)(jj)) & cellw_mask) >> 3; \
           if (cellCol_ != vcsc_cell) { \
             vcsc_cell = cellCol_; \
-            s32 vshift_ = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, \
+            s32 vshift_ = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, \
                             ctrl->info.verticalscrolltbl + \
-                            (u32)cellCol_ * ctrl->info.verticalscrollinc) >> 16; \
+                            (u32)cellCol_ * ctrl->info.verticalscrollinc)); \
             u32 sv_eff_ = ((u32)sv + (u32)vshift_) & cellh_mask; \
             lin_base = sv_eff_ * ctrl->info.cellw + (u32)sh; \
           } \
@@ -4655,9 +4692,9 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         int cellCol_ = (h_val) >> 3; \
         if (cellCol_ != vcsc_cell) { \
           vcsc_cell = cellCol_; \
-          s32 vshift_ = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, \
+          s32 vshift_ = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, \
                           ctrl->info.verticalscrolltbl + \
-                          (u32)cellCol_ * ctrl->info.verticalscrollinc) >> 16; \
+                          (u32)cellCol_ * ctrl->info.verticalscrollinc)); \
           u32 sv_eff_ = ((u32)sv + (u32)vshift_) & (u32)cellh_mask; \
           row_base = baseaddr + sv_eff_ * (u32)(bpr); \
         } \
@@ -4934,6 +4971,33 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
   int screenH = _Ygl->rheight;
 
+  /* Etendue de la table de vertical cell scroll, en longwords. Calculee sur
+   * ctrl->regs -- l'instantane de la zone -- et non sur Vdp2Regs : le rendu a
+   * lieu en fin de trame, les registres vivants peuvent avoir change depuis.
+   * Invariante sur la zone (elle ne depend que de SCRCTL et TVMD, tous deux
+   * compares par sameVDP2RegNBG0/NBG1), donc hissee hors des deux boucles :
+   * la fonction n'est plus inline depuis qu'elle est exportee, et l'appeler
+   * par changement de colonne coutait ~36 000 appels par trame. */
+  const int vcsCount = Vdp2VCellScrollLongwordsFor(ctrl->regs);
+
+  /* Retard d'acces a la table de vertical cell scroll. Le creneau ou tombe la
+   * commande VCS decide si la lecture arrive a temps pour la cellule visee :
+   * a partir de T3 (NBG0) ou T4 (NBG1), la valeur s'applique une cellule plus
+   * loin. Calcule sur ctrl->regs -- l'instantane de la zone -- et invariant
+   * sur celle-ci, donc hisse hors des boucles.
+   *
+   * Le drapeau "repeat" (NBG0 des T2) est calcule par
+   * Vdp2VCellScrollTimingFor() et rapporte dans l'export du viewer, mais PAS
+   * applique ici : sa semantique exacte -- quelles cellules reutilisent la
+   * valeur precedente -- n'est pas etablie, et l'appliquer au juge serait
+   * remplacer une approximation par une autre. */
+  int vcsDelay;
+  {
+    Vdp2VCellScrollTiming vcst;
+    Vdp2VCellScrollTimingFor(ctrl->regs, &vcst);
+    vcsDelay = (ctrl->info.idScreen == NBG1) ? vcst.delay[1] : vcst.delay[0];
+  }
+
   for (v = 0; v < screenH; v++) {
     int targetv = 0;
 
@@ -4980,6 +5044,17 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
     int vcsc_cell = -1;
 
+    /* Le cache de page/plan doit repartir de zero a chaque ligne. Declare en
+     * tete de fonction, il survivait d'une ligne a l'autre : les premieres
+     * colonnes d'une ligne reutilisaient l'adresse de page etablie pour le
+     * bord DROIT de la ligne precedente. Correct sur le fond, meme si ce
+     * n'est pas ce qui cause le fragment au bord gauche de la vue du bas. */
+    preplanex = -1;
+    preplaney = -1;
+    prepagex  = -1;
+    prepagey  = -1;
+    premapid  = -1;
+
     for (int j = 0; j < ctrl->info.draww; j += 1) {
 
       int hh = ((j*inch) >> 8);
@@ -4997,6 +5072,10 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
          * (320 px / 8) l'adresse sortait de la table. D'ou un bloc de colonnes
          * decale verticalement, qui se deplace quand le joueur avance. */
         int cellCol = hh >> 3;
+        /* Lecture tardive : la valeur lue pour cette cellule est en fait celle
+         * de la precedente. La cellule 0 n'a pas de precedente, elle garde la
+         * sienne. */
+        if (vcsDelay && cellCol > 0) cellCol--;
         if (cellCol != vcsc_cell) {
           vcsc_cell = cellCol;
           /* La table de vertical cell scroll est relue A L'INSTANT DU TRACE
@@ -5030,14 +5109,22 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
             const int fieldShift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
             int line = v >> fieldShift;
             int idx  = (int)((addr - vcsBase) >> 2);
-            const int lineMax = (yabsys.VBlankLineCount >= 270)
-                                ? 270 : yabsys.VBlankLineCount;
-            if (line < 0) line = 0;
+            const int lineMax = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                                ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
+            /* Borne haute AVANT borne basse : si lineMax valait 0 (etat
+             * transitoire d'initialisation), l'ordre inverse repoussait line
+             * a -1 apres l'avoir ramene a 0. */
             if (line >= lineMax) line = lineMax - 1;
-            if ((addr >= vcsBase) && (idx >= 0) && (idx < 88))
-              vshift = (s32)cell_scroll_data[line].data[idx] >> 16;
+            if (line < 0) line = 0;
+            /* vcsCount = exactement ce que Vdp2HBlankIN a capture. Le 88 code
+             * en dur valait la capacite du tampon, pas l'etendue reelle de la
+             * table (80 en 320 px avec les deux couches) : les indices 80-87
+             * lisaient des entrees jamais remplies au lieu de retomber sur la
+             * VRAM. */
+            if ((addr >= vcsBase) && (idx >= 0) && (idx < vcsCount))
+              vshift = VCS_VALUE(cell_scroll_data[line].data[idx]);
             else
-              vshift = (s32)Vdp2RamReadLong(NULL, Vdp2Ram, addr) >> 16;
+              vshift = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, addr));
           }
           int tv = base_targetv + vshift;
           mapy = tv >> planeh_shift;
@@ -5200,7 +5287,7 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
     for (h = -ctrl->info.patternpixelwh; h < ctrl->info.draww + ctrl->info.patternpixelwh; h += ctrl->info.patternpixelwh) {
 
       if (ctrl->info.isverticalscroll) {
-        targetv = ctrl->info.y + v + (Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl + cell_count) >> 16);
+        targetv = ctrl->info.y + v + VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, ctrl->info.verticalscrolltbl + cell_count));
         cell_count += ctrl->info.verticalscrollinc;
         mapy = (targetv) >> planeh_shift;
         dot_on_planey = (targetv)-(mapy << planeh_shift);
@@ -5313,8 +5400,8 @@ static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
     const int bk_line_shift = (_Ygl->interlace == SINGLE_INTERLACE) ? 1 : 0;
 
     const int phys_lines = _Ygl->rheight;
-    const int logical_lines = (yabsys.VBlankLineCount >= 270)
-                              ? 270 : yabsys.VBlankLineCount;
+    const int logical_lines = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                              ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
 
     for (int i = 0; i < phys_lines; i++) {
         const int li = (i * logical_lines) / phys_lines;
@@ -5376,8 +5463,8 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
   }
 
   const int phys_lines = _Ygl->rheight;
-  const int logical_lines = (yabsys.VBlankLineCount >= 270)
-                            ? 270 : yabsys.VBlankLineCount;
+  const int logical_lines = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                            ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
   for (i = 0; i < phys_lines; i++) {
     const int li = (i * logical_lines) / phys_lines;
     const Vdp2 *L = &Vdp2Lines[li];
@@ -5825,7 +5912,7 @@ static void Vdp2DrawRBG1()
   int nbZone = 1;
   int lastLine = 0;
   int line;
-  int max = (yabsys.VBlankLineCount >= 270)?270:yabsys.VBlankLineCount;
+  int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)?VDP2_LINE_SNAPSHOT_MAX:yabsys.VBlankLineCount;
   RBGDrawInfo *rbg = NULL;
   for (line = 1; line<max; line++) {
     if (!sameVDP2Reg(RBG1, &Vdp2Lines[line-1], &Vdp2Lines[line])) {
