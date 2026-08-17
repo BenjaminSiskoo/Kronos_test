@@ -10,6 +10,8 @@
 #include <QGraphicsRectItem>
 #include <sstream>
 #include <iomanip>
+#include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <QWheelEvent>
 #include <QFile>
@@ -46,16 +48,37 @@ extern "C" {
 #define HEX8(v) std::hex<<std::uppercase<<std::right<<std::setw(8)<<std::setfill('0')<<(unsigned)(v)
 #define DEC(v)  std::dec<<(v)
 
+// VRAM access command decode -- ST-058-R2 Table 3.5 p.34.
+//
+// L'ancienne table etait decalee de deux crans sur tout le haut du nibble.
+// Elle attribuait 1000B-1011B a RBG0/RBG1, alors que ces quatre codes sont
+// "setting prohibited" : les fonds en rotation n'utilisent PAS les registres
+// de cycle pattern (leur banque entiere leur est reservee via RAMCTL, cf.
+// §3.3 et Technical Bulletin SOA-6, et vdp2.c:bankOwnedByRotation()). Les
+// deux codes reellement presents a cet endroit de la table sont les tables
+// de vertical cell scroll NBG0 (1100B) et NBG1 (1101B), qui manquaient
+// completement -- d'ou le glissement : CPU-RW (1110B) s'affichait "(rsvd)"
+// et no-access (1111B) prenait la place du precedent.
+//
+// Consequence concrete : sur un jeu utilisant le vertical cell scroll, les
+// creneaux VCS etaient rapportes comme CPU-RW / no-access, et le creneau CPU
+// reel comme reserve -- exactement le sous-systeme qu'on cherche a debugger.
+// Sonic Jam (CYCA1L=0xCD45) se lisait "T0=CPU-RW T1=NoAccess T2=NBG0CP
+// T3=NBG1CP" au lieu de "T0=N0VCST T1=N1VCST T2=NBG0CP T3=NBG1CP".
+//
+// Les libelles font tous 6 caracteres pour que les colonnes T0-T7 restent
+// alignees dans l'export texte.
 static std::string decodeVramTiming(u8 n) {
     switch(n&0xF){
         case 0x0:return"NBG0PN"; case 0x1:return"NBG1PN";
         case 0x2:return"NBG2PN"; case 0x3:return"NBG3PN";
         case 0x4:return"NBG0CP"; case 0x5:return"NBG1CP";
         case 0x6:return"NBG2CP"; case 0x7:return"NBG3CP";
-        case 0x8:return"RBG0PN"; case 0x9:return"RBG1PN";
-        case 0xA:return"RBG0CP"; case 0xB:return"RBG1CP";
-        case 0xC:return"CPU-RW"; case 0xD:return"NoAccess";
-        case 0xE:return"(rsvd)"; case 0xF:return"------";
+        // 1000B-1011B : setting prohibited (Table 3.5)
+        case 0x8: case 0x9:
+        case 0xA: case 0xB:      return"PROHIB";
+        case 0xC:return"N0VCST"; case 0xD:return"N1VCST";
+        case 0xE:return"CPU-RW"; case 0xF:return"------";
         default: return"??????";
     }
 }
@@ -232,6 +255,27 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
           <<" T6="<<decodeVramTiming((U>>4)&0xF)<<" T7="<<decodeVramTiming(U&0xF)<<"\n";};
     cyc("VRAM-A0",r.CYCA0L,r.CYCA0U); cyc("VRAM-A1",r.CYCA1L,r.CYCA1U);
     cyc("VRAM-B0",r.CYCB0L,r.CYCB0U); cyc("VRAM-B1",r.CYCB1L,r.CYCB1U);
+    d<<"  (N0VCST/N1VCST = table de vertical cell scroll NBG0/NBG1, "
+       "PROHIB = reglage interdit, ------ = no access)\n";
+    // ST-058-R2 §3.2 p.32 : T0-T7 ne sont tous valides qu'en mode normal
+    // (HRESO 000/001). En haute resolution ou en mode moniteur exclusif,
+    // seuls T0-T3 sont pris en compte, T4-T7 sont ignores par le materiel.
+    if ((r.TVMD & 0x6) != 0)
+        d<<"  (HRESO hi-res / moniteur exclusif : seuls T0-T3 sont en vigueur, "
+           "T4-T7 ignores)\n";
+    // Une banque monopolisee par un fond en rotation ignore entierement son
+    // cycle pattern (RAMCTL RDBSx, §3.3 p.149 ; RBG1 prend VRAM-B0 et B1 en
+    // entier). Le signaler evite de lire un pattern qui ne s'applique pas.
+    if ((r.BGON & 0x20) != 0)
+        d<<"  (RBG1 affiche : VRAM-B0 et VRAM-B1 lui sont reservees, "
+           "leurs cycle patterns sont ignores)\n";
+    if ((r.BGON & 0x10) != 0) {
+        static const char* bkn[4] = {"VRAM-A0","VRAM-A1","VRAM-B0","VRAM-B1"};
+        for (int b = 0; b < 4; b++)
+            if (((r.RAMCTL >> (b*2)) & 0x3) != 0)
+                d<<"  (RBG0 : "<<bkn[b]<<" lui est reservee (RAMCTL), "
+                   "son cycle pattern est ignore)\n";
+    }
 
     // BGON §3.7 : bits 5-0 = display enable (NBG0-RBG1), bits 13-8 = transparency (NBG0-RBG1, tous les 6 layers)
     d<<"\n=== BGON=0x"<<HEX4(r.BGON)<<" (Display Enable) ===\n";
@@ -1048,6 +1092,428 @@ void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
     if(!s.isEmpty())if(!img.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
 
+
+// ============================================================
+//  Vertical cell scroll -- dump par ligne de champ
+// ============================================================
+// Pourquoi ce dump ne peut pas etre remplace par une lecture de la VRAM :
+// les registres et la VRAM ne donnent que le DERNIER etat ecrit. Un jeu qui
+// reecrit la table de vertical cell scroll en cours de trame -- typiquement
+// un ecran splitte, ou chaque moitie a ses propres offsets verticaux -- ne
+// laisse a l'instant de la pause que les valeurs de la derniere moitie
+// balayee. La seule trace de ce qui s'est reellement applique ligne par
+// ligne est cell_scroll_data[], rempli par Vdp2HBlankIN().
+//
+// Attention a l'unite : cell_scroll_data[] est indexe par ligne de CHAMP
+// (0..VBlankLineCount-1), comme tous les instantanes pris en H-blank, alors
+// que la geometrie de plan est lue en lignes d'AFFICHAGE. En double-density
+// interlace les deux different d'un facteur 2 -- c'est exactement le genre
+// de decalage que ce dump sert a mettre en evidence.
+//
+// On n'imprime que les lignes ou le contenu CHANGE, sous forme de plages :
+// une table reecrite en milieu de trame produit alors deux plages, et la
+// ligne de bascule saute aux yeux.
+//
+// Format des valeurs : format standard des tables de scroll (partie entiere
+// bits 26-16, partie fractionnaire bits 15-8) ; le vertical cell scroll
+// n'utilise pas la partie fractionnaire. Le brut est affiche a cote pour ne
+// rien masquer si l'interpretation ci-dessus ne colle pas.
+static std::string buildVCellScrollDump()
+{
+    char b[512];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    // SCRCTL (ST-058-R2 3.20) : bit 0 = N0VCSC, bit 8 = N1VCSC.
+    const int n0 = (r.SCRCTL & 0x0001) ? 1 : 0;
+    const int n1 = (r.SCRCTL & 0x0100) ? 1 : 0;
+    const u32 base = 0x05E00000u | ((r.VCSTA.all & 0x7FFFEu) << 1);
+
+    snprintf(b, sizeof b, "  VCSTA = 0x%08X    NBG0 VCS = %s    NBG1 VCS = %s\n",
+             (unsigned)base, n0 ? "ON" : "off", n1 ? "ON" : "off");
+    o += b;
+
+    /* Timings deduits des cycle patterns, pas de SCRCTL seul. Le creneau ou
+     * tombe la commande VCS determine si la lecture arrive trop tard pour la
+     * cellule visee : NBG0 est retarde des T3 et repete des T2, NBG1 retarde
+     * des T4 (pas de repetition -- l'asymetrie est materielle). Les jeux qui
+     * programment des patterns "illegaux" dependent de ce comportement. */
+    {
+        Vdp2VCellScrollTiming t;
+        Vdp2VCellScrollTiming_Current(&t);
+        snprintf(b, sizeof b,
+                 "  Acces (cycle patterns) : pas=%d o    NBG0 offset=+%d o    NBG1 offset=+%d o\n"
+                 "                           NBG0 delay=%s repeat=%s    NBG1 delay=%s\n",
+                 t.inc, t.offset[0], t.offset[1],
+                 t.delay[0] ? "OUI" : "non", t.repeat[0] ? "OUI" : "non",
+                 t.delay[1] ? "OUI" : "non");
+        o += b;
+        if (n0 + n1 > 0 && t.inc != (n0 + n1) * 4)
+            o += "  ATTENTION : SCRCTL active une couche dont aucune commande VCS\n"
+                 "              n'est programmee dans les cycle patterns\n";
+    }
+
+    if (!n0 && !n1) {
+        o += "  (vertical cell scroll desactive sur les deux couches)\n";
+        return o;
+    }
+
+    // ST-058-R2 5.3 Fig 5.6 p.134 : une entree par colonne de cellule
+    // AFFICHEE, dans l'ordre des cellules a partir du bord GAUCHE de l'ecran
+    // (et non a partir de la position scrollee). Fig 5.8 p.136 : quand les
+    // deux couches partagent la table, les entrees alternent, NBG0 en tete,
+    // d'ou l'offset de +1 longword pour NBG1.
+    // Colonnes affichees par HRESO (2.1) : 320/352/640/704 dots, 8 dots par
+    // cellule, les quatre memes largeurs se repetant pour les modes moniteur
+    // exclusif (HRESO 100-111).
+    static const int colsForHreso[8] = { 40, 44, 80, 88, 40, 44, 80, 88 };
+    const int cols = colsForHreso[r.TVMD & 0x7];
+    const int nlay = n0 + n1;
+    const int cap  = (int)(sizeof(cell_scroll_data[0].data)
+                         / sizeof(cell_scroll_data[0].data[0]));
+
+    int need = cols * nlay;
+    snprintf(b, sizeof b, "  %d colonnes x %d couche(s) = %d entrees utiles"
+                          " (capacite cell_scroll_data[].data = %d)\n",
+             cols, nlay, need, cap);
+    o += b;
+    if (need > cap) {
+        snprintf(b, sizeof b, "  ATTENTION : la table depasse la capacite du"
+                              " tampon, %d entrees non capturees\n", need - cap);
+        o += b;
+        need = cap;
+    }
+
+    int lines = yabsys.VBlankLineCount;
+    const int maxLines = (int)(sizeof(cell_scroll_data)
+                             / sizeof(cell_scroll_data[0]));
+    if (lines > maxLines) lines = maxLines;
+    if (lines <= 0) { o += "  (aucune ligne capturee)\n"; return o; }
+
+    // Rend une liste de valeurs par colonne, compressee par plages de valeurs
+    // identiques consecutives -- sans perte, mais lisible quand les 40
+    // colonnes portent le meme offset.
+    auto renderLayer = [&](const char *name, int lane, int line) {
+        std::string row;
+        int c = 0;
+        while (c < cols) {
+            const int idx = c * nlay + lane;
+            if (idx >= need) break;
+            const u32 v = cell_scroll_data[line].data[idx];
+            int run = 1;
+            while (c + run < cols) {
+                const int j = (c + run) * nlay + lane;
+                if (j >= need || cell_scroll_data[line].data[j] != v) break;
+                run++;
+            }
+            // partie entiere = bits 26-16, signee sur 11 bits
+            int ip = (int)((v >> 16) & 0x7FF);
+            if (ip & 0x400) ip -= 0x800;
+            if (!row.empty()) row += "  |  ";
+            if (run > 1) snprintf(b, sizeof b, "0x%08X(y=%d) x%d", (unsigned)v, ip, run);
+            else         snprintf(b, sizeof b, "0x%08X(y=%d)",     (unsigned)v, ip);
+            row += b;
+            c += run;
+        }
+        snprintf(b, sizeof b, "      %s: %s\n", name, row.c_str());
+        return std::string(b);
+    };
+
+    const size_t cmpBytes = (size_t)need * sizeof(cell_scroll_data[0].data[0]);
+    int runs = 0;
+    const int maxRuns = 64;
+    int start = 0;
+
+    for (int l = 1; l <= lines; l++) {
+        const bool last = (l == lines);
+        if (!last && memcmp(cell_scroll_data[l].data,
+                            cell_scroll_data[start].data, cmpBytes) == 0)
+            continue;
+
+        if (runs == maxRuns) {
+            snprintf(b, sizeof b, "  ... (plus de %d changements, sortie tronquee ;"
+                                  " la table change quasiment a chaque ligne)\n", maxRuns);
+            o += b;
+            return o;
+        }
+        runs++;
+
+        if (l - 1 == start) snprintf(b, sizeof b, "  ligne de champ %3d :\n", start);
+        else                snprintf(b, sizeof b, "  lignes de champ %3d-%3d :\n", start, l - 1);
+        o += b;
+        if (n0) o += renderLayer("NBG0", 0, start);
+        if (n1) o += renderLayer("NBG1", n0 ? 1 : 0, start);
+
+        start = l;
+    }
+
+    snprintf(b, sizeof b, "  -> %d plage(s) distincte(s) sur %d lignes de champ\n",
+             runs, lines);
+    o += b;
+    if (runs == 1)
+        o += "  (table constante sur toute la trame : aucune reecriture en cours"
+             " de balayage)\n";
+    return o;
+}
+
+
+// ============================================================
+//  Defilement horizontal -- dump par ligne de champ
+// ============================================================
+// Meme lecture que le dump de vertical cell scroll ci-dessus, sur l'autre
+// axe. Trois sources se combinent pour donner le decalage horizontal d'une
+// ligne, et elles ne sont pas capturees au meme endroit :
+//
+//   SCXIN/SCXDN : registres, capturés par ligne dans Vdp2Lines[] ;
+//   table de line scroll : capturee par ligne dans line_scroll_data[] ;
+//   zoom (LZMX)  : idem, quand LSS le prevoit.
+//
+// Le total est ce que le renderer appelle sx. Si les deux moities d'un ecran
+// splitte doivent avoir des positions horizontales distinctes, la bascule
+// doit apparaitre ici, a la meme ligne que celle du dump VCS.
+//
+// On n'imprime que les lignes ou le total CHANGE, sous forme de plages.
+static std::string buildLineScrollDump()
+{
+    char b[512];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    // SCRCTL (ST-058-R2 3.20) : bit sh+1 = LSCX, sh+2 = LSCY, sh+3 = LZMX,
+    // bits sh+5..sh+4 = LSS. sh = 0 pour NBG0, 8 pour NBG1.
+    const int sx0 = (r.SCRCTL & 0x0002) ? 1 : 0;
+    const int sx1 = (r.SCRCTL & 0x0200) ? 1 : 0;
+
+    snprintf(b, sizeof b,
+             "  LSTA0 = 0x%08X   LSTA1 = 0x%08X\n"
+             "  NBG0 LineScrollX = %s   NBG1 LineScrollX = %s\n",
+             (unsigned)(0x05E00000u | ((r.LSTA0.all & 0x7FFFEu) << 1)),
+             (unsigned)(0x05E00000u | ((r.LSTA1.all & 0x7FFFEu) << 1)),
+             sx0 ? "ON" : "off", sx1 ? "ON" : "off");
+    o += b;
+
+    int lines = yabsys.VBlankLineCount;
+    const int maxLines = (int)(sizeof(line_scroll_data)
+                             / sizeof(line_scroll_data[0]));
+    if (lines > maxLines) lines = maxLines;
+    if (lines <= 0) { o += "  (aucune ligne capturee)\n"; return o; }
+
+    // Partie entiere du scroll : SCXIN sur 11 bits (bits 10-0), et pour la
+    // table de line scroll le meme format que partout ailleurs (26-16).
+    auto reg = [](u16 v) { int x = v & 0x7FF; if (x & 0x400) x -= 0x800; return x; };
+    auto tbl = [](u32 v) { int x = (int)((v >> 16) & 0x7FF); if (x & 0x400) x -= 0x800; return x; };
+
+    struct Row { int n0r, n1r, n0t, n1t; };
+    auto rowAt = [&](int l) {
+        Row w;
+        w.n0r = reg(Vdp2Lines[l].SCXIN0);
+        w.n1r = reg(Vdp2Lines[l].SCXIN1);
+        w.n0t = sx0 ? tbl(line_scroll_data[l].n0[0][0]) : 0;
+        w.n1t = sx1 ? tbl(line_scroll_data[l].n1[0][0]) : 0;
+        return w;
+    };
+    auto same = [](const Row &a, const Row &c) {
+        return a.n0r == c.n0r && a.n1r == c.n1r && a.n0t == c.n0t && a.n1t == c.n1t;
+    };
+
+    int runs = 0, start = 0;
+    const int maxRuns = 64;
+
+    for (int l = 1; l <= lines; l++) {
+        const bool last = (l == lines);
+        if (!last && same(rowAt(l), rowAt(start))) continue;
+
+        if (runs == maxRuns) {
+            o += "  ... (plus de 64 changements, sortie tronquee)\n";
+            return o;
+        }
+        runs++;
+
+        const Row w = rowAt(start);
+        if (l - 1 == start) snprintf(b, sizeof b, "  ligne de champ %3d :\n", start);
+        else                snprintf(b, sizeof b, "  lignes de champ %3d-%3d :\n", start, l - 1);
+        o += b;
+        snprintf(b, sizeof b,
+                 "      NBG0: SCXIN=%5d  table=%5d  total=%5d\n"
+                 "      NBG1: SCXIN=%5d  table=%5d  total=%5d\n",
+                 w.n0r, w.n0t, w.n0r + w.n0t,
+                 w.n1r, w.n1t, w.n1r + w.n1t);
+        o += b;
+
+        start = l;
+    }
+
+    snprintf(b, sizeof b, "  -> %d plage(s) distincte(s) sur %d lignes de champ\n",
+             runs, lines);
+    o += b;
+    if (runs == 1)
+        o += "  (defilement horizontal constant sur toute la trame)\n";
+    return o;
+}
+
+
+// ============================================================
+//  Back screen et line color screen -- dump par ligne
+// ============================================================
+// BKTA bit 31 (BKCLMD, ST-058-R2 3.13) : 0 = couleur unique, 1 = une couleur
+// PAR LIGNE lue dans une table. LCTA bit 31 fait de meme pour le line color
+// screen (3.14). Ces deux tables sont voisines de la table de vertical cell
+// scroll -- dans Sonic Jam, BKTA = VCSTA + 0x150 -- et elles souffrent du
+// meme piege : le renderer qui les relit en fin de trame ne voit que le
+// dernier etat ecrit.
+//
+// C'est ce qui distingue une bordure NOIRE d'une bordure BLEUE autour d'un
+// ecran splitte : le jeu ecrit du noir dans les entrees hors cadre et la
+// couleur du ciel ailleurs. Une couleur unique etalee sur toute la trame
+// donne du bleu partout.
+//
+// Couleurs en 5:5:5 RGB (bit 15 ignore pour le back screen).
+static std::string buildBackScreenDump()
+{
+    char b[256];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    auto section = [&](const char *name, u32 hi, u32 lo, int perLineBit) {
+        const u32 all  = ((u32)hi << 16) | (u32)lo;
+        const u32 addr = (all & 0x7FFFEu) << 1;
+        const int per  = (all >> perLineBit) & 1;
+        snprintf(b, sizeof b, "  %s = 0x%08X   table = 0x%08X   mode = %s\n",
+                 name, (unsigned)all, (unsigned)(0x05E00000u | addr),
+                 per ? "une couleur PAR LIGNE" : "couleur unique");
+        o += b;
+
+        if (!per) {
+            const u16 c = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+            snprintf(b, sizeof b, "      couleur = 0x%04X  (R=%2d G=%2d B=%2d)\n",
+                     c, c & 0x1F, (c >> 5) & 0x1F, (c >> 10) & 0x1F);
+            o += b;
+            return;
+        }
+
+        int lines = yabsys.VBlankLineCount;
+        if (lines > VDP2_LINE_SNAPSHOT_MAX) lines = VDP2_LINE_SNAPSHOT_MAX;
+        if (lines <= 0) { o += "      (aucune ligne)\n"; return; }
+
+        // Plages de lignes consecutives de meme couleur.
+        int runs = 0, start = 0;
+        for (int l = 1; l <= lines; l++) {
+            const bool last = (l == lines);
+            const u16 cs = Vdp2RamReadWord(NULL, Vdp2Ram, addr + (u32)start * 2);
+            if (!last && Vdp2RamReadWord(NULL, Vdp2Ram, addr + (u32)l * 2) == cs)
+                continue;
+            if (runs == 48) { o += "      ... (tronque)\n"; return; }
+            runs++;
+            if (l - 1 == start)
+                snprintf(b, sizeof b, "      ligne %3d      : 0x%04X (R=%2d G=%2d B=%2d)\n",
+                         start, cs, cs & 0x1F, (cs >> 5) & 0x1F, (cs >> 10) & 0x1F);
+            else
+                snprintf(b, sizeof b, "      lignes %3d-%3d : 0x%04X (R=%2d G=%2d B=%2d)\n",
+                         start, l - 1, cs, cs & 0x1F, (cs >> 5) & 0x1F, (cs >> 10) & 0x1F);
+            o += b;
+            start = l;
+        }
+        snprintf(b, sizeof b, "      -> %d plage(s) sur %d lignes\n", runs, lines);
+        o += b;
+        if (runs == 1)
+            o += "      ATTENTION : mode par ligne mais une seule couleur sur toute\n"
+                 "                  la trame -- table lue trop tard ?\n";
+    };
+
+    section("BKTA", r.BKTAU, r.BKTAL, 31);
+    o += "\n";
+    section("LCTA", r.LCTA.part.U, r.LCTA.part.L, 31);
+    return o;
+}
+
+
+// ============================================================
+//  Color RAM -- entrees utiles
+// ============================================================
+// L'export ne donnait que "Color RAM Mode = 0", sans aucune valeur. Or
+// l'entree 0 est celle que remontent tous les pixels dont le code de couleur
+// utile est nul -- typiquement un polygone VDP1 ecrit avec CMDCOLR = 0xF000
+// en sprite type 7 palette-only, ou 0xF000 & 0x1FF vaut 0. Sa couleur decide
+// donc de ce que voit le joueur a la place, et il faut pouvoir la lire.
+//
+// Modes (RAMCTL bits 13-12, ST-058-R2 3.2) :
+//   0 = RGB 5:5:5, 1024 mots, 2 banques
+//   1 = RGB 5:5:5, 2048 mots, 1 banque
+//   2 = RGB 8:8:8, 1024 longwords
+static std::string buildColorRamDump()
+{
+    char b[256];
+    std::string o;
+
+    if (!Vdp2ColorRam || !Vdp2Regs) return std::string("  (Color RAM indisponible)\n");
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 0x3;
+    static const char *modeName[4] = {
+        "RGB 5:5:5, 1024 mots, 2 banques",
+        "RGB 5:5:5, 2048 mots, 1 banque",
+        "RGB 8:8:8, 1024 longwords",
+        "(reglage interdit)"
+    };
+    snprintf(b, sizeof b, "  Mode = %d  (%s)\n", mode, modeName[mode]);
+    o += b;
+
+    auto entry = [&](int idx, unsigned *raw, int *r, int *g, int *bl) {
+        if (mode == 2) {
+            const u32 addr = (u32)(idx * 4) & 0xFFF;
+            const u16 msw = T2ReadWord(Vdp2ColorRam, addr);
+            const u16 lsw = T2ReadWord(Vdp2ColorRam, addr + 2);
+            *raw = ((unsigned)msw << 16) | lsw;
+            *r = msw & 0xFF; *g = (lsw >> 8) & 0xFF; *bl = lsw & 0xFF;
+        } else {
+            const u16 w = T2ReadWord(Vdp2ColorRam, (u32)(idx * 2) & 0xFFF);
+            *raw = w;
+            *r = w & 0x1F; *g = (w >> 5) & 0x1F; *bl = (w >> 10) & 0x1F;
+        }
+    };
+
+    /* L'entree 0 en premier et isolee : c'est la plus souvent en cause. */
+    {
+        unsigned raw; int r, g, bl;
+        entry(0, &raw, &r, &g, &bl);
+        snprintf(b, sizeof b,
+                 "  Entree 0 = 0x%0*X   R=%3d G=%3d B=%3d   %s\n",
+                 mode == 2 ? 8 : 4, raw, r, g, bl,
+                 (r == 0 && g == 0 && bl == 0) ? "(noir)" : "(NON NOIRE)");
+        o += b;
+    }
+
+    o += "  Les 32 premieres entrees :\n";
+    for (int row = 0; row < 4; row++) {
+        std::string line = "   ";
+        for (int c = 0; c < 8; c++) {
+            unsigned raw; int r, g, bl;
+            entry(row * 8 + c, &raw, &r, &g, &bl);
+            snprintf(b, sizeof b, " %0*X", mode == 2 ? 8 : 4, raw);
+            line += b;
+        }
+        snprintf(b, sizeof b, "  %3d-%3d :%s\n", row * 8, row * 8 + 7, line.c_str());
+        o += b;
+    }
+
+    /* Offsets par couche : une couche peut viser une autre zone de la CRAM. */
+    snprintf(b, sizeof b,
+             "  CRAOFA = 0x%04X  (NBG0=0x%03X NBG1=0x%03X NBG2=0x%03X NBG3=0x%03X)\n"
+             "  CRAOFB = 0x%04X  (RBG0=0x%03X SPR=0x%03X RBG1=0x%03X)\n",
+             Vdp2Regs->CRAOFA,
+             (Vdp2Regs->CRAOFA & 7) << 8, ((Vdp2Regs->CRAOFA >> 4) & 7) << 8,
+             ((Vdp2Regs->CRAOFA >> 8) & 7) << 8, ((Vdp2Regs->CRAOFA >> 12) & 7) << 8,
+             Vdp2Regs->CRAOFB,
+             (Vdp2Regs->CRAOFB & 7) << 8, ((Vdp2Regs->CRAOFB >> 4) & 7) << 8,
+             ((Vdp2Regs->CRAOFB >> 8) & 7) << 8);
+    o += b;
+    return o;
+}
+
 // ============================================================
 //  on_pbExportDebugInfo_clicked
 //  Sauvegarde le contenu texte des onglets "Registers" (raw + decoded)
@@ -1096,6 +1562,18 @@ void UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked()
 
     ts << "########## REGISTERS - DECODED ##########\n\n";
     ts << pteDecodedRegs->toPlainText() << "\n\n";
+
+    ts << "########## VERTICAL CELL SCROLL (par ligne de champ) ##########\n\n";
+    ts << QString::fromStdString(buildVCellScrollDump()) << "\n\n";
+
+    ts << "########## DEFILEMENT HORIZONTAL (par ligne de champ) ##########\n\n";
+    ts << QString::fromStdString(buildLineScrollDump()) << "\n\n";
+
+    ts << "########## BACK SCREEN / LINE COLOR (par ligne) ##########\n\n";
+    ts << QString::fromStdString(buildBackScreenDump()) << "\n\n";
+
+    ts << "########## COLOR RAM ##########\n\n";
+    ts << QString::fromStdString(buildColorRamDump()) << "\n\n";
 
     ts << "########## DEBUG ##########\n\n";
     ts << pteStats->toPlainText() << "\n";
