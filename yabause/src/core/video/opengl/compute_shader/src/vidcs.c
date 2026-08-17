@@ -50,6 +50,21 @@
 #define VCS_VALUE(raw) \
   ((s32)(((((u32)(raw)) >> 16) & 0x7FFu) ^ 0x400u) - 0x400)
 
+/* Meme entree, mais conservee en 16.16 : partie entiere signee (bits 26-16)
+ * ET fraction sur 8 bits (bits 15-8).
+ *
+ * La fraction ne peut pas etre jetee des lors que plusieurs sources de
+ * defilement vertical s'additionnent -- SCYIN, line scroll vertical et
+ * vertical cell scroll : chacune peut valoir moins d'une ligne alors que leur
+ * somme franchit la ligne suivante. C'est exactement le principe du bitmap a
+ * adresses continues du Sega Saturn Technical Bulletin #14 ("Use of VRAM for
+ * Bit Maps") : la table de line scroll porte I(n) + 0400H x (64 - m) et la
+ * table de cell scroll 0400H x w, deux valeurs purement fractionnaires dont
+ * la somme fait avancer la coordonnee verticale de 1 AU MILIEU du scanline.
+ * Un simple >>16 sur chacune les annule toutes les deux. */
+#define VCS_VALUE16(raw) \
+  ((s32)((u32)VCS_VALUE(raw) << 16) | (s32)(((u32)(raw)) & 0x0000FF00u))
+
 #define Y_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define Y_MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -126,6 +141,164 @@ static pixel_t *VIDCSGetVdp2ScreenExtract(u32 screen, int * w, int * h);
 
 static vdp2Lineinfo lineNBG0[512];
 static vdp2Lineinfo lineNBG1[512];
+
+/* =====================================================================
+ * INSTRUMENTATION TEMPORAIRE - fragment de decor au bord gauche de la
+ * vue du bas, Sonic Jam 2 joueurs. A RETIRER une fois le bug localise.
+ *
+ * Sort un fichier par periode de DBG_NBG0_PERIOD trames dans
+ * DBG_NBG0_DIR. Trois sections :
+ *   [ZONES]   les couples startLine/endLine passes a Vdp2DrawNBG0 sur la
+ *             trame. Deux zones qui couvrent la meme ligne signifient que
+ *             la seconde passe efface ou complete la premiere.
+ *   [LIGNES]  par ligne d'ecran : nombre d'ecritures de ligne (wr), le sx
+ *             effectif et le tv effectif. wr > 1 = ligne redessinee.
+ *             Un sx de 312 sur une ligne >= 216 = la vue du bas a recu le
+ *             cadrage de la vue du haut.
+ *   [EMPREINTES] empreinte des texels reellement ecrits, par ligne et par
+ *             bloc de DBG_NBG0_BLK colonnes, comparee a la trame armee
+ *             precedente. La vue du bas a sx=0 constant : tout bloc qui
+ *             change alors que le joueur du bas ne bouge pas EST le
+ *             fragment, localise a DBG_NBG0_BLK pixels pres.
+ * ===================================================================== */
+#define DBG_NBG0_TRACE     1
+#define DBG_NBG0_DIR       "E:\\Kronos64Bits"
+#define DBG_NBG0_PERIOD    4    /* ecart, en trames, entre deux captures comparees */
+#define DBG_NBG0_BLK       16   /* largeur d'un bloc d'empreinte, en dots */
+
+#if DBG_NBG0_TRACE
+#include <stdio.h>
+#include <string.h>
+
+#define DBG_NBG0_LINES 512
+#define DBG_NBG0_ZONES 64
+#define DBG_NBG0_BLKS  (1024 / (DBG_NBG0_BLK))
+
+static int dbgFrame = 0;
+static int dbgArm   = 0;
+static int dbgWr[DBG_NBG0_LINES];
+static int dbgSx[DBG_NBG0_LINES];
+static int dbgTv[DBG_NBG0_LINES];
+static int dbgZoneN = 0;
+static struct { int start, end; } dbgZone[DBG_NBG0_ZONES];
+static unsigned int dbgGrid[DBG_NBG0_LINES][DBG_NBG0_BLKS];
+static unsigned int dbgPrev[DBG_NBG0_LINES][DBG_NBG0_BLKS];
+static int dbgHavePrev = 0;
+static int dbgPrevFrame = 0;
+
+static void dbgNbg0Reset(void)
+{
+  dbgFrame++;
+  dbgArm = ((dbgFrame % (DBG_NBG0_PERIOD)) == 0);
+  if (!dbgArm) return;
+  memset(dbgWr, 0, sizeof(dbgWr));
+  memset(dbgZone, 0, sizeof(dbgZone));
+  /* la grille courante devient la reference, puis on repart de zero */
+  memcpy(dbgPrev, dbgGrid, sizeof(dbgPrev));
+  memset(dbgGrid, 0, sizeof(dbgGrid));
+  for (int i = 0; i < DBG_NBG0_LINES; i++) { dbgSx[i] = -99999; dbgTv[i] = -99999; }
+  dbgZoneN = 0;
+}
+
+static void dbgNbg0Dump(void)
+{
+  if (!dbgArm) return;
+  FILE *f = fopen(DBG_NBG0_DIR "\\nbg0_trace.log", "w");
+  if (f == NULL) return;
+
+  fprintf(f, "Kronos - trace NBG0 (fragment vue du bas, Sonic Jam 2J)\n");
+  fprintf(f, "trame=%d  rwidth=%d  rheight=%d  interlace=%d\n\n",
+          dbgFrame, _Ygl->rwidth, _Ygl->rheight, _Ygl->interlace);
+
+  fprintf(f, "[ZONES] %d appel(s) a Vdp2DrawNBG0 sur la trame\n", dbgZoneN);
+  for (int i = 0; i < dbgZoneN; i++)
+    fprintf(f, "  zone %2d : startLine=%4d endLine=%4d\n", i, dbgZone[i].start, dbgZone[i].end);
+
+  int wrMax = 0, wrZero = 0;
+  for (int i = 0; i < DBG_NBG0_LINES; i++) {
+    if (dbgWr[i] > wrMax) wrMax = dbgWr[i];
+    if (i < _Ygl->rheight && dbgWr[i] == 0) wrZero++;
+  }
+  fprintf(f, "  ecritures par ligne : max=%d   lignes jamais ecrites=%d\n\n", wrMax, wrZero);
+
+  fprintf(f, "[LIGNES] v : wr sx tv\n");
+  for (int i = 0; i < DBG_NBG0_LINES && i < _Ygl->rheight; i++)
+    fprintf(f, "  %4d : wr=%d sx=%d tv=%d\n", i, dbgWr[i], dbgSx[i], dbgTv[i]);
+
+  const int nblk = (_Ygl->rwidth + DBG_NBG0_BLK - 1) / DBG_NBG0_BLK;
+  fprintf(f, "\n[EMPREINTES] blocs de %d dots, %d blocs par ligne\n", DBG_NBG0_BLK, nblk);
+  if (!dbgHavePrev) {
+    fprintf(f, "  premiere trame armee : pas de reference, rien a comparer.\n");
+  } else {
+    fprintf(f, "  comparaison trame %d -> trame %d\n", dbgPrevFrame, dbgFrame);
+
+    /* Ligne de cesure : premiere ligne dont le sx differe de celui du haut.
+     * Au-dessus c'est la vue du joueur 1, au-dessous celle du joueur 2. */
+    int split = -1;
+    for (int v = 1; v < DBG_NBG0_LINES && v < _Ygl->rheight; v++) {
+      if (dbgSx[v] != dbgSx[0]) { split = v; break; }
+    }
+    if (split < 0) split = _Ygl->rheight;
+    fprintf(f, "  cesure detectee a la ligne %d (sx %d -> %d)\n",
+            split, dbgSx[0], (split < _Ygl->rheight) ? dbgSx[split] : dbgSx[0]);
+
+    int ndHaut = 0, ndBas = 0;
+    for (int v = 0; v < DBG_NBG0_LINES && v < _Ygl->rheight; v++) {
+      int cnt = 0;
+      for (int b = 0; b < nblk && b < DBG_NBG0_BLKS; b++)
+        if (dbgGrid[v][b] != dbgPrev[v][b]) cnt++;
+      if (cnt > 0) { if (v < split) ndHaut++; else ndBas++; }
+    }
+
+    fprintf(f, "  vue du haut : %d ligne(s) modifiee(s) sur %d\n", ndHaut, split);
+    fprintf(f, "  vue du bas  : %d ligne(s) modifiee(s) sur %d\n\n",
+            ndBas, _Ygl->rheight - split);
+
+    if (ndHaut == 0) {
+      fprintf(f, "  *** CAPTURE INVALIDE ***\n");
+      fprintf(f, "  La vue du haut n'a pas bouge entre les deux trames : la\n");
+      fprintf(f, "  comparaison ne peut rien reveler. Refais la capture en\n");
+      fprintf(f, "  maintenant le joueur du HAUT en deplacement, et en ne\n");
+      fprintf(f, "  touchant pas au joueur du bas.\n");
+    } else if (ndBas == 0) {
+      fprintf(f, "  Capture valide. La vue du bas est restee strictement\n");
+      fprintf(f, "  identique : aucun fragment dans NBG0 sur cette trame.\n");
+    } else {
+      fprintf(f, "  Capture valide. Detail des lignes de la VUE DU BAS :\n");
+      for (int v = split; v < DBG_NBG0_LINES && v < _Ygl->rheight; v++) {
+        int first = -1, last = -1, cnt = 0;
+        for (int b = 0; b < nblk && b < DBG_NBG0_BLKS; b++) {
+          if (dbgGrid[v][b] != dbgPrev[v][b]) {
+            if (first < 0) first = b;
+            last = b; cnt++;
+          }
+        }
+        if (cnt == 0) continue;
+        fprintf(f, "  v=%4d tv=%4d : %2d bloc(s), dots %4d a %4d  [",
+                v, dbgTv[v], cnt,
+                first * DBG_NBG0_BLK, (last + 1) * DBG_NBG0_BLK - 1);
+        for (int b = 0; b < nblk && b < DBG_NBG0_BLKS; b++)
+          fputc((dbgGrid[v][b] != dbgPrev[v][b]) ? 'X' : '.', f);
+        fprintf(f, "]\n");
+      }
+    }
+  }
+
+  fclose(f);
+  dbgHavePrev  = 1;
+  dbgPrevFrame = dbgFrame;
+}
+
+#define DBG_NBG0_ZONE(s, e) do { \
+    if (dbgArm && dbgZoneN < DBG_NBG0_ZONES) { \
+      dbgZone[dbgZoneN].start = (s); dbgZone[dbgZoneN].end = (e); dbgZoneN++; } \
+  } while (0)
+
+#else
+static void dbgNbg0Reset(void) {}
+static void dbgNbg0Dump(void) {}
+#define DBG_NBG0_ZONE(s, e) do { } while (0)
+#endif
 
 #define WA_INSIDE (0)
 #define WA_OUTSIDE (1)
@@ -1381,6 +1554,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
    * the register snapshot is constant. */
   ctrl.info.startLine = startLine;
   ctrl.info.endLine   = endLine;
+  DBG_NBG0_ZONE(startLine, endLine); /* INSTRUMENTATION TEMPORAIRE */
   ctrl.info.cellh = 256;
   if (_Ygl->interlace == DOUBLE_INTERLACE) ctrl.info.cellh = ctrl.info.cellh << 1;
   ctrl.info.specialcolorfunction = 0;
@@ -3252,6 +3426,12 @@ int VIDCSVdp2Reset(void)
 
 void VIDCSVdp2Draw(void)
 {
+  /* INSTRUMENTATION TEMPORAIRE : on vide ce qui a ete collecte pendant la
+   * trame precedente -- le rendu peut etre asynchrone, attendre le debut de
+   * la trame suivante garantit qu'il est termine -- puis on rearme. */
+  dbgNbg0Dump();
+  dbgNbg0Reset();
+
   YglCheckFBSwitch(1);
   //varVdp2Regs = Vdp2RestoreRegs(0, Vdp2Lines);
   //if (varVdp2Regs == NULL) varVdp2Regs = Vdp2Regs;
@@ -4458,6 +4638,67 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
 #undef BITMAP_ACCESSIBLE
 }
 
+/* ---------------------------------------------------------------------------
+ * Valeur de vertical cell scroll, en 16.16, pour une cellule de l'ECRAN.
+ *
+ * ST-058-R2 5.3 p.134, sous la Figure 5.6 : "Data of the vertical cell scroll
+ * table is treated as a table in the order from data in the left side cell of
+ * the TV screen" -- l'index est la colonne de l'ecran, pas celle du plan ni
+ * celle du bitmap. Les deux chemins bitmap indexaient la table avec la
+ * coordonnee SOURCE (sh + j, deja repliee modulo la largeur du bitmap) : le
+ * defilement horizontal faisait tourner l'index d'une ligne a l'autre, donc
+ * chaque ligne recuperait le decalage vertical d'une colonne voisine.
+ * Le chemin cellule (Vdp2DrawTiles) avait deja ete corrige, pas ceux-ci.
+ *
+ * On lit l'instantane pris au H-blank (cell_scroll_data[], vdp2.c
+ * Vdp2HBlankIN) plutot que la VRAM au moment du trace, qui a lieu en fin de
+ * trame : un jeu qui reecrit sa table en cours de trame se voyait sinon
+ * appliquer la derniere valeur ecrite sur tout l'ecran. Repli sur la VRAM si
+ * l'entree tombe hors de ce qui a ete capture.
+ * ------------------------------------------------------------------------- */
+static INLINE s32 Vdp2GetVCS16(Vdp2Ctrl *ctrl, int dispLine, int cellCol,
+                               int vcsCount)
+{
+  const u32 vcsBase    = (ctrl->regs->VCSTA.all & 0x7FFFE) << 1;
+  const u32 addr       = ctrl->info.verticalscrolltbl
+                       + (u32)cellCol * ctrl->info.verticalscrollinc;
+  const int fieldShift = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+  const int lineMax    = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                         ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
+  int line = dispLine >> fieldShift;
+  int idx  = (int)((addr - vcsBase) >> 2);
+
+  if (line >= lineMax) line = lineMax - 1;
+  if (line < 0) line = 0;
+
+  if ((addr >= vcsBase) && (idx >= 0) && (idx < vcsCount))
+    return VCS_VALUE16(cell_scroll_data[line].data[idx]);
+  return VCS_VALUE16(Vdp2RamReadLong(NULL, Vdp2Ram, addr));
+}
+
+/* Fraction (bits 15-8) du defilement vertical de ligne, que
+ * Vdp2GenLineinfo() laisse tomber en ne conservant que les bits 26-16 dans
+ * lineinfo[].LineScrollValV, lequel est un s16 en lignes entieres. On la
+ * relit dans le meme instantane et on la reinjecte a cote de la partie
+ * entiere deja calculee, ce qui evite de toucher a vdp2Lineinfo. */
+static INLINE u32 Vdp2GetLineScrollVFrac(vdp2draw_struct *info, int dispLine)
+{
+  const int ilace = (_Ygl->interlace == DOUBLE_INTERLACE) ? 1 : 0;
+  const u32 *snap;
+  int fl  = dispLine >> ilace;
+  int sub = ilace ? (dispLine & 1) : 0;
+  int fi  = 0;
+
+  if (!VDPLINE_SY(info->islinescroll)) return 0;
+  if (fl >= VDP2_LINE_SNAPSHOT_MAX) fl = VDP2_LINE_SNAPSHOT_MAX - 1;
+  if (fl < 0) fl = 0;
+
+  snap = (info->idScreen == NBG1) ? line_scroll_data[fl].n1[sub]
+                                  : line_scroll_data[fl].n0[sub];
+  if (VDPLINE_SX(info->islinescroll)) fi++;   /* H puis V puis Z (5.2 Fig 5.3) */
+  return snap[fi] & 0x0000FF00u;
+}
+
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height)
 {
   int i, j;
@@ -4465,6 +4706,17 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
 
   const int zone_start = ctrl->info.startLine;
+
+  /* Etendue reellement capturee de la table VCS, et retard d'acces deduit du
+   * creneau ou tombe la commande VCS : invariants sur la zone, donc hisses
+   * hors des boucles, comme dans le chemin cellule. */
+  const int vcsCount = Vdp2VCellScrollLongwordsFor(ctrl->regs);
+  int vcsDelay;
+  {
+    Vdp2VCellScrollTiming vcst;
+    Vdp2VCellScrollTimingFor(ctrl->regs, &vcst);
+    vcsDelay = (ctrl->info.idScreen == NBG1) ? vcst.delay[1] : vcst.delay[0];
+  }
 
   for (i = 0; i < height; i++)
   {
@@ -4488,23 +4740,36 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     else
         sv = absline + ctrl->info.sv;
 
-    sv &= (ctrl->info.cellh - 1);
     sh &= (ctrl->info.cellw - 1);
+
+    /* Defilement vertical de la ligne en 16.16, fraction comprise. Le repli
+     * modulo la hauteur du bitmap ne se fait plus ici mais APRES l'ajout du
+     * vertical cell scroll : c'est la somme qui designe la ligne source, et
+     * tronquer chaque terme separement supprime le franchissement de ligne en
+     * milieu de scanline (Technical Bulletin #14). */
+    const s32 sv16 = ((s32)sv << 16)
+                   + (s32)Vdp2GetLineScrollVFrac(&ctrl->info, absline);
 
     {
       const u32 bmpmask    = (u32)(ctrl->info.cellw * ctrl->info.cellh) - 1;
       const u32 cellw_mask = (u32)ctrl->info.cellw - 1;
       const u32 cellh_mask = (u32)ctrl->info.cellh - 1;
-      /* [FIX VCS-2] lin_base is no longer const: it must be recomputed
-       * whenever the vertical cell scroll table hands back a different
-       * row for the 8-pixel cell we just entered. Without this, sv stays
-       * pinned to the line-scroll value alone and can legitimately land
-       * on bitmap rows 192-255 (VDP2 Manual Sec.3.3/4.9/5.3) where the
-       * line-scroll and vertical-cell-scroll tables themselves live in
-       * this game's VRAM layout (bitmap = full 512KB VRAM) - reading
-       * those bytes as pixels is exactly the horizontal white streaks
-       * seen on Mega Man 8 (Saturn) NBG0. */
-      u32 lin_base = (u32)sv * ctrl->info.cellw + (u32)sh;
+      /* [FIX VCS-2] lin_base n'est pas const : il est recalcule des que la
+       * table de vertical cell scroll designe une autre ligne source pour la
+       * cellule de 8 pixels en cours (Sec.3.3/4.9/5.3). Sans cela la ligne
+       * source reste figee sur le seul line scroll et peut tomber sur les
+       * lignes 192-255 du bitmap, la ou resident justement les tables de line
+       * scroll et de cell scroll quand le bitmap occupe toute la VRAM --
+       * lire ces octets comme des pixels donne les trainees blanches
+       * horizontales vues sur Mega Man 8 (Saturn) NBG0. */
+      /* lin_base ne porte plus que le debut de la ligne source : la colonne
+       * est ajoutee a l'echantillonnage, repliee modulo la largeur du bitmap.
+       * L'ancien (lin_base + j) & bmpmask reportait le depassement horizontal
+       * sur la LIGNE SUIVANTE du bitmap, alors que le materiel replie chaque
+       * axe independamment : c'est le vertical cell scroll, et non le wrap
+       * horizontal, qui fait avancer la ligne. */
+      u32 lin_base = (u32)((sv16 >> 16) & (s32)cellh_mask)
+                   * (u32)ctrl->info.cellw;
       int vcsc_cell = -1;
 
       /* Re-samples the VCSC table only when the 8-pixel cell changes
@@ -4513,14 +4778,13 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
 #define VCS_UPDATE(jj) \
       do { \
         if (ctrl->info.isverticalscroll) { \
-          int cellCol_ = (int)(((u32)sh + (u32)(jj)) & cellw_mask) >> 3; \
+          int cellCol_ = (int)(jj) >> 3; \
+          if (vcsDelay && cellCol_ > 0) cellCol_--; \
           if (cellCol_ != vcsc_cell) { \
             vcsc_cell = cellCol_; \
-            s32 vshift_ = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, \
-                            ctrl->info.verticalscrolltbl + \
-                            (u32)cellCol_ * ctrl->info.verticalscrollinc)); \
-            u32 sv_eff_ = ((u32)sv + (u32)vshift_) & cellh_mask; \
-            lin_base = sv_eff_ * ctrl->info.cellw + (u32)sh; \
+            s32 y16_ = sv16 + Vdp2GetVCS16(ctrl, absline, cellCol_, vcsCount); \
+            lin_base = (u32)((y16_ >> 16) & (s32)cellh_mask) \
+                     * (u32)ctrl->info.cellw; \
           } \
         } \
       } while (0)
@@ -4531,7 +4795,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           for (j = 0; j < width; j++)
           {
             VCS_UPDATE(j);
-            u32 p = (lin_base + (u32)j) & bmpmask;
+            u32 p = (lin_base + (((u32)sh + (u32)j) & cellw_mask)) & bmpmask;
             u8 dot = Vdp2CtrlRamReadByte(ctrl, baseaddr + (p >> 1));
             if (!(p & 0x01)) dot >>= 4;
             if (!(dot & 0xF) && ctrl->info.transparencyenable) {
@@ -4553,7 +4817,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           for (j = 0; j < width; j++)
           {
             VCS_UPDATE(j);
-            u32 p = (lin_base + (u32)j) & bmpmask;
+            u32 p = (lin_base + (((u32)sh + (u32)j) & cellw_mask)) & bmpmask;
             u8 dot = Vdp2CtrlRamReadByte(ctrl, baseaddr + p);
             if (!(dot & 0xFF) && ctrl->info.transparencyenable) {
               *ctrl->texture.textdata++ = 0x00000000;
@@ -4574,7 +4838,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           for (j = 0; j < width; j++)
           {
             VCS_UPDATE(j);
-            u32 p = (lin_base + (u32)j) & bmpmask;
+            u32 p = (lin_base + (((u32)sh + (u32)j) & cellw_mask)) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel16bpp(ctrl, baseaddr + (p << 1));
           }
@@ -4585,7 +4849,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           for (j = 0; j < width; j++)
           {
             VCS_UPDATE(j);
-            u32 p = (lin_base + (u32)j) & bmpmask;
+            u32 p = (lin_base + (((u32)sh + (u32)j) & cellw_mask)) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel16bppbmp(ctrl, baseaddr + (p << 1));
           }
@@ -4596,7 +4860,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
           for (j = 0; j < width; j++)
           {
             VCS_UPDATE(j);
-            u32 p = (lin_base + (u32)j) & bmpmask;
+            u32 p = (lin_base + (((u32)sh + (u32)j) & cellw_mask)) & bmpmask;
             *ctrl->texture.textdata++ =
                 Vdp2GetPixel32bppbmp(ctrl, baseaddr + (p << 2));
           }
@@ -4633,6 +4897,15 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   const int cellh = ctrl->info.cellh;
   const int cellw_mask = cellw - 1;
   const int cellh_mask = cellh - 1;
+
+  /* Meme derivation que Vdp2DrawBitmapLineScroll. */
+  const int vcsCount = Vdp2VCellScrollLongwordsFor(ctrl->regs);
+  int vcsDelay;
+  {
+    Vdp2VCellScrollTiming vcst;
+    Vdp2VCellScrollTimingFor(ctrl->regs, &vcst);
+    vcsDelay = (ctrl->info.idScreen == NBG1) ? vcst.delay[1] : vcst.delay[0];
+  }
  
   for (i = screenY1; i < screenY2; i++)
   {
@@ -4676,8 +4949,14 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     else
       sv = v + ctrl->info.sv;
  
-    sv = sv & cellh_mask;
     sh = sh & cellw_mask;
+
+    /* 16.16, fraction du line scroll vertical comprise : elle porte, avec
+     * celle du vertical cell scroll, le franchissement de ligne en milieu de
+     * scanline. Le repli modulo la hauteur se fait apres la somme. */
+    const s32 sv16 = ((s32)sv << 16)
+                   + (s32)Vdp2GetLineScrollVFrac(&ctrl->info, i);
+    sv = (int)((sv16 >> 16) & (s32)cellh_mask);
  
     /* [FIX VCS-3] Same rationale as Vdp2DrawBitmapLineScroll: recompute
      * row_base whenever the vertical cell scroll table hands back a
@@ -4686,16 +4965,15 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
      * plain line-scroll path above (both must avoid drifting into the
      * bitmap rows that hold the line-scroll/VCSC tables themselves). */
     int vcsc_cell = -1;
-#define VCS_ROW(h_val, bpr) \
+#define VCS_ROW(scr_x, bpr) \
     do { \
       if (ctrl->info.isverticalscroll) { \
-        int cellCol_ = (h_val) >> 3; \
+        int cellCol_ = (int)(scr_x) >> 3; \
+        if (vcsDelay && cellCol_ > 0) cellCol_--; \
         if (cellCol_ != vcsc_cell) { \
           vcsc_cell = cellCol_; \
-          s32 vshift_ = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, \
-                          ctrl->info.verticalscrolltbl + \
-                          (u32)cellCol_ * ctrl->info.verticalscrollinc)); \
-          u32 sv_eff_ = ((u32)sv + (u32)vshift_) & (u32)cellh_mask; \
+          s32 y16_ = sv16 + Vdp2GetVCS16(ctrl, i, cellCol_, vcsCount); \
+          u32 sv_eff_ = (u32)((y16_ >> 16) & (s32)cellh_mask); \
           row_base = baseaddr + sv_eff_ * (u32)(bpr); \
         } \
       } \
@@ -4708,7 +4986,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
-          VCS_ROW(h, cellw >> 1);
+          VCS_ROW(j, cellw >> 1);
           u32 addr = row_base + (h >> 1);
           int cc = 1;
           u8 dot = Vdp2CtrlRamReadByte(ctrl, addr);
@@ -4739,7 +5017,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
-          VCS_ROW(h, cellw);
+          VCS_ROW(j, cellw);
           u32 alpha = ctrl->info.alpha_per_line[ctrl->info.draw_line >> shift];
           u8 dot = Vdp2CtrlRamReadByte(ctrl, row_base + h);
           if (!dot && ctrl->info.transparencyenable) {
@@ -4771,7 +5049,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
-          VCS_ROW(h, (u32)cellw * 2);
+          VCS_ROW(j, (u32)cellw * 2);
           *ctrl->texture.textdata++ = Vdp2GetPixel16bpp(ctrl, row_base + (h << 1));
         }
       }
@@ -4783,7 +5061,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
-          VCS_ROW(h, (u32)cellw * 2);
+          VCS_ROW(j, (u32)cellw * 2);
           *ctrl->texture.textdata++ = Vdp2GetPixel16bppbmp(ctrl, row_base + (h << 1));
         }
       }
@@ -4795,7 +5073,7 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
         for (j = 0; j < _Ygl->rwidth; j++)
         {
           int h = (sh + ((j * inch) >> 8)) & cellw_mask;
-          VCS_ROW(h, (u32)cellw * 4);
+          VCS_ROW(j, (u32)cellw * 4);
           *ctrl->texture.textdata++ = Vdp2GetPixel32bppbmp(ctrl, row_base + (h << 2));
         }
       }
@@ -5017,6 +5295,14 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
     const int base_targetv = targetv;
 
+#if DBG_NBG0_TRACE
+    /* INSTRUMENTATION TEMPORAIRE */
+    if (dbgArm && ctrl->info.idScreen == NBG0 && v >= 0 && v < DBG_NBG0_LINES) {
+      dbgSx[v] = sx;
+      dbgTv[v] = base_targetv;
+    }
+#endif
+
 	if (VDPLINE_SZ(ctrl->info.islinescroll)) {
 		u16 raw_inc = ctrl->info.lineinfo[v].CoordinateIncH;
 		if (raw_inc == 0) {
@@ -5127,6 +5413,13 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
               vshift = VCS_VALUE(Vdp2RamReadLong(NULL, Vdp2Ram, addr));
           }
           int tv = base_targetv + vshift;
+#if DBG_NBG0_TRACE
+          /* INSTRUMENTATION TEMPORAIRE : tv reellement utilise, VCS inclus. */
+          if (dbgArm && j == 0 && ctrl->info.idScreen == NBG0 &&
+              v >= 0 && v < DBG_NBG0_LINES) {
+            dbgTv[v] = tv;
+          }
+#endif
           mapy = tv >> planeh_shift;
           dot_on_planey = tv - (mapy << planeh_shift);
           mapy = mapy & 0x01;
@@ -5161,7 +5454,30 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
       if (planex != preplanex || pagex != prepagex ||
           planey != preplaney || pagey != prepagey) {
-        if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) == 0) continue;
+        if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) == 0) {
+          /* Acces pattern name refuse a cette banque par le cycle pattern.
+           *
+           * Le "continue" d'origine sortait de l'iteration SANS ecrire de
+           * texel : ctrl->texture.textdata n'avancait pas, donc toute la fin
+           * de la ligne se decalait d'un texel vers la gauche, et le
+           * "textdata += texture.w" de fin de ligne repartait d'une position
+           * fausse -- le decalage se cumulait sur les lignes suivantes. La
+           * boucle ecrit draww = rwidth texels par ligne, ce contrat doit
+           * tenir sur tous les chemins.
+           *
+           * Ymir ne saute jamais un pixel dans ce cas : il substitue un
+           * caractere nul (VDP2FetchOneWordCharacter / VDP2FetchTwoWord-
+           * Character retournent {} quand patNameAccess est faux, et
+           * VDP2FetchPixel ecrit un bloc de donnees nul quand charPatAccess
+           * l'est). On ecrit donc un texel transparent, comme partout
+           * ailleurs dans ce fichier.
+           *
+           * On ne met PAS a jour les pre* : le refus depend de la banque
+           * visee, la colonne suivante peut tomber dans une autre page et
+           * doit reessayer. */
+          *(ctrl->texture.textdata++) = 0x00000000;
+          continue;
+        }
         preplanex = planex;
         preplaney = planey;
         prepagex = pagex;
@@ -5226,11 +5542,35 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
         }
       }
 
+#if DBG_NBG0_TRACE
+      {
+        /* INSTRUMENTATION TEMPORAIRE : empreinte du texel reellement ecrit,
+         * accumulee par bloc de DBG_NBG0_BLK colonnes. */
+        u32 dbgPx = Vdp2RotationFetchPixel(&ctrl->info, x, y, ctrl->info.cellw);
+        *(ctrl->texture.textdata++) = dbgPx;
+        if (dbgArm && ctrl->info.idScreen == NBG0 && v >= 0 && v < DBG_NBG0_LINES) {
+          const int b = j / DBG_NBG0_BLK;
+          if (b >= 0 && b < DBG_NBG0_BLKS) {
+            unsigned int g = dbgGrid[v][b];
+            g ^= dbgPx + 0x9E3779B9u + (g << 6) + (g >> 2);
+            dbgGrid[v][b] = g;
+          }
+        }
+      }
+#else
       *(ctrl->texture.textdata++) =
           Vdp2RotationFetchPixel(&ctrl->info, x, y, ctrl->info.cellw);
+#endif
 
       ctrl->info.priority = priority;
     }
+
+#if DBG_NBG0_TRACE
+    /* INSTRUMENTATION TEMPORAIRE : une ligne comptee deux fois = deux zones
+     * qui repassent sur les memes lignes. */
+    if (dbgArm && ctrl->info.idScreen == NBG0 && v >= 0 && v < DBG_NBG0_LINES)
+      dbgWr[v]++;
+#endif
 
     ctrl->texture.textdata += ctrl->texture.w;
   }
