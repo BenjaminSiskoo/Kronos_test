@@ -140,7 +140,24 @@ static const GLchar Yglprg_vdp2_sprite_type_2[] =
 "    ret.prio = (ret.code >> 14) & 0x1;\n"
 "    ret.cc = (ret.code >> 11) & 0x7;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -170,7 +187,24 @@ static const GLchar Yglprg_vdp2_sprite_type_3[] =
 "    ret.prio = (ret.code >> 13) & 0x3;\n"
 "    ret.cc = (ret.code >> 11) & 0x3;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -200,7 +234,24 @@ static const GLchar Yglprg_vdp2_sprite_type_4[] =
 "    ret.prio = (ret.code >> 13) & 0x3;\n"
 "    ret.cc = (ret.code >> 10) & 0x7;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -230,7 +281,24 @@ static const GLchar Yglprg_vdp2_sprite_type_5[] =
 "    ret.prio = (ret.code >> 12) & 0x7;\n"
 "    ret.cc = (ret.code >> 11) & 0x1;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -260,7 +328,24 @@ static const GLchar Yglprg_vdp2_sprite_type_6[] =
 "    ret.prio = (ret.code >> 12) & 0x7;\n"
 "    ret.cc = (ret.code >> 10) & 0x3;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -290,7 +375,24 @@ static const GLchar Yglprg_vdp2_sprite_type_7[] =
 "    ret.prio = (ret.code >> 12) & 0x7;\n"
 "    ret.cc = (ret.code >> 9) & 0x7;\n"
 "    if (use_sp_win == 0) {\n"
+"      /* SOA-2 (Developer Technical Support, 23/05/95), qui resume le\n"
+"       * 14.1 de ST-058-R2 : un pixel dont le MSB est arme n'est une\n"
+"       * ombre TRANSPARENTE que si les quinze autres bits sont nuls,\n"
+"       * c'est-a-dire si le mot vaut exactement 0x8000. Si la valeur\n"
+"       * non signee est superieure a 0x8000, le pixel est OPAQUE : il\n"
+"       * est affiche selon la banque de couleur, la priorite et les\n"
+"       * autres informations des 15 bits restants, mais a luminance\n"
+"       * reduite. Le seuil porte donc sur le mot complet, bits de\n"
+"       * priorite et de color calculation inclus, et non sur les seuls\n"
+"       * bits de code couleur.\n"
+"       * Sonic Jam 2 joueurs : le separateur est un polygone VDP1 de\n"
+"       * CMDCOLR = 0xF000 -- priorite 7, code couleur 0. 0xF000 est\n"
+"       * superieur a 0x8000 donc pixel opaque noir assombri, soit noir.\n"
+"       * Kronos tranchait sur le code couleur seul, le prenait pour une\n"
+"       * ombre transparente et laissait passer le back screen : bande\n"
+"       * de separation bleue au lieu de noire. */\n"
 "      ret.MSBshadow = (((ret.code >> 15) & 0x1) == 1);\n"
+"      ret.MSBtransShadow = (ret.code == 0x8000);\n"
 "    } else { \n"
 "      ret.spwin = (((ret.code >> 15) & 0x1) == 1);\n"
 "      if (ret.code == 0x8000) ret.valid = 0;\n"
@@ -506,6 +608,7 @@ static const GLchar Yglprg_vdp2_common_start[] =
 "int FBMeshPrio = 0;\n"
 "bool FBNormalShadow = false;\n"
 "bool FBMSBShadow = false;\n"
+"bool FBMSBTransShadow = false;\n"
 "int NoVdp1 = 0;\n"
 
 "struct Col \n"
@@ -536,6 +639,7 @@ static const GLchar Yglprg_vdp2_common_start[] =
 "  int valid;\n"
 "  int isRGB;\n"
 "  bool MSBshadow;\n"
+"  bool MSBtransShadow;\n"
 "  bool spwin;\n"
 "  bool normalShadow;\n"
 "}; \n"
@@ -553,6 +657,7 @@ static const GLchar Yglprg_vdp2_common_start[] =
 "  ret.valid = 0;\n"
 "  ret.isRGB = 0;\n"
 "  ret.MSBshadow = false;\n"
+"  ret.MSBtransShadow = false;\n"
 "  ret.normalShadow = false;\n"
 "  ret.spwin = false;\n"
 "  return ret;\n"
@@ -1291,6 +1396,7 @@ FBRgb = tmp.isRGB;\n \
 bool processShadow = false;\n \
 FBNormalShadow = tmp.normalShadow;\n \
 FBMSBShadow = tmp.MSBshadow;\n \
+FBMSBTransShadow = tmp.MSBtransShadow;\n \
 FBShadow = tmp.meshColor;\n \
 FBMeshPrio = tmp.meshPrio;\n \
 FBMesh = tmp.mesh;\n \
@@ -1346,8 +1452,8 @@ for (int i = 7; i>0; i--) { \n \
 //The MSB shadow is only effetive when the sprite window is not used \n \
               processShadow = true;\n \
 //The shadow process shall be processed for any of color code \n \
-              if (tmp.code == 0) {\n \
-//In case of a code of zero and if the transparent shadow code is enabled, then we do not process as a top image \n \
+              if (FBMSBTransShadow) {\n \
+//SOA-2: only a word equal to 0x8000 is a transparent shadow. If the transparent shadow code is enabled, we do not process it as a top image \n \
                   processShadow = (use_trans_shadow != 0);\n \
                   if (processShadow && (((isShadow>>6)&0x1)!= 0)) colorback.rgb *= 0.5; \n \
                   continue;\n \
@@ -1400,7 +1506,7 @@ for (int i = 7; i>0; i--) { \n \
               continue;\n \
             }\n \
             if (FBMSBShadow) {\n \
-              if ((tmp.code == 0) && (use_trans_shadow == 1)) { \n \
+              if (FBMSBTransShadow && (use_trans_shadow == 1)) { \n \
                 continue;\n \
               }\n \
             }\n \
@@ -1432,7 +1538,7 @@ for (int i = 7; i>0; i--) { \n \
               continue;\n \
             }\n \
             if (FBMSBShadow) {\n \
-              if ((tmp.code == 0) && (use_trans_shadow == 1)) { \n \
+              if (FBMSBTransShadow && (use_trans_shadow == 1)) { \n \
                 continue;\n \
               }\n \
             }\n \
