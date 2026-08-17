@@ -1258,25 +1258,35 @@ static u8 FASTCALL ROMSTVCs1ReadByte(SH2_struct *context, UNUSED u8* memory, u32
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Common ST-V 315-5881 protection block. Sur le vrai hardware/MAME, ce
+   bloc de registres n'est mappé que sur les 16 derniers octets de la
+   fenêtre CS1 (0xFFFFF0-0xFFFFFF) - voir MAME stv.cpp,
+   install_common_protection() installé à 0x4fffff0-0x4ffffff.
+   Toute autre adresse est de la ROM cartouche normale. Sans cette
+   restriction, l'interception tombait sur 1 lecture/écriture sur 16
+   dans TOUT le cart, pour TOUS les jeux ST-V passant par ce handler -
+   corrompant les données ROM des jeux qui n'ont pas cette puce
+   (ex: Critter Crusher bloque sur SYSTEM CHECKING). */
+#define STV_PROT_WINDOW_BASE 0xFFFFF0
+
+static INLINE int STVAddrInProtWindow(u32 addr)
+{
+  return (addr & 0xFFFFFF) >= STV_PROT_WINDOW_BASE;
+}
+
 static u16 FASTCALL ROMSTVCs1ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
-  /* FIX: mirror MAME's common_prot_r for the 315-5881 protection block.
-     On real hardware, reading back one of the protection registers
-     (enable / low addr / high addr / subkey) returns the last value
-     written to it (a simple bus echo), it does NOT read cart ROM data.
-     Some games (e.g. Tecmo World Cup '98) write then immediately poll
-     the same address waiting for the readback to match, as a presence
-     check for the protection chip. Without this echo the poll compares
-     against raw (out of range) ROM bytes and never matches -> infinite
-     loop ("SYSTEM CHECKING" never completes). Confirmed by testing. */
-  u8 decryptCmd = addr & 0xF;
-  switch (decryptCmd)
+  if (STVAddrInProtWindow(addr))
   {
-    case 0x1: return protRegEnable;
-    case 0x8: return protRegLowAddr;
-    case 0xa: return protRegHighAddr;
-    case 0xc: return protRegSubkey;
-    default: break;
+    u8 decryptCmd = addr & 0xF;
+    switch (decryptCmd)
+    {
+      case 0x1: return protRegEnable;
+      case 0x8: return protRegLowAddr;
+      case 0xa: return protRegHighAddr;
+      case 0xc: return protRegSubkey;
+      default: break;
+    }
   }
   return T1ReadWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF);
 }
@@ -1286,29 +1296,29 @@ static u16 FASTCALL ROMSTVCs1ReadWord(SH2_struct *context, UNUSED u8* memory, u3
 static u32 FASTCALL ROMSTVCs1ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
   LOGSTV("%s %x\n", __FUNCTION__, addr);
-  u8 decryptCmd = addr & 0xF;
-  /* FIX: decryptOn is supposed to be set by a write to the "enable"
-     register, but ROMSTVCs1WriteWord's detection (decryptCmd == 0x1)
-     is unreachable for a naturally-aligned word access (addr & 0xF is
-     always even for a 16-bit write), so decryptOn never actually gets
-     set to 1 for games that enable protection with a word write (e.g.
-     Tecmo World Cup '98 / World Soccer '98). Confirmed by testing:
-     forcing this branch unconditionally lets the game boot past
-     "SYSTEM CHECKING". Root cause (word-write enable detection) still
-     needs a proper fix; this keeps the workaround narrowly scoped to
-     the decrypt trigger itself rather than gating on decryptOn. */
-  if(decryptCmd == 0xc)
+
+  if (STVAddrInProtWindow(addr))
   {
-    u16 res = cryptoDecrypt();
-    u16 res2 = cryptoDecrypt();
-    res = ((res & 0xff00) >> 8) | ((res & 0x00ff) << 8);
-    res2 = ((res2 & 0xff00) >> 8) | ((res2 & 0x00ff) << 8);
-    return res2 | (res << 16);
-  }
-  else if (decryptOn & 0x1)
-  {
-    if (decryptCmd == 0x0) return protRegEnable;
-    else if (decryptCmd == 0x8) return (protRegLowAddr << 16) | protRegHighAddr;
+    u8 decryptCmd = addr & 0xF;
+    /* Gating sur decryptOn restauré : le vrai bug (le mot d'activation
+       jamais posé sur une écriture 16 bits) est maintenant corrigé dans
+       ROMSTVCs1WriteWord (decryptCmd == 0x0). Le hack inconditionnel
+       n'est donc plus nécessaire et est retiré : il cassait toute
+       lecture 32 bits légitime finissant par 0xC dans les jeux qui
+       n'activent jamais decryptOn (ex: Critter Crusher). */
+    if (decryptCmd == 0xc && (decryptOn & 0x1))
+    {
+      u16 res = cryptoDecrypt();
+      u16 res2 = cryptoDecrypt();
+      res = ((res & 0xff00) >> 8) | ((res & 0x00ff) << 8);
+      res2 = ((res2 & 0xff00) >> 8) | ((res2 & 0x00ff) << 8);
+      return res2 | (res << 16);
+    }
+    else if (decryptOn & 0x1)
+    {
+      if (decryptCmd == 0x0) return protRegEnable;
+      else if (decryptCmd == 0x8) return (protRegLowAddr << 16) | protRegHighAddr;
+    }
   }
   return T1ReadLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF);
 }
@@ -1332,75 +1342,76 @@ static void FASTCALL ROMSTVCs1WriteByte(SH2_struct *context, UNUSED u8* memory, 
 static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
-  u8 decryptCmd = addr & 0xF;
-  if (decryptCmd == 0x0)
+
+  if (STVAddrInProtWindow(addr))
   {
-    /* FIX: was `decryptCmd == 0x1`, which addr & 0xF can never equal
-       for a naturally-aligned 16-bit access (always even) - dead code,
-       decryptOn was never set through a word write. 0x0 is the correct
-       nibble: it's the same enable register as ROMSTVCs1WriteLong's
-       `decryptCmd == 0x0` case, just written as one 16-bit half instead
-       of a full 32-bit long. On real hardware/MAME the enable bit lives
-       in the upper 16 bits of the 32-bit register (m_abus_protenable &
-       0x10000); on this big-endian SH2, that upper half is the first
-       16-bit word of the register, i.e. this exact word access - so no
-       extra shift is needed here (val already IS that half), unlike
-       WriteLong which shifts a full 32-bit value with `val >> 16`. */
-    decryptOn = val & 0x1;
-    protRegEnable = val;
+    u8 decryptCmd = addr & 0xF;
+    if (decryptCmd == 0x0)
+    {
+      /* decryptCmd == 0x0 et non 0x1 : addr & 0xF ne peut jamais valoir
+         0x1 pour un accès 16 bits aligné (toujours pair) - c'était du
+         code mort, decryptOn n'était jamais activé par une écriture
+         mot. Sur ce SH2 big-endian, le bit d'activation (bit
+         0x10000 du registre 32 bits complet côté MAME) tombe dans le
+         premier mot 16 bits du registre, donc pas de décalage
+         supplémentaire ici, contrairement à WriteLong. */
+      decryptOn = val & 0x1;
+      protRegEnable = val;
+      return;
+    }
+    else if (decryptCmd == 0x8)
+    {
+      cyptoSetLowAddr(val);
+      protRegLowAddr = val;
+      return;
+    }
+    else if (decryptCmd == 0xa)
+    {
+      cyptoSetHighAddr(val);
+      protRegHighAddr = val;
+      return;
+    }
+    else if (decryptCmd == 0xc)
+    {
+      cyptoSetSubkey(val);
+      protRegSubkey = val;
+      return;
+    }
   }
-  else if(decryptCmd == 0x8)
-  {
-    cyptoSetLowAddr(val);
-    protRegLowAddr = val;
-  }
-  else if(decryptCmd == 0xa)
-  {
-    cyptoSetHighAddr(val);
-    protRegHighAddr = val;
-  }
-  else if(decryptCmd == 0xc)
-  {
-    cyptoSetSubkey(val);
-    protRegSubkey = val;
-  } else
-    T1WriteWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
+  T1WriteWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
 }
-
 //////////////////////////////////////////////////////////////////////////////
-
 static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
-  u8 decryptCmd = addr & 0xF;
-  /* FIX: this handler used to always fall through to a raw ROM write,
-     silently dropping any 32-bit (longword) access to the 315-5881
-     protection block. Games that configure the crypto device with a
-     single MOV.L instead of two MOV.W never reached decryptOn /
-     cyptoSetLowAddr / cyptoSetHighAddr / cyptoSetSubkey, so the address
-     and subkey registers stayed at their reset values and cryptoDecrypt()
-     produced garbage. Mirrors MAME's common_prot_w, which reacts to
-     ACCESSING_BITS_16_31 and ACCESSING_BITS_0_15 independently so a full
-     longword write updates both halves of a register in one go. */
-  if (decryptCmd == 0x0)
+
+  if (STVAddrInProtWindow(addr))
   {
-    decryptOn = (val >> 16) & 0x1;
-    protRegEnable = (u16)(val >> 16);
-    return;
-  }
-  else if (decryptCmd == 0x8)
-  {
-    cyptoSetLowAddr(val >> 16);
-    cyptoSetHighAddr(val & 0xFFFF);
-    protRegLowAddr = (u16)(val >> 16);
-    protRegHighAddr = (u16)(val & 0xFFFF);
-    return;
-  }
-  else if (decryptCmd == 0xc)
-  {
-    cyptoSetSubkey(val >> 16);
-    protRegSubkey = (u16)(val >> 16);
-    return;
+    u8 decryptCmd = addr & 0xF;
+    /* Mirroring MAME's common_prot_w : une écriture 32 bits sur le
+       registre d'activation ou d'adresse doit mettre à jour les deux
+       moitiés du registre en un seul accès (ACCESSING_BITS_16_31 /
+       ACCESSING_BITS_0_15), pas être silencieusement ignorée. */
+    if (decryptCmd == 0x0)
+    {
+      decryptOn = (val >> 16) & 0x1;
+      protRegEnable = (u16)(val >> 16);
+      return;
+    }
+    else if (decryptCmd == 0x8)
+    {
+      cyptoSetLowAddr(val >> 16);
+      cyptoSetHighAddr(val & 0xFFFF);
+      protRegLowAddr = (u16)(val >> 16);
+      protRegHighAddr = (u16)(val & 0xFFFF);
+      return;
+    }
+    else if (decryptCmd == 0xc)
+    {
+      cyptoSetSubkey(val >> 16);
+      protRegSubkey = (u16)(val >> 16);
+      return;
+    }
   }
   T1WriteLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
 }
