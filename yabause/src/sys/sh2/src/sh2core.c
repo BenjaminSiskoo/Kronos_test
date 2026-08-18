@@ -2459,6 +2459,32 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
       int eat = getEatClock(*dmac->SAR, *dmac->DAR);
 
       dmac->copy_clock += cycles;
+
+      /* SH7604 sec. 9.2.4, bits AR (CHCR.9) et TB (CHCR.4) : en requete
+       * automatique et mode rafale, le DMAC acquiert le bus et le conserve
+       * jusqu a TCR = 0. Le SH-2 n execute aucune instruction pendant toute
+       * la duree du transfert.
+       *
+       * Decouper un tel transfert en tranches et laisser le CPU tourner entre
+       * deux tranches permet a un jeu de reecrire son propre tampon de
+       * transit alors que le DMAC est encore en train de le lire. La copie
+       * reste exacte octet pour octet, mais elle melange deux blocs
+       * consecutifs. Golden Axe: The Duel fait passer chaque image
+       * d animation par un tampon unique et montrait exactement ce defaut :
+       * sprites des combattants zebres, decor intact (issue #1280).
+       *
+       * Le transfert est donc mene a son terme en une seule fois. La borne
+       * evite qu un TCR aberrant ne fasse deborder le budget. */
+      if ((*dmac->CHCR & 0x210) == 0x210) {
+         u32 remaining = *dmac->TCR & 0xFFFFFF;
+         s64 budget;
+
+         if (remaining == 0) remaining = 0x1000000;   /* TCR = 0 => maximum */
+         budget = (s64)remaining * (s64)eat;
+         if (budget > 0x20000000) budget = 0x20000000;
+         if (budget > (s64)dmac->copy_clock) dmac->copy_clock = (int)budget;
+      }
+
       if (dmac->copy_clock < eat) return;
 
       switch(*dmac->CHCR & 0x3000) {
