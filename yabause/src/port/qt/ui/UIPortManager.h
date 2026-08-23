@@ -22,6 +22,16 @@
 #include "ui_UIPortManager.h"
 #include "../QtYabause.h"
 
+// UI-only sentinel for the "Hopper Cabinet" combo entry. Same underlying
+// peripheral (PerCab_struct / PERCABINET) as "ST-V Cabinet" - it only
+// changes which dialog UIPortManager opens (UIPatocarSetting instead of
+// UISTVSetting). NEVER persist this value as-is: YabauseThread.cpp reads
+// Input/Port/.../Type directly with a switch() that only recognises real
+// peripheral.h type constants, so this is always normalized back down to
+// PERCABINET before being written there (see mSettingsHopperUI instead).
+// Real types top out at PERCABINET (0xFF), so 0x100 can't collide.
+#define PERCABINET_HOPPER (PERCABINET | 0x100)
+
 class UIPortManager : public QGroupBox, public Ui::UIPortManager
 {
 	Q_OBJECT
@@ -29,6 +39,7 @@ class UIPortManager : public QGroupBox, public Ui::UIPortManager
 public:
 	static const QString mSettingsKey;
 	static const QString mSettingsType;
+	static const QString mSettingsHopperUI; // UI-only: was "Hopper Cabinet" picked for this slot?
 
 	UIPortManager( QWidget* parent = 0 );
 	virtual ~UIPortManager();
