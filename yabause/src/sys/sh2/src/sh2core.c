@@ -2633,41 +2633,73 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 // Input Capture Specific
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL MSH2InputCaptureWriteWord(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u16 data)
+/* MINIT (0100 0000H) et SINIT (0180 0000H) ne sont pas des registres : toute
+ * ecriture dans la fenetre, quelle que soit sa taille, declenche l'input
+ * capture du FRT de l'autre CPU (communication maitre/esclave par FRT ICI,
+ * niveau 15). Les six points d'entree partagent donc le meme corps. */
+
+static void InputCaptureFire(SH2_struct *target, SH2_struct *context)
 {
-   FRTExec(MSH2);
+   FRTExec(target);
+
    // Set Input Capture Flag
-   MSH2->onchip.FTCSR |= 0x80;
-   MSH2->onchip.FTCSRM |= 0x80;
+   target->onchip.FTCSR |= 0x80;
+   target->onchip.FTCSRM |= 0x80;
 
    // Copy FRC register to FICR
-   MSH2->onchip.FICR = MSH2->onchip.FRC.all;
+   target->onchip.FICR = target->onchip.FRC.all;
+
    //Ensure there is some delay between input capture flag and effective interrupt handling
    //Docs says it takes around 4 instructions to accept an interrupt
    //And some games like Scorcher are using this delay to write some usefull values for the slave
-   if ((context->target_cycles - context->cycles)<10) context->target_cycles += 10;
-   SH2EvaluateInterrupt(MSH2);
+   if ((context->target_cycles - context->cycles) < 10) context->target_cycles += 10;
 
+   SH2EvaluateInterrupt(target);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL MSH2InputCaptureWriteWord(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u16 data)
+{
+   InputCaptureFire(MSH2, context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL MSH2InputCaptureWriteByte(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u8 data)
+{
+   InputCaptureFire(MSH2, context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL MSH2InputCaptureWriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u32 data)
+{
+   InputCaptureFire(MSH2, context);
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 void FASTCALL SSH2InputCaptureWriteWord(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u16 data)
 {
-   FRTExec(SSH2);
-   // Set Input Capture Flag
-   SSH2->onchip.FTCSR |= 0x80;
-   SSH2->onchip.FTCSRM |= 0x80;
-
-   // Copy FRC register to FICR
-   SSH2->onchip.FICR = SSH2->onchip.FRC.all;
-
-   //Ensure there is some delay between input capture flag and effective interrupt handling
-   //Docs says it takes around 4 instructions to accept an interrupt
-   //And some games like Scorcher are using this delay to write some usefull values for the slave
-   if ((context->target_cycles - context->cycles)<10) context->target_cycles += 10;
-   SH2EvaluateInterrupt(SSH2);
+   InputCaptureFire(SSH2, context);
 }
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL SSH2InputCaptureWriteByte(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u8 data)
+{
+   InputCaptureFire(SSH2, context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL SSH2InputCaptureWriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u32 data)
+{
+   InputCaptureFire(SSH2, context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////
 // SCI Specific
