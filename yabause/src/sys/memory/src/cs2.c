@@ -2616,6 +2616,25 @@ void Cs2GetSectorData(void)
    }
 
    CalcSectorOffsetNumber(gsdbufno, &gsdsectoffset, &gsdsectnum);
+   /* Le bloc CD ne sert une plage de secteurs que si elle est entierement
+    * presente dans la partition ; sinon la commande est REJETEE et l hote
+    * la reemet plus tard (code de retour CDC_ERR_REJECT, manuel de
+    * l interface de communication CD ST-38 / ST-162).
+    *
+    * Kronos acceptait des que la partition n etait pas vide et transferait
+    * simplement moins de secteurs que demande. Un jeu qui fait confiance au
+    * compte demande - Sol Divide demande 40 secteurs par tour - avance alors
+    * son pointeur de 40 secteurs apres n en avoir recu qu un ou deux : le
+    * reste de sa zone de chargement garde son ancien contenu, et il finit par
+    * sauter dedans (issue #1222 : le CPU execute des donnees a 0x06010000 et
+    * leve un opcode invalide). */
+   if ((gsdsectoffset + gsdsectnum) > (u32)Cs2Area->partition[gsdbufno].numblocks)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
 
    // Setup Data Transfer
    Cs2Area->cdwnum = 0;
@@ -2711,6 +2730,25 @@ void Cs2GetThenDeleteSectorData(void)
    }
 
    CalcSectorOffsetNumber(gtdsdbufno, &gtdsdsectoffset, &gtdsdsectnum);
+   /* Le bloc CD ne sert une plage de secteurs que si elle est entierement
+    * presente dans la partition ; sinon la commande est REJETEE et l hote
+    * la reemet plus tard (code de retour CDC_ERR_REJECT, manuel de
+    * l interface de communication CD ST-38 / ST-162).
+    *
+    * Kronos acceptait des que la partition n etait pas vide et transferait
+    * simplement moins de secteurs que demande. Un jeu qui fait confiance au
+    * compte demande - Sol Divide demande 40 secteurs par tour - avance alors
+    * son pointeur de 40 secteurs apres n en avoir recu qu un ou deux : le
+    * reste de sa zone de chargement garde son ancien contenu, et il finit par
+    * sauter dedans (issue #1222 : le CPU execute des donnees a 0x06010000 et
+    * leve un opcode invalide). */
+   if ((gtdsdsectoffset + gtdsdsectnum) > (u32)Cs2Area->partition[gtdsdbufno].numblocks)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
 
    // Setup Data Transfer
    Cs2Area->cdwnum = 0;
