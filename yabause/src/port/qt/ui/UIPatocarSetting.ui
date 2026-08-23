@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>UIPatocarSetting</class>
+ <widget class="QDialog" name="UIPatocarSetting">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="focusPolicy">
+   <enum>Qt::StrongFocus</enum>
+  </property>
+  <property name="windowTitle">
+   <string>Hopper Cabinet Configuration</string>
+  </property>
+  <property name="windowIcon">
+   <iconset resource="../resources/resources.qrc">
+    <normaloff>:/hopper/trackball.png</normaloff>:/hopper/trackball.png</iconset>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="lTitle">
+     <property name="text">
+      <string>Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gbPanel">
+     <property name="title"><string>Coins &amp;&amp; Control Panel</string></property>
+     <layout class="QVBoxLayout" name="vl_gbPanel">
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbCoin1">
+       <item>
+        <widget class="QToolButton" name="tbCoin1">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>10 Yen</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/coin.png</normaloff>:/hopper/coin.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lCoin1">
+         <property name="text"><string>10 Yen</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbCoin1">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbCoin2">
+       <item>
+        <widget class="QToolButton" name="tbCoin2">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>100 Yen</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/coin.png</normaloff>:/hopper/coin.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lCoin2">
+         <property name="text"><string>100 Yen</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbCoin2">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbStart1">
+       <item>
+        <widget class="QToolButton" name="tbStart1">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Select / Shoot Button</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/button.png</normaloff>:/hopper/button.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lStart1">
+         <property name="text"><string>Select / Shoot Button</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbStart1">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbPowerButton">
+       <item>
+        <widget class="QToolButton" name="tbPowerButton">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Power Button</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/power.png</normaloff>:/hopper/power.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lPowerButton">
+         <property name="text"><string>Power Button</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbPowerButton">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbMedal">
+       <item>
+        <widget class="QToolButton" name="tbMedal">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Medal</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/medal.png</normaloff>:/hopper/medal.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lMedal">
+         <property name="text"><string>Medal</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbMedal">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbDoorSwitch">
+       <item>
+        <widget class="QToolButton" name="tbDoorSwitch">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Door Switch</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/door.png</normaloff>:/hopper/door.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lDoorSwitch">
+         <property name="text"><string>Door Switch</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbDoorSwitch">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+    </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gbTrackball">
+     <property name="title"><string>Trackball (patocar / skychal / supgoal / techbowl only)</string></property>
+     <layout class="QVBoxLayout" name="vl_gbTrackball">
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbTrackballUp">
+       <item>
+        <widget class="QToolButton" name="tbTrackballUp">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Trackball Up</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/trackball.png</normaloff>:/hopper/trackball.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lTrackballUp">
+         <property name="text"><string>Up</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbTrackballUp">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbTrackballDown">
+       <item>
+        <widget class="QToolButton" name="tbTrackballDown">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Trackball Down</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/trackball.png</normaloff>:/hopper/trackball.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lTrackballDown">
+         <property name="text"><string>Down</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbTrackballDown">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbTrackballLeft">
+       <item>
+        <widget class="QToolButton" name="tbTrackballLeft">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Trackball Left</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/trackball.png</normaloff>:/hopper/trackball.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lTrackballLeft">
+         <property name="text"><string>Left</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbTrackballLeft">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbTrackballRight">
+       <item>
+        <widget class="QToolButton" name="tbTrackballRight">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Trackball Right</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/trackball.png</normaloff>:/hopper/trackball.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lTrackballRight">
+         <property name="text"><string>Right</string></property>
+         
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbTrackballRight">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+    </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="gbDiag">
+     <property name="title"><string>Family-Specific &amp;&amp; Diagnostics</string></property>
+     <layout class="QVBoxLayout" name="vl_gbDiag">
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbHopperBtn2">
+       <item>
+        <widget class="QToolButton" name="tbHopperBtn2">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Button 2</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/button.png</normaloff>:/hopper/button.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lHopperBtn2">
+         <property name="text"><string>Button 2 (patocar/skychal/supgoal/techbowl only)</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbHopperBtn2">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbMagnetBtn5">
+       <item>
+        <widget class="QToolButton" name="tbMagnetBtn5">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Magnet Sensor</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/magnet.png</normaloff>:/hopper/magnet.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lMagnetBtn5">
+         <property name="text"><string>Magnet Sensor (micrombc only)</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbMagnetBtn5">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="hl_tbHopperTest">
+       <item>
+        <widget class="QToolButton" name="tbHopperTest">
+         <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+         <property name="toolTip"><string>Hopper Sensor Test</string></property>
+         <property name="checkable"><bool>true</bool></property>
+         <property name="autoRaise"><bool>true</bool></property>
+         <property name="icon">
+          <iconset resource="../resources/resources.qrc">
+           <normaloff>:/hopper/sensor.png</normaloff>:/hopper/sensor.png</iconset>
+         </property>
+         <property name="iconSize"><size><width>20</width><height>20</height></size></property>
+         <property name="toolButtonStyle"><enum>Qt::ToolButtonTextBesideIcon</enum></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="lHopperTest">
+         <property name="text"><string>Hopper Sensor Test (hold to force a payout pulse)</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="hspacer_tbHopperTest">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>10</width><height>10</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+    </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lInfos">
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="patocarButtons">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Close</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources>
+  <include location="../resources/resources.qrc"/>
+ </resources>
+ <connections>
+  <connection>
+   <sender>patocarButtons</sender>
+   <signal>rejected()</signal>
+   <receiver>UIPatocarSetting</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
