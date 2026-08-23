@@ -650,6 +650,11 @@ void FASTCALL DataArrayWriteLong(SH2_struct *context, u32 addr, u32 val);
 
 void FASTCALL MSH2InputCaptureWriteWord(SH2_struct *context, UNUSED u8* mem, u32 addr, u16 data);
 void FASTCALL SSH2InputCaptureWriteWord(SH2_struct *context, UNUSED u8* mem, u32 addr, u16 data);
+/* MINIT/SINIT reagissent a toute taille d'ecriture, pas seulement au mot. */
+void FASTCALL MSH2InputCaptureWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 data);
+void FASTCALL MSH2InputCaptureWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 data);
+void FASTCALL SSH2InputCaptureWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 data);
+void FASTCALL SSH2InputCaptureWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 data);
 
 int SH2SaveState(SH2_struct *context, void ** stream);
 int SH2LoadState(SH2_struct *context, const void * stream, int version, int size);
