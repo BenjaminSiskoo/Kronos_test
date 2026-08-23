@@ -133,6 +133,16 @@ PerBaseConfig_struct percabinetbaseconfig[] = {
 	{ PERJAMMA_P2_BUTTON4, PERCB(PerCabP2Button4Pressed), PERCB(PerCabP2Button4Released), NULL, NULL },
 	{ PERJAMMA_P2_BUTTON5, PERCB(PerCabP2Button5Pressed), PERCB(PerCabP2Button5Released), NULL, NULL },
 	{ PERJAMMA_P2_BUTTON6, PERCB(PerCabP2Button6Pressed), PERCB(PerCabP2Button6Released), NULL, NULL },
+	{ PERJAMMA_POWER_BUTTON, PERCB(PerCabPowerButtonPressed), PERCB(PerCabPowerButtonReleased), NULL, NULL },
+	{ PERJAMMA_MEDAL, PERCB(PerCabMedalPressed), PERCB(PerCabMedalReleased), NULL, NULL },
+	{ PERJAMMA_HOPPER_BTN2, PERCB(PerCabHopperBtn2Pressed), PERCB(PerCabHopperBtn2Released), NULL, NULL },
+	{ PERJAMMA_DOOR_SWITCH, PERCB(PerCabDoorSwitchPressed), PERCB(PerCabDoorSwitchReleased), NULL, NULL },
+	{ PERJAMMA_MAGNET_BTN5, PERCB(PerCabMagnetBtn5Pressed), PERCB(PerCabMagnetBtn5Released), NULL, NULL },
+	{ PERJAMMA_HOPPER_TEST, PERCB(PerCabHopperTestPressed), PERCB(PerCabHopperTestReleased), NULL, NULL },
+	{ PERJAMMA_TRACKBALL_UP, PERCB(PerCabTrackballUpPressed), PERCB(PerCabTrackballUpReleased), NULL, NULL },
+	{ PERJAMMA_TRACKBALL_DOWN, PERCB(PerCabTrackballDownPressed), PERCB(PerCabTrackballDownReleased), NULL, NULL },
+	{ PERJAMMA_TRACKBALL_LEFT, PERCB(PerCabTrackballLeftPressed), PERCB(PerCabTrackballLeftReleased), NULL, NULL },
+	{ PERJAMMA_TRACKBALL_RIGHT, PERCB(PerCabTrackballRightPressed), PERCB(PerCabTrackballRightReleased), NULL, NULL },
 };
 
 PerBaseConfig_struct permousebaseconfig[] = {
@@ -167,6 +177,139 @@ static void PerUpdateConfig(PerBaseConfig_struct * baseconfig, int nelems, void 
 u8 m_system_output = 0;
 u8 m_ioga_mode = 0;
 u8 m_ioga_portg = 0;
+
+/*
+   Medal/ticket hopper simulation.
+
+   patocar, skychal, supgoal, techbowl (PATOCAR layout) and micrombc
+   (MICROMBC layout) drive a physical hopper: PORT-D bit 0x80 turns the
+   hopper motor on/off, and a photo-sensor pulses PORT-A bit 0x02 once
+   per dispensed medal/ball while the motor runs. On real hardware (and
+   in MAME's ticket_dispenser/hopper device, which this mirrors) the
+   sensor line idles low and toggles roughly every 100ms while the
+   motor is energised, so the game's dispense loop sees a steady stream
+   of pulses until it has counted enough medals and cuts the motor.
+*/
+/* NOTE: on real hopper cabinets PORT-A is wired entirely differently from
+   the generic STV/STV6B control panel (see stv.h: "Only STV & STV6B are
+   properly hooked at the moment, the others might require tweaks"), so
+   bit 0x02 is hardwired to the sensor and nothing else. Kronos doesn't
+   yet have a dedicated PATOCAR/MICROMBC control-panel mapping, so the
+   generic pad "B" binding still targets the same PORT_A bit; avoid
+   binding/pressing B while testing a hopper game until that mapping
+   is added, or the two writers will fight over the bit. */
+#define HOPPER_SENSOR_PORT PORT_A
+#define HOPPER_SENSOR_MASK 0x02
+#define HOPPER_MOTOR_MASK  0x80
+#define HOPPER_PULSE_MS    100
+
+static u8 hopper_motor = 0;    /* current PORT-D bit 0x80 state */
+static u8 hopper_status = 0;   /* current sensor line state (0 = idle, 1 = pulse) */
+static u8 hopper_stopping = 0; /* motor released mid-pulse: finish the toggle, then stop */
+static int hopper_frame_count = 0;
+static u8 hopper_test_override = 0; /* PERJAMMA_HOPPER_TEST held: force the sensor line active */
+
+/*
+   PORT-G "counter mode" registers (patocar/skychal/supgoal/techbowl's
+   trackball - PORTG.0 = X, PORTG.1 = Y in MAME; PORTG.2/.3 unused here).
+   The SH2 reads these as a sequence of 8 byte-wide reads (auto-incrementing
+   through 4 slots x high/low byte, via m_ioga_portg below); each slot is a
+   genuine free-running 16-bit counter, unlike the rest of IOPORT[] which
+   is 8 bits wide. micrombc explicitly has no trackball (see MAME) and
+   never touches these.
+*/
+static u16 IOPORT_COUNTER[4];
+
+#define TRACKBALL_X 0
+#define TRACKBALL_Y 1
+/* MAME flags its own patocar trackball tuning as unconfirmed ("TODO:
+   sense/delta values seems wrong" - PORT_SENSITIVITY(500)/KEYDELTA(100)).
+   This digital nudge is a fallback for the same control (no host mouse/
+   analog wiring here), so treat this step as an approximate starting
+   point to taste rather than a verified hardware value. */
+#define TRACKBALL_STEP 96
+
+static u8 trackball_up = 0, trackball_down = 0, trackball_left = 0, trackball_right = 0;
+
+static int PerTrackballEnabled(void) {
+  /* Trackball is specific to the patocar-family control panel; micrombc
+     shares the same PORTA/PORTB/PORTC layout but has no trackball. */
+  return (yabsys.stvInputType == PATOCAR);
+}
+
+void PerTrackballExec(void) {
+  if (!PerTrackballEnabled())
+    return;
+
+  if (trackball_right)
+    IOPORT_COUNTER[TRACKBALL_X] += TRACKBALL_STEP;
+  if (trackball_left)
+    IOPORT_COUNTER[TRACKBALL_X] -= TRACKBALL_STEP;
+  if (trackball_down)
+    IOPORT_COUNTER[TRACKBALL_Y] += TRACKBALL_STEP;
+  if (trackball_up)
+    IOPORT_COUNTER[TRACKBALL_Y] -= TRACKBALL_STEP;
+}
+
+static int PerHopperEnabled(void) {
+  return (yabsys.stvInputType == PATOCAR) || (yabsys.stvInputType == MICROMBC);
+}
+
+static int PerHopperFramesPerPulse(void) {
+  int fps = yabsys.IsPal ? 50 : 60;
+  int frames = (HOPPER_PULSE_MS * fps + 500) / 1000; /* round to nearest frame */
+  return (frames < 1) ? 1 : frames;
+}
+
+static void PerHopperSetSensor(u8 active) {
+  hopper_status = active;
+  if (active)
+    IOPORT[HOPPER_SENSOR_PORT] |= HOPPER_SENSOR_MASK;
+  else
+    IOPORT[HOPPER_SENSOR_PORT] &= ~HOPPER_SENSOR_MASK;
+}
+
+static void PerHopperMotorWrite(u8 val) {
+  u8 motor;
+
+  if (!PerHopperEnabled())
+    return;
+
+  motor = (val & HOPPER_MOTOR_MASK) ? 1 : 0;
+
+  if (motor && !hopper_motor) {
+    /* Rising edge: power on, start pulsing from idle. */
+    hopper_motor = 1;
+    hopper_stopping = 0;
+    hopper_frame_count = 0;
+    PerHopperSetSensor(0);
+  } else if (!motor && hopper_motor) {
+    /* Falling edge: stop, but if we're mid-pulse let PerHopperExec()
+       finish toggling the line back down before it goes quiet. */
+    hopper_motor = 0;
+    if (hopper_status)
+      hopper_stopping = 1;
+    else
+      hopper_frame_count = 0;
+  }
+}
+
+void PerHopperExec(void) {
+  if (!PerHopperEnabled())
+    return;
+
+  if (!hopper_motor && !hopper_stopping)
+    return;
+
+  if (++hopper_frame_count < PerHopperFramesPerPulse())
+    return;
+
+  hopper_frame_count = 0;
+  PerHopperSetSensor(hopper_status ^ 1);
+
+  if (!hopper_motor && !hopper_status)
+    hopper_stopping = 0; /* trailing toggle done, fully idle now */
+}
 
 int IOPortAdd(int key, ioPort port, u8 index) {
   if (index >= 8) return -1;
@@ -214,7 +357,11 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
    addr = addr&0x1F;
    u8 val = 0x0;
    switch(addr) {
-     case 0x01: val = IOPORT[PORT_A]; break; // P1
+     case 0x01: // P1
+       val = IOPORT[PORT_A];
+       if (hopper_test_override && PerHopperEnabled())
+         val |= HOPPER_SENSOR_MASK; // force the sensor line active, like a held "Sensor Test" input
+       break;
      case 0x03: val = IOPORT[PORT_B]; break; // P2
      case 0x05: val = IOPORT[PORT_C]; break; // SYSTEM //Return press status like declared in stv.cpp
      case 0x07: val = m_system_output; break; // port D, read-backs value written
@@ -223,7 +370,8 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
      case 0x0d: //PORT-G
        if (m_ioga_mode & 0x80) // PORT-G in counter mode
        {
-         val = IOPORT[PORT_G0+((m_ioga_portg >> 1) & 3)] >> (((m_ioga_portg & 1) ^ 1) * 8);
+         u16 word = IOPORT_COUNTER[(m_ioga_portg >> 1) & 3];
+         val = (u8)(word >> (((m_ioga_portg & 1) ^ 1) * 8));
          m_ioga_portg = (m_ioga_portg & 0xf8) | ((m_ioga_portg + 1) & 7); // counter# is auto-incremented then read
        }
        else
@@ -248,6 +396,7 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
   {
     case 0x07:
       m_system_output = val;
+      PerHopperMotorWrite(val);
       break;
     case 0x09: IOPORT[PORT_F] = val;
                IOPORT[PORT_G] = val;
@@ -753,6 +902,142 @@ void PerCabP2Button6Pressed(PerCab_struct * pad) {
 
 void PerCabP2Button6Released(PerCab_struct * pad) {
    pad[PORT_F] |= (0x1 << 0x6);
+}
+
+/* PATOCAR/MICROMBC hopper cabinet inputs (patocar, skychal, supgoal,
+   techbowl, micrombc). Layout taken from MAME's sega/stv.cpp "patocar"
+   and "micrombc" input ports. */
+
+//////////////////////////////////////////////////////////////////////////////
+
+void PerCabPowerButtonPressed(PerCab_struct * pad) {
+   switch (yabsys.stvInputType) {
+      case MICROMBC:
+         pad[PORT_A] &= ~(0x1 << 0x5); break; // micrombc moves it to PORT-A bit 0x20
+      case PATOCAR:
+      default:
+         pad[PORT_C] &= ~(0x1 << 0x5); break; // PORT-C bit 0x20 on patocar/skychal/supgoal/techbowl
+   }
+}
+
+void PerCabPowerButtonReleased(PerCab_struct * pad) {
+   switch (yabsys.stvInputType) {
+      case MICROMBC:
+         pad[PORT_A] |= (0x1 << 0x5); break;
+      case PATOCAR:
+      default:
+         pad[PORT_C] |= (0x1 << 0x5); break;
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void PerCabMedalPressed(PerCab_struct * pad) {
+   pad[PORT_B] &= ~(0x1 << 0x5); // Coin3 / medal insert, PORT-B bit 0x20
+}
+
+void PerCabMedalReleased(PerCab_struct * pad) {
+   pad[PORT_B] |= (0x1 << 0x5);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* PORT-A bit 0 is wired active-high on these boards (idle = 0), unlike
+   the rest of the panel which idles high. MAME itself isn't sure what
+   this input does ("hopper ?" in its port list) but it shares the same
+   input port as the hopper sensor, so it's exposed here for parity. */
+void PerCabHopperBtn2Pressed(PerCab_struct * pad) {
+   pad[PORT_A] |= (0x1 << 0x0);
+}
+
+void PerCabHopperBtn2Released(PerCab_struct * pad) {
+   pad[PORT_A] &= ~(0x1 << 0x0);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* PORT-B bit 1 (door switch) is also active-high, idle = 0. */
+void PerCabDoorSwitchPressed(PerCab_struct * pad) {
+   pad[PORT_B] |= (0x1 << 0x1);
+}
+
+void PerCabDoorSwitchReleased(PerCab_struct * pad) {
+   pad[PORT_B] &= ~(0x1 << 0x1);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* PORT-B bits 0x0c move together as a single logical input: an unlabeled
+   "Button 5" on patocar/skychal/supgoal/techbowl, the "Magnet Sensor" on
+   micrombc. Same wiring, only the UI label differs (see libretro.c). */
+void PerCabMagnetBtn5Pressed(PerCab_struct * pad) {
+   pad[PORT_B] &= ~0x0c;
+}
+
+void PerCabMagnetBtn5Released(PerCab_struct * pad) {
+   pad[PORT_B] |= 0x0c;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Not a real cabinet input. Mirrors the "Sensor Test" service switch on
+   MAME's ticket_dispenser device: forces the hopper sensor line active
+   while held, regardless of motor state, so the wiring/counter can be
+   checked without having to actually run the hopper motor. */
+void PerCabHopperTestPressed(PerCab_struct * pad) {
+   (void)pad;
+   hopper_test_override = 1;
+}
+
+void PerCabHopperTestReleased(PerCab_struct * pad) {
+   (void)pad;
+   hopper_test_override = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Digital trackball nudge (patocar/skychal/supgoal/techbowl only - see
+   PerTrackballEnabled()). These just latch a held-direction flag; the
+   actual counter movement happens once per frame in PerTrackballExec(),
+   the same pattern used for the hopper motor/sensor above. */
+void PerCabTrackballUpPressed(PerCab_struct * pad) {
+   (void)pad;
+   trackball_up = 1;
+}
+
+void PerCabTrackballUpReleased(PerCab_struct * pad) {
+   (void)pad;
+   trackball_up = 0;
+}
+
+void PerCabTrackballDownPressed(PerCab_struct * pad) {
+   (void)pad;
+   trackball_down = 1;
+}
+
+void PerCabTrackballDownReleased(PerCab_struct * pad) {
+   (void)pad;
+   trackball_down = 0;
+}
+
+void PerCabTrackballLeftPressed(PerCab_struct * pad) {
+   (void)pad;
+   trackball_left = 1;
+}
+
+void PerCabTrackballLeftReleased(PerCab_struct * pad) {
+   (void)pad;
+   trackball_left = 0;
+}
+
+void PerCabTrackballRightPressed(PerCab_struct * pad) {
+   (void)pad;
+   trackball_right = 1;
+}
+
+void PerCabTrackballRightReleased(PerCab_struct * pad) {
+   (void)pad;
+   trackball_right = 0;
 }
 
 /* System Inputs*/
@@ -1415,6 +1700,24 @@ void PerPortReset(void)
           IOPORT[i] = 0xFF; //IOPORT are in pull up mode.
         for (i=0; i<256; i++)
           IOkeys[i] = NULL;
+
+        /* Hopper sensor line idles low (0), unlike the general pull-up
+           default above, so force it back down for games that have one.
+           PORT-A bit 0 (Button 2 / "hopper ?") and PORT-B bit 1 (door
+           switch) are likewise active-high/idle-low on these boards. */
+        hopper_motor = 0;
+        hopper_status = 0;
+        hopper_stopping = 0;
+        hopper_frame_count = 0;
+        hopper_test_override = 0;
+        if (PerHopperEnabled()) {
+          IOPORT[HOPPER_SENSOR_PORT] &= ~HOPPER_SENSOR_MASK;
+          IOPORT[PORT_A] &= ~0x01;
+          IOPORT[PORT_B] &= ~0x02;
+        }
+
+        IOPORT_COUNTER[0] = IOPORT_COUNTER[1] = IOPORT_COUNTER[2] = IOPORT_COUNTER[3] = 0;
+        trackball_up = trackball_down = trackball_left = trackball_right = 0;
 
 	perkeyconfigsize = 0;
         if (perkeyconfig)
