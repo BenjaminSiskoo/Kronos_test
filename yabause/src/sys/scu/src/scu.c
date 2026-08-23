@@ -1042,12 +1042,24 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
         } else {
           tmp = DMAMappedMemoryReadLong(dma->ReadAddress);
         }
+        /* Le compte de transfert s'exprime en OCTETS et rien n'oblige un
+         * jeu a le prendre multiple de 4 : le bloc de 98 octets de
+         * J.League en est un contre-exemple. Le decompte doit donc etre
+         * verifie apres CHAQUE mot, sinon le dernier tour ecrit deux
+         * octets au-dela de la zone visee -- dans le registre VDP2
+         * suivant, lorsque la destination est la zone des registres. */
         DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(tmp >> 16));
         dma->WriteAddress += dma->WriteAdd;
+        dma->TransferNumber -= 2;
+        if (dma->TransferNumber <= 0) {
+          if (MSH2->cacheOn == 0) SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
+          if (SSH2->cacheOn == 0) SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
+          return;
+        }
         DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)tmp);
         dma->WriteAddress += dma->WriteAdd;
         dma->ReadAddress += dma->ReadAdd;
-        dma->TransferNumber -= 4;
+        dma->TransferNumber -= 2;
         if (dma->TransferNumber <= 0) {
           if (MSH2->cacheOn == 0) SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
           if (SSH2->cacheOn == 0) SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
@@ -2782,13 +2794,20 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
        *   「許可ビットのセット and DMA起動ビットのセット」
        * soit les DEUX bits, pas seulement celui de demarrage.
        *
-       * Le test ne regardait que le bit 0. Une ecriture posant DxGO sans
+       * DxEN est REMANENT : il reste arme dans le registre entre deux
+       * transferts, alors que DxGO est une impulsion. Le declenchement
+       * est donc DxGO pose par CETTE ecriture, avec DxEN arme soit par
+       * la meme ecriture soit par une precedente ; exiger les deux bits
+       * dans le meme mot rendait muet tout jeu qui arme DxEN a l'init et
+       * se contente ensuite de pulser DxGO.
+       *
+       * Le test d'origine ne regardait que le bit 0. Une ecriture posant DxGO sans
        * DxEN lancait donc un transfert que le materiel ignore, avec les
        * valeurs presentes dans DxR/DxW/DxC. Or un compteur a zero vaut le
        * transfert MAXIMAL (manuel, 転送バイト数の'0'設定時の動作 : 1 Mo au
        * niveau 0), d'ou un transfert d'1 Mo depuis l'adresse 0 qui deborde
        * la VRAM VDP2 de 512 Ko. */
-      if ((val & 0x101) == 0x101 && ((ScuRegs->D0MD&0x7)==0x7) )
+      if ((val & 0x1) && (((val | ScuRegs->D0EN) & 0x100) != 0) && ((ScuRegs->D0MD&0x7)==0x7) )
          {
             if (ScuRegs->dma0.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma0, 0x7FFFFFFF);
@@ -2822,7 +2841,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          break;
       case 0x30:
       /* Meme regle qu'au niveau 0 : DxEN (bit 8) ET DxGO (bit 0). */
-      if ((val & 0x101) == 0x101 && ((ScuRegs->D1MD&0x07) == 0x7))
+      if ((val & 0x1) && (((val | ScuRegs->D1EN) & 0x100) != 0) && ((ScuRegs->D1MD&0x07) == 0x7))
          {
             if (ScuRegs->dma1.TransferNumber != 0) {
               ScuDmaProc(&ScuRegs->dma1, 0x7FFFFFFF);
@@ -2857,7 +2876,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          break;
       case 0x50:
       /* Meme regle qu'au niveau 0 : DxEN (bit 8) ET DxGO (bit 0). */
-      if ((val & 0x101) == 0x101 && ((ScuRegs->D2MD & 0x7) == 0x7))
+      if ((val & 0x1) && (((val | ScuRegs->D2EN) & 0x100) != 0) && ((ScuRegs->D2MD & 0x7) == 0x7))
          {
 
             if (ScuRegs->dma2.TransferNumber != 0) {
