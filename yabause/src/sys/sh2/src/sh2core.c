@@ -445,9 +445,13 @@ CACHE_LOG("%s reset\n", (context==SSH2)?"SSH2":"MSH2" );
 //////////////////////////////////////////////////////////////////////////////
 
 void SH2PowerOn(SH2_struct *context) {
-   u32 VBR = SH2Core->GetVBR(context);
-   SH2Core->SetPC(context, SH2MappedMemoryReadLong(context,VBR));
-   SH2Core->SetGPR(context, 15, SH2MappedMemoryReadLong(context,VBR+4));
+   /* A power-on fetches the reset vector from addresses 0 and 4, with VBR
+    * forced to zero - that is what the hardware does. Reading it at the
+    * current VBR only happens to work while VBR is still zero, which is not
+    * the case when a CPU that has already been running is restarted. */
+   SH2Core->SetVBR(context, 0x00000000);
+   SH2Core->SetPC(context, SH2MappedMemoryReadLong(context, 0x00000000));
+   SH2Core->SetGPR(context, 15, SH2MappedMemoryReadLong(context, 0x00000004));
    CACHE_LOG("%s start\n", (context==SSH2)?"SSH2":"MSH2" );
 }
 
