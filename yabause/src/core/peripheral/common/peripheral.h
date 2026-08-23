@@ -90,6 +90,18 @@ extern u16 FASTCALL IOPortReadWord(SH2_struct *context, UNUSED u8* memory, u32 a
 extern void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 addr, UNUSED u8 val);
 
 /**
+ * @brief Advance the medal/ticket hopper simulation by one frame.
+ *
+ * Games using the PATOCAR/MICROMBC extension I/O layout (patocar,
+ * skychal, supgoal, techbowl, micrombc) drive a hopper motor through
+ * PORT-D bit 0x80 and read a sensor pulse back on PORT-A bit 0x02.
+ * Call this once per emulated frame (e.g. on VBlankIN) so the sensor
+ * line keeps toggling for as long as the motor is running, mirroring
+ * real hopper behaviour. No-op for games that don't use a hopper.
+ */
+void PerHopperExec(void);
+
+/**
  * @brief Init a peripheral core
  *
  * Searches through the PERCoreList array for the given coreid.
@@ -375,6 +387,27 @@ void PerGunMove(PerGun_struct * gun, s32 dispx, s32 dispy);
 #define PERJAMMA_P2_BUTTON5 45
 #define PERJAMMA_P2_BUTTON6 46
 
+/* PATOCAR/MICROMBC hopper cabinets (patocar, skychal, supgoal, techbowl,
+   micrombc): controls specific to their extension I/O layout. See the
+   comment above PerHopperExec()'s state block in peripheral.c and MAME's
+   sega/stv.cpp "patocar"/"micrombc" input ports for the reference wiring. */
+#define PERJAMMA_POWER_BUTTON 47 /* PORT-C bit 0x20 (patocar family) / PORT-A bit 0x20 (micrombc) */
+#define PERJAMMA_MEDAL        48 /* PORT-B bit 0x20, Coin3 - medal insert slot */
+#define PERJAMMA_HOPPER_BTN2  49 /* PORT-A bit 0x01, active-high, MAME labels this "hopper ?" */
+#define PERJAMMA_DOOR_SWITCH  50 /* PORT-B bit 0x02, active-high */
+#define PERJAMMA_MAGNET_BTN5  51 /* PORT-B bits 0x0c, "Button 5" on patocar family / "Magnet Sensor" on micrombc */
+#define PERJAMMA_HOPPER_TEST  52 /* Not a real cabinet input: hold to force the hopper sensor line active, mirrors MAME's hopper "Sensor Test" service input */
+
+/* patocar/skychal/supgoal/techbowl only (NOT micrombc, which explicitly
+   has no trackball - see MAME's micrombc PORTG.0/.1 override). Digital
+   nudge fallback for the analog trackball (PORT-G counter registers 0/1),
+   mirroring MAME's own PORT_KEYDELTA(100) digital-input fallback for the
+   same control. See PerTrackballExec() in peripheral.c. */
+#define PERJAMMA_TRACKBALL_UP    53
+#define PERJAMMA_TRACKBALL_DOWN  54
+#define PERJAMMA_TRACKBALL_LEFT  55
+#define PERJAMMA_TRACKBALL_RIGHT 56
+
 typedef u8 PerCab_struct;
 
 PerCab_struct * PerCabAdd(PortData_struct * port);
@@ -462,6 +495,47 @@ void PerCabP2Button5Released(PerCab_struct * pad);
 
 void PerCabP2Button6Pressed(PerCab_struct * pad);
 void PerCabP2Button6Released(PerCab_struct * pad);
+
+/* PATOCAR/MICROMBC hopper cabinet controls, see PERJAMMA_* defines above. */
+void PerCabPowerButtonPressed(PerCab_struct * pad);
+void PerCabPowerButtonReleased(PerCab_struct * pad);
+
+void PerCabMedalPressed(PerCab_struct * pad);
+void PerCabMedalReleased(PerCab_struct * pad);
+
+void PerCabHopperBtn2Pressed(PerCab_struct * pad);
+void PerCabHopperBtn2Released(PerCab_struct * pad);
+
+void PerCabDoorSwitchPressed(PerCab_struct * pad);
+void PerCabDoorSwitchReleased(PerCab_struct * pad);
+
+void PerCabMagnetBtn5Pressed(PerCab_struct * pad);
+void PerCabMagnetBtn5Released(PerCab_struct * pad);
+
+/* Not a real cabinet input: manual hopper sensor override for testing. */
+void PerCabHopperTestPressed(PerCab_struct * pad);
+void PerCabHopperTestReleased(PerCab_struct * pad);
+
+/* Digital trackball nudge, patocar/skychal/supgoal/techbowl only. */
+void PerCabTrackballUpPressed(PerCab_struct * pad);
+void PerCabTrackballUpReleased(PerCab_struct * pad);
+void PerCabTrackballDownPressed(PerCab_struct * pad);
+void PerCabTrackballDownReleased(PerCab_struct * pad);
+void PerCabTrackballLeftPressed(PerCab_struct * pad);
+void PerCabTrackballLeftReleased(PerCab_struct * pad);
+void PerCabTrackballRightPressed(PerCab_struct * pad);
+void PerCabTrackballRightReleased(PerCab_struct * pad);
+
+/**
+ * @brief Advance the digital trackball nudge by one frame.
+ *
+ * Adds/subtracts a fixed step to the PORT-G0 (X) / PORT-G1 (Y) 16-bit
+ * counter registers for each direction currently held, wrapping like the
+ * real free-running quadrature counter these emulate. No-op unless the
+ * loaded game is patocar/skychal/supgoal/techbowl. Call once per frame,
+ * alongside PerHopperExec().
+ */
+void PerTrackballExec(void);
 
 /** @} */
 
