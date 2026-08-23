@@ -658,19 +658,24 @@ void MappedMemoryInit()
                                 &UnhandledMemoryWriteWord,
                                 &UnhandledMemoryWriteLong,
                                 &VoidMem);
+   /* MINIT / SINIT : l'input capture du FRT de l'autre CPU est declenchee par
+      n'importe quelle ecriture dans la fenetre, quelle que soit sa taille.
+      Seul le handler "word" etait cable ; une ecriture octet ou long partait
+      dans UnhandledMemoryWrite* et etait perdue, laissant l'autre CPU sur son
+      attente de FTCSR.ICF. */
    FillMemoryArea(0x100, 0x17F, &UnhandledMemoryReadByte,
                                 &UnhandledMemoryReadWord,
                                 &UnhandledMemoryReadLong,
-                                &UnhandledMemoryWriteByte,
+                                &SSH2InputCaptureWriteByte,
                                 &SSH2InputCaptureWriteWord,
-                                &UnhandledMemoryWriteLong,
+                                &SSH2InputCaptureWriteLong,
                                 &VoidMem);
    FillMemoryArea(0x180, 0x1FF, &UnhandledMemoryReadByte,
                                 &UnhandledMemoryReadWord,
                                 &UnhandledMemoryReadLong,
-                                &UnhandledMemoryWriteByte,
+                                &MSH2InputCaptureWriteByte,
                                 &MSH2InputCaptureWriteWord,
-                                &UnhandledMemoryWriteLong,
+                                &MSH2InputCaptureWriteLong,
                                 &VoidMem);
    FillMemoryArea(0x200, 0x3FF, CartridgeArea->Cs0ReadByte,
                                 CartridgeArea->Cs0ReadWord,
