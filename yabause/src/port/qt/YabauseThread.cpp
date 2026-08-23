@@ -40,7 +40,6 @@ YabauseThread::YabauseThread( QObject* o )
 	showFPS = false;
 	mIsCdIn = false;
 	mIsCDDirty = false;
-	emit initDone();
 }
 
 YabauseThread::~YabauseThread()
