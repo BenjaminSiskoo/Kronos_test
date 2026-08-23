@@ -1208,7 +1208,44 @@ static void setupVdp1Concurrency(scudmainfo_struct * dma) {
   }
 }
 
+
+/* ST-210 / TECH#10 enumerent ce que le SCU-DMA sait atteindre : la seule Work
+ * RAM utilisable est la Work RAM-H (No. 04 : "The only WORKRAM that the
+ * SCU-DMA can use is WORKRAM-H"), l'ecriture vers l'A-Bus est interdite
+ * (No. 01), la lecture de la zone VDP2 aussi (No. 02), et les acces aux zones
+ * inutilisees sont prohibes avec un resultat non garanti (No. 06). La Boot ROM
+ * (0000000H-00FFFFFH) n'y figure jamais comme source valide : elle pend sur le
+ * bus du SH2, pas sur un bus que le SCU sache adresser.
+ *
+ * Ici la source etait resolue vers l'image du BIOS et recopiee fidelement. Un
+ * jeu qui arme par erreur un transfert depuis l'adresse 0 detruisait donc sa
+ * cible alors que la console ne lui transfere rien. Deep Fear tombe exactement
+ * la-dedans : 8 octets depuis 00000000H vers 25C00000H ecrasaient CMDCTRL de
+ * la premiere table de commandes VDP1 avec les deux premiers vecteurs du BIOS,
+ * le VDP1 sautait par-dessus toute la liste et la video n'etait pas dessinee.
+ *
+ * -DSCU_DMA_BLOCK_BIOS_SOURCE=0 retablit l'ancien comportement. */
+#ifndef SCU_DMA_BLOCK_BIOS_SOURCE
+# define SCU_DMA_BLOCK_BIOS_SOURCE 1
+#endif
+
+static int ScuDmaSourceUnreachable(scudmainfo_struct *dma)
+{
+#if SCU_DMA_BLOCK_BIOS_SOURCE
+   return ((dma->ReadAddress & 0x0FFFFFFF) < 0x00100000);
+#else
+   (void)dma;
+   return 0;
+#endif
+}
+
 static void ScuDmaProc(scudmainfo_struct * dma, int time) {
+  if (ScuDmaSourceUnreachable(dma)) {
+    /* Transfert abandonne sans rien ecrire, comme si le SCU n'avait rien
+       ramene du bus. */
+    dma->TransferNumber = 0;
+    return;
+  }
   ScuDmaCheck(dma, time);
   setupBusConcurrency(dma);
   setupVdp1Concurrency(dma);
