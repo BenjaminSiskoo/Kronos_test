@@ -52,6 +52,7 @@ set( kronos_qt_FORMS
 	ui/UIPortManager.ui
 	ui/UIPadSetting.ui
 	ui/UISTVSetting.ui
+	ui/UIPatocarSetting.ui
 	ui/UI3DControlPadSetting.ui
     ui/UIWheelSetting.ui
     ui/UIMissionStickSetting.ui
@@ -90,6 +91,7 @@ set( kronos_qt_MOC_HEADERS
 	ui/UIControllerSetting.h
 	ui/UIPadSetting.h
         ui/UISTVSetting.h
+	ui/UIPatocarSetting.h
 	ui/UI3DControlPadSetting.h
     ui/UIWheelSetting.h
     ui/UIMissionStickSetting.h
@@ -136,6 +138,7 @@ set( kronos_qt_SOURCES
 	ui/UIControllerSetting.cpp
 	ui/UIPadSetting.cpp
         ui/UISTVSetting.cpp
+	ui/UIPatocarSetting.cpp
 	ui/UI3DControlPadSetting.cpp
     ui/UIWheelSetting.cpp
     ui/UIMissionStickSetting.cpp
