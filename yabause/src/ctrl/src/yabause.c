@@ -589,6 +589,16 @@ static int YabauseRefreshInit(yabauseinit_struct *init) {
      return -1;
   }
 
+  // Release whatever cartridge/STV state is currently loaded *before*
+  // recreating it. Order matters: STVDeInit() still needs CartridgeArea
+  // (it reads CartridgeArea->carttype) so it must run before CartDeInit()
+  // frees/NULLs that struct. Without this, switching STV games leaked the
+  // previous ~48MB cart ROM buffer and left the previous game's eeprom
+  // file handle open, which is what caused the intermittent "stuck on the
+  // first game" behavior when picking a new STV game at runtime.
+  STVDeInit();
+  CartDeInit();
+
   if (init->auto_cart != 0)
      DBLookup(&init->carttype, &init->cartpath, init->supportdir);
 
