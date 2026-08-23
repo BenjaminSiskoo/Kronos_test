@@ -58,6 +58,17 @@ void YabauseThread::initEmulation()
 		reloadSettings();
 		mInit = YabauseInit( &mYabauseConf );
 		SetOSDToggle(showFPS);
+		if ( mInit >= 0 )
+			// reloadSettings() (via reloadControllers()) already wired the
+			// saved bindings once, but that happened *before* YabauseInit()
+			// actually loaded/identified the cartridge - for ST-V, that
+			// means before yabsys.stvInputType was known (STV/STV6B vs.
+			// PATOCAR/MICROMBC), which several hopper-cabinet key handlers
+			// (Power Button, Hopper Sensor Test, etc.) branch on. Re-run it
+			// now that the game is identified, so bindings are correct from
+			// the very first frame instead of only after the player opens
+			// Settings once and it gets rewired as a side effect.
+			reloadControllers();
 	}
 }
 
