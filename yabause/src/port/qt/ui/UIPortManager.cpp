@@ -20,6 +20,7 @@
 #include "UIPortManager.h"
 #include "UIPadSetting.h"
 #include "UISTVSetting.h"
+#include "UIPatocarSetting.h"
 #include "UI3DControlPadSetting.h"
 #include "UIWheelSetting.h"
 #include "UIMissionStickSetting.h"
@@ -28,6 +29,7 @@
 #include "UIMouseSetting.h"
 #include "../CommonDialogs.h"
 #include "../Settings.h"
+#include "stv.h"
 
 #include <QDebug>
 
@@ -39,6 +41,7 @@ buttonid = key & 0xFFFF;
 
 const QString UIPortManager::mSettingsKey = "Input/Port/%1/Id/%2/Controller/%3/Key/%4";
 const QString UIPortManager::mSettingsType = "Input/Port/%1/Id/%2/Type";
+const QString UIPortManager::mSettingsHopperUI = "Input/Port/%1/Id/%2/HopperCabinetUI";
 
 UIPortManager::UIPortManager( QWidget* parent )
 	: QGroupBox( parent )
@@ -59,6 +62,7 @@ UIPortManager::UIPortManager( QWidget* parent )
       //cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD );
 		cb->addItem( QtYabause::translate( "Mouse" ), PERMOUSE );
                 cb->addItem( QtYabause::translate( "ST-V Cabinet" ), PERCABINET );
+                cb->addItem( QtYabause::translate( "Hopper Cabinet" ), PERCABINET_HOPPER ); // same peripheral as ST-V Cabinet, opens patocar/skychal/supgoal/techbowl/micrombc's dedicated dialog directly
 
 		connect( cb, SIGNAL( currentIndexChanged( int ) ), this, SLOT( cbTypeController_currentIndexChanged( int ) ) );
 	}
@@ -136,6 +140,11 @@ void UIPortManager::loadSettings()
 	foreach ( const QString& id, ids )
 	{
 		uint type = settings->value( QString( mSettingsType ).arg( mPort ).arg( id ) ).toUInt();
+		// mSettingsType always holds the real PERCABINET value (see
+		// cbTypeController_currentIndexChanged) - mSettingsHopperUI is
+		// what tells us whether "Hopper Cabinet" was the one picked.
+		if ( type == PERCABINET && settings->value( QString( mSettingsHopperUI ).arg( mPort ).arg( id ), false ).toBool() )
+			type = PERCABINET_HOPPER;
 		QComboBox* cb = findChild<QComboBox*>( QString( "cbTypeController%1" ).arg( id ) );
 		cb->setCurrentIndex( cb->findData( type ) );
 	}
@@ -157,6 +166,7 @@ void UIPortManager::cbTypeController_currentIndexChanged( int id )
 		case PER3DPAD:
 		case PERMOUSE:
 		case PERCABINET:
+		case PERCABINET_HOPPER:
 			buttons.at( 0 )->setEnabled( true );
 			buttons.at( 1 )->setEnabled( true );
 			buttons.at( 2 )->setEnabled( true );
@@ -179,7 +189,14 @@ void UIPortManager::cbTypeController_currentIndexChanged( int id )
 	}
 
 	Settings* settings = QtYabause::settings();
-	settings->setValue( QString( mSettingsType ).arg( mPort ).arg( controllerId ), type );
+	// PERCABINET_HOPPER is UI-only sugar for "same cabinet peripheral, open
+	// the hopper dialog". YabauseThread.cpp reads this Type value directly
+	// with a switch() over real peripheral.h constants at emulation start,
+	// so always persist the real PERCABINET there; the dropdown choice
+	// itself is remembered separately via mSettingsHopperUI.
+	const bool isHopperUI = ( type == PERCABINET_HOPPER );
+	settings->setValue( QString( mSettingsType ).arg( mPort ).arg( controllerId ), isHopperUI ? (uint)PERCABINET : type );
+	settings->setValue( QString( mSettingsHopperUI ).arg( mPort ).arg( controllerId ), isHopperUI );
 }
 
 void UIPortManager::tbSetJoystick_clicked()
@@ -213,6 +230,7 @@ void UIPortManager::tbSetJoystick_clicked()
 			break;
 		}
 		case PERCABINET:
+		case PERCABINET_HOPPER:
 		{
 			QMap<uint, PerCab_struct*>& padsbits = *QtYabause::portIOBits( );
 
@@ -231,8 +249,26 @@ void UIPortManager::tbSetJoystick_clicked()
 				padsbits[ controllerId ] = padBits;
 			}
 
-			UISTVSetting ups( mCore, mPort, controllerId, type, this );
-			ups.exec();
+			// Key bindings are stored/looked up under the real PERCABINET
+			// value (see cbTypeController_currentIndexChanged and
+			// YabauseThread.cpp), never under the PERCABINET_HOPPER
+			// sentinel - so always hand the dialogs the real type.
+			if ( type == PERCABINET_HOPPER || yabsys.stvInputType == PATOCAR || yabsys.stvInputType == MICROMBC )
+			{
+				// "Hopper Cabinet" was picked explicitly, or a hopper game
+				// (patocar/skychal/supgoal/techbowl/micrombc) is loaded:
+				// they have a completely different control panel (hopper
+				// motor, medal slot, power/door switches...) from the
+				// generic STV/STV6B JAMMA layout, so they get their own
+				// dialog rather than the generic ST-V Cabinet one.
+				UIPatocarSetting ups( mCore, mPort, controllerId, PERCABINET, this );
+				ups.exec();
+			}
+			else
+			{
+				UISTVSetting ups( mCore, mPort, controllerId, PERCABINET, this );
+				ups.exec();
+			}
 			break;
 		}
       case PERWHEEL:
