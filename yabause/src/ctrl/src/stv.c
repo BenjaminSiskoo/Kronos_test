@@ -16,6 +16,7 @@
 
 #include "stv.h"
 #include "cs0.h"
+#include "decrypt.h"
 #include "junzip.h"
 #include "yabause.h"
 #include "eeprom.h"
@@ -105,6 +106,11 @@ void sanjeon_init(void) {
   {
     T1WriteByte(CartridgeArea->rom, x, bitswap8(T1ReadByte(CartridgeArea->rom, x)^0xff,vec1));
   }
+}
+
+void init_decathlt(void) {
+  decathleteProtEnabled = 1;
+  decathlt5838Reset();
 }
 
 
@@ -414,7 +420,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP | STV_REGION_US | STV_REGION_EU | STV_REGION_TW,
     0,
     0,
-    NULL,
+    init_decathlt,
     NULL,
     {
         HEADER_BLOB,    "epr18967a.13", 0x0000001, 0x0100000, 0xac59c186,
@@ -436,7 +442,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP | STV_REGION_US | STV_REGION_EU | STV_REGION_TW,
     0,
     0,
-    NULL,
+    init_decathlt,
     NULL,
     {
         HEADER_BLOB,    "epr18967.13", 0x0000001, 0x0100000, 0xc0446674,
