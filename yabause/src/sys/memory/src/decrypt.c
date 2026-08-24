@@ -6,7 +6,9 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include "memory.h"
+#include "cs0.h"
 
 typedef struct sbox_s {
   u8 table[64];
@@ -815,4 +817,225 @@ u16 cryptoDecrypt()
 		buffer_pos += 2;
 	}
 	return (base[0] << 8) | base[1];
+}
+
+/*============================================================================
+ * 315-5838 / 317-0229 compression+encryption device (Decathlete).
+ * Ported verbatim from MAME's 315-5838_317-0229_comp.cpp where the algorithm
+ * itself is concerned (decipher() bit-shuffle, Huffman-style tree walk).
+ * The tree and dictionary are NOT hardcoded here either - the game uploads
+ * them itself at boot via decathlt5838WriteTableData(), exactly like on
+ * real hardware / in MAME.
+ *============================================================================*/
+
+typedef struct {
+  u8  len;      /* in bits */
+  u8  idx;      /* in the dictionary */
+  u16 pattern;  /* of the first node */
+} decathlt5838TreeNode;
+
+static struct {
+  u32 srcoffset;
+  u32 srcstart;
+  int abort_;
+  u8  bank;       /* 0, 1 or 2 - selects which 8MB window of cart ROM the
+                     source address/reads are relative to (see decathlt_
+                     prot_srcaddr_w / m_protbankval in MAME) */
+
+  u16 mode;
+  decathlt5838TreeNode tree[13];
+  int it2;
+  u8  dictionary[256];
+  int id;
+
+  int num_bits_compressed;
+  u16 val_compressed;
+  int num_bits;
+  u16 val;
+} d5838;
+
+/* Called on EVERY write into the 24MB decathlete protection window
+ * (regardless of which sub-register), mirroring how MAME recomputes
+ * m_protbankval unconditionally in decathlt_prot_srcaddr_w before
+ * dispatching to the specific register handler. addr here is the
+ * CS0-relative address (0-0x1FFFFFF), same convention as cs0.c. */
+void decathlt5838SetBank(u32 addr)
+{
+  d5838.bank = (u8)((addr >> 23) & 0x3);
+}
+
+void decathlt5838Reset(void)
+{
+  d5838.srcoffset = 0;
+  d5838.srcstart = 0;
+  d5838.abort_ = 0;
+  d5838.bank = 0;
+  d5838.mode = 0;
+  d5838.it2 = 0;
+  d5838.id = 0;
+  d5838.num_bits_compressed = 0;
+  d5838.val_compressed = 0;
+  d5838.num_bits = 0;
+  d5838.val = 0;
+  memset(d5838.tree, 0, sizeof(d5838.tree));
+  memset(d5838.dictionary, 0, sizeof(d5838.dictionary));
+}
+
+/* Fixed bit-permutation network, identical on every 315-5838/317-0229 chip
+ * regardless of game - not a per-game key, so ported as-is. */
+static u16 decathlt5838Decipher(u16 c)
+{
+  u16 p = 0;
+  u16 x[16];
+  int b;
+
+  for (b = 0; b < 16; ++b)
+    x[b] = (c >> b) & 1;
+
+  p |= (x[7] ^ x[9] ^ x[14] ? 0 : x[5] ^ x[12]) ^ x[14];
+  p |= (((x[7] ^ x[9])&(x[12] ^ x[14] ^ x[5])) ^ x[14] ^ 1) << 1;
+  p |= ((x[6] & x[8]) ^ (x[6] & x[15]) ^ (x[8] & x[15]) ^ 1) << 2;
+  p |= (x[11] ^ x[14] ^ 1) << 3;
+  p |= ((x[7] & (x[1] ^ x[8] ^ x[12])) ^ x[12]) << 4;
+  p |= ((x[6] | x[8]) ^ (x[8] & x[15])) << 5;
+  p |= (x[4] ^ (x[3] | x[10])) << 6;
+  p |= ((x[14] & (x[5] ^ x[12])) ^ x[7] ^ x[9] ^ 1) << 7;
+  p |= (x[4] ^ x[13] ^ 1) << 8;
+  p |= (x[6] ^ (x[8] | (x[15] ^ 1))) << 9;
+  p |= (x[7] ^ (x[12] | (x[1] ^ x[8] ^ x[7] ^ 1))) << 10;
+  p |= (x[3] ^ x[10] ^ 1) << 11;
+  p |= (x[0] ^ x[2]) << 12;
+  p |= (x[8] ^ x[1] ? x[12] : x[7]) << 13;
+  p |= (x[0] ^ x[11] ^ x[14] ^ 1) << 14;
+  p |= (x[10] ^ 1) << 15;
+
+  return p;
+}
+
+/* Reads the next compressed word straight from cartridge ROM.
+ * NOTE: unlike MAME's source_word_r() (which XORs the byte offset with 2 to
+ * compensate for a MAME-internal ROM region addressing quirk), Kronos'
+ * T1ReadWord() already returns the correctly byte-swapped 16-bit word for
+ * CartridgeArea->rom, the same accessor every other (working) tile/sprite
+ * fetch in this codebase relies on - so no extra swizzle is applied here. */
+static u16 decathlt5838SourceWordRead(void)
+{
+  u32 base = (u32)d5838.bank * 0x800000;
+  u16 tempdata = T1ReadWord(CartridgeArea->rom, (base + d5838.srcoffset * 2) & 0x1FFFFFF);
+
+  d5838.srcoffset++;
+  d5838.srcoffset &= 0x007FFFFF;
+
+  if (d5838.srcoffset == d5838.srcstart) /* wrapped around: something's wrong, bail */
+    d5838.abort_ = 1;
+
+  return tempdata;
+}
+
+static u8 decathlt5838GetDecompressedByte(void)
+{
+  for (;;)
+  {
+    int i;
+
+    if (d5838.abort_)
+      return 0xFF;
+
+    if (d5838.num_bits_compressed == 0)
+    {
+      d5838.val_compressed = decathlt5838Decipher(decathlt5838SourceWordRead());
+      d5838.num_bits_compressed = 16;
+    }
+
+    d5838.num_bits_compressed--;
+    d5838.val <<= 1;
+    d5838.val |= 1 & (d5838.val_compressed >> d5838.num_bits_compressed);
+    d5838.num_bits++;
+
+    for (i = 0; i < 12; i++)
+    {
+      int j;
+
+      if (d5838.num_bits != d5838.tree[i].len) continue;
+      if (d5838.val < (d5838.tree[i].pattern >> (12 - d5838.num_bits))) continue;
+      if ((d5838.num_bits < 12) &&
+          (d5838.val >= (d5838.tree[i + 1].pattern >> (12 - d5838.num_bits))))
+        continue;
+
+      j = d5838.tree[i].idx + d5838.val - (d5838.tree[i].pattern >> (12 - d5838.num_bits));
+
+      d5838.val = 0;
+      d5838.num_bits = 0;
+
+      return d5838.dictionary[j];
+    }
+  }
+}
+
+u16 decathlt5838DataRead(void)
+{
+  u8 b0 = decathlt5838GetDecompressedByte();
+  u8 b1 = decathlt5838GetDecompressedByte();
+  return (b0 << 8) | b1;
+}
+
+/* srcaddr_w equivalent. mem_mask mirrors MAME's COMBINE_DATA: 0xFFFFFFFF for
+ * a full 32-bit write, 0xFFFF0000/0x0000FFFF for a 16-bit write to the
+ * upper/lower half only - the untouched half is preserved. */
+void decathlt5838SetSrcAddr(u32 val, u32 mem_mask)
+{
+  d5838.srcoffset = (d5838.srcoffset & ~mem_mask) | (val & mem_mask);
+  d5838.srcoffset &= 0x007FFFFF;
+  d5838.srcstart = d5838.srcoffset;
+  d5838.abort_ = 0;
+
+  d5838.num_bits_compressed = 0;
+  d5838.val_compressed = 0;
+  d5838.num_bits = 0;
+  d5838.val = 0;
+}
+
+/* Upper 16 bits of the 32-bit data register (byte offset 0x7FFFF4/5 within
+ * a bank window). Rarely written: switches between "upload tree" (mode bit
+ * 0x80 clear) and "upload dictionary" (mode bit 0x80 set), and resets the
+ * corresponding cursor. Must NOT be called again between data writes or
+ * the cursor gets reset and the upload never completes. */
+void decathlt5838SetTableUploadMode(u16 val)
+{
+  d5838.mode = val;
+  if (!(d5838.mode & 0x80))
+    d5838.it2 = 0;
+  else
+    d5838.id = 0;
+}
+
+/* Lower 16 bits of the 32-bit data register (byte offset 0x7FFFF6/7 within
+ * a bank window). Written repeatedly, once per payload word, without
+ * resetting anything - the cursor auto-increments. */
+void decathlt5838UploadTableData(u16 val)
+{
+  if (!(d5838.mode & 0x80))
+  {
+    if (d5838.it2 / 2 < 12)
+    {
+      if ((d5838.it2 & 1) == 0)
+      {
+        d5838.tree[d5838.it2 / 2].len = (u8)((0xFF00 & val) >> 8);
+        d5838.tree[d5838.it2 / 2].idx = (u8)(0x00FF & val);
+      }
+      else
+      {
+        d5838.tree[d5838.it2 / 2].pattern = val;
+      }
+      d5838.it2++;
+    }
+  }
+  else
+  {
+    if (d5838.id < 255)
+    {
+      d5838.dictionary[d5838.id++] = (u8)((0xFF00 & val) >> 8);
+      d5838.dictionary[d5838.id++] = (u8)(0x00FF & val);
+    }
+  }
 }
