@@ -41,6 +41,12 @@ static u16 protRegLowAddr = 0;
 static u16 protRegHighAddr = 0;
 static u16 protRegSubkey = 0;
 
+/* Set by init_decathlt() (stv.c) for the handful of carts using the
+ * 315-5838/317-0229 compression chip (Decathlete, Name Club, Print Club
+ * Love Love...). Left off for every other ROMSTV game so the normal CS0
+ * ROM read/write path below is completely unaffected. */
+u8 decathleteProtEnabled = 0;
+
 #define LOGSTV
 #define LOGBUP
 
@@ -1207,6 +1213,17 @@ static void FASTCALL ROM16MBITCs0WriteLong(SH2_struct *context, UNUSED u8* memor
 // 256 Mbit ST-V Rom
 //////////////////////////////////////////////////////////////////////////////
 
+/* 315-5838/317-0229 (Decathlete) register window: within any of the 3
+ * bank-switched 8MB regions of CS0 (bank = (addr>>23) & 0x3, matching
+ * MAME's m_protbankval), the last 16 bytes are special:
+ *   ...FFFF0  srcaddr_w  (compressed data source address)
+ *   ...FFFF4  data_w     (upper half = mode select, lower half = table/
+ *                          dictionary payload)
+ *   ...FFFF8  data_r     (streamed decompressed output)
+ * Everything else in CS0 is unaffected and falls through to normal ROM
+ * access, exactly like before this device existed. */
+#define DECATHLT_REG_OFFSET(addr) ((addr) & 0x7FFFFF)
+
 static u8 FASTCALL ROMSTVCs0ReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
    return T1ReadByte(CartridgeArea->rom, addr & 0x1FFFFFF);
@@ -1216,6 +1233,10 @@ static u8 FASTCALL ROMSTVCs0ReadByte(SH2_struct *context, UNUSED u8* memory, u32
 
 static u16 FASTCALL ROMSTVCs0ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
+   if (decathleteProtEnabled && DECATHLT_REG_OFFSET(addr) == 0x7FFFF8)
+   {
+      return decathlt5838DataRead();
+   }
    u16 ret = T1ReadWord(CartridgeArea->rom, addr & 0x1FFFFFF);
    return ret;
 }
@@ -1224,6 +1245,12 @@ static u16 FASTCALL ROMSTVCs0ReadWord(SH2_struct *context, UNUSED u8* memory, u3
 
 static u32 FASTCALL ROMSTVCs0ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
+   if (decathleteProtEnabled && DECATHLT_REG_OFFSET(addr) == 0x7FFFF8)
+   {
+      u16 hi = decathlt5838DataRead();
+      u16 lo = decathlt5838DataRead();
+      return ((u32)hi << 16) | lo;
+   }
    u32 ret = T1ReadLong(CartridgeArea->rom, addr & 0x1FFFFFF);
    return ret;
 }
@@ -1239,6 +1266,15 @@ static void FASTCALL ROMSTVCs0WriteByte(SH2_struct *context, UNUSED u8* memory, 
 
 static void FASTCALL ROMSTVCs0WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
 {
+   if (decathleteProtEnabled)
+   {
+      u32 offs = DECATHLT_REG_OFFSET(addr);
+      decathlt5838SetBank(addr);
+      if (offs == 0x7FFFF0) { decathlt5838SetSrcAddr((u32)val << 16, 0xFFFF0000); return; }
+      if (offs == 0x7FFFF2) { decathlt5838SetSrcAddr((u32)val,       0x0000FFFF); return; }
+      if (offs == 0x7FFFF4) { decathlt5838SetTableUploadMode(val); return; }
+      if (offs == 0x7FFFF6) { decathlt5838UploadTableData(val); return; }
+   }
    T1WriteWord(CartridgeArea->rom, addr & 0x1FFFFFF, val);
 }
 
@@ -1246,6 +1282,18 @@ static void FASTCALL ROMSTVCs0WriteWord(SH2_struct *context, UNUSED u8* memory, 
 
 static void FASTCALL ROMSTVCs0WriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
 {
+   if (decathleteProtEnabled)
+   {
+      u32 offs = DECATHLT_REG_OFFSET(addr);
+      decathlt5838SetBank(addr);
+      if (offs == 0x7FFFF0) { decathlt5838SetSrcAddr(val, 0xFFFFFFFF); return; }
+      if (offs == 0x7FFFF4)
+      {
+         decathlt5838SetTableUploadMode((u16)(val >> 16));
+         decathlt5838UploadTableData((u16)(val & 0xFFFF));
+         return;
+      }
+   }
    T1WriteLong(CartridgeArea->rom, addr & 0x1FFFFFF, val);
 }
 
