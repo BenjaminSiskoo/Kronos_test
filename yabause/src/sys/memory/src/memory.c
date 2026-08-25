@@ -822,7 +822,9 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
       {
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
-         return CacheReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
+           return context->cacheOn
+                   ? CacheReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
+                   : ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x2:
          return 0xFF;
@@ -879,7 +881,9 @@ u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
       case 0x4:
       if (context->cacheOn) SH2UpdateABusAccess(context, 0);
       else SH2UpdateABusAccess(context, 1);
-           return CacheReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
+           return context->cacheOn
+                   ? CacheReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
+                   : ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       case 0x2:
       case 0x5:
          return 0xFFFF;
@@ -936,7 +940,9 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
       {
         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
         else SH2UpdateABusAccess(context, 1);
-         return CacheReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
+           return context->cacheOn
+                   ? CacheReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
+                   : ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x2:
       case 0x5:
@@ -1003,7 +1009,10 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
         CACHE_LOG("wb %x %x\n", addr, addr >> 29);
         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
         else SH2UpdateABusAccess(context, 1);
-         CacheWriteByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         if (context->cacheOn)
+            CacheWriteByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         else
+            WriteByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          return;
       }
 
@@ -1073,7 +1082,10 @@ CACHE_LOG("ww %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
-         CacheWriteWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         if (context->cacheOn)
+            CacheWriteWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         else
+            WriteWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          return;
       }
 
@@ -1144,7 +1156,10 @@ CACHE_LOG("wl %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
-         CacheWriteLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         if (context->cacheOn)
+            CacheWriteLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
+         else
+            WriteLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          return;
       }
       case 0x2:
