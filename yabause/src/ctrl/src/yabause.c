@@ -1136,7 +1136,14 @@ void YabauseSetVideoFormat(int type) {
 #endif
    yabsys.OneFrameTime =
       type ? (yabsys.tickfreq / 50) : (yabsys.tickfreq * 1001 / 60000);
-   Vdp2Regs->TVSTAT = Vdp2Regs->TVSTAT | (type & 0x1);
+   /* TVSTAT bit 0 (PAL) is how a game learns which video standard it is
+      running on. An OR can only ever set it: once the bit is 1 it stays 1,
+      and VIDEOFORMATTYPE_NTSC is 0, so the NTSC branch of every caller ORs
+      nothing and cannot undo it. Vdp2Reset() then preserves the bit
+      deliberately (TVSTAT &= 0x1), so a single PAL pass pins the flag for
+      the rest of the session and an NTSC disc keeps reporting PAL.
+      Assign the bit instead of OR-ing it. */
+   Vdp2Regs->TVSTAT = (Vdp2Regs->TVSTAT & ~0x1) | (type & 0x1);
    ScspChangeVideoFormat(type);
    YabauseChangeTiming(yabsys.CurSH2FreqType);
 }
