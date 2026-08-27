@@ -562,20 +562,36 @@ typedef struct
    void(*updateInterruptReturnHandling)(SH2_struct *context);
 } SH2Interface_struct;
 
-static INLINE int SH2HandleBreakpoints(SH2_struct *context)
+/* Match a code breakpoint against an explicit address rather than
+   context->regs.PC. A delay-slot instruction is fetched and executed from
+   inside the branch opcode handler (see SH2delay), so regs.PC still holds
+   the branch address while the slot runs, and the plain PC comparison can
+   never match a breakpoint placed on a delay slot.
+
+   The silence is the problem: the SH2 idiom for a one-line accessor puts
+   the useful instruction in the delay slot of an rts, so breakpoints on
+   perfectly ordinary code addresses simply never fired, with no message
+   and no way to tell that from "this code is never reached". */
+static INLINE int SH2HandleBreakpointsAt(SH2_struct *context, u32 addr)
 {
    int i;
    if (context->bp.inbreakpoint == 0) {
      for (i=0; i < context->bp.numcodebreakpoints; i++) {
-       if (context->regs.PC == context->bp.codebreakpoint[i].addr)  {
+       if (addr == context->bp.codebreakpoint[i].addr)  {
          context->bp.inbreakpoint = 1;
-         context->bp.BreakpointUserData.PCAddress = (context->isDelayed != 0)?context->isDelayed:context->regs.PC;
-         context->bp.BreakpointUserData.BPAddress = (context->isDelayed != 0)?context->isDelayed:context->regs.PC;
+         context->bp.BreakpointUserData.PCAddress = addr;
+         context->bp.BreakpointUserData.BPAddress = addr;
          return 1;
        }
      }
    }
    return 0;
+}
+
+static INLINE int SH2HandleBreakpoints(SH2_struct *context)
+{
+   return SH2HandleBreakpointsAt(context,
+             (context->isDelayed != 0) ? context->isDelayed : context->regs.PC);
 }
 
 extern SH2_struct *MSH2;
