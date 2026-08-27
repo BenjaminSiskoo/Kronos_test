@@ -41,6 +41,12 @@ extern void SH2ExecCb(SH2_struct *context);
 static void SH2delay(SH2_struct * sh, u32 addr)
 {
    sh->isDelayed = addr;
+   /* The exec loop only tests breakpoints at its head, and a delay slot
+      never passes through the head. Without this, a breakpoint on a delay
+      slot is ignored in silence. The break is reported for the slot
+      address but takes effect once the branch has completed, so PC on
+      entry to the debugger is the branch target. */
+   SH2HandleBreakpointsAt(sh, addr);
    sh->instruction = krfetchlist[(addr >> 20) & 0xFFF](sh, addr);
    opcodeTable[sh->instruction](sh);
    sh->isDelayed = 0;
