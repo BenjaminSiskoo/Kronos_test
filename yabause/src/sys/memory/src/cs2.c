@@ -3971,7 +3971,18 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
       if (Cs2Area->curdirsect == 0)
          return -1;
 
-      Cs2Area->curdirfidoffset = fid - 2;
+      /* Le nombre d'enregistrements que la boucle de saut plus bas ignore
+       * reellement vaut max(0, fid - 2) : elle s'ecrit "for (i = 2; i < fid;
+       * i++)" et ne tourne donc pas quand fid vaut 0 ou 1. Memoriser fid - 2
+       * dans un u32 dans ce cas produit un debordement (0xFFFFFFFE pour
+       * fid = 0), et le Change Directory suivant indexe alors
+       * fileinfo[fid + 2] au lieu de fileinfo[fid].
+       *
+       * L'offset memorise doit valoir exactement le nombre d'enregistrements
+       * sautes, sans quoi la correspondance entre identificateur de fichier
+       * et entree de fileinfo[] est decalee.
+       * Ref : ST-040-R4-051795 §6.10 "Read Directory (command 0x71)". */
+      Cs2Area->curdirfidoffset = (fid > 2) ? (fid - 2) : 0;
       curdirlba = Cs2Area->curdirsect;
       numsectorsleft = (u8)Cs2Area->curdirsize;
    }
@@ -4015,8 +4026,18 @@ int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
          if (Cs2Area->curdirsect == 0)
             return -1;
 
-         curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].lba - 150;
-         Cs2Area->curdirsize = (Cs2Area->fileinfo[fid - Cs2Area->curdirfidoffset].size / blocksectsize) - 1;
+         /* Index borne comme partout ailleurs dans ce fichier : fid vient
+          * directement d'un registre du bloc CD et fileinfo[] ne compte que
+          * MAX_FILES entrees. */
+         {
+            u32 cdfid = fid - Cs2Area->curdirfidoffset;
+
+            if (cdfid >= MAX_FILES)
+               return -1;
+
+            curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[cdfid].lba - 150;
+            Cs2Area->curdirsize = (Cs2Area->fileinfo[cdfid].size / blocksectsize) - 1;
+         }
          numsectorsleft = (u8)Cs2Area->curdirsize;
          Cs2Area->curdirfidoffset = 0;
       }
