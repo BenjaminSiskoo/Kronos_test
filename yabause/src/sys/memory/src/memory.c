@@ -810,6 +810,9 @@ u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr) {
 CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    int id = addr >> 29;
    if (context == NULL) id = 1;
+#ifdef SH2_HANG_WATCH
+   if ((context != NULL) && context->hangWatch.armed) SH2HangWatchLogRead(context, addr);
+#endif
    switch (id)
    {
       case 0x1:
@@ -866,7 +869,11 @@ u16 FASTCALL DMAMappedMemoryReadWord(u32 addr) {
 }
 
 
-u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
+/* The instruction fetch and ordinary data reads both used to land straight in
+   here, so nothing could tell them apart. They are split now: SH2FetchWord is
+   what krfetchlist points at, which keeps instrumentation on the data path
+   from seeing every instruction fetch. */
+static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
 {
     int id = addr >> 29;
     if (context == NULL) id =1;
@@ -919,6 +926,29 @@ LOG("Unhandled Word R %x\n", addr);
    return 0;
 }
 
+u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
+{
+#ifdef SH2_TRAP_ADDRESS_ERROR
+   if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
+#endif
+#ifdef SH2_HANG_WATCH
+   if ((context != NULL) && context->hangWatch.armed) SH2HangWatchLogRead(context, addr);
+#endif
+   return SH2ReadWordRaw(context, addr);
+}
+
+u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
+{
+#ifdef SH2_TRAP_ADDRESS_ERROR
+   /* Instruction fetch at an odd PC. On hardware this is a CPU address error
+      too; here the exec loop just did (PC >> 1) and quietly fetched the wrong
+      instruction, which is one of the ways a game ends up wandering with
+      nothing reported. */
+   if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
+#endif
+   return SH2ReadWordRaw(context, addr);
+}
+
 u32 FASTCALL DMAMappedMemoryReadLong(u32 addr)
 {
   return ReadLongList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
@@ -928,6 +958,12 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
 {
   int id = addr >> 29;
   if (context == NULL) id =1;
+#ifdef SH2_TRAP_ADDRESS_ERROR
+   if ((addr & 3) && (context != NULL)) SH2AddressError(context, addr, 32, 0);
+#endif
+#ifdef SH2_HANG_WATCH
+   if ((context != NULL) && context->hangWatch.armed) SH2HangWatchLogRead(context, addr);
+#endif
   switch (id)
    {
       case 0x1: //0x0 no cache
@@ -1066,6 +1102,9 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
 {
    int id = addr >> 29;
    if (context == NULL) id =1;
+#ifdef SH2_TRAP_ADDRESS_ERROR
+   if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 1);
+#endif
    SH2WriteNotify(context, addr, 2);
    switch (id)
    {
@@ -1140,6 +1179,9 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
 {
    int id = addr >> 29;
    if (context == NULL) id =1;
+#ifdef SH2_TRAP_ADDRESS_ERROR
+   if ((addr & 3) && (context != NULL)) SH2AddressError(context, addr, 32, 1);
+#endif
    SH2WriteNotify(context, addr, 4);
    switch (id)
    {
