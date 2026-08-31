@@ -199,7 +199,8 @@ static u16 FASTCALL FetchVram(SH2_struct *context, u32 addr)
 static u16 FASTCALL FetchInvalid(SH2_struct *context, UNUSED u32 addr)
 {
 #ifdef DMPHISTORY
-  SH2DumpHistory(CurrentSH2);
+  /* CurrentSH2 does not exist; the context is right there in the argument. */
+  SH2DumpHistory(context);
 #endif
    return 0xFFFF;
 }
