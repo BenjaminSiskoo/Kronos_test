@@ -37,6 +37,9 @@
 #include <windows.h>
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+
 // cores
 
 #ifdef Q_OS_WIN
@@ -139,15 +142,46 @@ QMap<uint, PerMouse_struct*> mPort2MouseBits;
 QMap<uint, PerAnalog_struct*> mPort1AnalogBits;
 QMap<uint, PerAnalog_struct*> mPort2AnalogBits;
 
+/* On Windows YuiMsg goes to OutputDebugString and to the in-app log dock, so
+   there is no stdout to redirect and no practical way to capture a diagnostic
+   run. Setting KRONOS_LOG_FILE to a path mirrors every message to that file,
+   flushed on each line so a crash or a hang still leaves a usable log. */
+static FILE *kronosLogFile = NULL;
+static int   kronosLogTried = 0;
+
+static void kronosLogWrite(const char *s)
+{
+   if (!kronosLogTried)
+   {
+      const char *path = getenv("KRONOS_LOG_FILE");
+      kronosLogTried = 1;
+      if (path && *path)
+         kronosLogFile = fopen(path, "w");
+   }
+   if (kronosLogFile)
+   {
+      fputs(s, kronosLogFile);
+      fflush(kronosLogFile);
+   }
+}
+
 extern "C"
 {
 
 #ifdef WIN32
 #ifndef vasprintf
 		int vasprintf(char **strp, const char *fmt, va_list ap) {
-			int len = 512;
-			char *str = (char*)malloc((size_t)len);
-			int r = vsnprintf_s(str, len, _TRUNCATE, fmt, ap); /* "secure" version of vsprintf */
+			/* Was hardcoded to 512 bytes, so anything longer came out cut in
+			   half: a register dump barely fits and a hang report does not.
+			   Size the buffer from the format instead. */
+			va_list ap2;
+			va_copy(ap2, ap);
+			int len = _vscprintf(fmt, ap2);
+			va_end(ap2);
+			if (len < 0) return -1;
+			char *str = (char*)malloc((size_t)len + 1);
+			if (str == NULL) return -1;
+			int r = vsnprintf_s(str, (size_t)len + 1, _TRUNCATE, fmt, ap); /* "secure" version of vsprintf */
 			if (r == -1) return free(str), -1;
 			*strp = str;
 			return r;
@@ -162,10 +196,17 @@ extern "C"
 	  va_end( arglist );
 	  if (r > 0) {
             //QtYabause::mainWindow()->appendLog( str );
-		  wchar_t wtext[512];
-		  mbstowcs(wtext, str, strlen(str) + 1);//Plus null
-		  LPWSTR ptr = wtext;
-		    ::OutputDebugString(ptr);
+		  /* The wide buffer used to be a fixed wchar_t[512] fed with
+		     strlen(str) + 1, which only stayed inside its bounds because
+		     vasprintf truncated at 512. Size it from the string. */
+		  size_t wlen = strlen(str) + 1;
+		  wchar_t *wtext = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+		  if (wtext != NULL) {
+		    mbstowcs(wtext, str, wlen);//Plus null
+		    ::OutputDebugString(wtext);
+		    free(wtext);
+		  }
+			kronosLogWrite( str );
 			if (mUIYabause) mUIYabause->appendLog( str );
 	      free(str);
 	  }
@@ -179,6 +220,7 @@ extern "C"
 		va_end(argptr);
 		printf("%s", dest);
 		fflush(stdout);
+		kronosLogWrite( dest );
 		if (mUIYabause) mUIYabause->appendLog( dest );
 }
 
