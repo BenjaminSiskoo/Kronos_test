@@ -38,6 +38,21 @@ extern "C" {
 //#define DMPHISTORY
 #define MAX_DMPHISTORY (512)
 
+/* The SH7095 raises a CPU address error (vector 9) on a word access to an odd
+   address, a longword access that is not a multiple of four, and on an
+   instruction fetch at an odd PC. None of that was detected, so a game that
+   derailed through a corrupted pointer kept running on garbage instead of
+   trapping: no message, black screen. Comment this out to remove the checks
+   from the memory paths entirely. */
+#define SH2_TRAP_ADDRESS_ERROR
+
+/* Per-frame detector for silent lockups, plus a ring buffer of the addresses
+   read from inside the offending loop - which is what actually names the
+   culprit. Needs the debug interpreter: it works off the backward-branch
+   counters, and SH2KronosInterpreterExec does not maintain those. */
+#define SH2_HANG_WATCH
+#define SH2_POLL_LOG (32)
+
 // UBC Flags
 #define BBR_CPA_NONE			(0 << 6)
 #define BBR_CPA_CPU				(1 << 6)
@@ -505,6 +520,22 @@ typedef struct SH2_struct_s
              int num;
              int maxNum;
           } trackInfLoop;
+#ifdef SH2_HANG_WATCH
+    struct {
+             u8 enabled;
+             u8 armed;      /* poll logging on: the loop looks suspicious */
+             u8 reported;   /* one report per hang, not one per frame */
+             u32 frames;    /* consecutive suspicious frames */
+             u32 hotAddr;
+             u64 hotDelta;
+             u64 lastTotal;
+             u64 *prev;     /* per-entry snapshot of the previous frame */
+             int prevNum;
+             u32 pollAddr[SH2_POLL_LOG];
+             u32 pollPC[SH2_POLL_LOG];
+             u32 pollIdx;
+          } hangWatch;
+#endif
     struct {
              u8 enabled;
              void (*callBack)(void *, u32, void *);
@@ -624,6 +655,33 @@ void SH2TrackInfLoopClear(SH2_struct *context);
 
 void SH2Disasm(u32 v_addr, u16 op, int mode, sh2regs_struct *r, char *string);
 void SH2DumpHistory(SH2_struct *context);
+
+/* Shared register dump, so the format lives in one place instead of being
+   copy-pasted into every error path. */
+void SH2FormatRegs(SH2_struct *context, char *buf, int size);
+
+#ifdef SH2_TRAP_ADDRESS_ERROR
+/* fatal == 0 (the default) reports the fault and lets the CPU carry on, which
+   is what you want when triaging a batch of games: you get the faulting PC
+   and still see whatever the game does next.
+   fatal == 1 takes vector 9 for real. Faithful to the hardware, but the boot
+   ROM default handler is an infinite loop (System Library User's Guide, 1.1),
+   so you go straight back to a black screen. */
+void SH2SetAddressErrorFatal(int fatal);
+int  SH2GetAddressErrorFatal(void);
+void SH2AddressError(SH2_struct *context, u32 addr, int width, int isWrite);
+#endif
+
+#ifdef SH2_HANG_WATCH
+int  SH2HangWatchInit(SH2_struct *context);
+void SH2HangWatchDeInit(SH2_struct *context);
+void SH2HangWatchStart(SH2_struct *context);
+void SH2HangWatchStop(SH2_struct *context);
+void SH2HangWatchClear(SH2_struct *context);
+void SH2HangWatchLogRead(SH2_struct *context, u32 addr);
+void SH2HangWatchFrame(SH2_struct *context);
+void SH2HangWatchFormat(SH2_struct *context, char *buf, int size);
+#endif
 
 void SH2UpdateBlockedState(SH2_struct *context);
 void SH2UpdateABusAccess(SH2_struct *context, int on);
