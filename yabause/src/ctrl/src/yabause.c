@@ -995,6 +995,14 @@ int YabauseEmulate(void) {
    syncVideoMode();
    FPSDisplay();
 
+#ifdef SH2_HANG_WATCH
+   /* One sample per frame is enough: the detector works on the deltas of the
+      backward-branch counters, not on live PC sampling. */
+   SH2HangWatchFrame(MSH2);
+   if (yabsys.IsSSH2Running)
+      SH2HangWatchFrame(SSH2);
+#endif
+
 #ifdef YAB_STATICS
    YuiMsg("CPUTIME = %" PRId64 " @ %d \n", cpu_emutime, yabsys.frame_count );
 #if 1
