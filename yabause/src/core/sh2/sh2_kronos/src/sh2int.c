@@ -149,26 +149,26 @@ static u8 cacheId[0x1000];
 
 static u16 FASTCALL FetchBios(SH2_struct *context, u32 addr)
 {
-   return SH2MappedMemoryReadWord(context,addr);
+   return SH2FetchWord(context, addr);
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 static u16 FASTCALL FetchLWram(SH2_struct *context, u32 addr)
 {
-	return SH2MappedMemoryReadWord(context,addr);
+	return SH2FetchWord(context, addr);
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 static u16 FASTCALL FetchHWram(SH2_struct *context, u32 addr)
 {
-	return SH2MappedMemoryReadWord(context,addr);
+	return SH2FetchWord(context, addr);
 }
 
 static u16 FASTCALL FetchVram(SH2_struct *context, u32 addr)
 {
-  return SH2MappedMemoryReadWord(context, addr);
+  return SH2FetchWord(context, addr);
 }
 
 static const int cacheMask[9] = {
@@ -391,23 +391,23 @@ int SH2KronosInterpreterInit(void)
             cacheId[i] = 0;
             break;
           case 0x002: // Low Work Ram
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 1;
             break;
           case 0x020: // CS0
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 2;
             break;
           case 0x05a: // SoundRam
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 3;
             break;
           case 0x05c: // Fighting Viper
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 4;
             break;
           case 0x05e: // PGA Tour 97
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 5;
             break;
           case 0x060: // High Work Ram
@@ -426,7 +426,7 @@ int SH2KronosInterpreterInit(void)
           case 0x06D:
           case 0x06E:
           case 0x06F:
-            krfetchlist[i] = SH2MappedMemoryReadWord;
+            krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 6;
             break;
           default:
@@ -436,7 +436,7 @@ int SH2KronosInterpreterInit(void)
         }
      }
      if ((i>>8) == 0xC) {
-       krfetchlist[i] = SH2MappedMemoryReadWord;
+       krfetchlist[i] = SH2FetchWord;
        cacheId[i] = 7;
      }
    }
