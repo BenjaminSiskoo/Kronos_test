@@ -51,7 +51,8 @@ static void AllocAmendPrintString(const char *string1, const char *string2)
 
 void YabSetError(int type, const void *extra)
 {
-   char tempstr[512];
+   char tempstr[2048];
+   char regstr[512];
    SH2_struct *sh;
 
    switch (type)
@@ -72,38 +73,22 @@ void YabSetError(int type, const void *extra)
          AllocAmendPrintString(_("Cannot initialize "), (const char *)extra);
          break;
       case YAB_ERR_SH2INVALIDOPCODE:
-#ifdef DMPHISTORY
-        SH2DumpHistory(CurrentSH2);
-#endif
          sh = (SH2_struct *)extra;
-         SH2GetRegisters(sh, &sh->regs);
-         sprintf(tempstr, "%s SH2 invalid opcode\n\n"
-                          "R0 =  %08lX\tR12 =  %08lX\n"
-                          "R1 =  %08lX\tR13 =  %08lX\n"
-                          "R2 =  %08lX\tR14 =  %08lX\n"
-                          "R3 =  %08lX\tR15 =  %08lX\n"
-                          "R4 =  %08lX\tSR =   %08lX\n"
-                          "R5 =  %08lX\tGBR =  %08lX\n"
-                          "R6 =  %08lX\tVBR =  %08lX\n"
-                          "R7 =  %08lX\tMACH = %08lX\n"
-                          "R8 =  %08lX\tMACL = %08lX\n"
-                          "R9 =  %08lX\tPR =   %08lX\n"
-                          "R10 = %08lX\tPC =   %08lX\n"
-                          "R11 = %08lX\n", sh->isslave ? "Slave" : "Master",
-                          (long)sh->regs.R[0], (long)sh->regs.R[12],
-                          (long)sh->regs.R[1], (long)sh->regs.R[13],
-                          (long)sh->regs.R[2], (long)sh->regs.R[14],
-                          (long)sh->regs.R[3], (long)sh->regs.R[15],
-                          (long)sh->regs.R[4], (long)sh->regs.SR.all,
-                          (long)sh->regs.R[5], (long)sh->regs.GBR,
-                          (long)sh->regs.R[6], (long)sh->regs.VBR,
-                          (long)sh->regs.R[7], (long)sh->regs.MACH,
-                          (long)sh->regs.R[8], (long)sh->regs.MACL,
-                          (long)sh->regs.R[9], (long)sh->regs.PR,
-                          (long)sh->regs.R[10], (long)sh->regs.PC,
-                          (long)sh->regs.R[11]);
+#ifdef DMPHISTORY
+         SH2DumpHistory(sh);
+#endif
+         SH2FormatRegs(sh, regstr, sizeof(regstr));
+         snprintf(tempstr, sizeof(tempstr), "%s SH2 invalid opcode\n\n%s",
+                  sh->isslave ? "Slave" : "Master", regstr);
          YuiMsg(tempstr);
          break;
+#ifdef SH2_HANG_WATCH
+      case YAB_ERR_SH2HANG:
+         sh = (SH2_struct *)extra;
+         SH2HangWatchFormat(sh, tempstr, sizeof(tempstr));
+         YuiMsg(tempstr);
+         break;
+#endif
       case YAB_ERR_SH2READ:
          YuiErrorMsg(_("SH2 read error")); // fix me
          break;
