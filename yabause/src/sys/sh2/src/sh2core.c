@@ -29,6 +29,8 @@
 #include "yabause.h"
 #include <scu.h>
 #include <error.h>
+#include "yui.h"
+#include "sh2int_kronos.h"
 
 SH2_struct *SSH2=NULL;
 SH2_struct *MSH2=NULL;
@@ -281,6 +283,11 @@ int SH2Init(int coreid)
    if (SH2TrackInfLoopInit(MSH2) != 0)
       return -1;
 
+#ifdef SH2_HANG_WATCH
+   if (SH2HangWatchInit(MSH2) != 0)
+      return -1;
+#endif
+
    MSH2->onchip.BCR1 = 0x0000;
    MSH2->isslave = 0;
    MSH2->isAccessingCPUBUS = 0;
@@ -309,6 +316,11 @@ int SH2Init(int coreid)
 
    if (SH2TrackInfLoopInit(SSH2) != 0)
       return -1;
+
+#ifdef SH2_HANG_WATCH
+   if (SH2HangWatchInit(SSH2) != 0)
+      return -1;
+#endif
 
     SSH2->interruptReturnAddress = 0;
     SSH2->onchip.BCR1 = 0x8000;
@@ -361,6 +373,17 @@ int SH2Init(int coreid)
       return -1;
    }
 
+#ifdef SH2_HANG_WATCH
+   /* The watchdog reads the backward-branch counters, which only the debug
+      interpreter maintains, so arm it there and leave the fast core alone.
+      Set KRONOS_NO_HANGWATCH in the environment to opt out. */
+   if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER && getenv("KRONOS_NO_HANGWATCH") == NULL)
+   {
+      SH2HangWatchStart(MSH2);
+      SH2HangWatchStart(SSH2);
+   }
+#endif
+
    SH2Reset(MSH2);
    SH2Reset(SSH2);
 
@@ -378,6 +401,9 @@ void SH2DeInit()
    if (MSH2)
    {
       SH2TrackInfLoopDeInit(MSH2);
+#ifdef SH2_HANG_WATCH
+      SH2HangWatchDeInit(MSH2);
+#endif
       free(MSH2);
    }
    MSH2 = NULL;
@@ -385,6 +411,9 @@ void SH2DeInit()
    if (SSH2)
    {
       SH2TrackInfLoopDeInit(SSH2);
+#ifdef SH2_HANG_WATCH
+      SH2HangWatchDeInit(SSH2);
+#endif
       free(SSH2);
    }
    SSH2 = NULL;
@@ -439,6 +468,10 @@ CACHE_LOG("%s reset\n", (context==SSH2)?"SSH2":"MSH2" );
 #ifdef DMPHISTORY
    memset(context->pchistory, 0, sizeof(context->pchistory));
    context->pchistory_index = 0;
+#endif
+
+#ifdef SH2_HANG_WATCH
+   SH2HangWatchClear(context);
 #endif
 }
 
@@ -588,6 +621,321 @@ void SH2TrackInfLoopClear(SH2_struct *context)
 
 //////////////////////////////////////////////////////////////////////////////
 
+void SH2FormatRegs(SH2_struct *context, char *buf, int size)
+{
+   sh2regs_struct r;
+
+   SH2GetRegisters(context, &r);
+
+   snprintf(buf, size,
+            "R0  = %08lX\tR12  = %08lX\n"
+            "R1  = %08lX\tR13  = %08lX\n"
+            "R2  = %08lX\tR14  = %08lX\n"
+            "R3  = %08lX\tR15  = %08lX\n"
+            "R4  = %08lX\tSR   = %08lX\n"
+            "R5  = %08lX\tGBR  = %08lX\n"
+            "R6  = %08lX\tVBR  = %08lX\n"
+            "R7  = %08lX\tMACH = %08lX\n"
+            "R8  = %08lX\tMACL = %08lX\n"
+            "R9  = %08lX\tPR   = %08lX\n"
+            "R10 = %08lX\tPC   = %08lX\n"
+            "R11 = %08lX\n",
+            (long)r.R[0],  (long)r.R[12],
+            (long)r.R[1],  (long)r.R[13],
+            (long)r.R[2],  (long)r.R[14],
+            (long)r.R[3],  (long)r.R[15],
+            (long)r.R[4],  (long)r.SR.all,
+            (long)r.R[5],  (long)r.GBR,
+            (long)r.R[6],  (long)r.VBR,
+            (long)r.R[7],  (long)r.MACH,
+            (long)r.R[8],  (long)r.MACL,
+            (long)r.R[9],  (long)r.PR,
+            (long)r.R[10], (long)r.PC,
+            (long)r.R[11]);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+#ifdef SH2_TRAP_ADDRESS_ERROR
+
+#define ADDRESS_ERROR_MAX_REPORTS (16)
+
+static int addressErrorFatal = 0;
+static int addressErrorBusy = 0;   /* the stack pushes below re-enter the
+                                      memory accessors; do not recurse */
+static int addressErrorCount = 0;
+
+void SH2SetAddressErrorFatal(int fatal)
+{
+   addressErrorFatal = fatal;
+}
+
+int SH2GetAddressErrorFatal(void)
+{
+   return addressErrorFatal;
+}
+
+void SH2AddressError(SH2_struct *context, u32 addr, int width, int isWrite)
+{
+   char regs[512];
+
+   if (context == NULL || addressErrorBusy)
+      return;
+
+   addressErrorBusy = 1;
+
+   /* A game looping on a bad pointer would otherwise flood the log with the
+      same fault a few hundred thousand times a second. YuiMsg rather than
+      YuiErrorMsg for the same reason: this goes to the log, it does not raise
+      a dialog. */
+   if (addressErrorCount < ADDRESS_ERROR_MAX_REPORTS)
+   {
+      addressErrorCount++;
+      SH2FormatRegs(context, regs, sizeof(regs));
+      YuiMsg("%s SH2 address error: %s%d @ %08lX (PC=%08lX PR=%08lX)\n\n%s\n",
+             context->isslave ? "Slave" : "Master",
+             isWrite ? "W" : "R", width,
+             (unsigned long)addr,
+             (unsigned long)context->regs.PC,
+             (unsigned long)context->regs.PR,
+             regs);
+#ifdef DMPHISTORY
+      SH2DumpHistory(context);
+#endif
+      if (addressErrorCount == ADDRESS_ERROR_MAX_REPORTS)
+         YuiMsg("further SH2 address errors suppressed\n");
+   }
+
+   if (addressErrorFatal)
+   {
+      /* SH7095 sec. 4.5 and table 4.11: an address error pushes SR then PC,
+         PC being the start address of the instruction that caused it - the
+         same convention as the general illegal instruction, not the +2 used
+         for interrupts. */
+      context->regs.R[15] -= 4;
+      SH2MappedMemoryWriteLong(context, context->regs.R[15], context->regs.SR.all);
+      context->regs.R[15] -= 4;
+      SH2MappedMemoryWriteLong(context, context->regs.R[15], context->regs.PC);
+      context->regs.PC = SH2MappedMemoryReadLong(context, context->regs.VBR + (9 << 2));
+   }
+
+   addressErrorBusy = 0;
+}
+
+#endif /* SH2_TRAP_ADDRESS_ERROR */
+
+//////////////////////////////////////////////////////////////////////////////
+
+#ifdef SH2_HANG_WATCH
+
+/* A frame counts as suspicious when a single backward branch accounts for
+   almost every backward branch taken during that frame. HANG_RATIO is that
+   share in percent, HANG_MIN_BRANCHES keeps it quiet on a frame where the CPU
+   barely ran, and HANG_FRAMES is how long it has to last before reporting -
+   two seconds is well past any legitimate load or fade. */
+#define HANG_RATIO         (95)
+#define HANG_MIN_BRANCHES  (2000)
+#define HANG_FRAMES        (120)
+#define HANG_MAX_POLL      (6)
+
+int SH2HangWatchInit(SH2_struct *context)
+{
+   context->hangWatch.prevNum = context->trackInfLoop.maxNum;
+   if ((context->hangWatch.prev = calloc(context->hangWatch.prevNum, sizeof(u64))) == NULL)
+      return -1;
+   return 0;
+}
+
+void SH2HangWatchDeInit(SH2_struct *context)
+{
+   if (context->hangWatch.prev)
+      free(context->hangWatch.prev);
+   context->hangWatch.prev = NULL;
+   context->hangWatch.prevNum = 0;
+}
+
+void SH2HangWatchClear(SH2_struct *context)
+{
+   if (context->hangWatch.prev)
+      memset(context->hangWatch.prev, 0, sizeof(u64) * context->hangWatch.prevNum);
+   context->hangWatch.armed = 0;
+   context->hangWatch.reported = 0;
+   context->hangWatch.frames = 0;
+   context->hangWatch.hotAddr = 0;
+   context->hangWatch.hotDelta = 0;
+   context->hangWatch.lastTotal = 0;
+   context->hangWatch.pollIdx = 0;
+   memset(context->hangWatch.pollAddr, 0, sizeof(context->hangWatch.pollAddr));
+   memset(context->hangWatch.pollPC, 0, sizeof(context->hangWatch.pollPC));
+}
+
+void SH2HangWatchStart(SH2_struct *context)
+{
+   SH2HangWatchClear(context);
+   context->hangWatch.enabled = 1;
+   /* the detector reads the backward-branch counters, so it needs them */
+   SH2TrackInfLoopStart(context);
+}
+
+void SH2HangWatchStop(SH2_struct *context)
+{
+   context->hangWatch.enabled = 0;
+   context->hangWatch.armed = 0;
+}
+
+void SH2HangWatchLogRead(SH2_struct *context, u32 addr)
+{
+   u32 i;
+   u32 slot;
+
+   /* One entry per distinct address: a loop polling the same register a
+      million times must not flush everything else out of the buffer. */
+   for (i = 0; i < SH2_POLL_LOG; i++)
+      if (context->hangWatch.pollAddr[i] == addr)
+         return;
+
+   slot = context->hangWatch.pollIdx;
+   context->hangWatch.pollAddr[slot] = addr;
+   context->hangWatch.pollPC[slot] = context->regs.PC;
+   context->hangWatch.pollIdx = (slot + 1) % SH2_POLL_LOG;
+}
+
+/* How many distinct addresses the loop read. A genuine wait loop touches one
+   or two; a loop doing real work touches a dozen and is not hung. */
+static int SH2HangWatchPollCount(SH2_struct *context)
+{
+   int i, n = 0;
+   for (i = 0; i < SH2_POLL_LOG; i++)
+      if (context->hangWatch.pollAddr[i] != 0)
+         n++;
+   return n;
+}
+
+void SH2HangWatchFormat(SH2_struct *context, char *buf, int size)
+{
+   char regs[512];
+   int i;
+   int used;
+
+   SH2FormatRegs(context, regs, sizeof(regs));
+
+   used = snprintf(buf, size,
+                   "%s SH2 appears hung\n\n"
+                   "Loop at %08lX took %lu of the last %lu backward branches,\n"
+                   "for %lu consecutive frames.\n\n%s\nAddresses polled from the loop:\n",
+                   context->isslave ? "Slave" : "Master",
+                   (unsigned long)context->hangWatch.hotAddr,
+                   (unsigned long)context->hangWatch.hotDelta,
+                   (unsigned long)context->hangWatch.lastTotal,
+                   (unsigned long)context->hangWatch.frames,
+                   regs);
+
+   for (i = 0; i < SH2_POLL_LOG && used < size - 1; i++)
+   {
+      int slot = (context->hangWatch.pollIdx + i) % SH2_POLL_LOG;
+      if (context->hangWatch.pollAddr[slot] == 0)
+         continue;
+      used += snprintf(buf + used, size - used, "  %08lX  (read from PC %08lX)\n",
+                       (unsigned long)context->hangWatch.pollAddr[slot],
+                       (unsigned long)context->hangWatch.pollPC[slot]);
+   }
+}
+
+void SH2HangWatchFrame(SH2_struct *context)
+{
+   u64 total = 0;
+   u64 bestDelta = 0;
+   u32 bestAddr = 0;
+   u64 delta;
+   int i;
+   int n;
+
+   if (!context->hangWatch.enabled || !context->trackInfLoop.enabled)
+      return;
+
+   n = context->trackInfLoop.num;
+
+   if (n > context->hangWatch.prevNum)
+   {
+      u64 *grown = realloc(context->hangWatch.prev, sizeof(u64) * context->trackInfLoop.maxNum);
+      if (grown == NULL)
+         return;
+      memset(grown + context->hangWatch.prevNum, 0,
+             sizeof(u64) * (context->trackInfLoop.maxNum - context->hangWatch.prevNum));
+      context->hangWatch.prev = grown;
+      context->hangWatch.prevNum = context->trackInfLoop.maxNum;
+   }
+
+   /* Per-entry delta rather than raw count: a loop that ran hot during boot
+      must not keep masking a hang that starts twenty seconds later. */
+   for (i = 0; i < n; i++)
+   {
+      delta = context->trackInfLoop.match[i].count - context->hangWatch.prev[i];
+      context->hangWatch.prev[i] = context->trackInfLoop.match[i].count;
+      total += delta;
+      if (delta > bestDelta)
+      {
+         bestDelta = delta;
+         bestAddr = context->trackInfLoop.match[i].addr;
+      }
+   }
+
+   context->hangWatch.lastTotal = total;
+   context->hangWatch.hotDelta = bestDelta;
+
+   if (total < HANG_MIN_BRANCHES || bestDelta * 100 < total * HANG_RATIO)
+   {
+      /* healthy frame */
+      context->hangWatch.frames = 0;
+      context->hangWatch.armed = 0;
+      context->hangWatch.reported = 0;
+      return;
+   }
+
+   if (bestAddr != context->hangWatch.hotAddr)
+   {
+      /* a different loop than last frame: start counting again */
+      context->hangWatch.hotAddr = bestAddr;
+      context->hangWatch.frames = 0;
+      context->hangWatch.reported = 0;
+      context->hangWatch.pollIdx = 0;
+      memset(context->hangWatch.pollAddr, 0, sizeof(context->hangWatch.pollAddr));
+      memset(context->hangWatch.pollPC, 0, sizeof(context->hangWatch.pollPC));
+   }
+
+   context->hangWatch.frames++;
+
+   /* Arm the read logger well before reporting, so that by the time we print,
+      the buffer holds the addresses the loop is actually polling. */
+   if (context->hangWatch.frames > 2)
+      context->hangWatch.armed = 1;
+
+   /* A dominant backward branch is not enough on its own. The outer dispatch
+      loop of a busy slave also dominates its frame, and reporting it buries
+      the real thing. A loop that reads more than a handful of distinct
+      addresses is working, not waiting. */
+   if (context->hangWatch.frames >= HANG_FRAMES &&
+       SH2HangWatchPollCount(context) > HANG_MAX_POLL)
+   {
+      context->hangWatch.frames = 0;
+      context->hangWatch.armed = 0;
+      return;
+   }
+
+   if (context->hangWatch.frames >= HANG_FRAMES && !context->hangWatch.reported)
+   {
+      context->hangWatch.reported = 1;
+#ifdef DMPHISTORY
+      SH2DumpHistory(context);
+#endif
+      YabSetError(YAB_ERR_SH2HANG, context);
+   }
+}
+
+#endif /* SH2_HANG_WATCH */
+
+//////////////////////////////////////////////////////////////////////////////
+
 void SH2HandleStepOverOut(SH2_struct *context)
 {
    if (context->stepOverOut.enabled)
@@ -634,12 +982,38 @@ void SH2HandleTrackInfLoop(SH2_struct *context)
 {
    if (context->trackInfLoop.enabled)
    {
-      // Look for specific bf/bt/bra instructions that branch to address < PC
-      if ((context->instruction & 0x8B80) == 0x8B80 || // bf
-          (context->instruction & 0x8F80) == 0x8F80 || // bf/s
-          (context->instruction & 0x8980) == 0x8980 || // bt
-          (context->instruction & 0x8D80) == 0x8D80 || // bt/s
-          (context->instruction & 0xA800) == 0xA800)   // bra
+      /* Look for branches that go backwards, i.e. loop candidates.
+       *
+       * The tests used to be written as (op & 0x8B80) == 0x8B80 and friends,
+       * which does not isolate the opcode field at all: 0xCF80, that is
+       * or.b #imm,@(R0,GBR), satisfies the first one, and
+       * (op & 0xA800) == 0xA800 matches every 0xE8xx, that is mov #imm,Rn.
+       * The match list filled up with addresses that are not branches.
+       *
+       * The 8-bit displacement forms are backwards when bit 7 of the
+       * displacement is set; bra/bsr carry a 12-bit displacement, so the sign
+       * bit is bit 11. jmp/jsr/braf/bsrf are register-relative, so the target
+       * has to be computed to know which way they go - worth doing, since a
+       * wait loop built around jmp @Rn was previously invisible here, and
+       * that shape is common in SGL code. */
+      u16 op = context->instruction;
+      int backward = 0;
+
+      if ((op & 0xFF80) == 0x8B80 ||    // bf    disp<0
+          (op & 0xFF80) == 0x8F80 ||    // bf/s  disp<0
+          (op & 0xFF80) == 0x8980 ||    // bt    disp<0
+          (op & 0xFF80) == 0x8D80 ||    // bt/s  disp<0
+          (op & 0xF800) == 0xA800 ||    // bra   disp<0
+          (op & 0xF800) == 0xB800)      // bsr   disp<0
+         backward = 1;
+      else if ((op & 0xF0FF) == 0x402B ||  // jmp  @Rn
+               (op & 0xF0FF) == 0x400B)    // jsr  @Rn
+         backward = (context->regs.R[(op >> 8) & 0xF] <= context->regs.PC);
+      else if ((op & 0xF0FF) == 0x0023 ||  // braf Rn
+               (op & 0xF0FF) == 0x0003)    // bsrf Rn
+         backward = ((s32)context->regs.R[(op >> 8) & 0xF] + 4 <= 0);
+
+      if (backward)
       {
          int i;
 
@@ -1937,7 +2311,11 @@ void CacheFetch(SH2_struct *context, u8* memory, u32 addr, u8 way) {
     CacheWriteVal(context, (addr&(~0xF))|(i*4), ret, 4);
     // printf("Fetch (%x) (%d)=%x\n", (addr&(~0xF))|(i*4), i, ret);
   }
-  SH2WriteNotify(context, (addr&(~0xF)), 4);
+  /* A cache line is 16 bytes and all four longwords were just refilled by
+     the loop above, but only the first four bytes were invalidated: the
+     remaining six instructions of the line kept whatever decode they had
+     from before the fetch. */
+  SH2WriteNotify(context, (addr&(~0xF)), 16);
   // for (int i =0; i<=0xF; i++) {
   //   printf("%x ", context->cacheData[line][way][i]);
   // }
@@ -2836,11 +3214,19 @@ void SH2DumpHistory(SH2_struct *context){
 	if (history){
 		int i;
 		int index = context->pchistory_index;
+		fprintf(history, "%s SH2, most recent instruction first\n\n",
+		        context->isslave ? "Slave" : "Master");
 		for (i = 0; i < (MAX_DMPHISTORY - 1); i++){
 		  char lineBuf[128];
-		  SH2Disasm(context->pchistory[(index & (MAX_DMPHISTORY - 1))], SH2MappedMemoryReadWord(context->pchistory[(index & (MAX_DMPHISTORY - 1))]), 0, NULL /*&context->regshistory[index & 0xFF]*/, lineBuf);
-		  fprintf(history,lineBuf);
-		  fprintf(history, "\n");
+		  /* SH2MappedMemoryReadWord takes the context as its first argument,
+		     so the old one-argument call meant this file did not compile at
+		     all with DMPHISTORY defined. The register dump was commented out
+		     for a related reason: regshistory was indexed with 0xFF instead
+		     of MAX_DMPHISTORY - 1. */
+		  u32 addr = context->pchistory[index & (MAX_DMPHISTORY - 1)];
+		  SH2Disasm(addr, SH2MappedMemoryReadWord(context, addr), 0,
+		            &context->regshistory[index & (MAX_DMPHISTORY - 1)], lineBuf);
+		  fprintf(history, "%s\n", lineBuf);
 		  index--;
 	    }
 		fclose(history);
