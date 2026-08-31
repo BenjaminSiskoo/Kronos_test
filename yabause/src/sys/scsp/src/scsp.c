@@ -4172,11 +4172,24 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     default:
       break;
     }
+    scsp_dsp.updated = 1;
     return;
   }
-  else if (a > 0xC00 && a <= 0xee2)
+  else if (a >= 0xEC0 && a <= 0xEDF)
+  {
+    u32 address = (a >> 1) & 0x1F;
+    u16 current_val = scsp_dsp.efreg[address];
+    if ((a & 0x1) == 0){
+      scsp_dsp.efreg[address] = (current_val & 0x00FF) | ((u16)d << 8);
+    }
+    else{
+      scsp_dsp.efreg[address] = (current_val & 0xFF00) | (u16)d;
+    }
+    return;
+  }
+  else if (a >= 0xC00 && a < 0xee4)
     {
-      SCSPLOG("WARNING: scsp dsp internal w_w to %08lx w/ %04x\n", a, d);
+      SCSPLOG("WARNING: scsp dsp internal w_b to %08lx w/ %02x\n", a, d);
       a &= 0x3ff;
       scsp_dcr[a ^ 3] = d;
       return;
@@ -4219,7 +4232,7 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
      scsp_dsp.coef[address] = d >> 3;//lower 3 bits seem to be discarded
      return;
   }
-  else if (a >= 0x780 && a < 0x7BF)
+  else if (a >= 0x780 && a < 0x7C0)
   {
      u32 address = (a - 0x780) / 2;
      scsp_dsp.madrs[address] = d;
