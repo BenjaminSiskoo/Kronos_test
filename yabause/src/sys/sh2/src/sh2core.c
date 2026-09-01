@@ -811,6 +811,102 @@ static int SH2HangWatchPollCount(SH2_struct *context)
    return n;
 }
 
+/* Names the thing behind a polled address. A wait loop is only readable once
+   you know whether it is spinning on the CD block, the SMPC, a VDP status bit,
+   its own free-running timer or a plain RAM flag. */
+static const char *SH2HangWatchWhat(u32 addr)
+{
+   u32 a = addr & 0x0FFFFFFF;
+
+   if (addr >= 0xFFFFFE00)
+   {
+      switch (addr)
+      {
+      case 0xFFFFFE10: return "SH2 TIER  (FRT interrupt enable)";
+      case 0xFFFFFE11: return "SH2 FTCSR (FRT status, bit7 = input capture)";
+      case 0xFFFFFE12:
+      case 0xFFFFFE13: return "SH2 FRC   (free-running counter)";
+      case 0xFFFFFE92: return "SH2 CCR   (cache control)";
+      }
+      return "SH2 on-chip register";
+   }
+
+   switch (a >> 20)
+   {
+   case 0x000: return "boot ROM";
+   case 0x001: if (a == 0x0010007F) return "SMPC SF (command busy flag)";
+               if (a >= 0x00100021 && a <= 0x0010005F) return "SMPC OREG (INTBACK result)";
+               return "SMPC";
+   case 0x002: return "Work RAM-L";
+   case 0x058:
+   case 0x059: if (a == 0x00589008) return "CD block HIRQ";
+               return "CD block";
+   case 0x05A:
+   case 0x05B: return "SCSP / sound RAM";
+   case 0x05C:
+   case 0x05D: if (a == 0x005D0010) return "VDP1 EDSR (draw end status)";
+               return "VDP1";
+   case 0x05E:
+   case 0x05F: if (a == 0x005F8004) return "VDP2 TVSTAT (bit3 VBLANK, bit2 HBLANK)";
+               if (a == 0x005FE0A4) return "SCU IST (interrupt status)";
+               if (a == 0x005FE0A0) return "SCU IMS (interrupt mask)";
+               if (a >= 0x005FE000) return "SCU register";
+               return "VDP2";
+   default: break;
+   }
+
+   if (a >= 0x06000000 && a < 0x06100000) return "Work RAM-H";
+   if (a >= 0x00200000 && a < 0x00300000) return "Work RAM-L";
+   return "unknown area";
+}
+
+/* Reads Work RAM straight out of the backing buffer. Going through the normal
+   read path would be wrong here: it can clear status bits and would perturb
+   the very state we are trying to describe. */
+static int SH2HangWatchPeek(u32 addr, u32 *out)
+{
+   u32 a = addr & 0x0FFFFFFF;
+
+   if (a >= 0x06000000 && a < 0x06100000 && HighWram != NULL)
+   {
+      *out = T2ReadLong(HighWram, a & 0xFFFFF);
+      return 1;
+   }
+   if (a >= 0x00200000 && a < 0x00300000 && LowWram != NULL)
+   {
+      *out = T2ReadLong(LowWram, a & 0xFFFFF);
+      return 1;
+   }
+   return 0;
+}
+
+/* The dual-CPU idle loop of TECH#28 5.1: the slave masks every interrupt
+   through SR and polls the FRT input capture flag until the master signals it.
+   A slave with nothing to do sits there permanently. It is the expected state,
+   not a hang, and reporting it hides whatever the master is really doing. */
+static int SH2HangWatchIsIdleSlave(SH2_struct *context)
+{
+   int i, n = 0;
+
+   if (!context->isslave)
+      return 0;
+   if (context->regs.VBR != 0x06000400)
+      return 0;
+   if (((context->regs.SR.all >> 4) & 0xF) != 0xF)
+      return 0;
+
+   for (i = 0; i < SH2_POLL_LOG; i++)
+   {
+      u32 a = context->hangWatch.pollAddr[i];
+      if (a == 0)
+         continue;
+      if (a != 0xFFFFFE11)
+         return 0;
+      n++;
+   }
+   return (n > 0);
+}
+
 void SH2HangWatchFormat(SH2_struct *context, char *buf, int size)
 {
    char regs[512];
@@ -835,11 +931,29 @@ void SH2HangWatchFormat(SH2_struct *context, char *buf, int size)
       int slot = (context->hangWatch.pollIdx + i) % SH2_POLL_LOG;
       if (context->hangWatch.pollAddr[slot] == 0)
          continue;
-      used += snprintf(buf + used, size - used, "  %08lX  (read from PC %08lX)\n",
-                       (unsigned long)context->hangWatch.pollAddr[slot],
-                       (unsigned long)context->hangWatch.pollPC[slot]);
+      u32 addr = context->hangWatch.pollAddr[slot];
+      u32 val;
+
+      if (SH2HangWatchPeek(addr, &val))
+         used += snprintf(buf + used, size - used,
+                          "  %08lX = %08lX  %s  (read from PC %08lX)\n",
+                          (unsigned long)addr, (unsigned long)val,
+                          SH2HangWatchWhat(addr),
+                          (unsigned long)context->hangWatch.pollPC[slot]);
+      else
+         used += snprintf(buf + used, size - used,
+                          "  %08lX             %s  (read from PC %08lX)\n",
+                          (unsigned long)addr, SH2HangWatchWhat(addr),
+                          (unsigned long)context->hangWatch.pollPC[slot]);
    }
+
+   if (used < size - 1)
+      used += snprintf(buf + used, size - used,
+         "\nThe loop exits when one of those values changes. A Work RAM-H\n"
+         "address is written by an interrupt handler or by the other SH2;\n"
+         "anything else is a hardware status register.\n");
 }
+
 
 void SH2HangWatchFrame(SH2_struct *context)
 {
@@ -919,6 +1033,13 @@ void SH2HangWatchFrame(SH2_struct *context)
    {
       context->hangWatch.frames = 0;
       context->hangWatch.armed = 0;
+      return;
+   }
+
+   /* An idle slave is not a hang: keep watching, but stay quiet. */
+   if (context->hangWatch.frames >= HANG_FRAMES && SH2HangWatchIsIdleSlave(context))
+   {
+      context->hangWatch.reported = 1;
       return;
    }
 
