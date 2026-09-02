@@ -32,6 +32,8 @@
 #include "yui.h"
 #include "sh2int_kronos.h"
 
+static int SH2IsRunawayCDTransfer(SH2_struct *context, int ch, u32 newchcr);
+
 SH2_struct *SSH2=NULL;
 SH2_struct *MSH2=NULL;
 SH2Interface_struct *SH2Core=NULL;
@@ -2118,6 +2120,10 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          context->onchip.TCR0 = val & 0xFFFFFF;
          return;
       case 0x18C:
+        if (SH2IsRunawayCDTransfer(context, 0, val)) {
+          context->onchip.CHCR0 = (val & ~1) | 0x2;   /* DE=0, TE=1 */
+          return;
+        }
         if (context->onchip.TCR0 != 0) {
           DMAProc(context, 0x7FFFFFFF);
         }
@@ -2144,6 +2150,10 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
          context->onchip.TCR1 = val & 0xFFFFFF;
          return;
       case 0x19C:
+        if (SH2IsRunawayCDTransfer(context, 1, val)) {
+          context->onchip.CHCR1 = (val & ~1) | 0x2;   /* DE=0, TE=1 */
+          return;
+        }
         if (context->onchip.TCR1 != 0) {
           DMAProc(context, 0x7FFFFFFF);
         }
@@ -3148,6 +3158,44 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// On-chip DMAC sanity check
+//////////////////////////////////////////////////////////////////////////////
+
+/* CD block data transfer register (ST162 sec. 1.3: everything read out of the
+   CD block goes through it). */
+#define SH2_CDBLOCK_DATA_AREA 0x05800000
+
+/* A transfer count of 0 legitimately means the maximum count of 16,777,216 on
+   the SH7604 (manual sec. 9.2.3), but no title asks for that when loading CD
+   sectors: the surrounding code loads one 2048-byte sector at a time. When the
+   count reaching the DMAC is 0, the channel walks 64 MB from the CD data
+   register, straight through VDP2 VRAM, CRAM, the VDP2 and SCU registers and
+   the whole of work RAM high, boot ROM vector table included. Independence Day
+   hits this and ends up with the display disabled and both CPUs executing
+   zeroes.
+   The count itself comes from the game, so this is not the real fix - that
+   belongs upstream, in what the CD block reports as available - but running
+   the transfer can only destroy the machine state, so refuse it. */
+static int SH2IsRunawayCDTransfer(SH2_struct *context, int ch, u32 newchcr)
+{
+   u32 sar, tcr, unit;
+   u64 bytes;
+
+   if ((newchcr & 0x3) != 0x1)          /* only a fresh DE=1 / TE=0 arming */
+      return 0;
+
+   sar = ch ? context->onchip.SAR1 : context->onchip.SAR0;
+   if (((sar & 0x0FF00000) != SH2_CDBLOCK_DATA_AREA))
+      return 0;
+
+   tcr  = (ch ? context->onchip.TCR1 : context->onchip.TCR0) & 0xFFFFFF;
+   unit = 1u << ((newchcr & 0x0C00) >> 10);      /* TS[11:10]: 1, 2, 4 or 16 */
+   bytes = (u64)(tcr == 0 ? 0x1000000u : tcr) * unit;
+
+   return (bytes > 0x100000);           /* larger than work RAM high */
+}
+
+//////////////////////////////////////////////////////////////////////////////
 // Input Capture Specific
 //////////////////////////////////////////////////////////////////////////////
 
@@ -3158,6 +3206,8 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 
 static void InputCaptureFire(SH2_struct *target, SH2_struct *context)
 {
+   if (target == NULL) return;
+
    FRTExec(target);
 
    // Set Input Capture Flag
@@ -3167,10 +3217,25 @@ static void InputCaptureFire(SH2_struct *target, SH2_struct *context)
    // Copy FRC register to FICR
    target->onchip.FICR = target->onchip.FRC.all;
 
-   //Ensure there is some delay between input capture flag and effective interrupt handling
-   //Docs says it takes around 4 instructions to accept an interrupt
-   //And some games like Scorcher are using this delay to write some usefull values for the slave
-   if ((context->target_cycles - context->cycles) < 10) context->target_cycles += 10;
+   /* context is NULL when the MINIT/SINIT write comes from a DMA:
+      DMAMappedMemoryWrite{Byte,Word,Long}() passes NULL to the handler, so
+      there is no issuing CPU whose slice could be stretched. Dereferencing it
+      crashed the emulator. The bug already existed on the "word" path, but
+      wiring up the byte and long handlers made it far more likely to be hit,
+      since SCU DMA transfers are mostly long. */
+   if (context != NULL)
+   {
+      /* Ensure there is some delay between input capture flag and effective
+         interrupt handling. Docs says it takes around 4 instructions to accept
+         an interrupt, and some games like Scorcher are using this delay to
+         write some usefull values for the slave.
+         The comparison must be signed: target_cycles - cycles is computed on
+         u32 and goes negative as soon as the CPU has overrun its target, in
+         which case the unsigned subtraction produced a huge value and the
+         stretch was silently skipped. */
+      if ((s32)(context->target_cycles - context->cycles) < 10)
+         context->target_cycles = context->cycles + 10;
+   }
 
    SH2EvaluateInterrupt(target);
 }
