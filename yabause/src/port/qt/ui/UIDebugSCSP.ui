@@ -124,6 +124,26 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_7">
      <item>
+      <widget class="QPushButton" name="pbExportFullReport">
+       <property name="toolTip">
+        <string>Export common control registers + all 32 slots + full DSP state (registers, COEF, MADRS, TEMP, MEMS, MIXS, EFREG, EXTS) into a single text file</string>
+       </property>
+       <property name="text">
+        <string>Export Full Debug Report...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pbExportSoundRam">
+       <property name="toolTip">
+        <string>Dump the raw 512KB SCSP sound RAM to a binary file</string>
+       </property>
+       <property name="text">
+        <string>Export Sound RAM...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QDialogButtonBox" name="dbbButtons">
        <property name="standardButtons">
         <set>QDialogButtonBox::Close</set>
