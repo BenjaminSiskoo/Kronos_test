@@ -626,6 +626,14 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
               trk[track_num-2].fad_end = trk[track_num-1].fad_start-1;
               CDLOG("End[%d] %d\n", track_num-1, trk[track_num-2].fad_end);
             }
+            // PREGAP ne s'applique qu'a la piste qui vient d'etre positionnee : une
+            // fois consomme il doit repartir a 0, sinon toute piste SUIVANTE sans
+            // PREGAP propre herite a tort du gap de la precedente (et les pistes
+            // qui declarent chacune leur propre PREGAP -- convention Redump courante
+            // pour des CDDA consecutives -- accumulent l'erreur piste apres piste :
+            // +2s, +4s, +6s..., ce qui finit par placer fad_start hors de la zone
+            // reelle du fichier -> pistes audio muettes/desalignees en fin de disque).
+            pregap = 0;
          }
       }
       else if (strncmp(temp_buffer, "PREGAP", 6) == 0)
@@ -948,6 +956,9 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
               trk[track_num-2].fad_end = trk[track_num-1].fad_start-1;
               CDLOG("End[%d] %d\n", track_num-1, trk[track_num-2].fad_end);
             }
+            // cf. LoadBinCue : un PREGAP ne s'applique qu'a la piste qui suit, il doit
+            // etre remis a 0 une fois consomme (sinon accumulation piste apres piste).
+            pregap = 0;
          }
       }
       else if (strncmp(temp_buffer, "PREGAP", 6) == 0)
