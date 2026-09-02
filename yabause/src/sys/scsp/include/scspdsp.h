@@ -21,6 +21,7 @@
 #define SCSPDSP_H
 
 #include "core.h"
+#include <stddef.h> // size_t, for ScspDspFullDebugStats
 
 #ifdef __cplusplus
 extern "C" {
@@ -170,8 +171,69 @@ union ScspDspInstruction {
 
 void ScspDspDisasm(u8 addr, char *outstring);
 void ScspDspExec(ScspDsp* dsp, int addr, u8 * sound_ram);
+void ScspDspDisassembleToFile(char * filename);
 
 extern ScspDsp scsp_dsp;
+
+//////////////////////////////////////////////////////////////////////////////
+// Debug support : code breakpoints on MPRO step address, single-step and
+// register/memory dumps. Mirrors the M68K (scsp.c) / SCU DSP (scu.c)
+// debug API so the Qt debugger windows (UIDebugSCSPDSP) can be filled in
+// the same way the M68K and SCU DSP ones already are.
+
+typedef struct
+{
+   u32 addr;
+} scspdspcodebreakpoint_struct;
+
+#define SCSPDSP_MAX_BREAKPOINTS 10
+
+// Callback fired (from the audio thread, inside the per-sample DSP program
+// loop in scsp.c) the first time execution reaches a breakpointed MPRO
+// step. Like M68KSetBreakpointCallBack/ScuDspSetBreakpointCallBack, the
+// UI side is expected to only queue a request to pause the emulation
+// thread from this callback, not to touch Qt widgets directly (wrong
+// thread).
+void ScspDspSetBreakpointCallBack(void (*func)(u32));
+int ScspDspAddCodeBreakpoint(u32 addr);
+void ScspDspSortCodeBreakpoints(void);
+int ScspDspDelCodeBreakpoint(u32 addr);
+void ScspDspClearCodeBreakpoints(void);
+scspdspcodebreakpoint_struct *ScspDspGetBreakpointList(void);
+int ScspDspGetNumCodeBreakpoints(void);
+
+// Called once per MPRO step (addr = 0..scsp_dsp.last_step-1) from the
+// scsp.c sample loop, right before ScspDspExec(). No-op (and effectively
+// free) as long as no breakpoint is set.
+void ScspDspCheckBreakpoints(u32 addr);
+
+// Debug single-stepping: executes exactly one MPRO instruction at the
+// tracked debug program counter (see ScspDspGetPC/ScspDspSetPC) and
+// advances/wraps it, independently from the normal per-sample execution
+// driven by scsp.c. Meant to be used while the emulator is paused, same
+// convention as ScuDspStep()/M68K stepInto in the debugger.
+void ScspDspStep(void);
+u32 ScspDspGetPC(void);
+void ScspDspSetPC(u32 addr);
+
+// Raw dumps of the DSP's internal memories/registers, for the debugger's
+// "Save ..." buttons (same idea as ScuDspSaveProgram/ScuDspSaveMD).
+int ScspDspSaveProgram(const char *filename);
+int ScspDspSaveCoef(const char *filename);
+int ScspDspSaveMadrs(const char *filename);
+int ScspDspSaveTemp(const char *filename);
+int ScspDspSaveMems(const char *filename);
+int ScspDspSaveMixs(const char *filename);
+
+// Full human-readable text dump of every DSP register and internal memory
+// (scalars + COEF/MADRS/TEMP/MEMS/MIXS/EFREG/EXTS), written into
+// "outstring" which must be at least "maxlen" bytes. Always NUL-terminated
+// and never writes past maxlen, regardless of how large maxlen actually is
+// -- callers should still size their buffer generously (~16-32KB is a
+// comfortable margin for the full 128-step TEMP + 64-word COEF dump).
+// Used by ScspSaveFullDebugReport() (scsp.c) to fold the whole DSP state
+// into a single combined debug report file alongside the 32 slots.
+void ScspDspFullDebugStats(char *outstring, size_t maxlen);
 
 #ifdef __cplusplus
 }
