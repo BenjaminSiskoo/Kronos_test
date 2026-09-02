@@ -1182,6 +1182,18 @@ void UIYabause::on_aViewDebugSCUDSP_triggered()
 	UIDebugSCUDSP( mYabauseThread, this ).exec();
 }
 
+// BUG CORRIGE : l'action de menu "aViewDebugSCSPDSP" existait dans UIYabause.ui
+// mais n'avait aucun slot on_aViewDebugSCSPDSP_triggered() connecte (absent du
+// .h et du .cpp) : cliquer sur "Debug SCSP DSP" dans le menu ne faisait donc
+// strictement rien. La seule facon d'atteindre UIDebugSCSPDSP etait via
+// breakpointHandlerSCSPDSP(), et meme ca ne pouvait jamais se declencher tant
+// que scspdsp.c n'exposait aucune API de breakpoint (voir ScspDspAddCodeBreakpoint).
+void UIYabause::on_aViewDebugSCSPDSP_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSCSPDSP( mYabauseThread, this ).exec();
+}
+
 void UIYabause::on_aViewDebugSCSP_triggered()
 {
 	YabauseLocker locker( mYabauseThread );
