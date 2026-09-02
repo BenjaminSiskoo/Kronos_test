@@ -110,6 +110,11 @@ int ScspSlotDebugSaveRegisters(u8 slotnum, const char *filename);
 u32 ScspSlotDebugAudio (u32 *workbuf, s16 *buf, u32 len);
 void ScspSlotResetDebug(u8 slotnum);
 int ScspSlotDebugAudioSaveWav(u8 slotnum, const char *filename);
+// Export complet (registres communs + 32 slots + DSP) dans un seul fichier
+// texte, et dump binaire brut de la RAM son (0x80000 octets). Voir
+// ScspDspFullDebugStats (scspdsp.h) pour la partie DSP du rapport.
+int ScspSaveFullDebugReport(const char *filename);
+int ScspSaveSoundRam(const char *filename);
 void ScspMuteAudio(int flags);
 void ScspUnMuteAudio(int flags);
 void ScspSetVolume(int volume);
