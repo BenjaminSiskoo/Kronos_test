@@ -550,6 +550,23 @@
     <string>SCU-&amp;DSP</string>
    </property>
   </action>
+  <!-- BUG CORRIGE : cette action etait seulement referencee par
+       <addaction name="aViewDebugSCSPDSP"/> dans le menu Debug, sans
+       jamais etre declaree ici. uic la creait donc "a la volee", sans
+       texte ni icone (entree de menu vide/invisible), et rien dans le
+       code ne pouvait s'y accrocher proprement. -->
+  <action name="aViewDebugSCSPDSP">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../resources/resources.qrc">
+     <normaloff>:/actions/icons/actions/debug_cpu.png</normaloff>:/actions/icons/actions/debug_cpu.png</iconset>
+   </property>
+   <property name="text">
+    <string>SCSP-&amp;DSP</string>
+   </property>
+  </action>
   <action name="aViewDebugSCSP">
    <property name="enabled">
     <bool>true</bool>
