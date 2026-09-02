@@ -207,3 +207,23 @@ void UIDebugSCSP::on_pbSaveSlotRegisters_clicked ()
       if (ScspSlotDebugSaveRegisters(sbSlotNumber->value(), s.toLatin1()) != 0)
 			CommonDialogs::error( QtYabause::translate( "An error occured while writing file." ) );
 }
+
+// Export complet : registres communs + les 32 slots + etat du DSP, en un
+// seul fichier texte -- pour capturer d'un coup l'etat de la puce sans
+// naviguer slot par slot (voir ScspSaveFullDebugReport, scsp.c).
+void UIDebugSCSP::on_pbExportFullReport_clicked ()
+{
+	const QString s = CommonDialogs::getSaveFileName( QString(), QtYabause::translate( "Choose a location for your report" ), QtYabause::translate( "Text Files (*.txt)" ) );
+	if ( !s.isEmpty() )
+		if (ScspSaveFullDebugReport(s.toLatin1()) != 0)
+			CommonDialogs::error( QtYabause::translate( "An error occured while writing file." ) );
+}
+
+// Dump binaire brut des 512Ko de RAM son SCSP (voir ScspSaveSoundRam, scsp.c).
+void UIDebugSCSP::on_pbExportSoundRam_clicked ()
+{
+	const QString s = CommonDialogs::getSaveFileName( QString(), QtYabause::translate( "Choose a location for your binary file" ), QtYabause::translate( "Binary Files (*.bin)" ) );
+	if ( !s.isEmpty() )
+		if (ScspSaveSoundRam(s.toLatin1()) != 0)
+			CommonDialogs::error( QtYabause::translate( "An error occured while writing file." ) );
+}
