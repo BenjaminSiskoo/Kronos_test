@@ -1491,7 +1491,10 @@ void generate_sample(struct Scsp * s, int rbp, int rbl, s16 * out_l, s16* out_r,
    }
 
    for (i = 0; i < scsp_dsp.last_step; i++)
+   {
+      ScspDspCheckBreakpoints((u32)i);
       ScspDspExec(&scsp_dsp, i, SoundRam);
+   }
 
    if (!scsp_dsp.mdec_ct){
      scsp_dsp.mdec_ct = (0x2000 << rbl);
@@ -4119,8 +4122,7 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     }
     return;
   }
-  else if (a >= 0x780 && a < 0x7C0)
-    {
+  else if (a >= 0x780 && a < 0x7C0){
     u32 address = (a - 0x780)>>1;
     u16 current_val = scsp_dsp.madrs[address];
     if ((a & 0x1) == 0){
@@ -4172,24 +4174,11 @@ scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
     default:
       break;
     }
-    scsp_dsp.updated = 1;
     return;
   }
-  else if (a >= 0xEC0 && a <= 0xEDF)
-  {
-    u32 address = (a >> 1) & 0x1F;
-    u16 current_val = scsp_dsp.efreg[address];
-    if ((a & 0x1) == 0){
-      scsp_dsp.efreg[address] = (current_val & 0x00FF) | ((u16)d << 8);
-    }
-    else{
-      scsp_dsp.efreg[address] = (current_val & 0xFF00) | (u16)d;
-    }
-    return;
-  }
-  else if (a >= 0xC00 && a < 0xee4)
+  else if (a > 0xC00 && a <= 0xee2)
     {
-      SCSPLOG("WARNING: scsp dsp internal w_b to %08lx w/ %02x\n", a, d);
+      SCSPLOG("WARNING: scsp dsp internal w_w to %08lx w/ %04x\n", a, d);
       a &= 0x3ff;
       scsp_dcr[a ^ 3] = d;
       return;
@@ -4232,7 +4221,7 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
      scsp_dsp.coef[address] = d >> 3;//lower 3 bits seem to be discarded
      return;
   }
-  else if (a >= 0x780 && a < 0x7C0)
+  else if (a >= 0x780 && a < 0x7BF)
   {
      u32 address = (a - 0x780) / 2;
      scsp_dsp.madrs[address] = d;
@@ -4266,7 +4255,7 @@ scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
      scsp_dsp.updated = 1;
      return;
   }
-  else if (a >= 0xEC0 && a <= 0xEDF)
+   else if (a >= 0xEC0 && a <= 0xEDF)
   {
      scsp_dsp.efreg[(a >> 1) & 0x1F] = d;
      return;
@@ -4342,7 +4331,7 @@ scsp_r_b (SH2_struct *context, UNUSED u8* m, u32 a)
     {
       if (a < 0x440) return scsp_get_b(a);
     }
-    else if (a < 0xee4)
+  else if (a < 0xee4)
     {
       /* Byte access to the DSP area: extract from the 16-bit register. */
       u16 val = scsp_r_w (context, m, a & ~1);
@@ -6761,6 +6750,83 @@ ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
   ywrite (&check, (void *)&length, 1, 4, fp);
   fclose (fp);
 
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+// Export complet : registres communs + les 32 slots + etat du DSP dans un
+// seul fichier texte lisible, en plus des exports individuels deja
+// existants (ScspSlotDebugStats/ScspSlotDebugSaveRegisters, un slot a la
+// fois). Pense pour capturer d'un coup l'etat complet de la puce (utile
+// pour deboguer a distance sans repasser slot par slot dans l'UI).
+int
+ScspSaveFullDebugReport(const char *filename)
+{
+  FILE *fp;
+  char tempstr[2048];
+  char *dspstr;
+  const size_t dspstr_size = 32768; // marge large : voir dimensionnement dans scspdsp.c
+  int i;
+
+  if (!filename)
+    return -1;
+
+  if (!HighWram)
+    return -1;
+
+  if ((fp = fopen(filename, "w")) == NULL)
+    return -1;
+
+  fprintf(fp, "==================================================\n");
+  fprintf(fp, "SCSP full debug report\n");
+  fprintf(fp, "==================================================\n\n");
+
+  fprintf(fp, "---- Common Control Registers ----\n");
+  ScspCommonControlRegisterDebugStats(tempstr);
+  fprintf(fp, "%s\n\n", tempstr);
+
+  for (i = 0; i < 32; i++)
+  {
+    fprintf(fp, "---- Slot %d ----\n", i);
+    ScspSlotDebugStats((u8)i, tempstr);
+    fprintf(fp, "%s\n\n", tempstr);
+  }
+
+  fprintf(fp, "---- DSP ----\n");
+  dspstr = (char *)malloc(dspstr_size);
+  if (dspstr)
+  {
+    ScspDspFullDebugStats(dspstr, dspstr_size);
+    fprintf(fp, "%s\n", dspstr);
+    free(dspstr);
+  }
+
+  fclose(fp);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Dump binaire brut de toute la RAM son SCSP (512Ko / 0x80000), pour
+// pouvoir inspecter hors-ligne les donnees d'echantillons pointees par
+// SA/LSA/LEA d'un slot donne (reperees dans ScspSaveFullDebugReport).
+int
+ScspSaveSoundRam(const char *filename)
+{
+  FILE *fp;
+
+  if (!filename)
+    return -1;
+
+  if (!SoundRam)
+    return -1;
+
+  if ((fp = fopen(filename, "wb")) == NULL)
+    return -1;
+
+  fwrite(SoundRam, 1, SCSP_RAM_SIZE, fp);
+  fclose(fp);
   return 0;
 }
 
