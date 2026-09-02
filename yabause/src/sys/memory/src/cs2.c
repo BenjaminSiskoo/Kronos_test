@@ -2606,7 +2606,18 @@ void Cs2GetSectorData(void)
       return;
    }
 
-   if (Cs2Area->partition[gsdbufno].numblocks == 0)
+   /* A request for zero sectors cannot be satisfied and must be rejected
+    * like any other unsatisfiable one. Independence Day polls with
+    * getSectorNumber and feeds the result straight back as the sector
+    * count, so it asks for zero on every iteration while it waits. We only
+    * rejected that while the partition was still empty; the moment a sector
+    * landed, a zero-sector request was accepted and DRDY was raised, so the
+    * game took its zero count to be valid and armed a zero-length SH2 DMA -
+    * which the SH7604 reads as the maximum count of 16,777,216 (manual sec.
+    * 9.2.3). The channel then walked 64 MB from the CD data register through
+    * VDP2 VRAM, CRAM, the VDP2 and SCU registers and all of work RAM high,
+    * leaving the display disabled and both CPUs executing zeroes. */
+   if (Cs2Area->reg.CR4 == 0 || Cs2Area->partition[gsdbufno].numblocks == 0)
    {
       CDLOG("No sectors available\n");
 
@@ -2720,7 +2731,18 @@ void Cs2GetThenDeleteSectorData(void)
       return;
    }
 
-   if (Cs2Area->partition[gtdsdbufno].numblocks == 0)
+   /* A request for zero sectors cannot be satisfied and must be rejected
+    * like any other unsatisfiable one. Independence Day polls with
+    * getSectorNumber and feeds the result straight back as the sector
+    * count, so it asks for zero on every iteration while it waits. We only
+    * rejected that while the partition was still empty; the moment a sector
+    * landed, a zero-sector request was accepted and DRDY was raised, so the
+    * game took its zero count to be valid and armed a zero-length SH2 DMA -
+    * which the SH7604 reads as the maximum count of 16,777,216 (manual sec.
+    * 9.2.3). The channel then walked 64 MB from the CD data register through
+    * VDP2 VRAM, CRAM, the VDP2 and SCU registers and all of work RAM high,
+    * leaving the display disabled and both CPUs executing zeroes. */
+   if (Cs2Area->reg.CR4 == 0 || Cs2Area->partition[gtdsdbufno].numblocks == 0)
    {
       CDLOG("No sectors available\n");
 
