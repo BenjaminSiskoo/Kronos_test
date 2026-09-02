@@ -56,6 +56,8 @@ protected slots:
    void on_sbSlotNumber_valueChanged ( int i );
    void on_pbSaveAsWav_clicked ();
    void on_pbSaveSlotRegisters_clicked ();
+   void on_pbExportFullReport_clicked ();
+   void on_pbExportSoundRam_clicked ();
 #ifdef HAVE_QT_MULTIMEDIA
 	void on_pbPlaySlot_clicked ();
 	void notified();
