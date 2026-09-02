@@ -17,6 +17,8 @@
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <stdio.h>
+#include <stdarg.h>
 #include "scsp.h"
 #include "scspdsp.h"
 
@@ -641,4 +643,314 @@ void ScspDspDisassembleToFile(char * filename)
    }
 
    fclose(fp);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Debug: breakpoints, single-step, memory dumps
+//
+// Same idioms as M68KAddCodeBreakpoint/M68KSortCodeBreakpoints/etc. in
+// scsp.c and ScuDspAddCodeBreakpoint/ScuDspStep in scu.c, so the Qt
+// debugger code can treat all three DSP/CPU debuggers uniformly.
+//////////////////////////////////////////////////////////////////////////////
+
+static scspdspcodebreakpoint_struct scspdsp_codebreakpoint[SCSPDSP_MAX_BREAKPOINTS];
+static int scspdsp_numcodebreakpoints = 0;
+static void (*ScspDspBreakpointCallBack)(u32) = NULL;
+static int scspdsp_inbreakpoint = 0;
+
+// Debug-only cursor used by ScspDspStep(); independent from the addr
+// argument the normal per-sample loop in scsp.c passes to ScspDspExec(),
+// so single-stepping in the debugger never disturbs real playback timing.
+static u32 scspdsp_debug_pc = 0;
+
+void ScspDspSetBreakpointCallBack(void (*func)(u32))
+{
+   ScspDspBreakpointCallBack = func;
+}
+
+int ScspDspAddCodeBreakpoint(u32 addr)
+{
+   int i;
+
+   if (addr > 0x7F)
+      return -1;
+
+   if (scspdsp_numcodebreakpoints < SCSPDSP_MAX_BREAKPOINTS)
+   {
+      // Make sure it isn't already on the list
+      for (i = 0; i < scspdsp_numcodebreakpoints; i++)
+      {
+         if (addr == scspdsp_codebreakpoint[i].addr)
+            return -1;
+      }
+
+      scspdsp_codebreakpoint[scspdsp_numcodebreakpoints].addr = addr;
+      scspdsp_numcodebreakpoints++;
+
+      return 0;
+   }
+
+   return -1;
+}
+
+void ScspDspSortCodeBreakpoints(void)
+{
+   int i, i2;
+   u32 tmp;
+
+   for (i = 0; i < (SCSPDSP_MAX_BREAKPOINTS - 1); i++)
+   {
+      for (i2 = i + 1; i2 < SCSPDSP_MAX_BREAKPOINTS; i2++)
+      {
+         if (scspdsp_codebreakpoint[i].addr == 0xFFFFFFFF &&
+             scspdsp_codebreakpoint[i2].addr != 0xFFFFFFFF)
+         {
+            tmp = scspdsp_codebreakpoint[i].addr;
+            scspdsp_codebreakpoint[i].addr = scspdsp_codebreakpoint[i2].addr;
+            scspdsp_codebreakpoint[i2].addr = tmp;
+         }
+      }
+   }
+}
+
+int ScspDspDelCodeBreakpoint(u32 addr)
+{
+   int i;
+
+   if (scspdsp_numcodebreakpoints > 0)
+   {
+      for (i = 0; i < scspdsp_numcodebreakpoints; i++)
+      {
+         if (scspdsp_codebreakpoint[i].addr == addr)
+         {
+            scspdsp_codebreakpoint[i].addr = 0xFFFFFFFF;
+            ScspDspSortCodeBreakpoints();
+            scspdsp_numcodebreakpoints--;
+            return 0;
+         }
+      }
+   }
+
+   return -1;
+}
+
+void ScspDspClearCodeBreakpoints(void)
+{
+   int i;
+
+   for (i = 0; i < SCSPDSP_MAX_BREAKPOINTS; i++)
+      scspdsp_codebreakpoint[i].addr = 0xFFFFFFFF;
+
+   scspdsp_numcodebreakpoints = 0;
+}
+
+scspdspcodebreakpoint_struct *ScspDspGetBreakpointList(void)
+{
+   return scspdsp_codebreakpoint;
+}
+
+int ScspDspGetNumCodeBreakpoints(void)
+{
+   return scspdsp_numcodebreakpoints;
+}
+
+void ScspDspCheckBreakpoints(u32 addr)
+{
+   int i;
+
+   // Cheap early-out: no breakpoints set, nothing to do. Keeps this call
+   // effectively free in the hot per-sample loop when no debugger is
+   // attached (same reasoning as m68kexecptr only switching to the
+   // breakpoint-checking M68KExecBP when a breakpoint actually exists).
+   if (scspdsp_numcodebreakpoints == 0)
+      return;
+
+   for (i = 0; i < scspdsp_numcodebreakpoints; i++)
+   {
+      if (scspdsp_codebreakpoint[i].addr == addr && scspdsp_inbreakpoint == 0)
+      {
+         scspdsp_inbreakpoint = 1;
+         if (ScspDspBreakpointCallBack)
+            ScspDspBreakpointCallBack(addr);
+         scspdsp_inbreakpoint = 0;
+      }
+   }
+}
+
+u32 ScspDspGetPC(void)
+{
+   return scspdsp_debug_pc;
+}
+
+void ScspDspSetPC(u32 addr)
+{
+   scspdsp_debug_pc = addr & 0x7F;
+}
+
+void ScspDspStep(void)
+{
+   u32 last_step = scsp_dsp.last_step ? (u32)scsp_dsp.last_step : 1;
+
+   if (scspdsp_debug_pc >= last_step)
+      scspdsp_debug_pc = 0;
+
+   ScspDspExec(&scsp_dsp, (int)scspdsp_debug_pc, SoundRam);
+
+   scspdsp_debug_pc++;
+   if (scspdsp_debug_pc >= last_step)
+      scspdsp_debug_pc = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static int ScspDspSaveBuffer(const char *filename, const void *data, size_t elemsize, size_t count)
+{
+   FILE *fp;
+
+   if (!filename)
+      return -1;
+
+   if ((fp = fopen(filename, "wb")) == NULL)
+      return -1;
+
+   fwrite(data, elemsize, count, fp);
+   fclose(fp);
+   return 0;
+}
+
+int ScspDspSaveProgram(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.mpro, sizeof(u64), 128);
+}
+
+int ScspDspSaveCoef(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.coef, sizeof(u16), 64);
+}
+
+int ScspDspSaveMadrs(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.madrs, sizeof(u16), 32);
+}
+
+int ScspDspSaveTemp(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.temp, sizeof(s32), 128);
+}
+
+int ScspDspSaveMems(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.mems, sizeof(s32), 32);
+}
+
+int ScspDspSaveMixs(const char *filename)
+{
+   return ScspDspSaveBuffer(filename, scsp_dsp.mixs, sizeof(s32), 16);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+// Small helper: appends via snprintf into *pos, tracking remaining space in
+// *remaining so we never write past the caller's buffer no matter how the
+// buffer was sized. Silently stops appending (rather than truncating mid
+// escape sequence or overflowing) once space runs out.
+static void appendf(char **pos, size_t *remaining, const char *fmt, ...)
+{
+   va_list args;
+   int written;
+
+   if (*remaining <= 1)
+      return; // only room left for (or already used up by) the NUL terminator
+
+   va_start(args, fmt);
+   written = vsnprintf(*pos, *remaining, fmt, args);
+   va_end(args);
+
+   if (written < 0)
+      return;
+
+   if ((size_t)written >= *remaining)
+   {
+      // vsnprintf truncated: consume the rest of the buffer and stop.
+      *pos += (*remaining - 1);
+      *remaining = 1;
+      return;
+   }
+
+   *pos += written;
+   *remaining -= (size_t)written;
+}
+
+void ScspDspFullDebugStats(char *outstring, size_t maxlen)
+{
+   char *pos = outstring;
+   size_t remaining = maxlen;
+   int i;
+
+   if (!outstring || maxlen == 0)
+      return;
+
+   outstring[0] = '\0';
+
+   appendf(&pos, &remaining, "--- Program ---\r\n");
+   appendf(&pos, &remaining, "Debug PC   = %02X (next step run by manual Step)\r\n", ScspDspGetPC());
+   appendf(&pos, &remaining, "last_step  = %d (active steps run per sample, HW max 128)\r\n", scsp_dsp.last_step);
+   appendf(&pos, &remaining, "mdec_ct    = %08X\r\n\r\n", scsp_dsp.mdec_ct);
+
+   appendf(&pos, &remaining, "--- Multiply / ALU pipeline ---\r\n");
+   appendf(&pos, &remaining, "INPUTS  = %08X (%d)\r\n", (unsigned int)scsp_dsp.inputs, scsp_dsp.inputs);
+   appendf(&pos, &remaining, "B       = %08X (%d)\r\n", (unsigned int)scsp_dsp.b, scsp_dsp.b);
+   appendf(&pos, &remaining, "X       = %08X (%d)\r\n", (unsigned int)scsp_dsp.x, scsp_dsp.x);
+   appendf(&pos, &remaining, "Y       = %04X (%d)\r\n", (unsigned short)scsp_dsp.y, scsp_dsp.y);
+   appendf(&pos, &remaining, "Y_REG   = %08X (%d)\r\n", (unsigned int)scsp_dsp.y_reg, scsp_dsp.y_reg);
+   appendf(&pos, &remaining, "MUL_OUT = %08X (%d)\r\n", (unsigned int)scsp_dsp.mul_out, scsp_dsp.mul_out);
+   appendf(&pos, &remaining, "ACC     = %08X (%d)\r\n", (unsigned int)scsp_dsp.acc, scsp_dsp.acc);
+   appendf(&pos, &remaining, "SHIFTED = %08X (%d)\r\n\r\n", (unsigned int)scsp_dsp.shifted, scsp_dsp.shifted);
+
+   appendf(&pos, &remaining, "--- Ring buffer memory access (MRD/MWT) ---\r\n");
+   appendf(&pos, &remaining, "FRC_REG   = %04X\r\n", scsp_dsp.frc_reg);
+   appendf(&pos, &remaining, "ADRS_REG  = %04X\r\n", scsp_dsp.adrs_reg);
+   appendf(&pos, &remaining, "RBP       = %08X\r\n", (unsigned int)scsp_dsp.rbp);
+   appendf(&pos, &remaining, "RBL       = %08X\r\n", (unsigned int)scsp_dsp.rbl);
+   appendf(&pos, &remaining, "MRD_VALUE = %08X\r\n", scsp_dsp.mrd_value);
+   appendf(&pos, &remaining, "SHIFT_REG = %08X\r\n\r\n", scsp_dsp.shift_reg);
+
+   appendf(&pos, &remaining, "--- Pending I/O (EWA/EWT) ---\r\n");
+   appendf(&pos, &remaining, "io_addr       = %08X\r\n", scsp_dsp.io_addr);
+   appendf(&pos, &remaining, "need_read     = %d\r\n", scsp_dsp.need_read);
+   appendf(&pos, &remaining, "need_write    = %d\r\n", scsp_dsp.need_write);
+   appendf(&pos, &remaining, "write_data    = %04X\r\n", scsp_dsp.write_data);
+   appendf(&pos, &remaining, "need_nofl     = %d\r\n", scsp_dsp.need_nofl);
+   appendf(&pos, &remaining, "read_pending  = %d\r\n", scsp_dsp.read_pending);
+   appendf(&pos, &remaining, "write_pending = %d\r\n", scsp_dsp.write_pending);
+   appendf(&pos, &remaining, "read_value    = %08X\r\n", scsp_dsp.read_value);
+   appendf(&pos, &remaining, "write_value   = %08X\r\n", scsp_dsp.write_value);
+   appendf(&pos, &remaining, "updated       = %d\r\n\r\n", scsp_dsp.updated);
+
+   appendf(&pos, &remaining, "--- COEF (64 x 16-bit) ---\r\n");
+   for (i = 0; i < 64; i++)
+      appendf(&pos, &remaining, "%3d: %04X%s", i, scsp_dsp.coef[i], ((i % 8) == 7) ? "\r\n" : "  ");
+   appendf(&pos, &remaining, "\r\n\r\n--- MADRS (32 x 16-bit) ---\r\n");
+   for (i = 0; i < 32; i++)
+      appendf(&pos, &remaining, "%3d: %04X%s", i, scsp_dsp.madrs[i], ((i % 8) == 7) ? "\r\n" : "  ");
+
+   appendf(&pos, &remaining, "\r\n\r\n--- TEMP (128 x 32-bit) ---\r\n");
+   for (i = 0; i < 128; i++)
+      appendf(&pos, &remaining, "%3d: %08X%s", i, (unsigned int)scsp_dsp.temp[i], ((i % 4) == 3) ? "\r\n" : "   ");
+
+   appendf(&pos, &remaining, "\r\n\r\n--- MEMS (32 x 32-bit) ---\r\n");
+   for (i = 0; i < 32; i++)
+      appendf(&pos, &remaining, "%2d: %08X%s", i, (unsigned int)scsp_dsp.mems[i], ((i % 4) == 3) ? "\r\n" : "   ");
+
+   appendf(&pos, &remaining, "\r\n\r\n--- MIXS (16 x 32-bit) ---\r\n");
+   for (i = 0; i < 16; i++)
+      appendf(&pos, &remaining, "%2d: %08X\r\n", i, (unsigned int)scsp_dsp.mixs[i]);
+
+   appendf(&pos, &remaining, "\r\n--- EFREG (16 x 16-bit) ---\r\n");
+   for (i = 0; i < 16; i++)
+      appendf(&pos, &remaining, "%2d: %04X (%d)\r\n", i, (unsigned short)scsp_dsp.efreg[i], scsp_dsp.efreg[i]);
+
+   appendf(&pos, &remaining, "\r\n--- EXTS (2 x 16-bit) ---\r\n");
+   appendf(&pos, &remaining, "0: %04X (%d)\r\n", (unsigned short)scsp_dsp.exts[0], scsp_dsp.exts[0]);
+   appendf(&pos, &remaining, "1: %04X (%d)\r\n", (unsigned short)scsp_dsp.exts[1], scsp_dsp.exts[1]);
 }
