@@ -21,24 +21,51 @@
 
 #include "UIDebugCPU.h"
 #include "../QtYabause.h"
+#include <QTabWidget>
+#include <QPlainTextEdit>
 
+// Etait un stub quasi vide (updateRegList/getRegister/etc. tous no-op,
+// pas de breakpoints, pas de step, aucun onglet mémoire) alors que le
+// debugger SCU DSP voisin (UIDebugSCUDSP) est complet. Réécrit sur le
+// même modèle : liste de registres DSP réels, onglets COEF/MADRS/TEMP/
+// MEMS-MIXS-EFREG, breakpoints et step branchés sur la nouvelle API
+// ScspDsp* de scspdsp.c/.h, boutons Save.
 class UIDebugSCSPDSP : public UIDebugCPU
 {
 	Q_OBJECT
-private:
 
 public:
-	UIDebugSCSPDSP( YabauseThread *mYabauseThread, QWidget* parent = 0 );
-   void updateRegList();
-   void updateCodeList(u32 addr);
-   u32 getRegister(int index, int *size);
-   void setRegister(int index, u32 value);
-   bool addCodeBreakpoint(u32 addr);
-   bool delCodeBreakpoint(u32 addr);
-   void stepInto();
-protected:
+	explicit UIDebugSCSPDSP( YabauseThread *mYabauseThread, QWidget* parent = 0 );
+
+	void updateRegList();
+	void updateCodeList(u32 addr);
+	void updateAll();          // pas virtuelle dans UIDebugCPU, appelée explicitement
+	u32 getRegister(int index, int *size);
+	void setRegister(int index, u32 value);
+	bool addCodeBreakpoint(u32 addr);
+	bool delCodeBreakpoint(u32 addr);
+	void stepInto();
+
+	// Boutons réservés -> fonctions Save (pbReserved1-5)
+	void reserved1();   // Save Program (MPRO)
+	void reserved2();   // Save COEF
+	void reserved3();   // Save MADRS
+	void reserved4();   // Save TEMP
+	void reserved5();   // Save MEMS
+
+private:
+	QString formatRegisterList() const;
+	QString formatCoefMadrs() const;
+	QString formatTemp() const;
+	QString formatMemsMixsEfreg() const;
+
+	QTabWidget     *m_tabExtra;
+	QPlainTextEdit *m_pteCoefMadrs;
+	QPlainTextEdit *m_pteTemp;
+	QPlainTextEdit *m_pteMems;
 
 protected slots:
+	void onTabChanged(int idx);
 };
 
 #endif // UIDEBUGSCSPDSP_H
