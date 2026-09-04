@@ -24,6 +24,7 @@
     \brief SH2 interpreter interface
 */
 
+#include <stdlib.h>
 #include "sh2core.h"
 #include "cs0.h"
 #include "debug.h"
@@ -492,8 +493,15 @@ static INLINE void SH2UBCInterrupt(SH2_struct *context, u32 flag)
    context->onchip.BRCR |= flag;
 }
 
+static int chargeFetch = -1;
+
+void SH2KronosSetFetchCost(void) {
+  if (chargeFetch < 0) chargeFetch = (getenv("KRONOS_NO_FETCH_COST") == NULL);
+}
+
 FASTCALL void SH2KronosInterpreterExec(SH2_struct *context, u32 cycles)
 {
+  if (chargeFetch < 0) SH2KronosSetFetchCost();
   context->target_cycles = context->cycles + cycles;
     SH2HandleInterrupts(context);
   while ((context->cycles < context->target_cycles) || (context->doNotInterrupt != 0)) {
@@ -501,7 +509,29 @@ FASTCALL void SH2KronosInterpreterExec(SH2_struct *context, u32 cycles)
     //NOTE: it can happen that next cachecode is generating a SH2HandleInterrupts which is normally forbidden when context->doNotInterrupt is not 0
     //Not sure it has a functionnal effect anyway
     // if (context == SSH2) YuiMsg("%x\n", context->regs.PC);
-    u32 id = cacheId[(context->regs.PC >> 20) & 0xFFF];
+    /* Perform the instruction fetch for its side effects, then dispatch
+     * through the decoded-handler cache.
+     *
+     * The fetch is not free in emulated time. HighWramMemoryReadWord() adds 2
+     * cycles on a DRAM row change and LowWramMemoryReadWord() adds 4, and
+     * SH2ReadWordRaw() calls SH2UpdateABusAccess(), which drives isBlocked.
+     * This loop dispatched straight from the cache without fetching, so the
+     * performance core charged nothing for any instruction fetch and its
+     * emulated clock ran ahead of the debug core's on the same code.
+     *
+     * That matters because the two SH2s are interleaved in blocks of
+     * MIN_STEP_RUN cycles rather than instruction by instruction: a cycle
+     * count that is systematically short moves where the block boundaries
+     * fall, and games whose master and slave share an unguarded structure
+     * lose the race. Kamen Rider and Space Jam both run on the debug core,
+     * which refetches every instruction and so pays the cost.
+     *
+     * The cache still saves the decode; only the fetch is paid back. */
+    u32 page = (context->regs.PC >> 20) & 0xFFF;
+    u32 id = cacheId[page];
+    /* KRONOS_NO_FETCH_COST restores the old behaviour at runtime, so a
+       regression can be pinned on this change without rebuilding. */
+    if (chargeFetch) (void)krfetchlist[page](context, context->regs.PC);
     cacheCode[context->isslave][id][(context->regs.PC >> 1) & cacheMask[id]](context);
   }
   context->target_cycles = 0;
