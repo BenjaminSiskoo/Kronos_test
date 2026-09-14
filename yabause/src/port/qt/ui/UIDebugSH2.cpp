@@ -38,6 +38,9 @@
 #include <QFile>
 #include <QTextStream>
 #include <QStringList>
+#include <QLabel>
+#include <QColor>
+#include <QListWidgetItem>
 #include <string.h>
 
 int SH2Dis(SH2_struct *context, u32 addr, char *string)
@@ -1264,19 +1267,57 @@ void SH2BreakpointHandler (SH2_struct *context, u32 addr, void *userdata)
 UIDebugSH2::UIDebugSH2(UIDebugCPU::PROCTYPE proc, YabauseThread *mYabauseThread, QWidget* p )
 	: UIDebugCPU( proc, mYabauseThread, p )
 {
+	// Master and Slave each get their own accent colour + banner text.
+	// The two debug windows are otherwise near pixel-identical, and with
+	// both open side by side (the normal way to chase a dual-CPU sync
+	// bug) the only difference used to be a few words in the title bar.
+	QString procBannerText;
+	QString procTooltip;
+	QString accentColor;
+
 	switch (proc)
 	{
 		case UIDebugCPU::PROC_MSH2:
 			this->setWindowTitle(QtYabause::translate("Debug Master SH2"));
-			gbRegisters->setTitle(QtYabause::translate("SH2 Registers"));
+			gbRegisters->setTitle(QtYabause::translate("Master SH2 Registers"));
 			debugSH2 = MSH2;
+			procBannerText = QtYabause::translate("MASTER SH2");
+			procTooltip = QtYabause::translate(
+				"The Master SH2 is always running: it is the core the boot ROM "
+				"starts first and, by default, the one with bus priority when "
+				"both SH-2s access the same resource at once. Most games run "
+				"the bulk of their logic here.");
+			accentColor = "#1f6feb"; // blue
 			break;
 		case UIDebugCPU::PROC_SSH2:
 			this->setWindowTitle(QtYabause::translate("Debug Slave SH2"));
-			gbRegisters->setTitle(QtYabause::translate("SH2 Registers"));
+			gbRegisters->setTitle(QtYabause::translate("Slave SH2 Registers"));
 			debugSH2 = SSH2;
+			procBannerText = QtYabause::translate("SLAVE SH2");
+			procTooltip = QtYabause::translate(
+				"The Slave SH2 is idle until a game explicitly starts it (see "
+				"the Sega Saturn Dual CPU User's Guide). Titles that use it "
+				"typically offload a second, parallel workload here rather "
+				"than running unrelated code to the Master SH2.");
+			accentColor = "#e8823a"; // orange
 			break;
 		default: break;
+	}
+
+	if (!procBannerText.isEmpty())
+	{
+		// Coloured banner across the top of the window plus a matching
+		// frame around the whole dialog: both are visible even from a
+		// glance at two tiled windows, well before anyone reads a title.
+		QLabel *procBanner = new QLabel(procBannerText, this);
+		procBanner->setAlignment(Qt::AlignCenter);
+		procBanner->setToolTip(procTooltip);
+		procBanner->setStyleSheet(QString(
+			"QLabel { background-color: %1; color: white; font-weight: bold; padding: 4px; }"
+			).arg(accentColor));
+		if (verticalLayout_13)
+			verticalLayout_13->insertWidget(0, procBanner);
+		this->setStyleSheet(QString("QDialog#UIDebugCPU { border: 2px solid %1; }").arg(accentColor));
 	}
 
 	lwDisassembledCode->setContext(debugSH2);
@@ -1375,39 +1416,110 @@ void UIDebugSH2::updateRegList()
    SH2GetRegisters(debugSH2, &sh2regs);
    lwRegisters->clear();
 
+   // A value that differs from the previous refresh is drawn in this
+   // colour, so a single Step Into/Over/Out (or a breakpoint hit) shows
+   // at a glance which registers actually moved instead of requiring a
+   // line-by-line comparison against what was there before.
+   static const QColor changedColor(255, 90, 90);
+
+   auto addReg = [&](const QString &text, u32 newVal, u32 oldVal, const QString &tooltip)
+   {
+      QListWidgetItem *item = new QListWidgetItem(text);
+      if (havePrevRegs && newVal != oldVal)
+         item->setForeground(changedColor);
+      if (!tooltip.isEmpty())
+         item->setToolTip(tooltip);
+      lwRegisters->addItem(item);
+   };
+
    for (i = 0; i < 16; i++)
    {
       str.sprintf("R%02d =  %08X", i, (int)sh2regs.R[i]);
-      lwRegisters->addItem(str);
+      QString tip = (i == 15)
+         ? QtYabause::translate(
+              "General-purpose register R15.\n"
+              "By convention this doubles as the SH-2 hardware stack "
+              "pointer (SP): the CPU pushes/pops it on exceptions and "
+              "interrupts, and compiled code uses it the same way for "
+              "the call stack.")
+         : QtYabause::translate(
+              "General-purpose register.\n"
+              "Holds data or an address; used freely by compiled code "
+              "and by any SH-2 instruction that takes a register "
+              "operand.");
+      addReg(str, sh2regs.R[i], prevRegs.R[i], tip);
    }
 
-   // SR
+   // SR - decoded inline so the flags that matter for a divide sequence
+   // (Q/M), MAC saturation (S) or a comparison/carry (T) don't need to
+   // be worked out by hand from the raw bit pattern.
    str.sprintf("SR =   %08X", (int)sh2regs.SR.all);
-   lwRegisters->addItem(str);
+   str += QString("  T=%1 S=%2 Q=%3 M=%4 I=%5")
+      .arg((int)sh2regs.SR.part.T)
+      .arg((int)sh2regs.SR.part.S)
+      .arg((int)sh2regs.SR.part.Q)
+      .arg((int)sh2regs.SR.part.M)
+      .arg((int)sh2regs.SR.part.I, 2, 10, QChar('0'));
+   addReg(str, sh2regs.SR.all, prevRegs.SR.all, QtYabause::translate(
+      "Status Register (SR).\n"
+      "T - test/compare result; also the carry/borrow flag for shift "
+      "and add/sub-with-carry instructions.\n"
+      "S - selects saturating vs. wraparound behaviour for the MAC "
+      "instruction's result.\n"
+      "Q, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit "
+      "divide out of 1-bit steps; meaningless outside a divide sequence.\n"
+      "I3-I0 - current interrupt mask level (0-15); interrupt requests "
+      "at or below this priority are held pending."));
 
    // GBR
    str.sprintf("GBR =  %08X", (int)sh2regs.GBR);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.GBR, prevRegs.GBR, QtYabause::translate(
+      "Global Base Register (GBR).\n"
+      "Base address used by GBR-relative addressing: MOV.B/W/L "
+      "@(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST "
+      "all compute their effective address from this register."));
 
    // VBR
    str.sprintf("VBR =  %08X", (int)sh2regs.VBR);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.VBR, prevRegs.VBR, QtYabause::translate(
+      "Vector Base Register (VBR).\n"
+      "Base address of the exception/interrupt vector table: vector n "
+      "is the 32-bit handler address stored at VBR + n*4. Normally set "
+      "once by the boot ROM/BIOS and left alone by game code."));
 
    // MACH
    str.sprintf("MACH = %08X", (int)sh2regs.MACH);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.MACH, prevRegs.MACH, QtYabause::translate(
+      "Multiply-and-Accumulate register, high 32 bits.\n"
+      "Written together with MACL by the MAC.W/MAC.L instructions; the "
+      "S bit in SR selects whether the MACH:MACL pair saturates or "
+      "wraps on overflow."));
 
    // MACL
    str.sprintf("MACL = %08X", (int)sh2regs.MACL);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.MACL, prevRegs.MACL, QtYabause::translate(
+      "Multiply-and-Accumulate register, low 32 bits.\n"
+      "Also used as an ordinary 32-bit result register by MUL.L, "
+      "DMULS.L and DMULU.L, which only ever write MACH:MACL."));
 
    // PR
    str.sprintf("PR =   %08X", (int)sh2regs.PR);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.PR, prevRegs.PR, QtYabause::translate(
+      "Procedure Register (PR).\n"
+      "Return address saved by BSR/BSRF/JSR; RTS jumps to whatever is "
+      "stored here. The closest thing the SH-2 has to a hardware link "
+      "register."));
 
    // PC
    str.sprintf("PC =   %08X", (int)sh2regs.PC);
-   lwRegisters->addItem(str);
+   addReg(str, sh2regs.PC, prevRegs.PC, QtYabause::translate(
+      "Program Counter (PC).\n"
+      "Address of the instruction about to execute (delay slots are "
+      "already accounted for). This is what a code breakpoint compares "
+      "against."));
+
+   prevRegs = sh2regs;
+   havePrevRegs = true;
 }
 
 void UIDebugSH2::updateCodeList(u32 addr)
