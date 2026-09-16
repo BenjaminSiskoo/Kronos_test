@@ -256,7 +256,27 @@ int Vdp1LoadState(const void * stream, int version, int size);
 u32 Vdp1DebugGetCommandAddr(u32 number);
 char *Vdp1DebugGetCommandNumberName(u32 addr);
 char *Vdp1DebugGetCommandRaw(u32 addr);
+/* Capture de la table de commandes au declenchement du trace. L'interface de
+ * debogue active la capture tant qu'elle est ouverte, puis lit l'instantane
+ * plutot que la VRAM vivante : c'est la liste effectivement tracee pour la
+ * derniere trame, et non ce que le jeu est en train de reconstruire.
+ * Vdp1DebugGetFrameRam() renvoie NULL tant qu'aucune trame n'a ete capturee. */
+void Vdp1DebugSetCapture(int enable);
+u8 *Vdp1DebugGetFrameRam(void);
+
+Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr);
 Vdp1CommandType Vdp1DebugGetCommandType(u32 number);
+/* Variantes adressees : l'appelant fournit l'adresse de la commande obtenue
+ * une seule fois via Vdp1DebugGetCommandAddr(). Elles evitent de reparcourir
+ * la table a chaque appel et garantissent que le nom, le detail et la texture
+ * portent bien sur la MEME commande, meme si le jeu reecrit sa liste entre
+ * deux rafraichissements de l'interface. */
+void Vdp1DebugCommandAtAddr(u32 addr, char *outstring);
+u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h);
+u8 *Vdp1DebugRawTextureAtAddr(u32 addr, int *w, int *h, int *numBytes);
+
+/* Variantes historiques a base de rang, conservees pour les appelants qui
+ * n'ont pas l'adresse sous la main. */
 void Vdp1DebugCommand(u32 number, char *outstring);
 u32 *Vdp1DebugTexture(u32 number, int *w, int *h);
 u8 *Vdp1DebugRawTexture(u32 number, int *w, int *h, int *numBytes);

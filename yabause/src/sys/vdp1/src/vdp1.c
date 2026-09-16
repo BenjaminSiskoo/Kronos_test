@@ -774,9 +774,55 @@ static void updateFBCRVBE() {
 	Vdp1External.useVBlankErase = decodeFBCRMode() & 0x1;
 }
 
+/* Instantane de la VRAM VDP1 pris au declenchement du trace.
+ *
+ * Un debogueur doit montrer la liste de commandes REELLEMENT tracee, pas
+ * l'etat de la VRAM a l'instant ou l'on ouvre la fenetre. Un jeu qui
+ * reconstruit sa table a chaque trame -- Doom, par exemple -- a souvent,
+ * au moment ou on regarde, deja remis sa liste a zero : on ne voit plus
+ * qu'un polygone d'effacement suivi d'un END, alors que la trame affichee
+ * a l'ecran a bien ete tracee a partir de plusieurs dizaines de commandes.
+ *
+ * La copie n'est faite que si l'interface de debogue l'a demandee
+ * (Vdp1DebugSetCapture), pour ne pas payer un memcpy de 512 Ko par trame
+ * en fonctionnement normal. */
+static u8 *Vdp1DebugFrameRam = NULL;
+static int Vdp1DebugCaptureEnabled = 0;
+static int Vdp1DebugFrameValid = 0;
+
+void Vdp1DebugSetCapture(int enable)
+{
+   Vdp1DebugCaptureEnabled = enable;
+   if (!enable) {
+      free(Vdp1DebugFrameRam);
+      Vdp1DebugFrameRam = NULL;
+      Vdp1DebugFrameValid = 0;
+   }
+}
+
+u8 *Vdp1DebugGetFrameRam(void)
+{
+   return Vdp1DebugFrameValid ? Vdp1DebugFrameRam : NULL;
+}
+
+static void Vdp1DebugCaptureFrame(void)
+{
+   if (!Vdp1DebugCaptureEnabled || (Vdp1Ram == NULL))
+      return;
+   if (Vdp1DebugFrameRam == NULL)
+      Vdp1DebugFrameRam = (u8 *)malloc(0x80000);
+   if (Vdp1DebugFrameRam == NULL)
+      return;
+   memcpy(Vdp1DebugFrameRam, Vdp1Ram, 0x80000);
+   Vdp1DebugFrameValid = 1;
+}
+
 static void Vdp1TryDraw(void) {
   if ((yabsys.LineCount >= yabsys.MaxLineCount-2) && (yabsys.LineCount <= yabsys.MaxLineCount-1)) return;
   if ((oldNeedVdp1draw == 0) && (needVdp1draw != 0)) {
+    /* Transition 0 -> 1 : une nouvelle passe de trace commence, la table de
+     * commandes est dans son etat definitif pour cette trame. */
+    Vdp1DebugCaptureFrame();
     FRAMELOG("Shift EDSR\n");
     Vdp1Regs->EDSR >>= 1;
     checkFBSync();
@@ -2548,10 +2594,9 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
 
 //////////////////////////////////////////////////////////////////////////////
 
-Vdp1CommandType Vdp1DebugGetCommandType(u32 number)
+Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr)
 {
-   u32 addr;
-   if ((addr = Vdp1DebugGetCommandNumberAddr(number)) != 0xFFFFFFFF)
+   if (addr != 0xFFFFFFFF)
    {
       const u16 command = T1ReadWord(Vdp1Ram, addr);
       if (command & 0x8000)
@@ -2561,6 +2606,11 @@ Vdp1CommandType Vdp1DebugGetCommandType(u32 number)
    }
 
    return VDPCT_INVALID;
+}
+
+Vdp1CommandType Vdp1DebugGetCommandType(u32 number)
+{
+   return Vdp1DebugGetCommandTypeAtAddr(Vdp1DebugGetCommandNumberAddr(number));
 }
 
 u32 Vdp1DebugGetCommandAddr(u32 number) {
@@ -2652,13 +2702,21 @@ char *Vdp1DebugGetCommandNumberName(u32 addr)
 
 //////////////////////////////////////////////////////////////////////////////
 
-void Vdp1DebugCommand(u32 number, char *outstring)
+/* Les trois fonctions de detail ci-dessous prennent desormais une ADRESSE
+ * de commande plutot qu'un rang dans la liste. Le rang n'est pas stable :
+ * il oblige a reparcourir toute la table a chaque appel (O(n^2) sur le
+ * remplissage de la liste) et, surtout, un jeu qui reconstruit sa table a
+ * chaque trame -- Doom par exemple -- decale les entrees entre l'instant
+ * ou l'interface remplit sa liste et l'instant ou l'utilisateur clique.
+ * Le nom affiche et le detail portaient alors sur deux commandes
+ * differentes. Les variantes historiques a base de rang restent
+ * disponibles, implementees au-dessus des nouvelles. */
+void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
 {
    u16 command;
    vdp1cmd_struct cmd;
-   u32 addr;
 
-   if ((addr = Vdp1DebugGetCommandNumberAddr(number)) == 0xFFFFFFFF)
+   if (addr == 0xFFFFFFFF)
       return;
 
    command = T1ReadWord(Vdp1Ram, addr);
@@ -3173,11 +3231,10 @@ static INLINE int DoEndcode(int count, u32 *charAddr, u32 **textdata, int width,
 
 //////////////////////////////////////////////////////////////////////////////
 
-u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
+u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
 {
    u16 command;
    vdp1cmd_struct cmd;
-   u32 addr;
    u32 *texture;
    u32 charAddr;
    u32 dot;
@@ -3188,7 +3245,7 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
    int code=0;
    int ret;
 
-   if ((addr = Vdp1DebugGetCommandNumberAddr(number)) == 0xFFFFFFFF)
+   if (addr == 0xFFFFFFFF)
       return NULL;
 
    command = T1ReadWord(Vdp1Ram, addr);
@@ -3580,17 +3637,16 @@ u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
    return texture;
 }
 
-u8 *Vdp1DebugRawTexture(u32 cmdNumber, int *width, int *height, int *numBytes)
+u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numBytes)
 {
    u16 cmdRaw;
    vdp1cmd_struct cmd;
-   u32 cmdAddress;
    u8 *texture = NULL;
 
    // Initial number of bytes written to texture
    *numBytes = 0;
 
-   if ((cmdAddress = Vdp1DebugGetCommandNumberAddr(cmdNumber)) == 0xFFFFFFFF)
+   if (cmdAddress == 0xFFFFFFFF)
       return NULL;
 
    cmdRaw = T1ReadWord(Vdp1Ram, cmdAddress);
@@ -3901,4 +3957,29 @@ void Vdp1SwitchFrame(void)
   } else {
     Vdp1Regs->EDSR >>= 1;
   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Variantes historiques a base de rang dans la liste de commandes.
+//
+// Elles resolvent l'adresse une fois puis delèguent aux fonctions ci-dessus.
+// A n'utiliser que lorsque l'appelant n'a pas deja l'adresse sous la main :
+// chaque appel reparcourt la table depuis l'adresse 0, et rien ne garantit
+// que la table n'a pas bouge depuis le moment ou le rang a ete calcule.
+//////////////////////////////////////////////////////////////////////////////
+
+void Vdp1DebugCommand(u32 number, char *outstring)
+{
+   Vdp1DebugCommandAtAddr(Vdp1DebugGetCommandNumberAddr(number), outstring);
+}
+
+u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
+{
+   return Vdp1DebugTextureAtAddr(Vdp1DebugGetCommandNumberAddr(number), w, h);
+}
+
+u8 *Vdp1DebugRawTexture(u32 cmdNumber, int *width, int *height, int *numBytes)
+{
+   return Vdp1DebugRawTextureAtAddr(Vdp1DebugGetCommandNumberAddr(cmdNumber),
+                                    width, height, numBytes);
 }
