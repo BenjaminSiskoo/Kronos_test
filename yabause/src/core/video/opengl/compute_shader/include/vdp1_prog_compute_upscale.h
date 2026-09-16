@@ -388,8 +388,13 @@ SHADER_VERSION_COMPUTE
 
 "vec4 ReadSpriteColor(cmdparameter_struct pixcmd, vec2 uv, vec2 texel, out bool discarded){\n"
 "  vec4 color = vec4(0.0);\n"
-"  uint y = uint(floor((pixcmd.h)*uv.y));\n"
-"  uint x = uint(uv.x*(pixcmd.w));\n"
+/* Meme borne que dans getColor() du chemin non-upscale : isOnAQuadLine()
+ * accepte d.z == 1.0, donc uv peut valoir exactement 1.0 pour les
+ * distorted sprites et les polygones. Sans min(), x == w et
+ * pos = y*w + w lit le premier texel de la ligne suivante, ce qui fait
+ * apparaitre le bord gauche de la texture a droite du quad. */
+"  uint y = min(uint(floor((pixcmd.h)*uv.y)), pixcmd.h-1u);\n"
+"  uint x = min(uint(uv.x*(pixcmd.w)), pixcmd.w-1u);\n"
 "  uint pos = y*pixcmd.w+x;\n"
 
 "  uint charAddr = ((pixcmd.CMDSRCA * 8)& 0x7FFFFu) + pos;\n"

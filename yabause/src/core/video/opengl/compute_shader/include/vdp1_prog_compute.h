@@ -239,8 +239,15 @@ static const char vdp1_get_textured_f[] =
 "{\n"
 "  uint color = 0;\n"
 "  ivec2 texSize = ivec2(((pixcmd.CMDSIZE >> 8) & 0x3F)<<3,pixcmd.CMDSIZE & 0xFF );\n"
-"  uint y = uint(floor(uv.y*(texSize.y)));\n"
-"  uint x = uint(floor(uv.x*(texSize.x)));\n"
+/* isOnAQuadLine() (distorted sprites et polygones) pose uv = d.z avec
+ * un test d.z <= 1.0 : uv peut donc valoir exactement 1.0 sur le bord
+ * oppose du quad. Sans borne, x atteint texSize.x et pos = y*w + w
+ * designe le PREMIER pixel de la ligne suivante -- le bord gauche de la
+ * texture reapparait a droite de la zone de trace ; a uv.y == 1.0 c'est
+ * toute une ligne au-dela de la texture qui est lue. Le VDP1 adresse un
+ * caractere de w x h texels, les indices valides s'arretent a w-1 / h-1. */
+"  uint y = min(uint(floor(uv.y*(texSize.y))), uint(texSize.y)-1u);\n"
+"  uint x = min(uint(floor(uv.x*(texSize.x))), uint(texSize.x)-1u);\n"
 "  if ((pixcmd.misc & 0x1u) == 0x1u) x = (texSize.x-1) - x;\n"
 "  if ((pixcmd.misc & 0x2u) == 0x2u) y = (texSize.y-1) - y;\n"
 "  uint pos = y*texSize.x+x;\n"
