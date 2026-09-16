@@ -21,6 +21,7 @@
 
 #include "ui_UIDebugVDP2Viewer.h"
 #include "../QtYabause.h"
+#include <QImage>
 
 class UIDebugVDP2Viewer : public QDialog, public Ui::UIDebugVDP2Viewer
 {
@@ -40,6 +41,11 @@ private:
     void updateStats();
     void updateColorRam();
     void updateVramHex();
+    // Panneau texte a cote de l'image (pteScreenInfo) : reprend les memes
+    // fonctions Vdp2DebugStatsXXX() que la fenetre VDP2 Debug principale
+    // (voir UIDebugVDP2.cpp), pour la couche actuellement selectionnee dans
+    // cbScreen. Meme source de verite cote noyau, pas de logique dupliquee.
+    void updateLayerInfo(int screenId);
     // Base et taille de la banque VRAM selectionnee dans cbVramBank.
     // Factorise entre updateVramHex() et on_pbVramExport_clicked() pour
     // que l'affichage hexa et le fichier exporte ne puissent pas diverger.
@@ -55,8 +61,14 @@ private:
 
 protected:
 	void wheelEvent(QWheelEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     pixel_t *vdp2texture = NULL;
     int width = 0, height = 0;
+    // Copie de l'image actuellement affichée (après le mirroring déjà
+    // appliqué dans displayCurrentScreen()), pour que l'inspecteur de
+    // pixel (lPixelInfo, sur survol de gvScreen) lise exactement ce que
+    // l'utilisateur voit à l'écran sans avoir à refaire cette conversion.
+    QImage currentImage;
 
 private:
     // Mémorisation de la sélection courante de cbScreen entre un
@@ -72,6 +84,7 @@ protected slots:
     void on_cbScreen_currentIndexChanged(int index);
     void on_pbSaveAsBitmap_clicked();
     void on_cbOpaque_toggled(bool enable);
+    void on_pbResetZoom_clicked();
     void on_tabWidget_currentChanged(int index);
     void on_cbVramBank_currentIndexChanged(int index);
     void on_pbVramGo_clicked();

@@ -14,18 +14,11 @@
 #include <cstring>
 #include <algorithm>
 #include <QWheelEvent>
+#include <QMouseEvent>
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
-
-// Miroir du cas spécial "screen == 0xFF" déjà implémenté côté moteur dans
-// VIDCSGetVdp2ScreenExtract() (vidcs.c) : lit _Ygl->default_fbo, c'est-à-dire
-// l'image finale VDP1+VDP2 déjà composée et mise à l'échelle, telle qu'
-// actuellement affichée à l'écran. Volontairement hors de l'enum enBG
-// (ygl.h) : cette dernière est utilisée pour dimensionner d'autres tableaux
-// via enBGMAX ailleurs dans le renderer, et 0xFF a été choisi côté moteur
-// précisément pour ne jamais entrer en collision avec elle.
-static const int VDP2_SCREEN_FINAL = 0xFF;
+#include <cmath>
 
 extern "C" {
 #include "vdp1.h"
@@ -831,25 +824,18 @@ void UIDebugVDP2Viewer::updateVramHex()
 // ============================================================
 void UIDebugVDP2Viewer::clearItems()
 {
-    // "Final" (index 0) + son séparateur (index 1) sont fixes, ajoutés une
-    // seule fois dans le constructeur : ils ne font jamais partie du
-    // rebuild par-frame et ne sont donc jamais retirés ici.
-    //
-    // Mémorise la couche individuelle actuellement sélectionnée (si elle
-    // n'est pas "Final") pour pouvoir la restaurer une fois la liste
-    // reconstruite par les addItem() qui suivent. UIDebugVDP2::updateScreenInfos()
-    // appelle clearItems() puis addItem() à CHAQUE frame ("Next Frame") pour
-    // tenir la liste des couches actives à jour ; sans cette restauration,
-    // la sélection de l'utilisateur (ex: RBG1) revenait systématiquement à
-    // la première couche active (ex: NBG0) à chaque frame. Si "Final" était
-    // sélectionnée (index 0), elle reste en place automatiquement puisqu'on
-    // ne touche jamais à cet index.
-    mRestoreScreenId = (cbScreen->currentIndex() > 1);
+    // Mémorise la couche individuelle actuellement sélectionnée pour pouvoir
+    // la restaurer une fois la liste reconstruite par les addItem() qui
+    // suivent. UIDebugVDP2::updateScreenInfos() appelle clearItems() puis
+    // addItem() à CHAQUE frame ("Next Frame") pour tenir la liste des
+    // couches actives à jour ; sans cette restauration, la sélection de
+    // l'utilisateur (ex: RBG1) revenait systématiquement à la première
+    // couche active (ex: NBG0) à chaque frame.
+    mRestoreScreenId = (cbScreen->count() > 0);
     if (mRestoreScreenId)
         mScreenIdToRestore = cbScreen->itemData(cbScreen->currentIndex()).toInt();
 
-    while (cbScreen->count() > 2)
-        cbScreen->removeItem(2);
+    cbScreen->clear();
 }
 
 void UIDebugVDP2Viewer::addItem(int id)
@@ -884,16 +870,12 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     QGraphicsScene *sc2= new QGraphicsScene(this); gvColorRam->setScene(sc2);
     vdp2texture=NULL; width=0; height=0;
 
-    // "Final" (sortie déjà composée VDP1+VDP2, cf. VDP2_SCREEN_FINAL) reste
-    // toujours pertinente tant que le VDP2 est initialisé, contrairement aux
-    // couches individuelles (NBG0...SPRITE) qui dépendent de ce qui est
-    // actuellement actif. On l'ajoute donc une seule fois ici, en position
-    // fixe à l'index 0, plutôt que via le rebuild par-frame de
-    // clearItems()/addItem() (voir ces deux méthodes plus bas).
-    cbScreen->addItem(tr("Final (Composite)"), VDP2_SCREEN_FINAL);
-    // Séparateur visuel : "Final" n'est pas une couche parmi d'autres, on le
-    // distingue clairement des entrées NBG0...SPRITE qui suivent.
-    cbScreen->insertSeparator(1);
+    // Filtre d'evenements plutot que surcharger mouseMoveEvent : la cible
+    // reelle des mouvements de souris est gvScreen->viewport() (l'enfant
+    // qui recoit les evenements dans une QGraphicsView), pas gvScreen
+    // lui-meme ni ce QDialog. Alimente l'inspecteur de pixel (lPixelInfo).
+    gvScreen->viewport()->installEventFilter(this);
+    gvScreen->viewport()->setMouseTracking(true);
 
     QtYabause::retranslateWidget(this);
 }
@@ -915,7 +897,9 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         // Libérer la texture précédente avant de rendre le viewer vide
         if (vdp2texture) { free(vdp2texture); vdp2texture = NULL; }
         gvScreen->scene()->clear();
+        currentImage = QImage();
         pbSaveAsBitmap->setEnabled(false);
+        pteScreenInfo->setPlainText(tr("VDP2 not initialised."));
         return;
     }
     int idx = cbScreen->itemData(cbScreen->currentIndex()).toInt();
@@ -944,26 +928,73 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
          * inutile et est retire. */
         QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGBX8888:QImage::Format_RGBA8888;
         QImage img((uchar*)vdp2texture,width,height,fmt);
-        // NOTE : idx != SPRITE couvre aussi VDP2_SCREEN_FINAL (donc miroir
-        // vertical appliqué, comme pour NBG/RBG). C'est une hypothèse : le
-        // cas Final lit via glReadPixels sur _Ygl->default_fbo (vidcs.c),
-        // pas via glGetTexImage sur une texture NBG/RBG classique — même
-        // convention "bas en haut" attendue côté OpenGL, mais pas vérifiée
-        // sur une capture réelle. Si "Final" apparaît à l'envers à l'usage,
-        // inverser explicitement pour VDP2_SCREEN_FINAL ici.
-        QPixmap px=QPixmap::fromImage(img.mirrored(false,idx!=SPRITE));
+        // Toutes les couches (NBG0-3, RBG0-1, SPRITE) sont extraites par
+        // glGetTexImage, dont la convention "bas en haut" impose ce miroir
+        // vertical -- sauf SPRITE, deja dans le bon sens cote framebuffer
+        // VDP1 (cf. VIDCSGetVdp2ScreenExtract, vidcs.c).
+        currentImage = img.mirrored(false,idx!=SPRITE).copy();
+        QPixmap px=QPixmap::fromImage(currentImage);
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
     } else {
-        // La couche sélectionnée n'a pas produit de texture (désactivée,
-        // pas encore de sélection valide pendant un rebuild, etc.) : on vide
-        // la vue au lieu de laisser l'ancienne image affichée, ce qui serait
-        // trompeur (le bouton "Save As Bitmap" est aussi désactivé, cf.
-        // on_pbSaveAsBitmap_clicked qui refusait déjà silencieusement dans
-        // ce cas — il ne pouvait juste jamais être désactivé auparavant).
+        // La couche sélectionnée n'a pas produit de texture. Le cas le plus
+        // courant est BGON=off (couche désactivée par le jeu) : le dire
+        // explicitement évite de confondre "rien à afficher" avec "l'image
+        // est un damier gris transparent" ou avec un bug du viewer -- les
+        // deux se ressemblaient avant ce message.
+        currentImage = QImage();
         gvScreen->scene()->clear();
+        QGraphicsTextItem *msg = gvScreen->scene()->addText(
+            tr("This layer isn't producing any output right now.\n"
+               "Most likely its BGON enable bit is off -- see the\n"
+               "Registers tab (BGON) or the main VDP2 Debug window."));
+        msg->setDefaultTextColor(Qt::gray);
+        gvScreen->scene()->setSceneRect(gvScreen->scene()->itemsBoundingRect());
         pbSaveAsBitmap->setEnabled(false);
     }
+    updateLayerInfo(idx);
+    lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+}
+
+// ============================================================
+//  updateLayerInfo -- reprend Vdp2DebugStatsXXX() (meme fonctions que la
+//  fenetre VDP2 Debug principale, UIDebugVDP2.cpp) pour la couche
+//  actuellement choisie dans cbScreen, afin que l'image et les chiffres qui
+//  l'expliquent (BPP, taille de plan, position de scroll, priorite...)
+//  soient visibles au meme endroit au lieu de devoir garder l'autre fenetre
+//  ouverte a cote et faire la correspondance NBG0/NBG1/... a la main.
+// ============================================================
+void UIDebugVDP2Viewer::updateLayerInfo(int screenId)
+{
+    if (!Vdp2Regs) {
+        pteScreenInfo->setPlainText(tr("VDP2 not initialised."));
+        return;
+    }
+
+    void (*statsFn)(char *, int *) = NULL;
+    switch (screenId) {
+        case NBG0:   statsFn = Vdp2DebugStatsNBG0;   break;
+        case NBG1:   statsFn = Vdp2DebugStatsNBG1;   break;
+        case NBG2:   statsFn = Vdp2DebugStatsNBG2;   break;
+        case NBG3:   statsFn = Vdp2DebugStatsNBG3;   break;
+        case RBG0:   statsFn = Vdp2DebugStatsRBG0;   break;
+        case RBG1:   statsFn = Vdp2DebugStatsRBG1;   break;
+        case SPRITE: statsFn = Vdp2DebugStatsSprite; break;
+        default:
+            pteScreenInfo->clear();
+            return;
+    }
+
+    char buf[VDP2_DEBUG_STRING_SIZE];
+    memset(buf, 0, sizeof(buf));
+    int isEnabled = 0;
+    statsFn(buf, &isEnabled);
+    buf[sizeof(buf)-1] = '\0';
+
+    QString text = isEnabled
+        ? QString::fromUtf8(buf)
+        : tr("(layer disabled -- BGON bit off)\n");
+    pteScreenInfo->setPlainText(text);
 }
 
 // ============================================================
@@ -995,8 +1026,14 @@ void UIDebugVDP2Viewer::refresh()
 
 void UIDebugVDP2Viewer::showEvent(QShowEvent *)
 {
-    gvScreen->fitInView(gvScreen->scene()->sceneRect());
-    refreshActiveTab();
+    // Fix: this used to fitInView()+refreshActiveTab() without ever calling
+    // displayCurrentScreen() (refreshActiveTab() only handles tabs 1-4, not
+    // the Screen Viewer itself). Closing the viewer, letting a few "Next
+    // Frame" clicks go by, then reopening it showed a stale image (and
+    // fitInView was framed against that stale image's old scene rect, so
+    // even reselecting the same layer afterwards could look mis-zoomed).
+    refresh();
+    gvScreen->fitInView(gvScreen->scene()->sceneRect(), Qt::KeepAspectRatio);
 }
 
 void UIDebugVDP2Viewer::on_tabWidget_currentChanged(int)
@@ -1011,6 +1048,56 @@ void UIDebugVDP2Viewer::on_cbScreen_currentIndexChanged(int index)
     displayCurrentScreen();
 }
 void UIDebugVDP2Viewer::on_cbOpaque_toggled(bool)             { displayCurrentScreen(); }
+
+void UIDebugVDP2Viewer::on_pbResetZoom_clicked()
+{
+    // Ctrl+wheel (see wheelEvent()) has no way back to a known-good zoom
+    // level short of guessing how many notches to scroll the other way;
+    // this snaps straight back to "the whole image fits the view".
+    gvScreen->resetTransform();
+    if (gvScreen->scene())
+        gvScreen->fitInView(gvScreen->scene()->sceneRect(), Qt::KeepAspectRatio);
+}
+
+// ============================================================
+//  Pixel inspector: hovering the image shows its on-screen coordinates and
+//  raw RGBA value, read back from the same currentImage that's on display
+//  (see displayCurrentScreen()) so what's reported always matches what's
+//  visible, mirroring/zoom included. A QGraphicsView's viewport is a plain
+//  QWidget, so an event filter is what actually sees the mouse move rather
+//  than overriding QWidget::mouseMoveEvent() on the dialog itself.
+// ============================================================
+bool UIDebugVDP2Viewer::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == gvScreen->viewport())
+    {
+        if (event->type() == QEvent::MouseMove)
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            QPointF scenePos = gvScreen->mapToScene(me->pos());
+            int px = (int)std::floor(scenePos.x());
+            int py = (int)std::floor(scenePos.y());
+
+            if (!currentImage.isNull() && px >= 0 && py >= 0 &&
+                px < currentImage.width() && py < currentImage.height())
+            {
+                QColor c = currentImage.pixelColor(px, py);
+                lPixelInfo->setText(tr("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
+                    .arg(px).arg(py)
+                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
+            }
+            else
+            {
+                lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+            }
+        }
+        else if (event->type() == QEvent::Leave)
+        {
+            lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
 void UIDebugVDP2Viewer::on_cbVramBank_currentIndexChanged(int){ updateVramHex(); }
 void UIDebugVDP2Viewer::on_pbVramGo_clicked()                 { updateVramHex(); }
 
@@ -1074,22 +1161,20 @@ void UIDebugVDP2Viewer::on_cbCramHex_toggled(bool)            { updateColorRam()
 void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
 {
     QStringList filters;
-    int idx=cbScreen->itemData(cbScreen->currentIndex()).toInt();
     foreach(QByteArray ba, QImageWriter::supportedImageFormats()) {
         QString fmt = QString(ba).toLower();
         if (!filters.contains(fmt, Qt::CaseInsensitive))
             filters << QString("%1 Images (*.%2)").arg(fmt.toUpper()).arg(fmt);
     }
-    if(!vdp2texture)return;
-    /* Meme convention d'octets que displayCurrentScreen() : GL a ecrit
-     * [R][G][B][A], donc format Qt a ordre d'octets explicite et pas de
-     * rgbSwapped(). L'image enregistree etait jusqu'ici correcte par
-     * compensation de deux erreurs, uniquement en little-endian. */
-    QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGBX8888:QImage::Format_RGBA8888;
-    QImage img((uchar*)vdp2texture,width,height,fmt);
-    img=img.mirrored(false,idx!=SPRITE);
+    if (currentImage.isNull())
+        return;
+    // Save exactly what's on screen: currentImage is the same mirrored
+    // copy displayCurrentScreen() already builds and hands to the
+    // QGraphicsScene, so this can no longer drift from what's displayed
+    // (it used to redo the raw-buffer-to-QImage conversion independently
+    // here, duplicating displayCurrentScreen()'s logic).
     const QString s=CommonDialogs::getSaveFileName(QString(),QtYabause::translate("Choose a location for your bitmap"),filters.join(";;"));
-    if(!s.isEmpty())if(!img.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+    if(!s.isEmpty())if(!currentImage.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
 
 
