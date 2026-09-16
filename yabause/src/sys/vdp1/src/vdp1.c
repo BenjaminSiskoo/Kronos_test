@@ -78,15 +78,28 @@ static void checkFBSync();
 #define DEBUG_BAD_COORD //YuiMsg
 
 int CONVERTCMD(s32 *A) {
-  /* VDP1 Manual §6.7 p.105: vertex coordinates are 11-bit signed.
-   * Hardware reads only bits [10:0] and sign-extends from bit 10,
-   * ignoring bits 15:11 entirely. Do NOT reject commands with
-   * non-canonical upper bits — the real VDP1 accepts them. */
-  s32 sign_bit = ((*A) >> 10) & 0x1;
-  /* Sign-extend from bit 10 to 32 bits. After this, the value is
-   * mathematically guaranteed to be in [-1024, +1023]. */
-  if (sign_bit) (*A) |= 0xFFFFF800;
-  else          (*A) &=  0x000007FF;
+  /* Vertex coordinates are decoded as 13-bit signed values: bits [12:0]
+   * are kept and bit 12 is the sign, bits 15:13 are ignored. This is the
+   * width the VDP1 vertex arithmetic actually uses (Mednafen and Ymir
+   * decode CMDXA..CMDYD the same way). The [-1024, +1023] range given in
+   * the VDP1 manual is the range a title should stay in, not the width of
+   * the register: nothing is truncated to 11 bits in the hardware.
+   *
+   * The previous code sign-extended from bit 10, which wrapped any
+   * coordinate beyond +/-1024 to the opposite side of the screen. Gale
+   * Racer places road-side building quads well past the screen edges,
+   * as mirrored left/right pairs, for instance X = 0x036E / 0x045F
+   * (+878 / +1119) and X = 0xFB6E / 0xFC5F (-1170 / -929). Read on 11 bits,
+   * 0x045F became -929 and 0x036E stayed +878: a 1808-pixel-wide distorted
+   * sprite spanning the whole screen, stretching a handful of building
+   * texels into the large flat colour blocks seen over the road. Read on
+   * 13 bits, every one of the 50 such quads captured in the trace is a
+   * consistent mirror pair lying entirely off screen, as the game intends.
+   *
+   * Commands are still never rejected on their upper bits: the real VDP1
+   * accepts them. */
+  if ((*A) & 0x1000) (*A) |= (s32)0xFFFFE000;
+  else               (*A) &= 0x00001FFF;
   return 0;
 }
 
