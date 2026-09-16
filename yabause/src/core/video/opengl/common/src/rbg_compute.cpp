@@ -2295,6 +2295,28 @@ DEBUGWIP("Init\n");
 		 * pas un booleen global partage entre deux threads. */
 		u8 VRAMNeedAnUpdate = Vdp2RamIsUpdated();
 
+		/* onFinish() pre-mappe le SSBO VRAM a chaque fin de frame avec
+		 * GL_MAP_INVALIDATE_BUFFER_BIT : des cet instant son contenu est
+		 * indefini (le pilote peut orphaner le stockage et en rendre un neuf).
+		 * Tant que le buffer est mappe, il n'est donc pas une copie valide de
+		 * Vdp2Ram, et il ne doit de toute facon pas etre utilise par un
+		 * dispatch sans avoir ete demappe.
+		 *
+		 * Seul VRAMNeedAnUpdate declenchait la copie et le demappage. Sur une
+		 * frame sans aucune ecriture VRAM, le dispatch partait donc sur un
+		 * SSBO encore mappe et invalide. Gale Racer tourne a 30 im/s et
+		 * n'ecrit la VRAM (table de rotation, en V-blank) qu'une frame sur
+		 * deux : une frame sur deux, RBG0 lisait son bitmap dans un stockage
+		 * au contenu indefini, d'ou les bandes horizontales intermittentes.
+		 * La trace l'a montre : 406 frames sans ecriture VRAM sur 811, et
+		 * exactement ces 406 frames dispatchees avec le SSBO encore mappe,
+		 * alors que les parametres de rotation ne variaient jamais.
+		 *
+		 * Un buffer encore mappe doit donc toujours etre rempli puis demappe.
+		 * Un buffer deja demappe (zone ou ecran suivant dans la meme frame)
+		 * garde la copie complete faite juste avant. */
+		const bool VRAMMustBeCopied = (VRAMNeedAnUpdate != 0) || (mapped_vram != nullptr);
+
     error = glGetError();
 
     if (rbg->ctrl.info.idScreen == RBG0) updateRBG0(rbg, varVdp2Regs);
@@ -2302,7 +2324,7 @@ DEBUGWIP("Init\n");
 
        ErrorHandle("glUseProgram");
 
-		if (VRAMNeedAnUpdate != 0) {
+		if (VRAMMustBeCopied) {
 			LOG("VRAM Update %x\n", VRAMNeedAnUpdate);
 			// (switch VRAMNeedAnUpdate retire : copie complete ci-dessous)
 
