@@ -826,6 +826,17 @@ INLINE void ScuTimer1Exec( u32 timing ) {
   }
 }
 
+/* STTECH39 "Supplemental Information on the SCU-DMA Transfer Byte Count" :
+ * en mode indirect, les niveaux 0, 1 et 2 acceptent tous un compte sur
+ * 20 bits (100000H octets au maximum), et la valeur 0 signifie le
+ * transfert maximal. Cette borne s'applique aussi bien au chargement
+ * initial de la table qu'a chaque rechargement d'entree. */
+static void ScuClampIndirectTransferNumber(scudmainfo_struct * dmainfo) {
+  dmainfo->TransferNumber &= 0xFFFFF;
+  if (dmainfo->TransferNumber == 0)
+    dmainfo->TransferNumber = 0x100000;
+}
+
 void ScuSetAddValue(scudmainfo_struct * dmainfo) {
 
   if (dmainfo->AddValue & 0x100)
@@ -868,6 +879,12 @@ void ScuSetAddValue(scudmainfo_struct * dmainfo) {
     dmainfo->WriteAddress = DMAMappedMemoryReadLong(dmainfo->InDirectAdress + 4);
     dmainfo->ReadAddress = DMAMappedMemoryReadLong(dmainfo->InDirectAdress + 8);
     dmainfo->InDirectAdress += 0xC;
+    /* STTECH39 fig.1 : en mode indirect le compte occupe 20 bits pour les
+     * trois niveaux (0FFFFFH au maximum, et 0 vaut 100000H). Les bits
+     * au-dessus ne font pas partie du compte ; sans masque, une entree de
+     * table dont les bits hauts ne sont pas nuls donne un compte aberrant
+     * et le transfert deborde largement la zone visee. */
+    ScuClampIndirectTransferNumber(dmainfo);
   }
   else {
 
@@ -922,12 +939,26 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
 
         u32 start = dma->WriteAddress;
         while ( *time > 0 ) {
-          *time -= 1;
+          /* SCU Manual ST-097-R5 p.43-44 (Fig 3.6/3.7) : le lien SCU<->B-Bus
+           * est 32 bits, mais le lien B-Bus<->processeur (VDP1/VDP2/SCSP) est
+           * 16 bits ; un long word coute donc DEUX cycles B-Bus, pas un.
+           * (ST-210 No.19 : la valeur d'increment d'ecriture B-Bus est figee
+           * a 001B = 2 octets.) */
+          *time -= 2;
+          /* Le compte est en OCTETS et rien n'impose un multiple de 4 :
+           * il doit etre verifie apres CHAQUE mot de 16 bits, sinon le
+           * dernier tour ecrit deux octets au-dela de la zone visee. */
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(val >> 16));
           dma->WriteAddress += dma->WriteAdd;
+          dma->TransferNumber -= 2;
+          if (dma->TransferNumber <= 0 ) {
+            SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
+            SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
+            return;
+          }
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)val);
           dma->WriteAddress += dma->WriteAdd;
-          dma->TransferNumber -= 4;
+          dma->TransferNumber -= 2;
           if (dma->TransferNumber <= 0 ) {
             SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
             SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
@@ -940,14 +971,28 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       else {
         u32 start = dma->WriteAddress;
         while ( *time > 0) {
-          *time -= 1;
+          /* SCU Manual ST-097-R5 p.43-44 (Fig 3.6/3.7) : le lien SCU<->B-Bus
+           * est 32 bits, mais le lien B-Bus<->processeur (VDP1/VDP2/SCSP) est
+           * 16 bits ; un long word coute donc DEUX cycles B-Bus, pas un.
+           * (ST-210 No.19 : la valeur d'increment d'ecriture B-Bus est figee
+           * a 001B = 2 octets.) */
+          *time -= 2;
           u32 tmp = DMAMappedMemoryReadLong((dma->ReadAddress));
+          /* Le compte est en OCTETS et rien n'impose un multiple de 4 :
+           * il doit etre verifie apres CHAQUE mot de 16 bits, sinon le
+           * dernier tour ecrit deux octets au-dela de la zone visee. */
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)(tmp >> 16));
           dma->WriteAddress += dma->WriteAdd;
+          dma->TransferNumber -= 2;
+          if (dma->TransferNumber <= 0) {
+            SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
+            SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
+            return;
+          }
           DMAMappedMemoryWriteWord(dma->WriteAddress, (u16)tmp);
           dma->WriteAddress += dma->WriteAdd;
           dma->ReadAddress += dma->ReadAdd;
-          dma->TransferNumber -= 4;
+          dma->TransferNumber -= 2;
           if (dma->TransferNumber <= 0) {
             SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
             SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
@@ -1034,7 +1079,9 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       // affichees, d'ou la disparition du fond.
       u32 start = dma->WriteAddress;
       while (*time > 0) {
-        *time -= 1;
+        /* Meme regle que dans le chemin de remplissage : un long word
+         * represente deux cycles B-Bus. */
+        *time -= 2;
         u32 tmp;
         if (dma->ReadAddress & 2) {  // Avoid misaligned access
           tmp = DMAMappedMemoryReadWord(dma->ReadAddress) << 16
@@ -1144,6 +1191,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             dma->WriteAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 4);
             dma->ReadAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 8);
             dma->InDirectAdress += 0xC;
+            /* Meme borne qu'au chargement initial de la table : chaque
+             * entree rechargee est un compte sur 20 bits (STTECH39). */
+            ScuClampIndirectTransferNumber(dma);
           }
         }
       }
@@ -1199,7 +1249,14 @@ static void setupBusConcurrency(scudmainfo_struct * dma) {
 }
 static int isOnVDp1Ram(u32 addr) {
   addr &= 0x1FFFFFFF;
-  if ((addr >= 0x5C00000) && (addr < 0x5C80000)) return 1; //VDP1Ram
+  if ((addr >= 0x5C00000) && (addr < 0x5C80000)) return 1; //VDP1 VRAM (4-Mbit = 0x80000)
+  /* VDP1 Manual ST-013-R3 p.20 : le frame buffer de dessin est partage entre
+   * le VDP1 (trace) et le controleur systeme, et "when access from the system
+   * controller is performed during drawing, drawing is interrupted and must
+   * wait". Un SCU-DMA qui touche le frame buffer doit donc bloquer le trace
+   * exactement comme un acces a la VRAM. Le plan de dessin fait 2 Mbit =
+   * 0x40000 octets et commence a 0x5C80000 (p.16). */
+  if ((addr >= 0x5C80000) && (addr < 0x5CC0000)) return 1; //VDP1 frame buffer (un plan)
   return 0;
 }
 
