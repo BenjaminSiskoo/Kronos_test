@@ -14,6 +14,7 @@
 #include <QScrollBar>
 #include <QGraphicsPixmapItem>
 #include <QListWidgetItem>
+#include <QVariant>
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
@@ -29,6 +30,29 @@ extern "C" {
 
 namespace {
 
+/* La VRAM VDP1 est lue par les fonctions Vdp1Debug* a travers le pointeur
+ * global Vdp1Ram. Pour garantir qu'une meme session d'affichage decrit un
+ * seul et meme instant, on fait pointer ce global sur l'instantane le temps
+ * des appels, puis on le remet en place. Les appels sont synchrones, sur le
+ * thread GUI, et l'emulation est suspendue par le YabauseLocker de la
+ * fenetre : le global n'est jamais detourne pendant qu'un autre thread le
+ * lit. Reentrant (fillCommandList appelle syncOnVdp1Entry). */
+class Vdp1RamFreeze
+{
+public:
+    explicit Vdp1RamFreeze(const QByteArray& snapshot)
+        : mSaved(Vdp1Ram)
+    {
+        if (!snapshot.isEmpty())
+            Vdp1Ram = (u8*)snapshot.constData();
+    }
+    ~Vdp1RamFreeze() { Vdp1Ram = mSaved; }
+private:
+    u8* mSaved;
+    Vdp1RamFreeze(const Vdp1RamFreeze&);
+    Vdp1RamFreeze& operator=(const Vdp1RamFreeze&);
+};
+
 struct Vdp1CommandsCount
 {
     size_t distortedSprites = 0;
@@ -39,9 +63,12 @@ struct Vdp1CommandsCount
     size_t lines = 0;
 };
 
-void Vdp1CountCommands(u32 index, Vdp1CommandsCount& cmdCount)
+/* Prend le type deja resolu plutot qu'un rang : le rang obligeait a
+ * reparcourir toute la table des commandes pour chaque entree, soit un
+ * remplissage en O(n^2), et surtout a relire la VRAM une seconde fois
+ * alors qu'elle a pu changer entre-temps. */
+void Vdp1CountCommands(Vdp1CommandType commandType, Vdp1CommandsCount& cmdCount)
 {
-    Vdp1CommandType commandType = Vdp1DebugGetCommandType(index);
     switch (commandType) {
     case VDPCT_DISTORTED_SPRITE:
     case VDPCT_DISTORTED_SPRITEN:
@@ -274,11 +301,31 @@ void UIDebugVDP1::updateVdp1Registers()
     pteVdp1Regs->setPlainText(QString::fromStdString(s.str()));
 }
 
+/* 0x80000 : taille de la VRAM VDP1 allouee par Vdp1Init()
+ * (T1MemoryInit(0x80000)). */
+void UIDebugVDP1::captureVdp1Ram()
+{
+    // De preference l'instantane pris par le coeur au declenchement du trace :
+    // c'est la liste reellement tracee pour la derniere trame. La VRAM vivante
+    // ne sert que de repli, tant qu'aucune trame n'a encore ete capturee.
+    const u8 *src = Vdp1DebugGetFrameRam();
+    if (!src) src = Vdp1Ram;
+    if (!src) {
+        mVdp1RamSnapshot.clear();
+        return;
+    }
+    mVdp1RamSnapshot = QByteArray((const char*)src, 0x80000);
+}
+
 void UIDebugVDP1::fillCommandList()
 {
     Vdp1CommandsCount cmdCount;
     lwCommandList->clear();
     lwCommandRaw->clear();
+
+    // Un seul instantane pour toute la session d'affichage qui suit.
+    captureVdp1Ram();
+    Vdp1RamFreeze freeze(mVdp1RamSnapshot);
 
     if (Vdp1Ram)
     {
@@ -290,14 +337,28 @@ void UIDebugVDP1::fillCommandList()
         const int kMaxCommands = 65536;
         for (int i = 0; i < kMaxCommands; i++)
         {
+            // L'adresse de la commande est resolue UNE SEULE FOIS ici, puis
+            // memorisee dans l'item. Tout ce qui sera affiché plus tard pour
+            // cette ligne — nom, détail, texture — repart de cette adresse.
+            //
+            // Auparavant le panneau de détail retrouvait la commande à partir
+            // de son rang, ce qui imposait de reparcourir la table de
+            // commandes au moment du clic. Un jeu qui reconstruit sa liste à
+            // chaque trame (Doom, par exemple) décale ses entrées entre le
+            // remplissage de la liste et la sélection : le nom affiché et le
+            // détail portaient alors sur deux commandes différentes, d'où des
+            // « User Clipping Coordinates » dont le détail décrivait un
+            // scaled sprite.
             u32 addr = Vdp1DebugGetCommandAddr(i);
             char *nameStr = Vdp1DebugGetCommandNumberName(addr);
             if (nameStr == NULL) break;
 
-            Vdp1CountCommands(i, cmdCount);
+            Vdp1CommandType cmdType = Vdp1DebugGetCommandTypeAtAddr(addr);
+            Vdp1CountCommands(cmdType, cmdCount);
             
             QListWidgetItem *item = new QListWidgetItem(QtYabause::translate(nameStr));
-            int type = (int)Vdp1DebugGetCommandType(i); // Cast en int pour comparaison matérielle
+            item->setData(Qt::UserRole, QVariant((uint)addr));
+            int type = (int)cmdType; // Cast en int pour comparaison matérielle
             
             // Coloration robuste utilisant les ID matériels
             if (type >= 0x00 && type <= 0x05) 
@@ -309,11 +370,14 @@ void UIDebugVDP1::fillCommandList()
                 
             lwCommandList->addItem(item);
 
+            // Les deux listes doivent rester rigoureusement parallèles : la
+            // sélection est synchronisée par numéro de ligne. On ajoute donc
+            // toujours une entrée, même si le décodage brut échoue.
             char *rawStr = Vdp1DebugGetCommandRaw(addr);
-            if (rawStr) {
-                lwCommandRaw->addItem(rawStr);
-                free(rawStr);
-            }
+            QListWidgetItem *rawItem = new QListWidgetItem(rawStr ? QString(rawStr) : QString("??"));
+            rawItem->setData(Qt::UserRole, QVariant((uint)addr));
+            lwCommandRaw->addItem(rawItem);
+            if (rawStr) free(rawStr);
         }
     }
 
@@ -348,17 +412,29 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     connect(lwCommandRaw->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandList->verticalScrollBar(), &QScrollBar::setValue);
 
+    // Active la capture de la table de commandes au declenchement du trace.
+    // La premiere trame utile arrive au prochain « Next Frame » ; d'ici la
+    // on se rabat sur la VRAM vivante.
+    Vdp1DebugSetCapture(1);
+
     fillCommandList();
 }
 
 UIDebugVDP1::~UIDebugVDP1()
 {
+    // Libere le tampon de capture : plus de memcpy de 512 Ko par trame une
+    // fois la fenetre fermee.
+    Vdp1DebugSetCapture(0);
     clearVdp1Display();
 }
 
 void UIDebugVDP1::syncOnVdp1Entry(int cursel)
 {
     if (cursel < 0 || cursel >= lwCommandList->count()) return;
+
+    // Meme instantane que celui qui a servi a remplir la liste : le nom
+    // affiche et le detail decrivent forcement la meme commande.
+    Vdp1RamFreeze freeze(mVdp1RamSnapshot);
 
     char tempstr[2048];
     // Garantir la null-termination même si Vdp1DebugCommand remplit le
@@ -368,7 +444,13 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     lwCommandRaw->setCurrentRow(cursel);
     lwCommandList->setCurrentRow(cursel);
 
-    Vdp1DebugCommand(cursel, tempstr);
+    // Adresse mémorisée au remplissage de la liste ; on ne redemande jamais
+    // « la commande n° cursel », qui pourrait désigner autre chose depuis.
+    QListWidgetItem *selItem = lwCommandList->item(cursel);
+    const u32 cmdAddr = selItem ? (u32)selItem->data(Qt::UserRole).toUInt()
+                                : 0xFFFFFFFFu;
+
+    Vdp1DebugCommandAtAddr(cmdAddr, tempstr);
     tempstr[sizeof(tempstr) - 1] = '\0';
     pteCommandInfo->setPlainText(QtYabause::translate(tempstr));
 
@@ -376,8 +458,8 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     if (vdp1texture) { free(vdp1texture); vdp1texture = NULL; }
     if (vdp1RawTexture) { free(vdp1RawTexture); vdp1RawTexture = NULL; }
 
-    vdp1texture    = Vdp1DebugTexture(cursel, &vdp1texturew, &vdp1textureh);
-    vdp1RawTexture = Vdp1DebugRawTexture(cursel, &vdp1texturew, &vdp1textureh, &vdp1RawNumBytes);
+    vdp1texture    = Vdp1DebugTextureAtAddr(cmdAddr, &vdp1texturew, &vdp1textureh);
+    vdp1RawTexture = Vdp1DebugRawTextureAtAddr(cmdAddr, &vdp1texturew, &vdp1textureh, &vdp1RawNumBytes);
 
     pbSaveBitmap->setEnabled(vdp1texture != NULL);
     pbSaveRawSprite->setEnabled(vdp1RawTexture != NULL);
@@ -456,6 +538,12 @@ void UIDebugVDP1::on_pbNextButton_clicked()
 // ============================================================
 void UIDebugVDP1::on_pbExportDebugInfo_clicked()
 {
+    // Le dump brut plus bas doit decrire le meme instant que la liste
+    // affichee, sinon l'export se contredit lui-meme : une liste de 70
+    // commandes en tete de fichier et, quelques lignes plus bas, une VRAM
+    // qui ne contient qu'un polygone et un END.
+    Vdp1RamFreeze freeze(mVdp1RamSnapshot);
+
     // S'assurer que les registres affichés sont à jour avant export
     updateVdp1Registers();
 
@@ -559,8 +647,15 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
 
     const int cur = lwCommandList->currentRow();
     ts << "########## SELECTED COMMAND DETAIL";
-    if (cur >= 0)
-        ts << " (#" << cur << ")";
+    if (cur >= 0) {
+        ts << " (#" << cur;
+        // L'adresse est bien plus utile que le rang pour recouper un rapport
+        // de bug : elle ne dépend pas de l'état de la liste au moment de
+        // l'export.
+        if (QListWidgetItem *it = lwCommandList->item(cur))
+            ts << " @ 0x" << QString::number(it->data(Qt::UserRole).toUInt(), 16).toUpper();
+        ts << ")";
+    }
     ts << " ##########\n\n";
     ts << pteCommandInfo->toPlainText() << "\n";
 
