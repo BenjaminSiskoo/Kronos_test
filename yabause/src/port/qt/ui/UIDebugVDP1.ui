@@ -18,6 +18,9 @@
     <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="1,2,3,1,2">
      <item>
       <widget class="QGroupBox" name="gbCommandRaw">
+       <property name="toolTip">
+        <string>Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).</string>
+       </property>
        <property name="title">
         <string>Jump list</string>
        </property>
@@ -36,6 +39,16 @@
        <layout class="QVBoxLayout" name="verticalLayout_10b">
         <item>
          <widget class="QListWidget" name="lwCommandList"/>
+        </item>
+        <item>
+         <widget class="QLabel" name="lCommandColorLegend">
+          <property name="text">
+           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;</string>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::RichText</enum>
+          </property>
+         </widget>
         </item>
        </layout>
       </widget>
@@ -90,6 +103,12 @@
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
+            <property name="toolTip">
+             <string>Ctrl+wheel to zoom</string>
+            </property>
+            <property name="mouseTracking">
+             <bool>true</bool>
+            </property>
             <property name="styleSheet">
              <string notr="true">background-color: transparent;</string>
             </property>
@@ -101,6 +120,20 @@
                <blue>0</blue>
               </color>
              </brush>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lTextureInfo">
+            <property name="text">
+             <string>No texture</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lTexturePixelInfo">
+            <property name="text">
+             <string>Move the mouse over the texture to inspect a pixel.</string>
             </property>
            </widget>
           </item>
@@ -131,6 +164,16 @@
                </size>
               </property>
              </spacer>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbResetZoom">
+              <property name="toolTip">
+               <string>Fit the texture back into the view (Ctrl+wheel to zoom)</string>
+              </property>
+              <property name="text">
+               <string>Reset Zoom</string>
+              </property>
+             </widget>
             </item>
             <item>
              <widget class="QPushButton" name="pbSaveBitmap">

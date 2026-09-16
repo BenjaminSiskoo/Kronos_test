@@ -23,7 +23,6 @@
 #include "../QtYabause.h"
 #include "UIYabause.h"
 #include <QImage>
-#include <QByteArray>
 
 class UIDebugVDP1 : public QDialog, public Ui::UIDebugVDP1
 {
@@ -38,26 +37,23 @@ protected:
     int  vdp1RawNumBytes = 0;
     int  vdp1texturew = 1, vdp1textureh = 1;
     YabauseLocker* mLock;
-
-    /* Copie de la VRAM VDP1 prise au moment ou la liste de commandes est
-     * remplie. Tout ce que la fenetre affiche ensuite -- noms, detail,
-     * texture, dump brut -- est relu dans cette copie et jamais dans la
-     * VRAM vivante, qui continue d'etre reecrite par le jeu. Sans cela le
-     * nom d'une ligne et son detail peuvent decrire deux commandes
-     * differentes, et l'export peut contenir une liste et un dump brut qui
-     * se contredisent. */
-    QByteArray mVdp1RamSnapshot;
-    void captureVdp1Ram();
+    // Copie de l'image de texture actuellement affichée (déjà convertie
+    // rgbSwapped), pour que l'inspecteur de pixel (survol de gvTexture)
+    // lise exactement ce qui est visible sans reconvertir le buffer brut.
+    QImage currentTextureImage;
 
     void fillCommandList();
     void updateVdp1Registers();
     void syncOnVdp1Entry(int cursel);
     void clearVdp1Display(); // <--- Correctement déclaré ici
+    void wheelEvent(QWheelEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 protected slots:
     void on_pbSaveBitmap_clicked();
     void on_pbSaveRawSprite_clicked();
     void on_pbNextButton_clicked();
+    void on_pbResetZoom_clicked();
     void on_lwCommandRaw_itemSelectionChanged();
     void on_lwCommandList_itemSelectionChanged();
     void on_pbExportDebugInfo_clicked();
