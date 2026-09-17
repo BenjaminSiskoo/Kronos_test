@@ -46,6 +46,58 @@
 #include "ygl.h"
 #include "vdp2.h"
 #include "yui.h"
+#include "vdp1.h"
+
+/* ===== Instrumentation TEMPORAIRE -- ecrit E:\\Kronos64Bits\\kronos_boot.log */
+#include <stdarg.h>
+#define KBOOT_LOG_PATH   "E:\\Kronos64Bits\\kronos_boot.log"
+#define KBOOT_MAX_BEATS  400
+static FILE *kboot_fp = NULL;
+static int   kboot_failed = 0;
+static int   kboot_beats = 0;
+void KBootLog(const char *fmt, ...);
+
+void KBootLog(const char *fmt, ...)
+{
+   va_list ap;
+   if (kboot_failed) return;
+   if (kboot_fp == NULL)
+   {
+      kboot_fp = fopen(KBOOT_LOG_PATH, "w");
+      if (kboot_fp == NULL) { kboot_failed = 1; return; }
+   }
+   va_start(ap, fmt);
+   vfprintf(kboot_fp, fmt, ap);
+   va_end(ap);
+   fflush(kboot_fp);
+}
+
+static void KBootHeartbeat(void)
+{
+   u32 mpc = 0, msp = 0, mpr = 0, mvbr = 0, msr = 0, spc = 0;
+
+   if (kboot_failed || kboot_beats >= KBOOT_MAX_BEATS) return;
+   if ((yabsys.frame_count % 50) != 0) return;
+   kboot_beats++;
+
+   if (MSH2 != NULL)
+   {
+      SH2GetRegisters(MSH2, &MSH2->regs);
+      mpc = MSH2->regs.PC;  msp = MSH2->regs.R[15]; mpr = MSH2->regs.PR;
+      mvbr = MSH2->regs.VBR; msr = MSH2->regs.SR.all;
+   }
+   if (SSH2 != NULL) { SH2GetRegisters(SSH2, &SSH2->regs); spc = SSH2->regs.PC; }
+
+   KBootLog("[f%06d] M PC=%08X SP=%08X PR=%08X SR=%08X | S run=%d PC=%08X | "
+            "VDP1 PTMR=%04X EDSR=%04X | VDP2 TVMD=%04X BGON=%04X | "
+            "SCU IMS=%08X IST=%08X | CD st=%02X\n",
+            yabsys.frame_count, mpc, msp, mpr, msr,
+            (int)yabsys.IsSSH2Running, spc,
+            Vdp1Regs ? Vdp1Regs->PTMR : 0xFFFF, Vdp1Regs ? Vdp1Regs->EDSR : 0xFFFF,
+            Vdp2Regs ? Vdp2Regs->TVMD : 0xFFFF, Vdp2Regs ? Vdp2Regs->BGON : 0xFFFF,
+            ScuRegs ? ScuRegs->IMS : 0xFFFFFFFF, ScuRegs ? ScuRegs->IST : 0xFFFFFFFF,
+            Cs2Area ? Cs2Area->status : 0xFF);
+}
 #include "bios.h"
 #include "movie.h"
 #include "osdcore.h"
@@ -122,20 +174,13 @@ PERFETTO_TRACK_EVENT_STATIC_STORAGE();
 // if this regresses anything for usecache=1 users.
 #define YAB_ENABLE_MSH2_CACHE_AT_BOOT 1
 
-// YabauseQuickLoadGame() unconditionally overwrote the IP.BIN-computed
-// 'size'/'blocks' (how much of the First Program to load) with a
-// hardcoded 0x8000 bytes / 16 sectors, labeled "Lastbronx for 0x8000" but
-// applied to every game -- not gated by any game-ID check. This path
-// runs whenever usequickload OR emulatebios is set, i.e. for anyone
-// playing without a real BIOS dump, a common configuration.
-// Rather than gate this on Last Bronx's product code (GS-9152 for the
-// Japanese release; unconfirmed for other regions, so an ID check risked
-// missing a region that needs the same workaround), the fix takes
-// max(computed size, 0x8000): never loads less than whatever Last Bronx
-// apparently needs, and never truncates a game whose real IP.BIN size is
-// bigger than 0x8000 the way the old unconditional override did.
-// Set to 0 to revert to the previous always-exactly-0x8000 behavior.
-#define YAB_QUICKLOAD_CORRECT_IP_SIZE 1
+// Note : l'ancien reglage YAB_QUICKLOAD_CORRECT_IP_SIZE a ete retire.
+// Il remplacait l'ecriture de 16 secteurs par max(taille_IP_lue, 8000H),
+// alors que la specification (ST-040-R4-051795 / TECH#11, champ IP SIZE en
+// E0H) borne l'IP a 8000H = les 16 secteurs de la zone systeme. La valeur
+// lue ne pouvait donc jamais depasser ce que l'on chargeait deja, et sur un
+// disque non conforme elle faisait lire hors de la zone systeme. Voir le
+// commentaire dans YabauseQuickLoadGame().
 
 #define THREAD_LOG //printf
 
@@ -859,6 +904,7 @@ u64 g_m68K_dec_cycle = 0;
 int YabauseEmulate(void) {
    int ret = 0;
    yabsys.frame_count++;
+   KBootHeartbeat();
 
    unsigned int m68kcycles;       // Integral M68k cycles per call
    unsigned int m68kcenticycles;  // 1/100 M68k cycles per call
@@ -1067,6 +1113,11 @@ void YabauseStartSlave(void) {
       SSH2->regs.R[15] = Cs2GetSlaveStackAdress();
       SSH2->regs.VBR = 0x06000400;
       SSH2->regs.PC = SH2MappedMemoryReadLong(SSH2, 0x06000250);
+      /* Filet de securite : si le jeu a explicitement remis l'entree a 0,
+         on parque l'esclave sur la boucle installee par BiosInit() plutot
+         que de le lancer a l'adresse 0. */
+      if (SSH2->regs.PC == 0)
+         SSH2->regs.PC = 0x06000614;
       if (SH2MappedMemoryReadLong(SSH2, 0x060002AC) != 0)
          SSH2->regs.R[15] = SH2MappedMemoryReadLong(SSH2, 0x060002AC);
 
@@ -1302,10 +1353,39 @@ int YabauseQuickLoadGame(void)
    u32 blocks;
    unsigned int i, i2;
    dirrec_struct dirrec;
+   char ipproduct[11];
 
    Cs2Area->outconcddev = Cs2Area->filter + 0;
    Cs2Area->outconcddevnum = 0;
    Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+
+
+   /* cdip -- le SYSTEM ID du disque : 1st read address (F0H), STACK-M (E8H),
+      STACK-S (ECH) -- n'est renseigne QUE par Cs2GetIP().
+
+      Or les trois appelants de cette fonction font, dans cet ordre :
+          YabauseQuickLoadGame();
+          if (Cs2GetRegionID() >= 0xA) ...
+      c'est-a-dire le chargement AVANT la lecture du SYSTEM ID. Au demarrage a
+      froid, cdip sort tout juste du calloc() de Cs2Init() et vaut encore
+      entierement zero quand on arrive ici : l'appel a Cs2ChangeCDCore() fait
+      depuis Cs2Init() ne remplit rien, car il precede Cs2Reset(), donc tous les
+      blocs CD ont encore size == 0 au lieu de -1, Cs2AllocateBlock() echoue et
+      Cs2GetIP() ressort sans avoir rien lu.
+
+      Consequence en BIOS emule : plus bas,
+          MSH2->regs.PC    = Cs2GetMasterExecutionAdress();  -> 0
+          MSH2->regs.R[15] = Cs2GetMasterStackAdress();      -> 0
+      car cdip n'est pas NULL et ces accesseurs renvoyaient donc le champ, pas
+      leur valeur de repli. Le maitre part a l'adresse 0 avec une pile nulle :
+      rien ne s'execute, VDP1 ne dessine jamais, l'ecran reste noir pendant que
+      VDP2 continue a compter ses trames.
+
+      Cela ne se voyait pas toujours : Cs2ForceCloseTray() appelle
+      Cs2ChangeCDCore(), donc Cs2GetRegionID(), AVANT YabauseQuickLoadGame() --
+      une fermeture de tiroir remplissait cdip a temps. D'ou un BIOS emule qui
+      "marche parfois". */
+   Cs2GetIP(1);
 
    // read in lba 0/FAD 150
    if ((lgpartition = Cs2ReadUnFilteredSector(150)) == NULL)
@@ -1318,6 +1398,14 @@ int YabauseQuickLoadGame(void)
 
    if (memcmp(buffer, "SEGA SEGASATURN", 15) == 0)
    {
+      /* Numero de produit, SYSTEM ID offset 20H (ST-040-R4, table 4.1).
+         Il faut le copier MAINTENANT : plus bas, "buffer" est reaffecte a
+         chaque secteur lu puis le bloc CD est rendu par Cs2FreeBlock(), si
+         bien qu'au moment des tests par jeu il ne designe plus l'IP mais le
+         dernier secteur du 1st read file dans un bloc deja libere. */
+      memcpy(ipproduct, buffer + 0x20, 10);
+      ipproduct[10] = '\0';
+
       // figure out how many more sectors we need to read
       size = (buffer[0xE0] << 24) |
              (buffer[0xE1] << 16) |
@@ -1327,20 +1415,27 @@ int YabauseQuickLoadGame(void)
       if ((size % 2048) != 0)
          blocks++;
 
-      // Lastbronx for 0x8000 -- see YAB_QUICKLOAD_CORRECT_IP_SIZE at the
-      // top of this file. Was an unconditional override to exactly 16
-      // sectors for every game; now a floor, so games needing more than
-      // 0x8000 aren't truncated.
-#if YAB_QUICKLOAD_CORRECT_IP_SIZE
-      if (size < 16 * 2048)
-      {
-         size = 16 * 2048;
-         blocks = 16;
-      }
-#else
+      /* IP SIZE (ST-040-R4-051795 / TECH#11, offset E0H) : "Range 1000H to
+         8000H". La zone systeme du disque fait exactement 16 secteurs de
+         2048 octets = 8000H, et l'IP y est contenu en entier.
+
+         Charger les 16 secteurs est donc toujours un sur-ensemble de l'IP
+         legal : on ne peut ni tronquer un jeu, ni sortir de la zone
+         systeme. C'est ce que faisait le code d'origine ; l'etiquette
+         "Lastbronx" etait trompeuse, ce n'est pas un contournement propre
+         a un jeu.
+
+         Prendre max(taille_lue, 8000H) etait en revanche dangereux : le
+         champ E0H n'est pas fiable sur les disques non conformes
+         (homebrew, compilations, images reconstruites), et une valeur
+         aberrante faisait lire des secteurs au-dela de LBA 15 -- le
+         descripteur ISO9660 et les tables de chemins -- puis les recopier
+         en 6002000H et suivants, voire echouer la lecture et faire
+         remonter YAB_ERR_CANNOTINIT. */
+      if (size > 16 * 2048)
+         LOG("IP size %08X hors specification (1000H-8000H), borne a 8000H\n", size);
       size = 16 * 2048;
       blocks = 16;
-#endif
 
       // Figure out where to load the first program
       addr = (buffer[0xF0] << 24) |
@@ -1461,6 +1556,29 @@ int YabauseQuickLoadGame(void)
       MSH2->onchip.VCRC = 0x64 << 8;
       MSH2->onchip.VCRWDT = 0x6869;
       MSH2->onchip.IPRB = 0x0F00;
+      /* ICR.VECMD (bit 0) : 0 = auto-vecteur, 1 = vecteur fourni par le
+         peripherique externe. Sur Saturn c'est le SCU qui presente le numero
+         de vecteur sur le bus, et le boot ROM met donc VECMD a 1 -- ce que le
+         demarrage rapide court-circuite, puisqu'il n'execute jamais le boot
+         ROM.
+
+         Avec VECMD a 0, SH2EvaluateInterrupt() prend la branche auto-vecteur :
+             intVector = 0x40 + (irl >> 1)
+         Le VBlank OUT, presente par le SCU au niveau 14 avec le vecteur 41H,
+         partait donc sur le vecteur 47H (System Manager). Le BIOS emule
+         construit une table 1 pour 1 en 6000A00H, si bien que le jeu tombait
+         sur le rts par defaut au lieu de son propre gestionnaire.
+
+         Pire : ScuAcceptInterrupt() n'est appele QUE dans la branche vecteur
+         externe. Le verrou currentInterrupt du SCU n'etait donc jamais relache,
+         et ScuTestInterruptMask() ressortait aussitot ("if (currentInterrupt <=
+         i) return;") pour toutes les interruptions suivantes. Une seule
+         interruption etait delivree sur toute la partie.
+
+         Le vrai BIOS n'etait pas touche : ses vecteurs 40H a 5FH pointent tous
+         sur un repartiteur commun qui relit l'etat du SCU, donc arriver par le
+         mauvais vecteur ne se voyait pas. */
+      MSH2->onchip.ICR |= 0x0001;
       MSH2->regs.PC = Cs2GetMasterExecutionAdress();
       MSH2->regs.R[15] = Cs2GetMasterStackAdress();
       SH2SetRegisters(MSH2, &MSH2->regs);
@@ -1485,7 +1603,7 @@ int YabauseQuickLoadGame(void)
       // 0x20, per the Disc Format Standards Specification Sheet) so
       // other games' boot-time color RAM isn't clobbered with values
       // that only make sense for this one.
-      if (strncmp((const char*)&buffer[0x20], "T-2507G", 7) == 0)
+      if (strncmp(ipproduct, "T-2507G", 7) == 0)
       {
       Vdp2WriteWord(MSH2, NULL, 0x0E,0); // set color mode to 0
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0x0, 0x8000);
@@ -1507,15 +1625,26 @@ int YabauseQuickLoadGame(void)
       Vdp2ColorRamWriteWord(MSH2, Vdp2ColorRam, 0xFF, 0x0000);
       }
 
-      //Workaround for Radiant silvergun boot in Emulated bios
-      // Japan-exclusive, product code T-32902G. Was applied unconditionally
-      // to every game (filling the *entire* 512KB of VDP1 RAM); gated the
-      // same way as the Langrisser fix above.
-      if (strncmp((const char*)&buffer[0x20], "T-32902G", 8) == 0)
-      {
+      /* Initialisation de la VRAM VDP1. Ce n'est PAS un contournement pour
+         Radiant Silvergun : c'est une tache du boot ROM, qui laisse la
+         liste de commandes terminee avant de rendre la main au jeu.
+
+         Une table de commandes fait 20H octets et son premier mot est
+         CMDCTRL, dont le bit 15 est le bit de fin de liste. Ecrire 8000H
+         tous les 20H marque donc chaque emplacement comme "fin de liste".
+
+         Sans cela la VRAM VDP1 sort de YabauseResetNoLoad() entierement a
+         zero : CMDCTRL = 0000H, soit "dessin de sprite normal, saut au
+         suivant", sans aucun code de fin. Des que le jeu arme PTMR, le
+         parcours de vdp1.c (while (!(command & 0x8000) ...)) deroule des
+         milliers de commandes nulles et n'atteint jamais la fin de liste :
+         aucune trame VDP1 ne se termine, le compteur VDP1 reste a 0 et
+         l'ecran reste noir, pendant que VDP2 continue a compter ses trames.
+
+         Le reserver a un seul numero de produit privait tous les autres
+         jeux de cette initialisation. */
       for (int i = 0; i < 0x80000; i += 0x20) {
         Vdp1RamWriteWord(NULL, Vdp1Ram, i, 0x8000);
-      }
       }
 
    }
