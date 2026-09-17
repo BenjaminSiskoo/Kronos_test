@@ -681,6 +681,14 @@ typedef struct {
    * actually current when *that job* was issued, regardless of what the
    * live VRAM looks like by the time the job actually runs. */
   const u8 *vram_bank[4];
+  /* Double-density interlace (see Vdp2GetVramBankSnapshotField, vdp2.h):
+   * when field_split is set, vram_bank[] is reloaded for every display line
+   * from vram_bank_field[0] (the field being drawn, whose lines have the
+   * parity cur_field) or vram_bank_field[1] (the other field, drawn by the
+   * previous frame). */
+  const u8 *vram_bank_field[2][4];
+  u8 field_split;
+  u8 cur_field;
   u8 order;
 } Vdp2Ctrl;
 

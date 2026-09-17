@@ -69,6 +69,16 @@ Vdp2VramBankSnapshot Vdp2VramSnapshots[2][4][VDP2_MAX_VRAM_SNAPSHOTS];
 int Vdp2VramSnapshotCount[2][4];
 int Vdp2VramCaptureSlot = 0;
 
+/* vdp2_is_odd_frame of the frame each slot was filled during (-1: none).
+ * Lets the double-density renderer pick the slot that scanned a given
+ * field, and refuse a slot that is too old after a skipped frame. */
+static int Vdp2VramSlotOddFrame[2] = { -1, -1 };
+/* Set by Vdp2VramSnapshotSwap(), consumed by Vdp2VBlankOUT(). */
+static int Vdp2VramSwappedThisFrame = 0;
+/* Whether the VDP2 had read access to each physical bank at the last
+ * cycle pattern update. */
+static int Vdp2BankHadReadAccess[4] = { 0, 0, 0, 0 };
+
 const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine) {
   const u8 *best = NULL;
   int slot = 1 - Vdp2VramCaptureSlot;
@@ -86,7 +96,30 @@ const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine) {
   return best;
 }
 
+const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame) {
+  const u8 *best = NULL;
+  int slot, i;
+  if (bank < 0 || bank > 3) return NULL;
+  /* Called from VIDCSVdp2Draw(), i.e. before this frame's swap: the capture
+   * slot still holds the captures of the frame being drawn, the other slot
+   * those of the frame before. */
+  if (Vdp2VramSlotOddFrame[Vdp2VramCaptureSlot] == oddFrame)
+    slot = Vdp2VramCaptureSlot;
+  else if (Vdp2VramSlotOddFrame[1 - Vdp2VramCaptureSlot] == oddFrame)
+    slot = 1 - Vdp2VramCaptureSlot;
+  else
+    return NULL;
+  for (i = 0; i < Vdp2VramSnapshotCount[slot][bank]; i++) {
+    if (Vdp2VramSnapshots[slot][bank][i].line <= atLine)
+      best = Vdp2VramSnapshots[slot][bank][i].data;
+    else
+      break;
+  }
+  return best;
+}
+
 void Vdp2VramSnapshotSwap(void) {
+  Vdp2VramSwappedThisFrame = 1;
   Vdp2VramCaptureSlot = 1 - Vdp2VramCaptureSlot;
   Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][0] = 0;
   Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][1] = 0;
@@ -616,6 +649,10 @@ void Vdp2Reset(void) {
    Vdp2VramSnapshotCount[1][1] = 0;
    Vdp2VramSnapshotCount[1][2] = 0;
    Vdp2VramSnapshotCount[1][3] = 0;
+   Vdp2VramSlotOddFrame[0] = -1;
+   Vdp2VramSlotOddFrame[1] = -1;
+   Vdp2VramSwappedThisFrame = 0;
+   memset(Vdp2BankHadReadAccess, 0, sizeof(Vdp2BankHadReadAccess));
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -630,6 +667,60 @@ static int checkFrameSkip(void) {
   return ret;
 #endif
   return !(yabsys.frame_count % (yabsys.skipframe+1) == 0);
+}
+
+/* Does the VDP2 read this physical bank at some timing of the cycle?
+ * Access commands, ST-058-R2 Table 3.5: 0000-0011 pattern name, 0100-0111
+ * character pattern / bitmap, 1100-1101 vertical cell scroll table.
+ * T4-T7 are only in force in normal mode (Figure 3.2). */
+static int Vdp2BankHasReadAccess(int bank) {
+  const int usedTimings = ((Vdp2Regs->TVMD & 0x6) != 0) ? 4 : 8;
+  int t;
+  for (t = 0; t < usedTimings; t++) {
+    const u8 c = Vdp2External.AC_VRAM[bank][t];
+    if (c <= 0x7 || c == 0xC || c == 0xD) return 1;
+  }
+  return 0;
+}
+
+/* Freeze physical bank 'bank' as the content in force from the current line
+ * onwards. Entries stay in increasing line order; a second capture on the
+ * same line replaces the first. */
+static void Vdp2CaptureBank(int bank) {
+  const int slot = Vdp2VramCaptureSlot;
+  int n = Vdp2VramSnapshotCount[slot][bank];
+  Vdp2VramBankSnapshot *snap;
+
+  if (n > 0 && Vdp2VramSnapshots[slot][bank][n - 1].line == (int)yabsys.LineCount) {
+    snap = &Vdp2VramSnapshots[slot][bank][n - 1];
+  } else {
+    if (n > 0 && Vdp2VramSnapshots[slot][bank][n - 1].line > (int)yabsys.LineCount) return;
+    if (n >= VDP2_MAX_VRAM_SNAPSHOTS) return;
+    snap = &Vdp2VramSnapshots[slot][bank][n];
+    Vdp2VramSnapshotCount[slot][bank] = n + 1;
+  }
+  snap->line = yabsys.LineCount;
+  memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+}
+
+/* See vdp2.h. True Pinball, in game, per field: NBG0 bitmap 1024x256 with a
+ * vertical scroll of -64, VRAM-A (rows 0-127) readable on lines 30-96 and
+ * 160-224, VRAM-B (rows 128-255) on lines 96-160 and 224 to the end, and the
+ * SCU DMA rewrites each bank, one row parity per field, while it is not
+ * readable. Without these captures the whole field was drawn from the
+ * end-of-frame VRAM, i.e. from the images meant for the last zone of each
+ * bank and for the next field. Limited to double-density interlace, the only
+ * mode where this has been observed; other modes keep their behaviour. */
+static void Vdp2CaptureOnReadGrant(void) {
+  const int active = (yabsys.LineCount < yabsys.VBlankLineCount) &&
+                     ((Vdp2Regs->TVMD & 0xC0) == 0xC0);
+  int bank;
+  for (bank = 0; bank < 4; bank++) {
+    const int has = Vdp2BankHasReadAccess(bank);
+    if (active && has && !Vdp2BankHadReadAccess[bank])
+      Vdp2CaptureBank(bank);
+    Vdp2BankHadReadAccess[bank] = has;
+  }
 }
 
 static void updateCyclePattern() {
@@ -696,6 +787,8 @@ static void updateCyclePattern() {
     Vdp2External.AC_VRAM[3][6] = Vdp2External.AC_VRAM[2][6];
     Vdp2External.AC_VRAM[3][7] = Vdp2External.AC_VRAM[2][7];
   }
+  Vdp2CaptureOnReadGrant();
+
   //unblock Bank
   vdp2RamAccessCPUCheck(VDP2_VRAM_A0);
   vdp2RamAccessCPUCheck(VDP2_VRAM_A1);
@@ -1067,6 +1160,16 @@ void Vdp2VBlankOUT(void) {
        vdp2_is_odd_frame = 1;
    }
 
+   /* A skipped frame is never drawn, so its captures were never swapped
+    * out: drop them rather than let the next field append after them. */
+   if (!Vdp2VramSwappedThisFrame) {
+     Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][0] = 0;
+     Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][1] = 0;
+     Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][2] = 0;
+     Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][3] = 0;
+   }
+   Vdp2VramSwappedThisFrame = 0;
+   Vdp2VramSlotOddFrame[Vdp2VramCaptureSlot] = vdp2_is_odd_frame;
 }
 
 //////////////////////////////////////////////////////////////////////////////

@@ -85,6 +85,75 @@ extern GLuint GetCSVDP1fb(int id);
 
 static int vdp1_interlace = 0;
 
+extern int vdp2_is_odd_frame;
+
+/* ---------------------------------------------------------------------------
+ * VRAM state per field in double-density interlace (True Pinball).
+ *
+ * ST-058-R2 p.17: in double-density interlace the odd and even fields show
+ * different pictures. Display line d belongs to the field of parity d & 1,
+ * and was last scanned either by the frame being drawn (parity
+ * vdp2_is_odd_frame) or by the previous one. Each parity therefore reads
+ * the captures of the frame that scanned it; see vdp2.h. In any other mode
+ * this is exactly the former single lookup.
+ * ------------------------------------------------------------------------- */
+static void Vdp2SetupVramBanks(Vdp2Ctrl *ctrl, int startLine)
+{
+  int b;
+  if (_Ygl->interlace == DOUBLE_INTERLACE) {
+    const int cur = vdp2_is_odd_frame & 1;
+    ctrl->field_split = 1;
+    ctrl->cur_field   = (u8)cur;
+    for (b = 0; b < 4; b++) {
+      ctrl->vram_bank_field[0][b] = Vdp2GetVramBankSnapshotField(b, startLine, cur);
+      ctrl->vram_bank_field[1][b] = Vdp2GetVramBankSnapshotField(b, startLine, 1 - cur);
+      ctrl->vram_bank[b] = ctrl->vram_bank_field[0][b];
+    }
+  } else {
+    ctrl->field_split = 0;
+    ctrl->cur_field   = 0;
+    for (b = 0; b < 4; b++) {
+      ctrl->vram_bank[b] = Vdp2GetVramBankSnapshot(b, startLine);
+      ctrl->vram_bank_field[0][b] = ctrl->vram_bank[b];
+      ctrl->vram_bank_field[1][b] = ctrl->vram_bank[b];
+    }
+  }
+}
+
+/* dispLine is a display line (0.._Ygl->rheight-1, may be negative for a
+ * tile that starts above the screen: only its parity is used). */
+static INLINE void Vdp2SelectFieldBanks(Vdp2Ctrl *ctrl, int dispLine)
+{
+  const u8 *const *set;
+  if (!ctrl->field_split) return;
+  set = ctrl->vram_bank_field[((dispLine & 1) == ctrl->cur_field) ? 0 : 1];
+  ctrl->vram_bank[0] = set[0];
+  ctrl->vram_bank[1] = set[1];
+  ctrl->vram_bank[2] = set[2];
+  ctrl->vram_bank[3] = set[3];
+}
+
+/* Access command of timing t for physical bank b, from a register snapshot
+ * rather than from the end-of-frame Vdp2External.AC_VRAM. Same layout and
+ * same mirroring as updateCyclePattern() (vdp2.c): without partitioning
+ * (RAMCTL VRAMD/VRBMD = 0) the A0/B0 register governs the whole of VRAM-A/B
+ * (ST-058-R2 p.35). */
+static INLINE u8 Vdp2ZoneAccessCommand(const Vdp2 *regs, int b, int t)
+{
+  u16 lo, hi;
+  switch (b) {
+    case 0:  lo = regs->CYCA0L; hi = regs->CYCA0U; break;
+    case 1:  if (regs->RAMCTL & 0x100) { lo = regs->CYCA1L; hi = regs->CYCA1U; }
+             else                      { lo = regs->CYCA0L; hi = regs->CYCA0U; }
+             break;
+    case 2:  lo = regs->CYCB0L; hi = regs->CYCB0U; break;
+    default: if (regs->RAMCTL & 0x200) { lo = regs->CYCB1L; hi = regs->CYCB1U; }
+             else                      { lo = regs->CYCB0L; hi = regs->CYCB0U; }
+             break;
+  }
+  return (t < 4) ? ((lo >> (12 - 4 * t)) & 0xF) : ((hi >> (12 - 4 * (t - 4))) & 0xF);
+}
+
 int GlWidth = 320;
 int GlHeight = 224;
 
@@ -1377,10 +1446,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   int i;
  
   ctrl.regs = varVdp2Regs;
-  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
-  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
-  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
-  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
+  Vdp2SetupVramBanks(&ctrl, startLine);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
@@ -1425,15 +1491,21 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   if (!ctrl.info.enable) return;
 
  
+  /* Access commands of THIS zone, read from its own register snapshot.
+   * ST-058-R2 p.33: an address outside the banks selected for reading is
+   * not accessed and the screen is not displayed there. The end-of-frame
+   * Vdp2External.AC_VRAM gave every zone the state of the last one: True
+   * Pinball grants VRAM-A and VRAM-B alternately, zone by zone. */
   for (int b = 0; b < 4; b++) {
     ctrl.info.char_bank[b] = 0;
     ctrl.info.pname_bank[b] = 0;
     for (int j = 0; j < 8; j++) {
-      if (Vdp2External.AC_VRAM[b][j] == 0x04) {
+      const u8 ac = Vdp2ZoneAccessCommand(ctrl.regs, b, j);
+      if (ac == 0x04) {
         ctrl.info.char_bank[b] = 1;
         char_access |= 1 << j;
       }
-      if (Vdp2External.AC_VRAM[b][j] == 0x00) {
+      if (ac == 0x00) {
         ctrl.info.pname_bank[b] = 1;
         ptn_access |= (1 << j);
       }
@@ -1947,10 +2019,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   /* Kronos#520: was hardcoded NULL (live VRAM only) for this
    * layer - Vdp2DrawNBG0() already consulted the frame-stable
    * snapshot below. Extended for consistency. */
-  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
-  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
-  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
-  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
+  Vdp2SetupVramBanks(&ctrl, startLine);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
   ctrl.info.cor = 0;
@@ -2370,10 +2439,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
   /* Kronos#520: see Vdp2DrawNBG1() for the full note. */
-  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
-  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
-  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
-  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
+  Vdp2SetupVramBanks(&ctrl, startLine);
   ctrl.info.startLine = startLine;
   ctrl.info.endLine = endLine;
   ctrl.info.dst = 0;
@@ -2611,10 +2677,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   Vdp2Ctrl ctrl;
   ctrl.regs = varVdp2Regs;
   /* Kronos#520: see Vdp2DrawNBG1() for the full note. */
-  ctrl.vram_bank[0] = Vdp2GetVramBankSnapshot(0, startLine);
-  ctrl.vram_bank[1] = Vdp2GetVramBankSnapshot(1, startLine);
-  ctrl.vram_bank[2] = Vdp2GetVramBankSnapshot(2, startLine);
-  ctrl.vram_bank[3] = Vdp2GetVramBankSnapshot(3, startLine);
+  Vdp2SetupVramBanks(&ctrl, startLine);
   ctrl.info.idScreen = NBG3;
   ctrl.info.dst = 0;
   ctrl.info.cor = 0;
@@ -4385,6 +4448,7 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
   {
   case 0: // 4 BPP
     for (i = 0; i < ctrl->info.cellh; i++) {
+      if (is_bitmap) Vdp2SelectFieldBanks(ctrl, ctrl->info.draw_line + i);
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
       for (j = 0; j < ctrl->info.cellw; j += 4) {
         u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
@@ -4406,6 +4470,7 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
     break;
   case 1: // 8 BPP
     for (i = 0; i < ctrl->info.cellh; i++) {
+      if (is_bitmap) Vdp2SelectFieldBanks(ctrl, ctrl->info.draw_line + i);
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
       for (j = 0; j < ctrl->info.cellw; j += 2) {
         u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
@@ -4425,6 +4490,7 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
     break;
   case 2: // 16 BPP(palette)
     for (i = 0; i < ctrl->info.cellh; i++) {
+      if (is_bitmap) Vdp2SelectFieldBanks(ctrl, ctrl->info.draw_line + i);
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
       for (j = 0; j < ctrl->info.cellw; j++) {
         u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
@@ -4440,6 +4506,7 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
     break;
   case 3: // 16 BPP(RGB)
     for (i = 0; i < ctrl->info.cellh; i++) {
+      if (is_bitmap) Vdp2SelectFieldBanks(ctrl, ctrl->info.draw_line + i);
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
       for (j = 0; j < ctrl->info.cellw; j++) {
         u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
@@ -4455,6 +4522,7 @@ static void FASTCALL Vdp2DrawCell_in_sync(Vdp2Ctrl *ctrl)
     break;
   case 4: // 32 BPP
     for (i = 0; i < ctrl->info.cellh; i++) {
+      if (is_bitmap) Vdp2SelectFieldBanks(ctrl, ctrl->info.draw_line + i);
       ctrl->info.alpha = getAlpha(&ctrl->info, i);
       for (j = 0; j < ctrl->info.cellw; j++) {
         u32 eff_addr = BITMAP_ADDR(ctrl->info.charaddr);
@@ -4559,6 +4627,7 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
     const int absline = zone_start + i;
 
     ctrl->info.draw_line = absline;
+    Vdp2SelectFieldBanks(ctrl, absline);
     ctrl->info.alpha = ctrl->info.alpha_per_line[absline >> shift];
     baseaddr = (u32)ctrl->info.charaddr;
     line = &(ctrl->info.lineinfo[absline]);
@@ -4752,19 +4821,22 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
     baseaddr = (u32)ctrl->info.charaddr;
      line = &(ctrl->info.lineinfo[i]);
      ctrl->info.draw_line = i;
+    Vdp2SelectFieldBanks(ctrl, i);
  
-    /* Kronos#520: i is a SCREEN-space output row (0.._Ygl->rheight, i.e.
-     * 0-511 when DOUBLE_INTERLACE doubles the display height to show a
-     * 256-line bitmap over 512 lines). v must be a VRAM/register-space
-     * row (0-255) - without the >> shift correction below, v == i for
-     * the top half (correct) but keeps counting into 256-511 for the
-     * bottom half, reading past the bitmap's logical height and
-     * wrapping/repeating its content (visible as the same image
-     * appearing twice with black gaps in between - confirmed via the
-     * Kronos VDP2 debug viewer's per-layer NBG0 view). Same conversion
-     * already applied a few lines below for alpha_per_line indexing;
-     * this was simply missing here. */
-    v = ((i >> shift) * incv) >> 8;
+    /* i is a display line. In double-density interlace line y of field f is
+     * display line 2y + f, and the vertical coordinate advances by the
+     * coordinate increment per DISPLAY line, starting at one increment in
+     * the second field -- so it is simply i * increment, the same rule the
+     * tile path (row = i + scroll) and the line scroll path already follow.
+     * With a 256-line bitmap the picture then repeats vertically, as
+     * ST-058-R2 p.93 states for double-density interlace.
+     *
+     * This used to be (i >> shift) * increment, which doubled every bitmap
+     * row. That made a 256-line bitmap fill 512 lines, and hid the repeat
+     * the hardware really shows -- but on True Pinball the repeat is the
+     * point: the game rewrites the bitmap between zones (see vdp2.h), and
+     * the halved coordinate put each zone on the rows meant for another. */
+    v = (i * incv) >> 8;
  
     if (VDPLINE_SZ(ctrl->info.islinescroll)) {
       u16 raw_inc = line->CoordinateIncH;

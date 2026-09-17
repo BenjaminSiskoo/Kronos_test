@@ -84,6 +84,29 @@ const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine);
  * its async jobs) are about to read from. */
 void Vdp2VramSnapshotSwap(void);
 
+/* Double-density interlace (True Pinball).
+ *
+ * ST-058-R2 p.17: double-density interlace shows a different picture in the
+ * odd and in the even field, so each display line is only refreshed every
+ * other frame, from the VRAM content of the field that scanned it.
+ * ST-058-R2 p.93: with a 256-line bitmap the picture repeats vertically, so
+ * a game can show four different 128-line images in one field by rewriting
+ * the bitmap between the zones, and it hides each rewrite from the display
+ * by removing the bank's read access in the cycle pattern registers (p.33:
+ * an address outside the banks selected for reading is not accessed).
+ *
+ * Vdp2CaptureOnReadGrant() (vdp2.c) freezes a physical bank each time the
+ * VDP2 gains read access to it during the active area of a double-density
+ * field. The capture is "content from this line onwards", like the
+ * Kronos#520 ones, and shares their storage.
+ *
+ * Vdp2GetVramBankSnapshotField() returns the capture in force at 'atLine'
+ * for the field whose vdp2_is_odd_frame value is 'oddFrame': the frame
+ * being drawn, or the one before it, whichever scanned that field. NULL
+ * when neither slot belongs to that field or none applies, in which case
+ * the caller reads the live VRAM. */
+const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame);
+
 u8 FASTCALL     Vdp2RamReadByte(SH2_struct *context, u8*, u32);
 u16 FASTCALL    Vdp2RamReadWord(SH2_struct *context, u8*, u32);
 u32 FASTCALL    Vdp2RamReadLong(SH2_struct *context, u8*, u32);
