@@ -88,12 +88,20 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
     //interrupt on IRL, determine the priority
     sh->intPriority = sh->intc.irl;
     if (sh->onchip.ICR & 0x1) {
+      /* ICR.VECMD = 1 : le peripherique externe presente le numero de vecteur.
+         C'est le mode normal sur Saturn, ou le SCU le pose sur le bus. */
       sh->intVector = sh->intc.d;
-      ScuAcceptInterrupt(sh);
     }
     else {
+      /* Mode auto-vecteur : le vecteur est deduit du seul niveau. */
       sh->intVector = 0x40+(sh->intc.irl>>1);
     }
+    /* Le verrou du SCU doit etre relache dans les DEUX modes. Il ne l'etait que
+       dans la branche vecteur externe : en auto-vecteur, currentInterrupt
+       restait arme et ScuTestInterruptMask() ressortait aussitot sur
+       "if (currentInterrupt <= i) return;", si bien qu'apres la toute premiere
+       interruption plus aucune n'etait presentee au CPU. */
+    ScuAcceptInterrupt(sh);
     sh->intc.irl = 0;
   }
   else if (((sh->onchip.DVCR & 0x3)==0x3) && (((sh->onchip.IPRA >> 12) & 0xF) > sh->regs.SR.part.I)) //DIVU
