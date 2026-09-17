@@ -3526,6 +3526,18 @@ void Cs2IsDeviceAuthenticated(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+int Cs2IsMpegCardPresent(void) {
+  // Pas de carte Video CD (MPEG Card) emulee dans cette branche :
+  // Cs2GetHardwareInfo() repond deja CR2 = 0x0001 ("No mpeg card exists",
+  // CD Communication Interface, commande 01h Get Hardware Info, bit MPEG
+  // de CR2). BiosCheckMPEGCard() doit donner la meme reponse.
+  // A remplacer par la vraie detection (MpegCardHasRom() / CART_MPEGCARD)
+  // lors de l'integration du lot Video CD.
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void Cs2GetMPEGRom(void) {
   u16 i;
   FILE * mpgfp;
@@ -4469,15 +4481,31 @@ u8 Cs2GetIP(int autoregion) {
 // ST-040-R4-051795.pdf is describing a bit the mechanism, look at 1st READ ADDRESS
          if (cdip->msh2stack == 0 )
          {
-            // Disc Format Standards Specification Sheet (ST-040-R4-051795),
-            // STACK-M: "Default (0 specified) 6001000H ~ 6001FFFH becomes
-            // the stack area." Confirmed by Saturn Technical Bulletin #35
-            // ("Change in the 1st Read File Load Area Size"), example
-            // memory map: Master SH Stack @ 6001000H.
-            // Was 0x6002000, which is the *start of the application area*
-            // per the same bulletin -- the default master stack would sit
-            // right on top of the freshly loaded application code.
-            cdip->msh2stack = 0x6001000;
+            /* STACK-M defaut (ST-040-R4-051795 / TECH#11) : "Default (0
+               specified) 6001000H ~ 6001FFFH becomes the stack area."
+
+               C'est la ZONE de pile, pas la valeur initiale de R15. Sur
+               SH-2 l'empilement se fait en pre-decrement (MOV.L Rn,@-R15),
+               donc R15 doit demarrer une case APRES le haut de la zone :
+               6001FFFH + 1 = 6002000H. Le premier push ecrit alors en
+              6001FFCH, a l'interieur de la zone.
+               Mettre R15 = 6001000H (le BAS de la zone) fait descendre le
+               premier push en 6000FFCH, c'est-a-dire hors de la zone du
+               maitre, dans celle de l'esclave, puis dans 6000900H-60009FFH
+               (table des handlers SCU du BIOS emule), 6000348H (masque
+               d'interruption memorise) et enfin la table de vecteurs
+               construite par BiosInit(). En BIOS emule le jeu detruit donc
+               le BIOS lui-meme des ses premiers appels de fonction.
+
+               Le diagramme de TECH#35 se lit de bas en haut :
+               6000000H-6000E00H vecteurs et routines residentes,
+               6000E00H-6001000H pile de l'esclave,
+               6001000H-6002000H pile du maitre.
+               Les etiquettes marquent les bornes BASSES des zones.
+
+               Coherent avec YabauseFullInit(), qui ecrit deja 0x06002000
+               dans le vecteur 1 (SP initial) de la ROM BIOS emulee. */
+            cdip->msh2stack = 0x6002000;
          }
 
          // for Panzer Dragoon Zwei. This operation is not written in the document.
@@ -4488,12 +4516,19 @@ u8 Cs2GetIP(int autoregion) {
 
          if (cdip->ssh2stack == 0 )
          {
-            // STACK-S: "Default (0 specified) 6000D00H ~ 6000FFFH becomes
-            // the stack area." Bulletin #35 example: Slave SH Stack @
-            // 6000E00H. Was 0x6001000, which is outside the documented
-            // slave range and collides with the master's default stack
-            // area (6001000H-6001FFFH) above.
-            cdip->ssh2stack = 0x6000E00;
+            /* STACK-S defaut : zone 6000D00H ~ 6000FFFH (ST-040-R4 /
+               TECH#11), donc R15 initial = 6001000H, meme raisonnement que
+               pour le maitre ci-dessus.
+
+               Et cette fois le document donne directement la valeur du
+               registre : SEGA Saturn Dual CPU User's Guide (ST-202-R1),
+               4.4 "Initialization (Vector, Stack) by the Boot ROM" :
+                 1. Vector VBR is set to address 6000400H.
+                 2. Stack SP is set to address 6001000H.
+               YabauseStartSlave() pose deja VBR = 0x06000400 ; SP doit
+               aller avec. 6000E00H ne laissait que 256 octets de pile et
+               ne correspond a aucune valeur de registre documentee. */
+            cdip->ssh2stack = 0x6001000;
          }
 
          if (cdip->ssh2stack & 0x80000000)
@@ -4818,9 +4853,16 @@ int Cs2LoadState(const void * stream, int version, int size) {
    return size;
 }
 
-u32 Cs2GetMasterStackAdress(){ if (cdip) return cdip->msh2stack; else return 0x6001000; }
-u32 Cs2GetSlaveStackAdress(){ if (cdip) return cdip->ssh2stack; else return 0x6000E00; }
-u32 Cs2GetMasterExecutionAdress(){ if (cdip) return cdip->firstprogaddr; else return 0x06002E00; }
+/* Valeurs de repli : memes SP que ci-dessus (ST-202-R1 4.4 pour
+   l'esclave), pas les bornes basses des zones de pile. */
+/* Un cdip alloue mais pas encore rempli (cf. le commentaire en tete de
+   YabauseQuickLoadGame()) vaut zero sans etre NULL. Tester le champ lui-meme,
+   et pas seulement le pointeur, evite de renvoyer PC = 0 et SP = 0 au maitre.
+   Replis : entree de l'AIP (6002000H + 100H SYSTEM ID + D00H code de securite
+   = 6002E00H) et sommets des zones de pile documentees. */
+u32 Cs2GetMasterStackAdress(){ if (cdip && cdip->msh2stack) return cdip->msh2stack; else return 0x6002000; }
+u32 Cs2GetSlaveStackAdress(){ if (cdip && cdip->ssh2stack) return cdip->ssh2stack; else return 0x6001000; }
+u32 Cs2GetMasterExecutionAdress(){ if (cdip && cdip->firstprogaddr) return cdip->firstprogaddr; else return 0x06002E00; }
 u64 Cs2GetGameId(){ if (cdip) return cdip->gameid; else return 0x00; }
 
 //////////////////////////////////////////////////////////////////////////////
