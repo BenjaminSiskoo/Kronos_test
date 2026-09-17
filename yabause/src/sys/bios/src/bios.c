@@ -23,6 +23,7 @@
 
 #include "memory.h"
 #include "cs0.h"
+#include "cs2.h"
 #include "debug.h"
 #include "sh2core.h"
 #include "bios.h"
@@ -56,6 +57,9 @@ extern u32 backup_file_size;
 void FASTCALL BiosBUPRead(SH2_struct * sh);
 //////////////////////////////////////////////////////////////////////////////
 
+extern void KBootLog(const char *fmt, ...);
+static int kb_func_n = 0;
+
 void BiosInit(SH2_struct *context)
 {
    int i;
@@ -66,6 +70,7 @@ void BiosInit(SH2_struct *context)
    SH2MappedMemoryWriteLong(context, 0x06000608, 0x400E8BFE); // ldc r0, sr; bf
    SH2MappedMemoryWriteLong(context, 0x0600060C, 0x00090009); // nop
    SH2MappedMemoryWriteLong(context, 0x06000610, 0x000B0009); // rts, nop
+   SH2MappedMemoryWriteLong(context, 0x06000614, 0xAFFE0009); // bra self, nop
 
    for (i = 0; i < 0x200; i+=4)
    {
@@ -108,6 +113,22 @@ void BiosInit(SH2_struct *context)
 
    for (i = 0; i < 0x100; i+=4)
       SH2MappedMemoryWriteLong(context, 0x06000A00+i, 0x06000610);
+
+   /* Point d'entree de l'esclave.
+
+      YabauseStartSlave() lit 6000250H une seule fois, au moment du SSHON,
+      et y prend le PC de l'esclave. Rien n'initialisait cette case : elle
+      valait donc 0 (HighWram vient d'etre remis a zero), et un jeu qui
+      emet SSHON avant d'avoir publie son entree lancait l'esclave a
+      l'adresse 0.
+
+      Le vrai boot ROM, lui, laisse l'esclave dans une boucle (SEGA Saturn
+      Dual CPU User's Guide, ST-202-R1, 4.3 : "the boot ROM rewrites the
+      execution entry ... after read initialization"). On pointe donc la
+      valeur par defaut sur la boucle inconditionnelle ecrite en 6000614H :
+      l'esclave tourne a vide au lieu d'executer n'importe quoi, et le jeu
+      ecrase cette valeur des qu'il fournit sa vraie fonction d'entree. */
+   SH2MappedMemoryWriteLong(context, 0x06000250, 0x06000614);
 
    // Setup Bios Functions
    SH2MappedMemoryWriteLong(context, 0x06000210, 0x00000210);
@@ -415,7 +436,12 @@ static void FASTCALL BiosCheckMPEGCard(SH2_struct * sh)
 {
    SH2GetRegisters(sh, &sh->regs);
 
-   //LOG("BiosCheckMPEGCard\n");
+   // Real return-value convention for this HLE call is undocumented, but
+   // every other CheckXxx/Get* stub in this file returns its boolean in
+   // R0 (see BiosGetSemaphore() above), and this is exactly what
+   // Cs2GetHardwareInfo()'s CR2 bit 9 and Cs2AuthenticateDevice()'s
+   // mpgauth agree on: see Cs2IsMpegCardPresent() in cs2.c.
+   sh->regs.R[0] = Cs2IsMpegCardPresent() ? 1 : 0;
 
    sh->regs.PC = sh->regs.PR;
    SH2SetRegisters(sh, &sh->regs);
@@ -1588,6 +1614,9 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
 {
    int addr = (sh->regs.PC & 0xFFFFF);
    SH2GetRegisters(sh, &sh->regs);
+   if (kb_func_n < 1500) { kb_func_n++;
+      KBootLog("BIOS appel @%05X (PR=%08X R4=%08X R5=%08X R6=%08X)\n",
+               addr, sh->regs.PR, sh->regs.R[4], sh->regs.R[5], sh->regs.R[6]); }
    // Let's see if it's a bios function
    switch((addr - 0x200) >> 2)
    {
