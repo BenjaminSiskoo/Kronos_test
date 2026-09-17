@@ -1274,6 +1274,17 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
    * (0, 2, 3, 4) -- they would produce garbage palette-index shifts.
    * Mode 1 (LUT) and mode 5 (RGB) may legitimately use Gouraud.
    * Table 5.3: correction = value - 0x10, range [-16,+15].
+   *
+   * The correction is expressed in 5-bit colour steps and is added to the
+   * 5-bit component (ST-013-R3 §5.3). Every Gouraud shader of the compute
+   * renderer (vdp1_prog_compute.h, vdp1_prog_compute_upscale.h) first
+   * normalises the component as c / 31.0 and then adds G, so G has to use
+   * the same scale: (value - 0x10) / 31.0. Dividing by 16.0 made every
+   * correction 31/16 = 1.94 times too strong -- a +15 step pushed a
+   * component by about +29, which is why Virtual Hydlide's distance fog
+   * (bright Gouraud tables on the far polygons) saturated to white and the
+   * near polygons came out too dark.
+   *
    * NOTE: this block was accidentally dropped here when the
    * pre-clipping bounding-box check below was added; restored using
    * the same corrected formula already used in Vdp1ScaledSpriteDraw. */
@@ -1285,9 +1296,9 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
       for (int i = 0; i < 4; i++){
         u16 color2 = Vdp1RamReadWord(NULL, ram,
             (gouraud_base + (i << 1)) & 0x7FFFF);
-        cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-        cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-        cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+        cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+        cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+        cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
       }
     }
   }
@@ -1538,11 +1549,13 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			/* VDP1 Manual §5.3 Table 5.3:
 			 * correction = table_value - 0x10
 			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
-			 * Normalize to [-1,+1] for shader: divide by 16.0f
-			 * (not 31.0f — range is asymmetric [-16,+15]) */
-			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+			 * The correction is added to the 5-bit colour component, in
+			 * the same unit. The shaders normalise that component as
+			 * c / 31.0, so the correction must be divided by 31.0 too
+			 * (see the note in Vdp1NormalSpriteDraw). */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
 		}
 	}
 	// VDP1 Manual §4.2 EOS bit (FBCR bit 4):
@@ -1659,9 +1672,9 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     for (int i = 0; i < 4; i++) {
       u16 color2 = Vdp1RamReadWord(NULL, ram,
         (gouraud_base + (i << 1)) & 0x7FFFF);
-      cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-      cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-      cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+      cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+      cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+      cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
     }
   }
 
@@ -1707,11 +1720,13 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			/* VDP1 Manual §5.3 Table 5.3:
 			 * correction = table_value - 0x10
 			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
-			 * Normalize to [-1,+1] for shader: divide by 16.0f
-			 * (not 31.0f — range is asymmetric [-16,+15]) */
-			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+			 * The correction is added to the 5-bit colour component, in
+			 * the same unit. The shaders normalise that component as
+			 * c / 31.0, so the correction must be divided by 31.0 too
+			 * (see the note in Vdp1NormalSpriteDraw). */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
 		}
 	}
   cmd->w = 1;
@@ -1770,11 +1785,13 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			/* VDP1 Manual §5.3 Table 5.3:
 			 * correction = table_value - 0x10
 			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
-			 * Normalize to [-1,+1] for shader: divide by 16.0f
-			 * (not 31.0f — range is asymmetric [-16,+15]) */
-			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+			 * The correction is added to the 5-bit colour component, in
+			 * the same unit. The shaders normalise that component as
+			 * c / 31.0, so the correction must be divided by 31.0 too
+			 * (see the note in Vdp1NormalSpriteDraw). */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
 		}
 	}
 	
@@ -1824,11 +1841,13 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			/* VDP1 Manual §5.3 Table 5.3:
 			 * correction = table_value - 0x10
 			 * 0x00 → -16, 0x10 → 0, 0x1F → +15
-			 * Normalize to [-1,+1] for shader: divide by 16.0f
-			 * (not 31.0f — range is asymmetric [-16,+15]) */
-			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 16.0f;
-			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 16.0f;
+			 * The correction is added to the 5-bit colour component, in
+			 * the same unit. The shaders normalise that component as
+			 * c / 31.0, so the correction must be divided by 31.0 too
+			 * (see the note in Vdp1NormalSpriteDraw). */
+			cmd->G[(i * 3) + 0] = (float)((int)((color2 & 0x001F))       - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 1] = (float)((int)((color2 & 0x03E0) >> 5)  - 0x10) / 31.0f;
+			cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
 		}
 	}
   cmd->w = 1;
