@@ -486,6 +486,10 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
       return;
   }
 
+  /* ST-058-R2 p.193: LOG=AND with no window enabled -> the whole screen is
+   * the transparent-process area, nothing of this layer can be visible. */
+  if (_Ygl->WinAll[ctrl->info.idScreen] != 0) return;
+
   if ((_Ygl->Win0[ctrl->info.idScreen] != 0 || _Ygl->Win1[ctrl->info.idScreen] != 0) && ctrl->info.coordincx == 1.0f && ctrl->info.coordincy == 1.0f)
   {                                                 // coordinate inc is not supported yet.
     winmode = Vdp2CheckWindowRange(ctrl, x - cx, y - cy, tile.cellw, ctrl->info.lineinc);
@@ -2917,22 +2921,17 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
 
   if ((rbg->ctrl.regs->RPMD & 0x3) == 0x03)
   {
-    //printf("RPMD 0x3\n");
-    // Enable Window0(RPW0E)?
-    if (((rbg->ctrl.regs->WCTLD >> 1) & 0x01) == 0x01)
-    {
-      info->RotWin = _Ygl->win[0];
-      // RPW0A( inside = 0, outside = 1 )
-      info->RotWinMode = (rbg->ctrl.regs->WCTLD & 0x01);
-      // Enable Window1(RPW1E)?
-    }
-    else if (((rbg->ctrl.regs->WCTLD >> 3) & 0x01) == 0x01)
-    {
-      info->RotWin = _Ygl->win[1];
-      // RPW1A( inside = 0, outside = 1 )
-      info->RotWinMode = ((rbg->ctrl.regs->WCTLD >> 2) & 0x01);
-      // Bad Setting Both Window is disabled
-    }
+    /* Rotation parameter window (ST-058-R2 p.190 and p.193-195, WCTLD bits 7-0):
+     *   active area = (W0 area) RPLOG (W1 area), RPLOG: 0 = OR, 1 = AND,
+     *   RPWxA: 0 = inside of Wx is active, 1 = outside is active,
+     *   no window enabled: RPLOG=0 -> no active area, RPLOG=1 -> whole screen.
+     * Parameter B is used in the active area, parameter A outside of it.
+     * The sprite window cannot be used for the rotation parameter window.
+     * The compute shader receives both W0 and W1 tables (RotWin only marks
+     * that they must be uploaded) and the raw RPLOG/RPW1E/RPW1A/RPW0E/RPW0A
+     * bits in RotWinMode, so the full logic is evaluated per dot. */
+    info->RotWin = _Ygl->win[0];
+    info->RotWinMode = (rbg->ctrl.regs->WCTLD & 0x8F);
   }
 
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
@@ -3774,9 +3773,11 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   int Win1[enBGMAX+1];
   int Win1_mode[enBGMAX+1];
   int Win_op[enBGMAX+1];
+  int WinAll[enBGMAX+1];
 
-  if (((varVdp2Regs->WCTLD & 0xA)!=0x0) != useRotWin) {
-    useRotWin = ((varVdp2Regs->WCTLD & 0xA)!=0x0);
+  /* Rotation parameter window: RPLOG (bit 7) + RPW1E/RPW1A/RPW0E/RPW0A */
+  if ((int)(varVdp2Regs->WCTLD & 0x8F) != useRotWin) {
+    useRotWin = (int)(varVdp2Regs->WCTLD & 0x8F);
     _Ygl->needWinUpdate |= 1;
   }
 
@@ -3837,6 +3838,29 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   WinS[SPRITE+1] = (varVdp2Regs->WCTLD >> 13) & 0x01;
   Win_op[SPRITE+1] = (varVdp2Regs->WCTLD >> 15) & 0x01;
 
+  /* VDP2 User's Manual ST-058-R2 p.193 (Window logic bit xxLOG):
+   * "When W0, W1, and SW window enable bits are all 0, with this bit set to 0,
+   *  the whole screen will be window disabled area, and with this bit set to
+   *  1, the whole screen will become window enabled area."
+   * Computed from the RAW enable bits (before the sprite-window availability
+   * filtering below): SWE=1 with SPWINEN=0 is an enabled but empty sprite
+   * window, not "no window". Byte layout: bit7 LOG, bit5 SWE, bit3 W1E,
+   * bit1 W0E. */
+  {
+    u8 wb[enBGMAX+1];
+    int i;
+    wb[NBG0]     = (u8)(varVdp2Regs->WCTLA & 0xFF);
+    wb[NBG1]     = (u8)(varVdp2Regs->WCTLA >> 8);
+    wb[NBG2]     = (u8)(varVdp2Regs->WCTLB & 0xFF);
+    wb[NBG3]     = (u8)(varVdp2Regs->WCTLB >> 8);
+    wb[RBG0]     = (u8)(varVdp2Regs->WCTLC & 0xFF);
+    wb[RBG1]     = wb[NBG0];                          /* RBG1 uses NBG0 regs */
+    wb[SPRITE]   = (u8)(varVdp2Regs->WCTLC >> 8);
+    wb[SPRITE+1] = (u8)(varVdp2Regs->WCTLD >> 8);     /* CC window */
+    for (i = 0; i < enBGMAX+1; i++)
+      WinAll[i] = ((wb[i] & 0x80) != 0) && ((wb[i] & 0x2A) == 0);
+  }
+
   Win0[RBG1] = Win0[NBG0];
   Win0_mode[RBG1] = Win0_mode[NBG0];
   Win1[RBG1] = Win1[NBG0];
@@ -3863,6 +3887,7 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
     if (Win1_mode[i] != _Ygl->Win1_mode[i]) _Ygl->needWinUpdate |= 1;
     if (WinS_mode[i] != _Ygl->WinS_mode[i]) _Ygl->needWinUpdate |= 1;
     if (Win_op[i] != _Ygl->Win_op[i]) _Ygl->needWinUpdate |= 1;
+    if (WinAll[i] != _Ygl->WinAll[i]) _Ygl->needWinUpdate |= 1;
   #ifdef WINDOW_DEBUG
     if ((Win0[i] == 1) || (Win1[i] == 1) || (WinS[i] == 1))
       YuiMsg("Windows are used on layer %d (WO:%d, W1:%d, WS:%d, WS mode %s, WS op %s)\n", i, Win0[i], Win1[i], WinS[i], (WinS_mode[i]==0)?"INSIDE":"OUTSIDE", (Win_op[i]==0)?"OR":"AND");
@@ -3877,6 +3902,7 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   memcpy(&_Ygl->Win1_mode[0], &Win1_mode[0], (enBGMAX+1)*sizeof(int));
   memcpy(&_Ygl->WinS_mode[0], &WinS_mode[0], (enBGMAX+1)*sizeof(int));
   memcpy(&_Ygl->Win_op[0], &Win_op[0], (enBGMAX+1)*sizeof(int));
+  memcpy(&_Ygl->WinAll[0], &WinAll[0], (enBGMAX+1)*sizeof(int));
 
   if( _Ygl->win[0] == NULL ){
     _Ygl->win[0] = (u32*)malloc(512 * 4);
@@ -4237,6 +4263,8 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
 
 static INLINE int Vdp2CheckCCWindow(int x, int y) {
 		int idx = SPRITE + 1;
+		/* ST-058-R2 p.193: CCLOG=1 with no window enabled -> whole screen is CC window */
+		if (_Ygl->WinAll[idx] != 0) return 0;
 		if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // no CCW → CC active everywhere
 
 		  int have_w0 = (_Ygl->Win0[idx] != 0);
@@ -6078,7 +6106,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 
   if ((a->SFPRMD & 0x0300) != (b->SFPRMD & 0x0300)) return 0;
   if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;
-  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0;
+  if ((a->WCTLD & 0x008F) != (b->WCTLD & 0x008F)) return 0; // rotation parameter window (RPLOG + W0/W1)
   if ((a->BMPNB & 0x0077) != (b->BMPNB & 0x0077)) return 0;
   if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
   if ((a->SFCCMD & 0x0300) != (b->SFCCMD & 0x0300)) return 0;
@@ -6133,7 +6161,7 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;  
   if ((a->LSTA0.all) != (b->LSTA0.all)) return 0; // adresse table line scroll NBG0/RBG1 scroll est actif (SCRCTL bits 5-0 != 0).
   if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
-  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
+  if ((a->WCTLD & 0x008F) != (b->WCTLD & 0x008F)) return 0; // rotation parameter window (RPLOG + W0/W1)
   return 1;
 }
 
