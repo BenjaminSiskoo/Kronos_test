@@ -928,6 +928,18 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	}
 	if ((clipcmd != 0) && (VIDCore->startVdp1Render)) VIDCore->startVdp1Render();
 
+	/* Une commande de trace va modifier le frame buffer de trace : la copie
+	 * CPU de ce frame buffer (vdp1fb_read_buf, remplie par vdp1_read() a la
+	 * premiere lecture CPU/DMA) devient perimee. Elle n'etait jusqu'ici
+	 * invalidee qu'au changement de frame ou a l'effacement, si bien qu'un
+	 * jeu qui trace, relit le FB, trace encore puis le relit dans la meme
+	 * frame recevait a la seconde lecture l'image de la premiere.
+	 * Pebble Beach Golf Links fait exactement cela (deux passes VDP1 relues
+	 * par DMA SCU avant d'etre combinees par le CPU puis recopiees dans le
+	 * FB) : la seconde passe etait perdue et le sol restait a l'etat de
+	 * codes de luminosite rouges. */
+	if (clipcmd == 0) _Ygl->vdp1fb_read_buf[_Ygl->drawframe] = NULL;
+
 	if (_Ygl->wireframe_mode != 0) apply_wireframe_type(cmd);
 
 		if (clipcmd == 0) {
@@ -1170,6 +1182,18 @@ int vdp1_add(vdp1cmd_struct* cmd, int clipcmd) {
 	}
 
 	if ((clipcmd != 0) && (VIDCore->startVdp1Render)) VIDCore->startVdp1Render();
+
+	/* Une commande de trace va modifier le frame buffer de trace : la copie
+	 * CPU de ce frame buffer (vdp1fb_read_buf, remplie par vdp1_read() a la
+	 * premiere lecture CPU/DMA) devient perimee. Elle n'etait jusqu'ici
+	 * invalidee qu'au changement de frame ou a l'effacement, si bien qu'un
+	 * jeu qui trace, relit le FB, trace encore puis le relit dans la meme
+	 * frame recevait a la seconde lecture l'image de la premiere.
+	 * Pebble Beach Golf Links fait exactement cela (deux passes VDP1 relues
+	 * par DMA SCU avant d'etre combinees par le CPU puis recopiees dans le
+	 * FB) : la seconde passe etait perdue et le sol restait a l'etat de
+	 * codes de luminosite rouges. */
+	if (clipcmd == 0) _Ygl->vdp1fb_read_buf[_Ygl->drawframe] = NULL;
 
     /* VDP1 Manual §6.3 p.84 + §7.2 p.113 — User clipping is gated
      * PER-DRAW via the Clip bit (CMDPMOD bit 10).  When Clip=0 the
