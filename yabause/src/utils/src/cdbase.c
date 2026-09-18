@@ -273,6 +273,10 @@ typedef struct
    u8 ctl_addr;
    u32 fad_start;
    u32 fad_end;
+   // Premier FAD lisible dans le fichier de la piste (INDEX 00 / pre-gap
+   // stocke dans le fichier). 0 = identique a fad_start. Utilise seulement
+   // pour localiser un secteur, jamais pour la TOC (qui reste sur INDEX 01).
+   u32 fad_lookup_start;
    u32 file_offset;
    u32 sector_size;
    FILE *fp;
@@ -510,6 +514,46 @@ static FILE* OpenFile(char* buffer, const char* cue) {
 static int LoadCHD(const char *chd_filename, FILE *iso_file);
 static int ISOCDReadSectorFADFromCHD(u32 FAD, void *buffer);
 
+// Nombre de secteurs de la piste presents dans son fichier a partir de
+// INDEX 01 (file_offset).
+static u32 BinCueTrackSectors(const track_info_struct *t)
+{
+   if (t->sector_size == 0 || t->file_size <= (int)t->file_offset)
+      return 0;
+   return (u32)((t->file_size - t->file_offset) / t->sector_size);
+}
+
+// Fin de piste (inclusive) bornee au contenu reel de son fichier.
+static u32 BinCueTrackFileEnd(const track_info_struct *t)
+{
+   u32 n = BinCueTrackSectors(t);
+   return (n > 0) ? (t->fad_start + n - 1) : t->fad_start;
+}
+
+// Borne basse de recherche des secteurs : la zone INDEX 00 d'une piste qui
+// ouvre un nouveau FILE est stockee au debut de ce fichier (avant
+// file_offset). Elle appartient donc a cette piste et non a la precedente.
+// Un PREGAP (non stocke) n'est pas couvert : on ne descend jamais sous le
+// debut du fichier.
+static void BinCueSetLookupStart(track_info_struct *trk, unsigned int track_num)
+{
+   unsigned int i;
+   for (i = 0; i < track_num; i++)
+   {
+      track_info_struct *t = &trk[i];
+      u32 lo = t->fad_start;
+      if (i > 0 && t->file_id != trk[i-1].file_id && t->sector_size != 0)
+      {
+         u32 in_file = t->file_offset / t->sector_size;   // secteurs avant INDEX 01
+         u32 file_start = (t->fad_start >= in_file) ? (t->fad_start - in_file) : 0;
+         u32 after_prev = trk[i-1].fad_end + 1;
+         lo = (file_start > after_prev) ? file_start : after_prev;
+         if (lo > t->fad_start) lo = t->fad_start;
+      }
+      t->fad_lookup_start = lo;
+   }
+}
+
 static int LoadBinCue(const char *cuefilename, FILE *iso_file)
 {
    long size;
@@ -573,8 +617,10 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
          fseek(trackfp, 0, SEEK_SET);
          current_file_id++;
          if(track_num>0) {
-           trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
-           fad = trk[track_num-1].fad_end;
+           // La piste precedente s'arrete a la fin de SON fichier (inclusive) ;
+           // le nouveau FILE commence au FAD suivant.
+           trk[track_num-1].fad_end = BinCueTrackFileEnd(&trk[track_num-1]);
+           fad = trk[track_num-1].fad_start + BinCueTrackSectors(&trk[track_num-1]);
          }
          file_base_fad = fad; // nouveau FILE -> nouvelle base pour les temps INDEX
          continue;
@@ -622,7 +668,12 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
             trk[track_num-1].fad_start = fad;
             trk[track_num-1].file_offset = MSF_TO_FAD(min, sec, frame) * trk[track_num-1].sector_size;
             CDLOG("Start[%d] %d\n", track_num, trk[track_num-1].fad_start);
-            if (track_num > 1) {
+            // Meme fichier : la piste precedente s'etend jusqu'a INDEX 01 de
+            // celle-ci (son pre-gap INDEX 00 est dans ce meme fichier, a la
+            // suite). Fichier different : sa fin a deja ete fixee a la fin de
+            // son propre fichier lors de la ligne FILE ; le pre-gap INDEX 00
+            // de cette piste est au debut du nouveau fichier et lui appartient.
+            if (track_num > 1 && trk[track_num-2].file_id == trk[track_num-1].file_id) {
               trk[track_num-2].fad_end = trk[track_num-1].fad_start-1;
               CDLOG("End[%d] %d\n", track_num-1, trk[track_num-2].fad_end);
             }
@@ -661,12 +712,15 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
      return -1;
    }
 
-   trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
+   // Derniere piste : fin inclusive ; le lead-out (session.fad_end) est le
+   // FAD qui suit le dernier secteur (valeur inchangee pour la TOC).
+   trk[track_num-1].fad_end = BinCueTrackFileEnd(&trk[track_num-1]);
+   BinCueSetLookupStart(trk, track_num);
 
    //for (int i =0; i<track_num; i++) printf("Track %d [%d - %d]\n", i+1, trk[i].fad_start, trk[i].fad_end);
 
    disc.session[0].fad_start = 150;
-   disc.session[0].fad_end = trk[track_num-1].fad_end;
+   disc.session[0].fad_end = trk[track_num-1].fad_start + BinCueTrackSectors(&trk[track_num-1]);
    disc.session[0].track_num = track_num;
    disc.session[0].track = (track_info_struct*)calloc(1, sizeof(track_info_struct) * disc.session[0].track_num);
    if (disc.session[0].track == NULL)
@@ -902,8 +956,10 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
          trackfp = strdup(temp_buffer);
          tracktr = f;
          if(track_num > 0) {
-           trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
-           fad = trk[track_num-1].fad_end;
+           // La piste precedente s'arrete a la fin de SON fichier (inclusive) ;
+           // le nouveau FILE commence au FAD suivant.
+           trk[track_num-1].fad_end = BinCueTrackFileEnd(&trk[track_num-1]);
+           fad = trk[track_num-1].fad_start + BinCueTrackSectors(&trk[track_num-1]);
          }
          file_base_fad = fad; // nouveau FILE -> nouvelle base pour les temps INDEX
          continue;
@@ -952,7 +1008,12 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
             trk[track_num-1].fad_start = fad;
             trk[track_num-1].file_offset = MSF_TO_FAD(min, sec, frame) * trk[track_num-1].sector_size;
             CDLOG("Start[%d] %d\n", track_num, trk[track_num-1].fad_start);
-            if (track_num > 1) {
+            // Meme fichier : la piste precedente s'etend jusqu'a INDEX 01 de
+            // celle-ci (son pre-gap INDEX 00 est dans ce meme fichier, a la
+            // suite). Fichier different : sa fin a deja ete fixee a la fin de
+            // son propre fichier lors de la ligne FILE ; le pre-gap INDEX 00
+            // de cette piste est au debut du nouveau fichier et lui appartient.
+            if (track_num > 1 && trk[track_num-2].file_id == trk[track_num-1].file_id) {
               trk[track_num-2].fad_end = trk[track_num-1].fad_start-1;
               CDLOG("End[%d] %d\n", track_num-1, trk[track_num-2].fad_end);
             }
@@ -987,12 +1048,15 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
      return -1;
    }
 
-    trk[track_num-1].fad_end = trk[track_num-1].fad_start+(trk[track_num-1].file_size-trk[track_num-1].file_offset)/trk[track_num-1].sector_size;
+   // Derniere piste : fin inclusive ; le lead-out (session.fad_end) est le
+   // FAD qui suit le dernier secteur (valeur inchangee pour la TOC).
+   trk[track_num-1].fad_end = BinCueTrackFileEnd(&trk[track_num-1]);
+   BinCueSetLookupStart(trk, track_num);
 
    //for (int i =0; i<track_num; i++) printf("Track %d [%d - %d]\n", i+1, trk[i].fad_start, trk[i].fad_end);
 
    disc.session[0].fad_start = 150;
-   disc.session[0].fad_end = trk[track_num-1].fad_end;
+   disc.session[0].fad_end = trk[track_num-1].fad_start + BinCueTrackSectors(&trk[track_num-1]);
    disc.session[0].track_num = track_num;
    disc.session[0].track = (track_info_struct*)calloc(1, sizeof(track_info_struct) * disc.session[0].track_num);
    if (disc.session[0].track == NULL)
@@ -1793,17 +1857,19 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
 
    memset(buffer, 0, 2448);
 
-   for (i = 0; i < disc.session_num; i++)
+   for (i = 0; i < disc.session_num && !found; i++)
    {
       for (j = 0; j < disc.session[i].track_num; j++)
       {
-         if (FAD >= disc.session[i].track[j].fad_start &&
-             FAD <= disc.session[i].track[j].fad_end)
+         track_info_struct *track = &disc.session[i].track[j];
+         // fad_lookup_start couvre le pre-gap INDEX 00 stocke dans le fichier
+         // de la piste (bin/cue multi-fichiers) ; 0 = pas de pre-gap lisible.
+         u32 lo = (track->fad_lookup_start != 0 && track->fad_lookup_start < track->fad_start) ?
+                  track->fad_lookup_start : track->fad_start;
+         if (FAD >= lo && FAD <= track->fad_end)
          {
-            track_info_struct *track = &disc.session[i].track[j];
-            if ((currentTrack != track) || (currentTrack == NULL)){
+            if (currentTrack != track) {
               currentTrack = track;
-              found = 1;
               if (currentTrack->isZip == 1) {
                 if (currentTrack->tr == NULL) {
                   //This should never happen, otherwise we might suffer some delay to deflation during game
@@ -1813,22 +1879,28 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
               }
             }
             tr = currentTrack->tr;
+            found = 1;
             break;
          }
-         if (found == 1) break;
       }
    }
 
-   if (currentTrack == NULL)
+   if (!found)
    {
-      CDLOG("Warning: Sector not found in track list\n");
-      return 0;
+      // Secteur absent de tous les fichiers (PREGAP non stocke, au-dela du
+      // dernier secteur...) : secteur vide, sans relire la piste precedente
+      // avec un offset faux. Comportement identique a l'ancien cas "offset
+      // borne a la taille du fichier" qui renvoyait deja un secteur nul.
+      CDLOG("Warning: FAD %u not found in track list\n", FAD);
+      return (currentTrack != NULL) ? 1 : 0;
    }
    if ((currentTrack->isZip == 1) && (tr == NULL)) {
      CDLOG("Warning Zip file: Sector not found in track list\n");
      return 0;
    }
-   offset = currentTrack->file_offset + (FAD-currentTrack->fad_start) * currentTrack->sector_size;
+   // FAD < fad_start possible (pre-gap INDEX 00 dans le fichier) : calcul signe.
+   offset = (int)currentTrack->file_offset + ((int)FAD - (int)currentTrack->fad_start) * (int)currentTrack->sector_size;
+   if (offset < 0) offset = 0;
    if (currentTrack->isZip != 1) {
 	 if (offset > currentTrack->file_size) offset = currentTrack->file_size;
      fseek(currentTrack->fp, offset, SEEK_SET);
