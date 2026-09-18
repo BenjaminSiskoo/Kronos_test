@@ -314,8 +314,12 @@ void decode(SH2_struct *context) {
   int id = (context->regs.PC >> 20) & 0xFFF;
   u16 opcode = krfetchlist[id](context, context->regs.PC);
 
-// if (cacheId[id] == 6) YabErrorMsg("Decode intstructions from Data array\n");
-if (cacheId[id] == 7) YabErrorMsg("Decode intstructions from unxpected area @0x%x\n", context->regs.PC);
+  /* Executing from 0xC0000000 (cache data array used as on-chip RAM when
+   * CCR.TW selects two-way mode) is legal on the SH7604: some games copy hot
+   * routines there (e.g. Mr. Bones executes at 0xC0000064). The region is
+   * fetched through SH2FetchWord -> DataArrayReadWord and writes to it are
+   * already invalidated by SH2KronosWriteNotify (id 0x6), so this is not an
+   * error and must not pop a blocking dialog. */
   cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[opcode];
   context->instruction = opcode;
   if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER) {
