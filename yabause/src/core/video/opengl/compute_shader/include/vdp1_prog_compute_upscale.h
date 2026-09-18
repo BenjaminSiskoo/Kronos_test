@@ -82,8 +82,18 @@ SHADER_VERSION_COMPUTE
  * la taille reelle de s_texture pour la limite ET pour le stride,
  * afin que Vdp1FB[] garde une disposition ligne-major coherente avec
  * la texture source quelle que soit sa largeur. */
-"  if (x >= size.x || y >= size.y ) return;\n"
-"  int idx = int(x) + int(y)*size.x;\n"
+/* Pas de ligne = largeur du frame buffer VDP1 en pixels VDP1, et non
+ * largeur de la texture : celle-ci vaut 512*scale (1024*scale en Hi-Res)
+ * alors que x/y sont deja ramenes en coordonnees VDP1 par upscale
+ * (= 1/scale). Le C relit ce tampon avec un pas de 512 (16 bpp,
+ * pixIdx = addr >> 1) ou 1024 (8 bpp Hi-Res, pixIdx = addr) : avec
+ * size.x comme pas, toute resolution interne > 1x faisait lire au CPU la
+ * ligne y/2 (ou rien pour les lignes impaires), et a 4x le shader ecrivait
+ * au-dela du SSBO (1024*256 mots). size.x*upscale.x redonne 512/1024. */
+"  int fbw = int(float(size.x) * upscale.x + 0.5);\n"
+"  if (x >= fbw || y >= size.y ) return;\n"
+"  int idx = int(x) + int(y)*fbw;\n"
+"  if (idx >= 1024*256) return;\n"
 "  vec4 pix = imageLoad(s_texture, ivec2(vec2(texel.x,texel.y)));\n"
 "  uint val = (uint(pix.r*255.0)<<24) | (uint(pix.g*255.0)<<16);\n"
 "  Vdp1FB[idx] = val;\n"
