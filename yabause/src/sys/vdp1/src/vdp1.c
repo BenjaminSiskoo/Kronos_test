@@ -349,8 +349,13 @@ u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    if (!vdp1FBPixInBounds(pixIdx)) return 0;
    u32* buf = getVDP1ReadFramebuffer();
    vdp1BusAccess(context, 2);
-   PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
-   return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
+   /* Bus big-endian (SH-2) : dans un pixel 16 bits, l'octet a l'adresse
+    * paire est le poids FORT, l'octet a l'adresse impaire le poids faible.
+    * L'ancien code renvoyait toujours le poids faible. */
+   u16 pix = T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF;
+   u8 ret = (addr & 1) ? (u8)(pix & 0xFF) : (u8)(pix >> 8);
+   PRINT_FB("R B 0x%x@0x%x\n", ret, addr);
+   return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -385,9 +390,28 @@ void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
    if (!vdp1FBPixInBounds(pixIdx)) return;
+   /* Une ecriture octet ne modifie que la moitie du pixel 16 bits qu'elle
+    * vise (adresse paire = poids fort, impaire = poids faible, bus SH-2
+    * big-endian). L'ancien code ecrasait tout le pixel avec l'octet place
+    * en poids faible. On part donc de la valeur courante du pixel : celle
+    * du tampon d'ecriture CPU s'il a deja ete ecrit (alpha != 0), sinon
+    * celle du frame buffer relu. La relecture doit preceder
+    * getVDP1WriteFramebuffer() : elle peut declencher l'effacement
+    * differe du frame buffer, qui remappe le tampon d'ecriture. */
+   u16 old;
+   {
+     u32* wb = _Ygl->vdp1fb_write_buf[_Ygl->drawframe];
+     if ((wb != NULL) && ((wb[pixIdx] & 0xFF000000) != 0)) {
+       old = wb[pixIdx] & 0xFFFF;
+     } else {
+       u32* rb = getVDP1ReadFramebuffer();
+       old = (rb != NULL) ? (T1ReadLong((u8*)rb, pixIdx*4) & 0xFFFF) : 0;
+     }
+   }
+   u16 nv = (addr & 1) ? (u16)((old & 0xFF00) | val) : (u16)((old & 0x00FF) | ((u16)val << 8));
    u32* buf = getVDP1WriteFramebuffer(_Ygl->drawframe);
    PRINT_FB("W B 0x%x@0x%x line %d(%d) frame %d\n", val, pixIdx, yabsys.LineCount, yabsys.DecilineCount, _Ygl->drawframe);
-   buf[pixIdx] = (val&0xFF)|0xFF000000;
+   buf[pixIdx] = nv|0xFF000000;
    syncVdp1FBBuffer(pixIdx);
    vdp1BusAccess(context, 2);
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
