@@ -3127,6 +3127,24 @@ static INLINE void SetInterrupt(u8 id) {
 }
 
 // 3.2 DMA control register
+/* Demarrage d'un DMA par facteur (DxFT = 0..6).
+ *
+ * ST-TECH-10 No. 21 (= ST-210 No. 21) : la condition de demarrage est
+ * "Enable bit = 1 AND <facteur>" (V-BLANK-IN, V-BLANK-OUT, H-BLANK-IN,
+ * timer 0, timer 1, requete SCSP, fin de trace sprite). Rien n'indique que
+ * le bit DxEN retombe apres un demarrage : il reste a 1 jusqu'a ce que le
+ * logiciel l'ecrive a 0, et le transfert est relance a CHAQUE occurrence du
+ * facteur. ST-TECH-10 No. 22 le confirme par son exemple : un DMA demarre
+ * sur H-BLANK est relance a chaque ligne, d'ou l'avertissement sur la
+ * taille de bloc transferable en une ligne.
+ *
+ * Le code remettait DxEN a 0 apres le premier declenchement, ce qui
+ * transformait un transfert periodique en transfert unique. Un jeu qui arme
+ * une fois pour toutes la copie de sa liste de commandes VDP1 sur V-BLANK
+ * ne voyait donc sa table recopiee qu'une seule fois : la VRAM VDP1 gardait
+ * l'en-tete (clipping systeme/utilisateur, coordonnees locales) suivi de
+ * zeros, et aucun sprite n'etait plus affiche (World Heroes Perfect : decor
+ * et HUD VDP2 presents, combattants absents). */
 static INLINE void ScuChekIntrruptDMA(int id){
 
   if ((ScuRegs->D0EN & 0x100) && (ScuRegs->D0MD & 0x07) == id){
@@ -3140,7 +3158,7 @@ static INLINE void ScuChekIntrruptDMA(int id){
     ScuRegs->dma0.AddValue = ScuRegs->D0AD;
     ScuRegs->dma0.ModeAddressUpdate = ScuRegs->D0MD;
     ScuSetAddValue(&ScuRegs->dma0);
-    ScuRegs->D0EN = 0;
+    /* DxEN n'est PAS remis a 0 : voir l'en-tete de la fonction. */
   }
   if ((ScuRegs->D1EN & 0x100) && (ScuRegs->D1MD & 0x07) == id){
     if (ScuRegs->dma1.TransferNumber > 0) {
@@ -3153,7 +3171,7 @@ static INLINE void ScuChekIntrruptDMA(int id){
     ScuRegs->dma1.AddValue = ScuRegs->D1AD;
     ScuRegs->dma1.ModeAddressUpdate = ScuRegs->D1MD;
     ScuSetAddValue(&ScuRegs->dma1);
-    ScuRegs->D1EN = 0;
+    /* DxEN n'est PAS remis a 0 : voir l'en-tete de la fonction. */
   }
   if ((ScuRegs->D2EN & 0x100) && (ScuRegs->D2MD & 0x07) == id){
     if (ScuRegs->dma2.TransferNumber > 0) {
@@ -3166,7 +3184,7 @@ static INLINE void ScuChekIntrruptDMA(int id){
     ScuRegs->dma2.AddValue = ScuRegs->D2AD;
     ScuRegs->dma2.ModeAddressUpdate = ScuRegs->D2MD;
     ScuSetAddValue(&ScuRegs->dma2);
-    ScuRegs->D2EN = 0;
+    /* DxEN n'est PAS remis a 0 : voir l'en-tete de la fonction. */
   }
 }
 
