@@ -4049,41 +4049,82 @@ static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
 }
 
 
+/* Returns 1 when at least one pixel of the span [x, x+w-1] on line ly is
+ * VISIBLE for this window, i.e. NOT inside its transparent-processing area.
+ *   area == WA_INSIDE  (WxA=0): the inside of the window is transparent,
+ *   area == WA_OUTSIDE (WxA=1): the outside of the window is transparent.
+ * An empty window on this line (start > end, e.g. 0x000000FF) has no inside.
+ * Out-of-range lines are reported visible (conservative: never cull). */
+static INLINE int Vdp2WindowSpanVisible(int x, int ly, int w, int area, u32 *win)
+{
+  int wl, wr, xe, empty;
+  if (ly < 0 || ly >= _Ygl->rheight) return 1;
+  wl = win[ly] & 0xFFFF;
+  wr = (win[ly] >> 16) & 0xFFFF;
+  xe = x + w - 1;
+  empty = (wl > wr);
+  if (area == WA_INSIDE) {
+    /* visible = outside of the window */
+    if (empty) return 1;
+    return (x < wl) || (xe > wr);
+  }
+  /* WA_OUTSIDE: visible = inside of the window */
+  if (empty) return 0;
+  return (x <= wr) && (xe >= wl);
+}
+
+/* Tile culling helper used by Vdp2DrawPatternPos().
+ * Returns 1 if the tile [x, x+w-1] x [y, y+h-1] may contain a visible pixel,
+ * 0 only if the whole tile is guaranteed to be hidden by the window logic.
+ *
+ * VDP2 window semantics (ST-058-R2, Window Control WCTLx):
+ *   transparent = W0t OP W1t (OP SWt)   with OP = OR (LOG=0) / AND (LOG=1)
+ * so, by De Morgan, the VISIBLE area is:
+ *   LOG=0 (OR)  : visible = W0v AND W1v (AND SWv)
+ *   LOG=1 (AND) : visible = W0v OR  W1v (OR  SWv)
+ * The previous implementation combined the per-window VISIBLE results with
+ * the raw operator (OR for OR, AND for AND), i.e. it inverted the logic.
+ * With WCTL = 0x8B (W0 outside, W1 inside, AND) and W0 covering the whole
+ * screen (Hop Step Idol, ID card screen), nothing must be hidden, but every
+ * tile inside W1 was culled, leaving a transparent (black) hole in NBG3.
+ * It also only tested x and x+w (one pixel past the tile), so a visible area
+ * strictly inside a tile could be missed; span tests are used instead.
+ *
+ * Culling is only an optimisation: the exact per-pixel window is applied
+ * later by the blit shader (inWindow()), so this must stay conservative.
+ * The sprite window depends on the VDP1 framebuffer and cannot be predicted
+ * reliably here, so it is treated as "may be visible". */
 static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
 {
     int id = ctrl->info.idScreen;
     int useW0 = (_Ygl->Win0[id] != 0);
     int useW1 = (_Ygl->Win1[id] != 0);
     int useWS = (_Ygl->WinS[id] != 0);
-
-    if (!useW0 && !useW1 && !useWS) return 0;
-
     int use_and = (_Ygl->Win_op[id] != 0);
+    int ly;
 
-    for (int ly = y; ly < y + h; ly++) {
-        int test_xs[2] = { x, x + w };
-        for (int ei = 0; ei < 2; ei++) {
-            int cx = test_xs[ei];
-            int result;
+    if (!useW0 && !useW1 && !useWS) return 1;
+    if (w <= 0 || h <= 0) return 1;
 
-            if (!use_and) {
-                result = 0;
-                if (useW0) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
-                if (useW1) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
-                if (useWS) result |= Vdp2CheckSpriteWindow(id, cx, ly);
-            } else {
-                result = 1;
-                if (useW0) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
-                if (useW1) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
-                if (useWS) result &= Vdp2CheckSpriteWindow(id, cx, ly);
-            }
+    /* AND logic with a sprite window: visible = ... OR SWv, SWv unknown. */
+    if (use_and && useWS) return 1;
 
-            if (result) return 1;
+    for (ly = y; ly < y + h; ly++) {
+        int visible;
+        if (use_and) {
+            /* transparent = W0t AND W1t  ->  visible = W0v OR W1v */
+            visible = 0;
+            if (useW0) visible |= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) visible |= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win1_mode[id], _Ygl->win[1]);
+        } else {
+            /* transparent = W0t OR W1t (OR SWt) -> visible = W0v AND W1v (AND SWv)
+             * Span-wise this is an over-estimate (both may be visible on
+             * different pixels), which is safe for culling. SWv assumed 1. */
+            visible = 1;
+            if (useW0) visible &= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) visible &= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win1_mode[id], _Ygl->win[1]);
         }
+        if (visible) return 1;
     }
     return 0;
 }
