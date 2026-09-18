@@ -402,6 +402,32 @@ static INLINE int Vdp2VramBankIndex(Vdp2 *regs, u32 addr)
     return bank;
 }
 
+/* Indice de SNAPSHOT (ctrl->vram_bank[]) qui contient l'octet VRAM 'addr'.
+ *
+ * Les snapshots Kronos#520 (vdp2RamAccessCPUCheck, vdp2.c) sont des tranches
+ * PHYSIQUES : snapshot[b] = Vdp2Ram[b * 0x20000 .. +0x20000[. Ce n'est pas la
+ * banque logique de Vdp2VramBankIndex()/Vdp2GetBank() : sans partition
+ * (RAMCTL VRAMD/VRBMD = 0) la banque logique de 0x20000-0x3FFFF est A0 alors
+ * que ses octets sont dans le snapshot 1. Lecture ET test d'acces doivent
+ * donc passer par cet indice-ci, les droits d'acces (char_bank[]/
+ * pname_bank[]) restant, eux, indexes par banque logique.
+ *
+ * Ce decoupage n'est exact qu'en VRAM 4 Mbit (ST-058-R2 p.34 : A0/A1/B0/B1
+ * = 0x20000 chacune). En 8 Mbit (VRSIZE bit 15), chaque banque fait 0x40000
+ * et VRAM-B commence a 0x80000 : les tranches capturees ne correspondent a
+ * aucune banque et l'ancien masquage a 0x7FFFF faisait lire VRAM-B dans les
+ * snapshots de VRAM-A. On n'utilise alors aucun snapshot (-1 : lecture de la
+ * VRAM courante, comme avant Kronos#520). */
+static INLINE int Vdp2VramSnapshotSlice(const Vdp2 *regs, u32 addr, u32 *off)
+{
+    u32 a, slice;
+    if (regs->VRSIZE & 0x8000) return -1;
+    a = addr & 0x7FFFF;
+    slice = a / VDP2_VRAM_BANK_SIZE;
+    if (off) *off = a - slice * VDP2_VRAM_BANK_SIZE;
+    return (int)slice;
+}
+
 static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int lines)
 {
   u64 cacheaddr = (ctrl->info.paladdr << 20) | ctrl->info.charaddr | ctrl->info.transparencyenable |
@@ -4226,30 +4252,27 @@ static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
  * Vdp2Ram is a raw big-endian byte buffer regardless of host endianness,
  * and reading MSB-first here matches that on any host. */
 static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
-  u32 a = addr & 0x7FFFF;
-  u32 bank = a / VDP2_VRAM_BANK_SIZE;
-  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
-  if (bank < 4 && ctrl->vram_bank[bank])
-    return ctrl->vram_bank[bank][off];
+  u32 off = 0;
+  const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
+  if (s >= 0 && s < 4 && ctrl->vram_bank[s])
+    return ctrl->vram_bank[s][off];
   return Vdp2RamReadByte(NULL, Vdp2Ram, addr);
 }
 
 static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
-  u32 a = addr & 0x7FFFF;
-  u32 bank = a / VDP2_VRAM_BANK_SIZE;
-  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
-  if (bank < 4 && ctrl->vram_bank[bank] && (off + 1) < VDP2_VRAM_BANK_SIZE)
-    return ((u16)ctrl->vram_bank[bank][off] << 8) | ctrl->vram_bank[bank][off + 1];
+  u32 off = 0;
+  const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
+  if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 1) < VDP2_VRAM_BANK_SIZE)
+    return ((u16)ctrl->vram_bank[s][off] << 8) | ctrl->vram_bank[s][off + 1];
   return Vdp2RamReadWord(NULL, Vdp2Ram, addr);
 }
 
 static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
-  u32 a = addr & 0x7FFFF;
-  u32 bank = a / VDP2_VRAM_BANK_SIZE;
-  u32 off = a - bank * VDP2_VRAM_BANK_SIZE;
-  if (bank < 4 && ctrl->vram_bank[bank] && (off + 3) < VDP2_VRAM_BANK_SIZE)
-    return ((u32)ctrl->vram_bank[bank][off] << 24) | ((u32)ctrl->vram_bank[bank][off + 1] << 16) |
-           ((u32)ctrl->vram_bank[bank][off + 2] << 8) | (u32)ctrl->vram_bank[bank][off + 3];
+  u32 off = 0;
+  const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
+  if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 3) < VDP2_VRAM_BANK_SIZE)
+    return ((u32)ctrl->vram_bank[s][off] << 24) | ((u32)ctrl->vram_bank[s][off + 1] << 16) |
+           ((u32)ctrl->vram_bank[s][off + 2] << 8) | (u32)ctrl->vram_bank[s][off + 3];
   return Vdp2RamReadLong(NULL, Vdp2Ram, addr);
 }
 
@@ -4424,8 +4447,14 @@ static INLINE int isVramAccessible(Vdp2Ctrl *ctrl, u32 addr) {
      * is direct proof this bank *was* handed to the VDP2 at or before
      * this zone's start line (that's the only reason a snapshot exists -
      * see vdp2RamAccessCPUCheck()), regardless of what the global,
-     * current state looks like now. */
-    if (ctrl->vram_bank[bank]) return 1;
+     * current state looks like now.
+     * Le snapshot teste est celui d'ou l'octet sera effectivement lu
+     * (tranche physique, cf. Vdp2VramSnapshotSlice) ; les droits
+     * char_bank[] restent indexes par banque logique. */
+    {
+      const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, NULL);
+      if (s >= 0 && s < 4 && ctrl->vram_bank[s]) return 1;
+    }
     return ctrl->info.char_bank[bank];
 }
 
@@ -5546,9 +5575,11 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       ctrl->info.PlaneAddr(&ctrl->info, ctrl->info.mapwh * mapy + mapx, ctrl->regs);
       if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) != 0) {
         int charAddrBk = Vdp2VramBankIndex(ctrl->regs, ctrl->info.charaddr);
+        const int charSnap = Vdp2VramSnapshotSlice(ctrl->regs, ctrl->info.charaddr, NULL);
         /* Kronos#520: see isVramAccessible() above for why char_bank[]
-         * alone can be stale for a zone mid-frame. */
-        if (ctrl->info.char_bank[charAddrBk] == 1 || (charAddrBk >= 0 && charAddrBk < 4 && ctrl->vram_bank[charAddrBk])) {
+         * alone can be stale for a zone mid-frame (snapshot = tranche
+         * physique, droits = banque logique). */
+        if (ctrl->info.char_bank[charAddrBk] == 1 || (charSnap >= 0 && charSnap < 4 && ctrl->vram_bank[charSnap])) {
           int x = h - charx;
           int y = v - chary;
           int ytop   = y;
