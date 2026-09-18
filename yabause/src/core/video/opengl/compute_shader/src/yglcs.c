@@ -202,6 +202,7 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
    int win1_draw = 0;
    int win1_mode_draw= 0;
    int win_op_draw = 0;
+   int win_all_draw = 0;
    int drawScreen[enBGMAX];
    SpriteMode mode;
    GLenum DrawBuffers[8]= {GL_COLOR_ATTACHMENT0,GL_COLOR_ATTACHMENT1,GL_COLOR_ATTACHMENT2,GL_COLOR_ATTACHMENT3,GL_COLOR_ATTACHMENT4,GL_COLOR_ATTACHMENT5,GL_COLOR_ATTACHMENT6,GL_COLOR_ATTACHMENT7};
@@ -434,6 +435,7 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
       win1_draw |= (_Ygl->Win1[vdp2screens[j]]<<id);
       win1_mode_draw |= (_Ygl->Win1_mode[vdp2screens[j]]<<id);
       win_op_draw |= (_Ygl->Win_op[vdp2screens[j]]<<id);
+      win_all_draw |= (_Ygl->WinAll[vdp2screens[j]]<<id);
       id++;
     }
   }
@@ -457,6 +459,7 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
     win1_draw      |= _Ygl->Win1[i]      << i;
     win1_mode_draw |= _Ygl->Win1_mode[i] << i;
     win_op_draw    |= _Ygl->Win_op[i]    << i;
+    win_all_draw   |= _Ygl->WinAll[i]    << i;
   }
 
   isShadow[6] = setupShadow(varVdp2Regs, SPRITE); //Use sprite index for background suuport
@@ -480,6 +483,7 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   glDrawBuffers(NB_RENDER_LAYER, &DrawBuffers[0]);
   glClearBufferfi(GL_DEPTH_STENCIL, 0, 0, 0);
 
+  _Ygl->win_all_draw = win_all_draw;
   YglBlitTexture( prioscreens, modescreens, isRGB, isBlur, isPerline, isShadow, lncl_draw, GetCSVDP1fb, winS_draw, winS_mode_draw, win0_draw, win0_mode_draw, win1_draw, win1_mode_draw, win_op_draw, useLineColorOffset, varVdp2Regs);
   srcTexture = _Ygl->original_fbotex[0];
 
