@@ -314,12 +314,14 @@ void decode(SH2_struct *context) {
   int id = (context->regs.PC >> 20) & 0xFFF;
   u16 opcode = krfetchlist[id](context, context->regs.PC);
 
-  /* Executing from 0xC0000000 (cache data array used as on-chip RAM when
-   * CCR.TW selects two-way mode) is legal on the SH7604: some games copy hot
-   * routines there (e.g. Mr. Bones executes at 0xC0000064). The region is
-   * fetched through SH2FetchWord -> DataArrayReadWord and writes to it are
-   * already invalidated by SH2KronosWriteNotify (id 0x6), so this is not an
-   * error and must not pop a blocking dialog. */
+  /* Executing from 0xC0000000-0xC0000FFF (cache data array read/write area)
+   * is legal on the SH7604 (Hardware Manual 8.4.8): with CCR.TW=1 the area
+   * 0xC0000000-0xC00007FF is 2 KB of on-chip RAM, with the cache disabled the
+   * whole 4 KB is. The manual itself runs code there (3.7, frequency
+   * modification sample: copy to H'C0000000 then JMP @R0). Mr. Bones executes
+   * at 0xC0000064. Fetches go through SH2FetchWord -> DataArrayReadWord and
+   * writes are invalidated by SH2KronosWriteNotify (id 0x6), so this is not
+   * an error and must not pop a blocking dialog. */
   cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[opcode];
   context->instruction = opcode;
   if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER) {
