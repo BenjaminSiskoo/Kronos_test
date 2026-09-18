@@ -397,6 +397,32 @@ static u32* getVDP1Framebuffer(int frame) {
       // if (frame == _Ygl->drawframe) vdp1_compute();
       glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT|GL_TEXTURE_UPDATE_BARRIER_BIT);
       _Ygl->vdp1fb_read_buf[frame] = vdp1_read(frame);
+      /* vdp1_read() relit la texture du FB, qui ne contient pas encore les
+       * ecritures CPU/DMA en attente dans le tampon d'ecriture (elles n'y
+       * sont reportees qu'au prochain checkFBSync()). Maintenant que la
+       * copie de lecture est aussi invalidee a chaque commande de trace
+       * (vdp1_add), une ecriture CPU suivie d'une relecture sans trace
+       * intermediaire les perdrait : on les superpose ici, au format du
+       * tampon de lecture (cf. syncVdp1FBBuffer). */
+      {
+        u32 *wb = _Ygl->vdp1fb_write_buf[frame];
+        u32 *rb = _Ygl->vdp1fb_read_buf[frame];
+        if ((wb != NULL) && (rb != NULL)) {
+          u32 n = (u32)(512.0f * vdp1access_allocated_wdensity * 256.0f * vdp1access_allocated_hdensity);
+          u32 i;
+          if (n > 1024 * 256) n = 1024 * 256;
+          for (i = 0; i < n; i++) {
+            const u32 w = wb[i];
+            if ((w & 0xFF000000) != 0) {
+              u8 *dst = (u8 *)&rb[i];
+              dst[0] = 0;
+              dst[1] = 0;
+              dst[2] = (u8)((w >> 8) & 0xFF);
+              dst[3] = (u8)(w & 0xFF);
+            }
+          }
+        }
+      }
   }
   return _Ygl->vdp1fb_read_buf[frame];
 }
@@ -427,10 +453,36 @@ u32* getVDP1WriteFramebuffer(int frame) {
   return _Ygl->vdp1fb_write_buf[frame];
 }
 
+/* Reporte dans la copie de lecture un pixel que le CPU vient d'ecrire.
+ *
+ * Les deux tampons n'ont PAS le meme format :
+ *  - tampon d'ecriture (PBO -> vdp1AccessTex, rempli par
+ *    Vdp1FrameBuffer*Write*) : mot natif (valeur | 0xFF000000), soit en
+ *    memoire les octets [lo, hi, 00, FF] = canaux r, g, b, a ;
+ *  - tampon de lecture (SSBO rempli par le shader vdp1_read_f) :
+ *    (r << 24) | (g << 16), soit les octets [00, 00, hi, lo], relus par
+ *    T1ReadLong() (big-endian) puis masques a 0xFFFF / 0xFF.
+ *
+ * La copie brute d'avant mettait [lo, hi, 00, FF] dans le tampon de
+ * lecture : T1ReadLong() & 0xFFFF y trouvait 0x00FF. Tout pixel ecrit
+ * puis relu par le CPU dans la meme trame valait donc 0x00FF au lieu de
+ * la valeur ecrite -- ce qui casse les jeux qui font du
+ * lecture-modification-ecriture dans le frame buffer VDP1 (post-traitement
+ * logiciel de l'image tracee par le VDP1).
+ *
+ * On ecrit donc les octets dans l'ordre attendu par le lecteur, ce qui
+ * reste juste quel que soit le boutisme de l'hote puisque T1ReadLong()
+ * lit toujours en big-endian. En 8 bpp la valeur tient dans l'octet
+ * faible (canal r), ce que le meme placement respecte (lecture & 0xFF). */
 void syncVdp1FBBuffer(u32 addr) {
   if (_Ygl->vdp1fb_read_buf[_Ygl->drawframe] != NULL) {
     if (_Ygl->vdp1fb_write_buf[_Ygl->drawframe] != NULL) {
-      _Ygl->vdp1fb_read_buf[_Ygl->drawframe][addr] = _Ygl->vdp1fb_write_buf[_Ygl->drawframe][addr];
+      const u32 w = _Ygl->vdp1fb_write_buf[_Ygl->drawframe][addr];
+      u8 *dst = (u8 *)&_Ygl->vdp1fb_read_buf[_Ygl->drawframe][addr];
+      dst[0] = 0;
+      dst[1] = 0;
+      dst[2] = (u8)((w >> 8) & 0xFF);  /* g = poids fort */
+      dst[3] = (u8)(w & 0xFF);         /* r = poids faible */
     }
   }
 }
