@@ -486,6 +486,10 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
       return;
   }
 
+  /* ST-058-R2 p.193: LOG=AND with no window enabled -> the whole screen is
+   * the transparent-process area, nothing of this layer can be visible. */
+  if (_Ygl->WinAll[ctrl->info.idScreen] != 0) return;
+
   if ((_Ygl->Win0[ctrl->info.idScreen] != 0 || _Ygl->Win1[ctrl->info.idScreen] != 0) && ctrl->info.coordincx == 1.0f && ctrl->info.coordincy == 1.0f)
   {                                                 // coordinate inc is not supported yet.
     winmode = Vdp2CheckWindowRange(ctrl, x - cx, y - cy, tile.cellw, ctrl->info.lineinc);
@@ -2385,8 +2389,9 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
     /* SCXN2 bits 10-0: NBG2 horizontal scroll (integer only, no fractional). */
     if ((a->SCXN2 & 0x07FF) != (b->SCXN2 & 0x07FF)) return 0;
  
-    /* SCYN2 bits 10-0: NBG2 vertical scroll. */
-    if ((a->SCYN2 & 0x07FF) != (b->SCYN2 & 0x07FF)) return 0;
+    /* SCYN2 : non compare ici. Le scroll vertical effectif de NBG2 vient du
+     * compteur vertical (Vdp2Nbg23LineScrollY[0][], vdp2.h) et est compare
+     * ligne a ligne dans Vdp2DrawNBG2_zones(). */
  
     /* CRAOFA bits 10-8: N2CAOS[2:0] — NBG2 color RAM address offset. */
     if ((a->CRAOFA & 0x0700) != (b->CRAOFA & 0x0700)) return 0;
@@ -2452,7 +2457,8 @@ static void Vdp2DrawNBG2_zones(void)
     int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
-        if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+        if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line]) ||
+            (Vdp2Nbg23LineScrollY[0][line - 1] != Vdp2Nbg23LineScrollY[0][line])) {
             Vdp2DrawNBG2(&Vdp2Lines[lastLine], lastLine, line);
             lastLine = line;
         }
@@ -2496,7 +2502,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
   ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 4);
   ctrl.info.x = -((ctrl.regs->SCXN2 & 0x7FF) % (512 * ctrl.info.planew));
-  ctrl.info.y = -((ctrl.regs->SCYN2 & 0x7FF) % (512 * ctrl.info.planeh));
+  ctrl.info.y = -((Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF) % (512 * ctrl.info.planeh));
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN2, ctrl.regs->CHCTLB & 0x1);
 
   ReadMosaicData(&ctrl.info, 0x4, ctrl.regs);
@@ -2571,13 +2577,13 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 
   ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
-  ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
+  ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
 
    {
      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
      ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
-     ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
+     ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
      Vdp2DrawMapTest(&ctrl, delayed);
    }
 
@@ -2640,8 +2646,9 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
     /* SCXN3 bits 10-0: NBG3 horizontal scroll. */
     if ((a->SCXN3 & 0x07FF) != (b->SCXN3 & 0x07FF)) return 0;
  
-    /* SCYN3 bits 10-0: NBG3 vertical scroll. */
-    if ((a->SCYN3 & 0x07FF) != (b->SCYN3 & 0x07FF)) return 0;
+    /* SCYN3 : non compare ici. Le scroll vertical effectif de NBG3 vient du
+     * compteur vertical (Vdp2Nbg23LineScrollY[1][], vdp2.h) et est compare
+     * ligne a ligne dans Vdp2DrawNBG3_zones(). */
  
     /* CRAOFA bits 14-12: N3CAOS[2:0] — NBG3 color RAM address offset. */
     if ((a->CRAOFA & 0x7000) != (b->CRAOFA & 0x7000)) return 0;
@@ -2690,7 +2697,8 @@ static void Vdp2DrawNBG3_zones(void)
     int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
-        if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+        if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line]) ||
+            (Vdp2Nbg23LineScrollY[1][line - 1] != Vdp2Nbg23LineScrollY[1][line])) {
             Vdp2DrawNBG3(&Vdp2Lines[lastLine], lastLine, line);
             lastLine = line;
         }
@@ -2735,7 +2743,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 6);
   ctrl.info.x = -((ctrl.regs->SCXN3 & 0x7FF) % (512 * ctrl.info.planew));
-  ctrl.info.y = -((ctrl.regs->SCYN3 & 0x7FF) % (512 * ctrl.info.planeh));
+  ctrl.info.y = -((Vdp2Nbg23LineScrollY[1][startLine] & 0x7FF) % (512 * ctrl.info.planeh));
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN3, ctrl.regs->CHCTLB & 0x10);
  
   ReadMosaicData(&ctrl.info, 0x8, ctrl.regs);
@@ -2806,7 +2814,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
  
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
-  ctrl.info.y = ctrl.regs->SCYN3 & 0x7FF;
+  ctrl.info.y = Vdp2Nbg23LineScrollY[1][startLine] & 0x7FF;
   Vdp2DrawMapTest(&ctrl, delayed);
 #ifdef CELL_ASYNC
   YabThreadYield();
@@ -2917,22 +2925,17 @@ static void Vdp2DrawRBG0_part( RBGDrawInfo *rbg)
 
   if ((rbg->ctrl.regs->RPMD & 0x3) == 0x03)
   {
-    //printf("RPMD 0x3\n");
-    // Enable Window0(RPW0E)?
-    if (((rbg->ctrl.regs->WCTLD >> 1) & 0x01) == 0x01)
-    {
-      info->RotWin = _Ygl->win[0];
-      // RPW0A( inside = 0, outside = 1 )
-      info->RotWinMode = (rbg->ctrl.regs->WCTLD & 0x01);
-      // Enable Window1(RPW1E)?
-    }
-    else if (((rbg->ctrl.regs->WCTLD >> 3) & 0x01) == 0x01)
-    {
-      info->RotWin = _Ygl->win[1];
-      // RPW1A( inside = 0, outside = 1 )
-      info->RotWinMode = ((rbg->ctrl.regs->WCTLD >> 2) & 0x01);
-      // Bad Setting Both Window is disabled
-    }
+    /* Rotation parameter window (ST-058-R2 p.190 and p.193-195, WCTLD bits 7-0):
+     *   active area = (W0 area) RPLOG (W1 area), RPLOG: 0 = OR, 1 = AND,
+     *   RPWxA: 0 = inside of Wx is active, 1 = outside is active,
+     *   no window enabled: RPLOG=0 -> no active area, RPLOG=1 -> whole screen.
+     * Parameter B is used in the active area, parameter A outside of it.
+     * The sprite window cannot be used for the rotation parameter window.
+     * The compute shader receives both W0 and W1 tables (RotWin only marks
+     * that they must be uploaded) and the raw RPLOG/RPW1E/RPW1A/RPW0E/RPW0A
+     * bits in RotWinMode, so the full logic is evaluated per dot. */
+    info->RotWin = _Ygl->win[0];
+    info->RotWinMode = (rbg->ctrl.regs->WCTLD & 0x8F);
   }
 
   rbg->paraA.screenover = (rbg->ctrl.regs->PLSZ >> 10) & 0x03;
@@ -3774,9 +3777,11 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   int Win1[enBGMAX+1];
   int Win1_mode[enBGMAX+1];
   int Win_op[enBGMAX+1];
+  int WinAll[enBGMAX+1];
 
-  if (((varVdp2Regs->WCTLD & 0xA)!=0x0) != useRotWin) {
-    useRotWin = ((varVdp2Regs->WCTLD & 0xA)!=0x0);
+  /* Rotation parameter window: RPLOG (bit 7) + RPW1E/RPW1A/RPW0E/RPW0A */
+  if ((int)(varVdp2Regs->WCTLD & 0x8F) != useRotWin) {
+    useRotWin = (int)(varVdp2Regs->WCTLD & 0x8F);
     _Ygl->needWinUpdate |= 1;
   }
 
@@ -3837,6 +3842,29 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   WinS[SPRITE+1] = (varVdp2Regs->WCTLD >> 13) & 0x01;
   Win_op[SPRITE+1] = (varVdp2Regs->WCTLD >> 15) & 0x01;
 
+  /* VDP2 User's Manual ST-058-R2 p.193 (Window logic bit xxLOG):
+   * "When W0, W1, and SW window enable bits are all 0, with this bit set to 0,
+   *  the whole screen will be window disabled area, and with this bit set to
+   *  1, the whole screen will become window enabled area."
+   * Computed from the RAW enable bits (before the sprite-window availability
+   * filtering below): SWE=1 with SPWINEN=0 is an enabled but empty sprite
+   * window, not "no window". Byte layout: bit7 LOG, bit5 SWE, bit3 W1E,
+   * bit1 W0E. */
+  {
+    u8 wb[enBGMAX+1];
+    int i;
+    wb[NBG0]     = (u8)(varVdp2Regs->WCTLA & 0xFF);
+    wb[NBG1]     = (u8)(varVdp2Regs->WCTLA >> 8);
+    wb[NBG2]     = (u8)(varVdp2Regs->WCTLB & 0xFF);
+    wb[NBG3]     = (u8)(varVdp2Regs->WCTLB >> 8);
+    wb[RBG0]     = (u8)(varVdp2Regs->WCTLC & 0xFF);
+    wb[RBG1]     = wb[NBG0];                          /* RBG1 uses NBG0 regs */
+    wb[SPRITE]   = (u8)(varVdp2Regs->WCTLC >> 8);
+    wb[SPRITE+1] = (u8)(varVdp2Regs->WCTLD >> 8);     /* CC window */
+    for (i = 0; i < enBGMAX+1; i++)
+      WinAll[i] = ((wb[i] & 0x80) != 0) && ((wb[i] & 0x2A) == 0);
+  }
+
   Win0[RBG1] = Win0[NBG0];
   Win0_mode[RBG1] = Win0_mode[NBG0];
   Win1[RBG1] = Win1[NBG0];
@@ -3863,6 +3891,7 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
     if (Win1_mode[i] != _Ygl->Win1_mode[i]) _Ygl->needWinUpdate |= 1;
     if (WinS_mode[i] != _Ygl->WinS_mode[i]) _Ygl->needWinUpdate |= 1;
     if (Win_op[i] != _Ygl->Win_op[i]) _Ygl->needWinUpdate |= 1;
+    if (WinAll[i] != _Ygl->WinAll[i]) _Ygl->needWinUpdate |= 1;
   #ifdef WINDOW_DEBUG
     if ((Win0[i] == 1) || (Win1[i] == 1) || (WinS[i] == 1))
       YuiMsg("Windows are used on layer %d (WO:%d, W1:%d, WS:%d, WS mode %s, WS op %s)\n", i, Win0[i], Win1[i], WinS[i], (WinS_mode[i]==0)?"INSIDE":"OUTSIDE", (Win_op[i]==0)?"OR":"AND");
@@ -3877,6 +3906,7 @@ void Vdp2GenerateWindowInfo(Vdp2 *varVdp2Regs)
   memcpy(&_Ygl->Win1_mode[0], &Win1_mode[0], (enBGMAX+1)*sizeof(int));
   memcpy(&_Ygl->WinS_mode[0], &WinS_mode[0], (enBGMAX+1)*sizeof(int));
   memcpy(&_Ygl->Win_op[0], &Win_op[0], (enBGMAX+1)*sizeof(int));
+  memcpy(&_Ygl->WinAll[0], &WinAll[0], (enBGMAX+1)*sizeof(int));
 
   if( _Ygl->win[0] == NULL ){
     _Ygl->win[0] = (u32*)malloc(512 * 4);
@@ -4049,41 +4079,82 @@ static INLINE int Vdp2CheckSpriteWindow(int id, int vdp2x, int vdp2y)
 }
 
 
+/* Returns 1 when at least one pixel of the span [x, x+w-1] on line ly is
+ * VISIBLE for this window, i.e. NOT inside its transparent-processing area.
+ *   area == WA_INSIDE  (WxA=0): the inside of the window is transparent,
+ *   area == WA_OUTSIDE (WxA=1): the outside of the window is transparent.
+ * An empty window on this line (start > end, e.g. 0x000000FF) has no inside.
+ * Out-of-range lines are reported visible (conservative: never cull). */
+static INLINE int Vdp2WindowSpanVisible(int x, int ly, int w, int area, u32 *win)
+{
+  int wl, wr, xe, empty;
+  if (ly < 0 || ly >= _Ygl->rheight) return 1;
+  wl = win[ly] & 0xFFFF;
+  wr = (win[ly] >> 16) & 0xFFFF;
+  xe = x + w - 1;
+  empty = (wl > wr);
+  if (area == WA_INSIDE) {
+    /* visible = outside of the window */
+    if (empty) return 1;
+    return (x < wl) || (xe > wr);
+  }
+  /* WA_OUTSIDE: visible = inside of the window */
+  if (empty) return 0;
+  return (x <= wr) && (xe >= wl);
+}
+
+/* Tile culling helper used by Vdp2DrawPatternPos().
+ * Returns 1 if the tile [x, x+w-1] x [y, y+h-1] may contain a visible pixel,
+ * 0 only if the whole tile is guaranteed to be hidden by the window logic.
+ *
+ * VDP2 window semantics (ST-058-R2, Window Control WCTLx):
+ *   transparent = W0t OP W1t (OP SWt)   with OP = OR (LOG=0) / AND (LOG=1)
+ * so, by De Morgan, the VISIBLE area is:
+ *   LOG=0 (OR)  : visible = W0v AND W1v (AND SWv)
+ *   LOG=1 (AND) : visible = W0v OR  W1v (OR  SWv)
+ * The previous implementation combined the per-window VISIBLE results with
+ * the raw operator (OR for OR, AND for AND), i.e. it inverted the logic.
+ * With WCTL = 0x8B (W0 outside, W1 inside, AND) and W0 covering the whole
+ * screen (Hop Step Idol, ID card screen), nothing must be hidden, but every
+ * tile inside W1 was culled, leaving a transparent (black) hole in NBG3.
+ * It also only tested x and x+w (one pixel past the tile), so a visible area
+ * strictly inside a tile could be missed; span tests are used instead.
+ *
+ * Culling is only an optimisation: the exact per-pixel window is applied
+ * later by the blit shader (inWindow()), so this must stay conservative.
+ * The sprite window depends on the VDP1 framebuffer and cannot be predicted
+ * reliably here, so it is treated as "may be visible". */
 static int FASTCALL Vdp2CheckWindowRange(Vdp2Ctrl *ctrl, int x, int y, int w, int h)
 {
     int id = ctrl->info.idScreen;
     int useW0 = (_Ygl->Win0[id] != 0);
     int useW1 = (_Ygl->Win1[id] != 0);
     int useWS = (_Ygl->WinS[id] != 0);
-
-    if (!useW0 && !useW1 && !useWS) return 0;
-
     int use_and = (_Ygl->Win_op[id] != 0);
+    int ly;
 
-    for (int ly = y; ly < y + h; ly++) {
-        int test_xs[2] = { x, x + w };
-        for (int ei = 0; ei < 2; ei++) {
-            int cx = test_xs[ei];
-            int result;
+    if (!useW0 && !useW1 && !useWS) return 1;
+    if (w <= 0 || h <= 0) return 1;
 
-            if (!use_and) {
-                result = 0;
-                if (useW0) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
-                if (useW1) result |= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
-                if (useWS) result |= Vdp2CheckSpriteWindow(id, cx, ly);
-            } else {
-                result = 1;
-                if (useW0) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win0_mode[id], _Ygl->win[0]);
-                if (useW1) result &= Vdp2CheckWindow(&ctrl->info, cx, ly,
-                                                      _Ygl->Win1_mode[id], _Ygl->win[1]);
-                if (useWS) result &= Vdp2CheckSpriteWindow(id, cx, ly);
-            }
+    /* AND logic with a sprite window: visible = ... OR SWv, SWv unknown. */
+    if (use_and && useWS) return 1;
 
-            if (result) return 1;
+    for (ly = y; ly < y + h; ly++) {
+        int visible;
+        if (use_and) {
+            /* transparent = W0t AND W1t  ->  visible = W0v OR W1v */
+            visible = 0;
+            if (useW0) visible |= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) visible |= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win1_mode[id], _Ygl->win[1]);
+        } else {
+            /* transparent = W0t OR W1t (OR SWt) -> visible = W0v AND W1v (AND SWv)
+             * Span-wise this is an over-estimate (both may be visible on
+             * different pixels), which is safe for culling. SWv assumed 1. */
+            visible = 1;
+            if (useW0) visible &= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win0_mode[id], _Ygl->win[0]);
+            if (useW1) visible &= Vdp2WindowSpanVisible(x, ly, w, _Ygl->Win1_mode[id], _Ygl->win[1]);
         }
+        if (visible) return 1;
     }
     return 0;
 }
@@ -4181,6 +4252,32 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
     }
 }
 
+/* Adresse couleur d'une couche VDP2 (palette) : offset CRAM + numero de
+ * palette + dot, repliee sur l'espace d'adressage de la Color RAM.
+ *
+ * ST-058-R2 §10.1 p.217 : l'offset (xxCAOS) est ADDITIONNE au code couleur
+ * et le resultat est une adresse de Color RAM ; en mode 0 / mode 2 le bit
+ * de poids fort de cette adresse est ignore. La somme deborde donc en
+ * rebouclant, elle ne sort jamais de la CRAM. Exemple, Tokimeki Memorial
+ * Forever With You (sauvegarde) : NBG0 256 couleurs, N0CAOS=1 (0x100) et
+ * palette 7 dans le pattern name (0x700) -> 0x800 + dot, soit les entrees
+ * 0x000-0x0FF en mode 1 (2048 couleurs).
+ *
+ * Sans ce repli, l'index etait transmis tel quel a la texture CRAM
+ * (2048 texels de large, cf. syncVDP2ColorLine) : texelFetch hors limites
+ * -> couleur nulle, toute la couche s'affichait en noir. Le chemin CPU
+ * (Vdp2ColorRamGetColorRaw) repliait deja, d'ou l'incoherence.
+ *
+ * Mode 1 : 2048 entrees de 16 bits -> 11 bits.
+ * Mode 2 : 1024 entrees de 32 bits -> 10 bits (la texture n'en contient
+ *          que 1024, cf. syncVDP2ColorLine).
+ * Mode 0 : 11 bits conserves, comme la texture CRAM (2048 texels) : seul le
+ *          debordement au-dela de 0x7FF, jusqu'ici noir, est corrige. */
+static INLINE u32 Vdp2CramIndexWrap(u32 cramindex)
+{
+  return (Vdp2Internal.ColorMode == 2) ? (cramindex & 0x3FF) : (cramindex & 0x7FF);
+}
+
 INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32 * cramindex ) {
   *prio = info->priority;
   if (info->specialprimode == 2) {
@@ -4196,6 +4293,8 @@ INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32
 
 static INLINE int Vdp2CheckCCWindow(int x, int y) {
 		int idx = SPRITE + 1;
+		/* ST-058-R2 p.193: CCLOG=1 with no window enabled -> whole screen is CC window */
+		if (_Ygl->WinAll[idx] != 0) return 0;
 		if (_Ygl->Win0[idx] == 0 && _Ygl->Win1[idx] == 0) return 1; // no CCW → CC active everywhere
 
 		  int have_w0 = (_Ygl->Win0[idx] != 0);
@@ -4288,7 +4387,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
   if (!(dot & 0xF) && ctrl->info.transparencyenable) {
     *ctrl->texture.textdata++ = 0x00000000;
   } else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4300,7 +4399,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4312,7 +4411,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4324,7 +4423,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4344,7 +4443,7 @@ static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
   dot = (dotw & 0xFF00)>>8;
   if (!(dot & 0xFF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4353,7 +4452,7 @@ static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
   dot = (dotw & 0xFF);
   if (!(dot & 0xFF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4369,7 +4468,7 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 priority = 0;
   if ((dot == 0) && ctrl->info.transparencyenable) return 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + dot;
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + dot);
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     return VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4734,8 +4833,8 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
               u32 priority = 0;
-              u32 cramindex = (ctrl->info.coloroffset +
-                               ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+              u32 cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset +
+                               ((ctrl->info.paladdr << 4) | (dot & 0xF))));
               Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
               u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
               *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
@@ -4755,8 +4854,8 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
               u32 priority = 0;
-              u32 cramindex = ctrl->info.coloroffset +
-                              ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+              u32 cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset +
+                              ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
               Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
               u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
               *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
@@ -5037,7 +5136,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if (!(dot & 0xF) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = (info->coloroffset + ((info->paladdr << 4) | (dot & 0xF)));
+      cramindex = Vdp2CramIndexWrap((info->coloroffset + ((info->paladdr << 4) | (dot & 0xF))));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
@@ -5057,7 +5156,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if (!(dot & 0xFF) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = info->coloroffset + ((info->paladdr << 4) | (dot & 0xFF));
+      cramindex = Vdp2CramIndexWrap(info->coloroffset + ((info->paladdr << 4) | (dot & 0xFF)));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
@@ -5077,7 +5176,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if ((dot == 0) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = (info->coloroffset + dot);
+      cramindex = Vdp2CramIndexWrap((info->coloroffset + dot));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
@@ -6037,7 +6136,7 @@ static int sameVDP2RegRBG0(Vdp2 *a, Vdp2 *b)
 
   if ((a->SFPRMD & 0x0300) != (b->SFPRMD & 0x0300)) return 0;
   if ((a->WCTLC & 0x00FF) != (b->WCTLC & 0x00FF)) return 0;
-  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0;
+  if ((a->WCTLD & 0x008F) != (b->WCTLD & 0x008F)) return 0; // rotation parameter window (RPLOG + W0/W1)
   if ((a->BMPNB & 0x0077) != (b->BMPNB & 0x0077)) return 0;
   if ((a->MZCTL & 0xFF10) != (b->MZCTL & 0xFF10)) return 0;
   if ((a->SFCCMD & 0x0300) != (b->SFCCMD & 0x0300)) return 0;
@@ -6092,7 +6191,7 @@ static int sameVDP2RegRBG1(Vdp2 *a, Vdp2 *b)
   if ((a->CLOFEN & 0x0001) != (b->CLOFEN & 0x0001)) return 0;  
   if ((a->LSTA0.all) != (b->LSTA0.all)) return 0; // adresse table line scroll NBG0/RBG1 scroll est actif (SCRCTL bits 5-0 != 0).
   if ((a->VCSTA.all) != (b->VCSTA.all)) return 0; // adresse table vertical cell scroll NBG0/RBG1
-  if ((a->WCTLD & 0x000F) != (b->WCTLD & 0x000F)) return 0; // rotation parameter window
+  if ((a->WCTLD & 0x008F) != (b->WCTLD & 0x008F)) return 0; // rotation parameter window (RPLOG + W0/W1)
   return 1;
 }
 

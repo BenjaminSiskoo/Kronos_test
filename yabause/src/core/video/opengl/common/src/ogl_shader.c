@@ -480,6 +480,7 @@ uniform int win0_mode; \n \
 uniform int win1; \n \
 uniform int win1_mode; \n \
 uniform int win_op; \n \
+uniform int win_all; \n \
 uniform int nbFrame; \n \
 uniform vec2 vdp1Shift; \n \
 uniform mat4 rotVdp1; \n \
@@ -1321,6 +1322,9 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "win1"), Win1);
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "win1_mode"), Win1_mode);
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "win_op"), Win_op);
+  /* ST-058-R2 p.193: layers whose whole screen is window area (LOG=1, no
+   * window enabled). Bit layout identical to win_op. */
+  glUniform1i(glGetUniformLocation(vdp2blit_prg, "win_all"), _Ygl->win_all_draw);
 
   if (_Ygl->interlace == NORMAL_INTERLACE){
     //double density interlaced or progressive _ Do not mix fields. Maybe required by double density. To check

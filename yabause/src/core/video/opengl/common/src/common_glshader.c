@@ -852,6 +852,8 @@ static const GLchar Yglprg_vdp2_common_part[] =
 
 
 "bool inWindow(int id) {\n"
+/* ST-058-R2 p.193: xxLOG=1 (AND) with W0E=W1E=SWE=0 -> whole screen is window area */
+"  if (((win_all>>id)&0x1) != 0) return true;\n"
 "  int pos = int(PosX);\n"
 "  bool valid = false;\n"
 "  if (((win_op>>id)&0x1) != 0) {\n"
@@ -873,6 +875,7 @@ static const GLchar Yglprg_vdp2_common_part[] =
 "  return inWindow(id);\n"
 "}\n"
 "bool inCCWindow() {\n"
+"  if (((win_all>>7)&0x1) != 0) return true;\n"
 "  if ((((win1>>7)&0x1) != 0) || (((win0>>7)&0x1) != 0) || (((win_s>>7)&0x1)!= 0)) {\n"
 "    return inWindow(7);\n"
 "  } else {\n"

@@ -145,6 +145,10 @@ SHADER_VERSION_COMPUTE
 " uint specialcolorfunction;\n"
 
 " uint vmask(uint a) { return a & (((vrsize & 0x8000u) != 0u) ? 0xFFFFFu : 0x7FFFFu); }\n"
+// ST-058-R2 10.1 p.217 : offset CRAM + code couleur = adresse CRAM, qui
+// reboucle (jamais de sortie de la Color RAM). Meme regle que
+// Vdp2CramIndexWrap() dans vidcs.c : 11 bits en mode 0/1, 10 bits en mode 2.
+" uint cramWrap(uint i) { return i & ((cram_mode == 2u) ? 0x3FFu : 0x7FFu); }\n"
 
 " int GetKValue( int paramid, vec2 pos, inout float ky, inout float kx, inout float Xp, inout uint lineaddr ){ \n"
 "  uint kdata;\n"
@@ -668,7 +672,7 @@ const char prg_rbg_getcolor_4bpp[] =
 "  if ( (dot & 0xFu) == 0u && transparencyenable != 0 ) { \n"
 "    discarded = 1; \n"
 "  } else {\n"
-"    cramindex = (coloroffset + ((paladdr << 4) | (dot & 0xFu)));\n"
+"    cramindex = cramWrap(coloroffset + ((paladdr << 4) | (dot & 0xFu)));\n"
 "    priority_ = Vdp2SetSpecialPriority(dot);\n"
 "    cc = setCCOn(cramindex, dot);\n"
 "  }\n";
@@ -689,7 +693,7 @@ const char prg_rbg_getcolor_8bpp[] =
 "  if ( dot == 0u && transparencyenable != 0 ) { \n"
 "    discarded = 1; \n"
 "  } else {\n"
-"    cramindex = (coloroffset + ((paladdr << 4) | dot));\n"
+"    cramindex = cramWrap(coloroffset + ((paladdr << 4) | dot));\n"
 "    priority_ = Vdp2SetSpecialPriority(dot);\n"
 "    cc = setCCOn(cramindex, dot);\n"
 "  }\n";
@@ -706,7 +710,7 @@ const char prg_rbg_getcolor_16bpp_palette[] =
 "  if ( dot == 0 && transparencyenable != 0 ) { \n"
 "    discarded = 1; \n"
 "  } else {\n"
-"    cramindex = (coloroffset + dot);\n"
+"    cramindex = cramWrap(coloroffset + dot);\n"
 "    priority_ = Vdp2SetSpecialPriority(dot);\n"
 "    cc = setCCOn(cramindex, dot);\n"
 "  }\n";

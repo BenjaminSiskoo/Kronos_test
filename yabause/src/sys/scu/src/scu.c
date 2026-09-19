@@ -909,6 +909,51 @@ void ScuSetAddValue(scudmainfo_struct * dmainfo) {
 
 }
 
+/* Lecture de la source d'un transfert SCU-DMA a une adresse quelconque.
+ *
+ * Le SCU lit sa source par long words alignes et en extrait les octets a
+ * partir de la position reelle de l'adresse : une adresse source qui n'est
+ * pas multiple de 4 (voire impaire) donne donc le flux d'octets qui commence
+ * exactement a cette adresse. Rien dans ST-097 / STTECH10 n'impose
+ * d'alignement a l'adresse de lecture (seules les valeurs d'increment sont
+ * restreintes, STTECH10 No.16 a No.19).
+ *
+ * DMAMappedMemoryReadLong() / ReadWord() descendent sur T2ReadLong() /
+ * T2ReadWord(), qui masquent l'adresse avec ~3 / ~1 : une source impaire
+ * rendait le long word aligne PRECEDENT, soit le flux decale d'un octet.
+ * Chaque mot de 16 bits ecrit sur le B-Bus recevait alors l'octet bas du
+ * mot precedent suivi de l'octet haut du mot voulu.
+ *
+ * Cas reel (Thunder Storm, ecran titre) : la palette 256 couleurs de la
+ * video est copiee en CRAM depuis une adresse impaire de la Work RAM-H ;
+ * la CRAM recevait 0x0080 0x0080 0x1082 ... au lieu de 0x8000 0x8010
+ * 0x8200 ..., d'ou des couleurs aleatoires (bruit) et un logo rouge au lieu
+ * de bleu. La texture 8 bpp copiee en VRAM VDP1 subissait le meme decalage
+ * d'un pixel. */
+static u32 ScuDmaReadSourceLong(u32 addr)
+{
+  const u32 shift = addr & 3;
+  if (shift == 0)
+    return DMAMappedMemoryReadLong(addr);
+  if (shift == 2)
+    return ((u32)DMAMappedMemoryReadWord(addr) << 16)
+         | (u32)DMAMappedMemoryReadWord(addr + 2);
+  {
+    const u32 base = addr & ~3u;
+    const u32 first = DMAMappedMemoryReadLong(base);
+    const u32 second = DMAMappedMemoryReadLong(base + 4);
+    return (first << (shift * 8)) | (second >> (32 - shift * 8));
+  }
+}
+
+static u16 ScuDmaReadSourceWord(u32 addr)
+{
+  if (!(addr & 1))
+    return DMAMappedMemoryReadWord(addr);
+  return (u16)(((u16)DMAMappedMemoryReadByte(addr) << 8)
+             | (u16)DMAMappedMemoryReadByte(addr + 1));
+}
+
 void SucDmaExec(scudmainfo_struct * dma, int * time ) {
   //LOG("DoDMA src=%08X,dst=%08X,size=%d, ra:%d/wa:%d flame=%d:%d\n",
   //  dma->ReadAddress, dma->WriteAddress, dma->TransferNumber, dma->ReadAdd, dma->WriteAdd, yabsys.frame_count, yabsys.LineCount);
@@ -1082,13 +1127,9 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
         /* Meme regle que dans le chemin de remplissage : un long word
          * represente deux cycles B-Bus. */
         *time -= 2;
-        u32 tmp;
-        if (dma->ReadAddress & 2) {  // Avoid misaligned access
-          tmp = DMAMappedMemoryReadWord(dma->ReadAddress) << 16
-              | DMAMappedMemoryReadWord(dma->ReadAddress + 2);
-        } else {
-          tmp = DMAMappedMemoryReadLong(dma->ReadAddress);
-        }
+        /* Source a une adresse quelconque (alignee sur 4, sur 2 ou impaire),
+         * cf. ScuDmaReadSourceLong(). */
+        u32 tmp = ScuDmaReadSourceLong(dma->ReadAddress);
         /* Le compte de transfert s'exprime en OCTETS et rien n'oblige un
          * jeu a le prendre multiple de 4 : le bloc de 98 octets de
          * J.League en est un contre-exemple. Le decompte doit donc etre
@@ -1099,6 +1140,12 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
         dma->WriteAddress += dma->WriteAdd;
         dma->TransferNumber -= 2;
         if (dma->TransferNumber <= 0) {
+          /* Transfert termine sur le mot haut (compte = 4n + 2 octets) :
+           * seuls 2 octets de ce long word ont ete consommes. L'adresse de
+           * lecture doit refleter exactement la fin des donnees lues, car
+           * avec DxRUP = 1 elle devient l'adresse de depart du prochain
+           * declenchement (voir ScuDmaUpdateStartAddresses()). */
+          dma->ReadAddress += 2;
           SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
           SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
           return;
@@ -1120,7 +1167,7 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       u32 start = dma->WriteAddress;
       while ( *time > 0) {
         *time -= 1;
-        u16 tmp = DMAMappedMemoryReadWord((dma->ReadAddress));
+        u16 tmp = ScuDmaReadSourceWord(dma->ReadAddress);
         DMAMappedMemoryWriteWord(dma->WriteAddress, tmp);
         dma->WriteAddress += (dma->WriteAdd >> 1);
         dma->ReadAddress += 2;
@@ -1139,7 +1186,7 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       u32 start = dma->WriteAddress;
       while (*time > 0) {
         *time -= 1;
-        u32 val = DMAMappedMemoryReadLong((dma->ReadAddress));
+        u32 val = ScuDmaReadSourceLong(dma->ReadAddress);
         DMAMappedMemoryWriteLong(dma->WriteAddress, val );
         dma->ReadAddress += 4;
         dma->WriteAddress += dma->WriteAdd;
@@ -1161,6 +1208,44 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
 }
 
 
+/* Bits de mise a jour d'adresse du registre DxMD (25FE0014H / 34H / 54H) :
+ *   bit 16 = DxRUP (read address update)
+ *   bit  8 = DxWUP (write address update)
+ * ST-TECH-10 / ST-210 No. 17 et No. 19 fixent les valeurs d'increment
+ * imposees quand ces bits sont a 1 (lecture : +4 ; ecriture B-Bus : 001B).
+ *
+ * Quand DxRUP = 1, a la fin du transfert l'adresse de lecture atteinte est
+ * reecrite dans DxR : le declenchement suivant reprend la ou le precedent
+ * s'est arrete au lieu de relire le debut de la table. DxWUP fait de meme
+ * pour DxW -- en mode indirect DxW est l'adresse de la table, qui avance
+ * alors apres la derniere entree (et DxRUP n'a pas d'effet).
+ * Reference comportementale : Mednafen ss/scu.inc, UpdateDMAInner().
+ *
+ * Kronos ignorait ces deux bits : chaque declenchement par facteur
+ * (ScuChekIntrruptDMA) rechargeait DxR/DxW d'origine. Un DMA H-blank arme
+ * une fois pour parcourir une table ligne par ligne recopiait donc la
+ * PREMIERE entree a toutes les lignes. Cas reel (Shinobi-X) : table de
+ * scroll horizontal NBG2 (2 octets/ligne vers SCXN2) et de color offset A
+ * (6 octets/ligne vers COAR/COAG/COAB) ; SCXN2 restait a sa valeur de la
+ * ligne 0 sur tout l'ecran et le bas du decor NBG2 etait decale. */
+static void ScuDmaUpdateStartAddresses(scudmainfo_struct * dma, int indirect) {
+  u32 *dxr, *dxw;
+  switch (dma->mode) {
+    case 0:  dxr = &ScuRegs->D0R; dxw = &ScuRegs->D0W; break;
+    case 1:  dxr = &ScuRegs->D1R; dxw = &ScuRegs->D1W; break;
+    case 2:  dxr = &ScuRegs->D2R; dxw = &ScuRegs->D2W; break;
+    default: return;
+  }
+  if (!indirect && (dma->ModeAddressUpdate & 0x10000))
+    *dxr = dma->ReadAddress;
+  if (dma->ModeAddressUpdate & 0x100) {
+    if (indirect)
+      *dxw = dma->InDirectAdress & ~0x3;   /* table : bits 1-0 a 0 */
+    else
+      *dxw = dma->WriteAddress;
+  }
+}
+
 void ScuDmaCheck(scudmainfo_struct * dma, int time) {
   int atime = time;
   if (dma->TransferNumber > 0) {
@@ -1169,6 +1254,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
         SucDmaExec(dma, &atime);
         if (dma->TransferNumber <= 0) {
           if (dma->ReadAddress & 0x80000000) {
+            /* Fin de table : DxWUP fait avancer DxW apres la derniere
+             * entree (DxRUP est sans effet en mode indirect). */
+            ScuDmaUpdateStartAddresses(dma, 1);
             switch (dma->mode) {
             case 0:
               //LOG("DMA0 Finished!");
@@ -1202,6 +1290,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
     else {
       SucDmaExec(dma, &atime);
       if (dma->TransferNumber <= 0) {
+        /* Mode direct : DxRUP / DxWUP reportent les adresses atteintes
+         * dans DxR / DxW pour le prochain declenchement. */
+        ScuDmaUpdateStartAddresses(dma, 0);
         switch (dma->mode) {
         case 0:
           //LOG("DMA0 Finished!");

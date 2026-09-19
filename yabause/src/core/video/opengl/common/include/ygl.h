@@ -573,6 +573,12 @@ typedef struct {
    int WinS[enBGMAX+1];
    int WinS_mode[enBGMAX+1];
    int Win_op[enBGMAX+1];
+   /* VDP2 ST-058-R2 p.193: xxLOG=1 (AND) with W0E=W1E=SWE=0 makes the whole
+    * screen the window (transparent / CC-window) area. Per slot (0..enBGMAX). */
+   int WinAll[enBGMAX+1];
+   /* Same flag packed per blit-shader layer id, filled by the renderer
+    * just before YglBlitTexture(). */
+   int win_all_draw;
 
    YglMatrix rbgModelView;
 
