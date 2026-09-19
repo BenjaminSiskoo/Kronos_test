@@ -59,6 +59,11 @@ struct CellScrollData cell_scroll_data[VDP2_LINE_SNAPSHOT_MAX];
 Vdp2 Vdp2Lines[VDP2_LINE_SNAPSHOT_MAX];
 struct LineScrollData line_scroll_data[VDP2_LINE_SNAPSHOT_MAX];
 
+/* Compteur vertical NBG2/NBG3 : voir Vdp2Nbg23LineScrollY dans vdp2.h. */
+u16 Vdp2Nbg23LineScrollY[2][VDP2_LINE_SNAPSHOT_MAX];
+static u16 Vdp2Nbg23YCounter[2] = { 0, 0 };
+static u8  Vdp2Nbg23YWritten[2] = { 0, 0 };
+
 /* See vdp2.h for the rationale (Kronos#520, True Pinball) and why this is
  * double-buffered. Plain global arrays rather than fields on Vdp2External:
  * Vdp2External already exists for small per-bank flags, and these buffers
@@ -1015,12 +1020,39 @@ static void Vdp2CaptureLineScroll(u32 base, u16 ctl, int sh,
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Compteur vertical de NBG2 / NBG3 pour la ligne 'line'.
+ *
+ * Le compteur est charge avec SCYN2/SCYN3 a la ligne 0, recharge a toute
+ * ecriture du registre depuis l'instantane precedent (meme valeur ecrite :
+ * la recharge a lieu quand meme), et avance d'une ligne sinon (de deux en
+ * double-density, ou une ligne de champ couvre deux lignes d'affichage).
+ * La valeur rangee est le scroll equivalent attendu par le renderer
+ * (ligne source = scroll + ligne d'affichage).
+ * ------------------------------------------------------------------------- */
+static void Vdp2CaptureNbg23YCounter(int line)
+{
+  const int step = ((Vdp2Regs->TVMD & 0xC0) == 0xC0) ? 2 : 1;
+  const u16 scy[2] = { (u16)(Vdp2Regs->SCYN2 & 0x7FF), (u16)(Vdp2Regs->SCYN3 & 0x7FF) };
+  int n;
+
+  for (n = 0; n < 2; n++) {
+    if (line == 0 || Vdp2Nbg23YWritten[n])
+      Vdp2Nbg23YCounter[n] = scy[n];
+    else
+      Vdp2Nbg23YCounter[n] = (u16)((Vdp2Nbg23YCounter[n] + step) & 0x7FF);
+    Vdp2Nbg23YWritten[n] = 0;
+    Vdp2Nbg23LineScrollY[n][line] = (u16)((Vdp2Nbg23YCounter[n] - line * step) & 0x7FF);
+  }
+}
+
 void Vdp2HBlankIN(void) {
 
   if (yabsys.LineCount < yabsys.VBlankLineCount) {
     u32 cell_scroll_table_start_addr = (Vdp2Regs->VCSTA.all & 0x7FFFE) << 1;
     int vcs_n = Vdp2VCellScrollLongwords();
     memcpy(Vdp2Lines + yabsys.LineCount, Vdp2Regs, sizeof(Vdp2));
+    Vdp2CaptureNbg23YCounter(yabsys.LineCount);
     /* Zero first: when VCS is turned off, or the mode narrows mid-frame, the
      * tail must not keep last frame's values -- a consumer bounded by the
      * same helper never looks there, but a debug dump does. */
@@ -1512,12 +1544,14 @@ void FASTCALL Vdp2WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
          return;
       case 0x092:
          Vdp2Regs->SCYN2 = val;
+         Vdp2Nbg23YWritten[0] = 1;
          return;
       case 0x094:
          Vdp2Regs->SCXN3 = val;
          return;
       case 0x096:
          Vdp2Regs->SCYN3 = val;
+         Vdp2Nbg23YWritten[1] = 1;
          return;
       case 0x098:
          Vdp2Regs->ZMCTL = val;
