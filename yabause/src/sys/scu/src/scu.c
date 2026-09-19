@@ -909,6 +909,51 @@ void ScuSetAddValue(scudmainfo_struct * dmainfo) {
 
 }
 
+/* Lecture de la source d'un transfert SCU-DMA a une adresse quelconque.
+ *
+ * Le SCU lit sa source par long words alignes et en extrait les octets a
+ * partir de la position reelle de l'adresse : une adresse source qui n'est
+ * pas multiple de 4 (voire impaire) donne donc le flux d'octets qui commence
+ * exactement a cette adresse. Rien dans ST-097 / STTECH10 n'impose
+ * d'alignement a l'adresse de lecture (seules les valeurs d'increment sont
+ * restreintes, STTECH10 No.16 a No.19).
+ *
+ * DMAMappedMemoryReadLong() / ReadWord() descendent sur T2ReadLong() /
+ * T2ReadWord(), qui masquent l'adresse avec ~3 / ~1 : une source impaire
+ * rendait le long word aligne PRECEDENT, soit le flux decale d'un octet.
+ * Chaque mot de 16 bits ecrit sur le B-Bus recevait alors l'octet bas du
+ * mot precedent suivi de l'octet haut du mot voulu.
+ *
+ * Cas reel (Thunder Storm, ecran titre) : la palette 256 couleurs de la
+ * video est copiee en CRAM depuis une adresse impaire de la Work RAM-H ;
+ * la CRAM recevait 0x0080 0x0080 0x1082 ... au lieu de 0x8000 0x8010
+ * 0x8200 ..., d'ou des couleurs aleatoires (bruit) et un logo rouge au lieu
+ * de bleu. La texture 8 bpp copiee en VRAM VDP1 subissait le meme decalage
+ * d'un pixel. */
+static u32 ScuDmaReadSourceLong(u32 addr)
+{
+  const u32 shift = addr & 3;
+  if (shift == 0)
+    return DMAMappedMemoryReadLong(addr);
+  if (shift == 2)
+    return ((u32)DMAMappedMemoryReadWord(addr) << 16)
+         | (u32)DMAMappedMemoryReadWord(addr + 2);
+  {
+    const u32 base = addr & ~3u;
+    const u32 first = DMAMappedMemoryReadLong(base);
+    const u32 second = DMAMappedMemoryReadLong(base + 4);
+    return (first << (shift * 8)) | (second >> (32 - shift * 8));
+  }
+}
+
+static u16 ScuDmaReadSourceWord(u32 addr)
+{
+  if (!(addr & 1))
+    return DMAMappedMemoryReadWord(addr);
+  return (u16)(((u16)DMAMappedMemoryReadByte(addr) << 8)
+             | (u16)DMAMappedMemoryReadByte(addr + 1));
+}
+
 void SucDmaExec(scudmainfo_struct * dma, int * time ) {
   //LOG("DoDMA src=%08X,dst=%08X,size=%d, ra:%d/wa:%d flame=%d:%d\n",
   //  dma->ReadAddress, dma->WriteAddress, dma->TransferNumber, dma->ReadAdd, dma->WriteAdd, yabsys.frame_count, yabsys.LineCount);
@@ -1082,13 +1127,9 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
         /* Meme regle que dans le chemin de remplissage : un long word
          * represente deux cycles B-Bus. */
         *time -= 2;
-        u32 tmp;
-        if (dma->ReadAddress & 2) {  // Avoid misaligned access
-          tmp = DMAMappedMemoryReadWord(dma->ReadAddress) << 16
-              | DMAMappedMemoryReadWord(dma->ReadAddress + 2);
-        } else {
-          tmp = DMAMappedMemoryReadLong(dma->ReadAddress);
-        }
+        /* Source a une adresse quelconque (alignee sur 4, sur 2 ou impaire),
+         * cf. ScuDmaReadSourceLong(). */
+        u32 tmp = ScuDmaReadSourceLong(dma->ReadAddress);
         /* Le compte de transfert s'exprime en OCTETS et rien n'oblige un
          * jeu a le prendre multiple de 4 : le bloc de 98 octets de
          * J.League en est un contre-exemple. Le decompte doit donc etre
@@ -1120,7 +1161,7 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       u32 start = dma->WriteAddress;
       while ( *time > 0) {
         *time -= 1;
-        u16 tmp = DMAMappedMemoryReadWord((dma->ReadAddress));
+        u16 tmp = ScuDmaReadSourceWord(dma->ReadAddress);
         DMAMappedMemoryWriteWord(dma->WriteAddress, tmp);
         dma->WriteAddress += (dma->WriteAdd >> 1);
         dma->ReadAddress += 2;
@@ -1139,7 +1180,7 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
       u32 start = dma->WriteAddress;
       while (*time > 0) {
         *time -= 1;
-        u32 val = DMAMappedMemoryReadLong((dma->ReadAddress));
+        u32 val = ScuDmaReadSourceLong(dma->ReadAddress);
         DMAMappedMemoryWriteLong(dma->WriteAddress, val );
         dma->ReadAddress += 4;
         dma->WriteAddress += dma->WriteAdd;
