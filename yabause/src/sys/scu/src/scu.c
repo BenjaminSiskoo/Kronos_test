@@ -1140,6 +1140,12 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
         dma->WriteAddress += dma->WriteAdd;
         dma->TransferNumber -= 2;
         if (dma->TransferNumber <= 0) {
+          /* Transfert termine sur le mot haut (compte = 4n + 2 octets) :
+           * seuls 2 octets de ce long word ont ete consommes. L'adresse de
+           * lecture doit refleter exactement la fin des donnees lues, car
+           * avec DxRUP = 1 elle devient l'adresse de depart du prochain
+           * declenchement (voir ScuDmaUpdateStartAddresses()). */
+          dma->ReadAddress += 2;
           SH2WriteNotify(MSH2, start, dma->WriteAddress - start);
           SH2WriteNotify(SSH2, start, dma->WriteAddress - start);
           return;
@@ -1202,6 +1208,44 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
 }
 
 
+/* Bits de mise a jour d'adresse du registre DxMD (25FE0014H / 34H / 54H) :
+ *   bit 16 = DxRUP (read address update)
+ *   bit  8 = DxWUP (write address update)
+ * ST-TECH-10 / ST-210 No. 17 et No. 19 fixent les valeurs d'increment
+ * imposees quand ces bits sont a 1 (lecture : +4 ; ecriture B-Bus : 001B).
+ *
+ * Quand DxRUP = 1, a la fin du transfert l'adresse de lecture atteinte est
+ * reecrite dans DxR : le declenchement suivant reprend la ou le precedent
+ * s'est arrete au lieu de relire le debut de la table. DxWUP fait de meme
+ * pour DxW -- en mode indirect DxW est l'adresse de la table, qui avance
+ * alors apres la derniere entree (et DxRUP n'a pas d'effet).
+ * Reference comportementale : Mednafen ss/scu.inc, UpdateDMAInner().
+ *
+ * Kronos ignorait ces deux bits : chaque declenchement par facteur
+ * (ScuChekIntrruptDMA) rechargeait DxR/DxW d'origine. Un DMA H-blank arme
+ * une fois pour parcourir une table ligne par ligne recopiait donc la
+ * PREMIERE entree a toutes les lignes. Cas reel (Shinobi-X) : table de
+ * scroll horizontal NBG2 (2 octets/ligne vers SCXN2) et de color offset A
+ * (6 octets/ligne vers COAR/COAG/COAB) ; SCXN2 restait a sa valeur de la
+ * ligne 0 sur tout l'ecran et le bas du decor NBG2 etait decale. */
+static void ScuDmaUpdateStartAddresses(scudmainfo_struct * dma, int indirect) {
+  u32 *dxr, *dxw;
+  switch (dma->mode) {
+    case 0:  dxr = &ScuRegs->D0R; dxw = &ScuRegs->D0W; break;
+    case 1:  dxr = &ScuRegs->D1R; dxw = &ScuRegs->D1W; break;
+    case 2:  dxr = &ScuRegs->D2R; dxw = &ScuRegs->D2W; break;
+    default: return;
+  }
+  if (!indirect && (dma->ModeAddressUpdate & 0x10000))
+    *dxr = dma->ReadAddress;
+  if (dma->ModeAddressUpdate & 0x100) {
+    if (indirect)
+      *dxw = dma->InDirectAdress & ~0x3;   /* table : bits 1-0 a 0 */
+    else
+      *dxw = dma->WriteAddress;
+  }
+}
+
 void ScuDmaCheck(scudmainfo_struct * dma, int time) {
   int atime = time;
   if (dma->TransferNumber > 0) {
@@ -1210,6 +1254,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
         SucDmaExec(dma, &atime);
         if (dma->TransferNumber <= 0) {
           if (dma->ReadAddress & 0x80000000) {
+            /* Fin de table : DxWUP fait avancer DxW apres la derniere
+             * entree (DxRUP est sans effet en mode indirect). */
+            ScuDmaUpdateStartAddresses(dma, 1);
             switch (dma->mode) {
             case 0:
               //LOG("DMA0 Finished!");
@@ -1243,6 +1290,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
     else {
       SucDmaExec(dma, &atime);
       if (dma->TransferNumber <= 0) {
+        /* Mode direct : DxRUP / DxWUP reportent les adresses atteintes
+         * dans DxR / DxW pour le prochain declenchement. */
+        ScuDmaUpdateStartAddresses(dma, 0);
         switch (dma->mode) {
         case 0:
           //LOG("DMA0 Finished!");
