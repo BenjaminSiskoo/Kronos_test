@@ -2389,8 +2389,9 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
     /* SCXN2 bits 10-0: NBG2 horizontal scroll (integer only, no fractional). */
     if ((a->SCXN2 & 0x07FF) != (b->SCXN2 & 0x07FF)) return 0;
  
-    /* SCYN2 bits 10-0: NBG2 vertical scroll. */
-    if ((a->SCYN2 & 0x07FF) != (b->SCYN2 & 0x07FF)) return 0;
+    /* SCYN2 : non compare ici. Le scroll vertical effectif de NBG2 vient du
+     * compteur vertical (Vdp2Nbg23LineScrollY[0][], vdp2.h) et est compare
+     * ligne a ligne dans Vdp2DrawNBG2_zones(). */
  
     /* CRAOFA bits 10-8: N2CAOS[2:0] — NBG2 color RAM address offset. */
     if ((a->CRAOFA & 0x0700) != (b->CRAOFA & 0x0700)) return 0;
@@ -2456,7 +2457,8 @@ static void Vdp2DrawNBG2_zones(void)
     int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
-        if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+        if (!sameVDP2RegNBG2(&Vdp2Lines[line - 1], &Vdp2Lines[line]) ||
+            (Vdp2Nbg23LineScrollY[0][line - 1] != Vdp2Nbg23LineScrollY[0][line])) {
             Vdp2DrawNBG2(&Vdp2Lines[lastLine], lastLine, line);
             lastLine = line;
         }
@@ -2500,7 +2502,7 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
   ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 4);
   ctrl.info.x = -((ctrl.regs->SCXN2 & 0x7FF) % (512 * ctrl.info.planew));
-  ctrl.info.y = -((ctrl.regs->SCYN2 & 0x7FF) % (512 * ctrl.info.planeh));
+  ctrl.info.y = -((Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF) % (512 * ctrl.info.planeh));
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN2, ctrl.regs->CHCTLB & 0x1);
 
   ReadMosaicData(&ctrl.info, 0x4, ctrl.regs);
@@ -2575,13 +2577,13 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
 
 
   ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
-  ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
+  ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
 
    {
      int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
      int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
      ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
-     ctrl.info.y = ctrl.regs->SCYN2 & 0x7FF;
+     ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
      Vdp2DrawMapTest(&ctrl, delayed);
    }
 
@@ -2644,8 +2646,9 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
     /* SCXN3 bits 10-0: NBG3 horizontal scroll. */
     if ((a->SCXN3 & 0x07FF) != (b->SCXN3 & 0x07FF)) return 0;
  
-    /* SCYN3 bits 10-0: NBG3 vertical scroll. */
-    if ((a->SCYN3 & 0x07FF) != (b->SCYN3 & 0x07FF)) return 0;
+    /* SCYN3 : non compare ici. Le scroll vertical effectif de NBG3 vient du
+     * compteur vertical (Vdp2Nbg23LineScrollY[1][], vdp2.h) et est compare
+     * ligne a ligne dans Vdp2DrawNBG3_zones(). */
  
     /* CRAOFA bits 14-12: N3CAOS[2:0] — NBG3 color RAM address offset. */
     if ((a->CRAOFA & 0x7000) != (b->CRAOFA & 0x7000)) return 0;
@@ -2694,7 +2697,8 @@ static void Vdp2DrawNBG3_zones(void)
     int max = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX) ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
  
     for (line = 1; line < max; line++) {
-        if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line])) {
+        if (!sameVDP2RegNBG3(&Vdp2Lines[line - 1], &Vdp2Lines[line]) ||
+            (Vdp2Nbg23LineScrollY[1][line - 1] != Vdp2Nbg23LineScrollY[1][line])) {
             Vdp2DrawNBG3(&Vdp2Lines[lastLine], lastLine, line);
             lastLine = line;
         }
@@ -2739,7 +2743,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   ReadPlaneSize(&ctrl.info, ctrl.regs->PLSZ >> 6);
   ctrl.info.x = -((ctrl.regs->SCXN3 & 0x7FF) % (512 * ctrl.info.planew));
-  ctrl.info.y = -((ctrl.regs->SCYN3 & 0x7FF) % (512 * ctrl.info.planeh));
+  ctrl.info.y = -((Vdp2Nbg23LineScrollY[1][startLine] & 0x7FF) % (512 * ctrl.info.planeh));
   ReadPatternData(&ctrl.info, ctrl.regs->PNCN3, ctrl.regs->CHCTLB & 0x10);
  
   ReadMosaicData(&ctrl.info, 0x8, ctrl.regs);
@@ -2810,7 +2814,7 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
  
   ctrl.info.x = ctrl.regs->SCXN3 & 0x7FF;
-  ctrl.info.y = ctrl.regs->SCYN3 & 0x7FF;
+  ctrl.info.y = Vdp2Nbg23LineScrollY[1][startLine] & 0x7FF;
   Vdp2DrawMapTest(&ctrl, delayed);
 #ifdef CELL_ASYNC
   YabThreadYield();
