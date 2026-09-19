@@ -492,6 +492,24 @@ struct LineScrollData
 
 extern struct LineScrollData line_scroll_data[VDP2_LINE_SNAPSHOT_MAX];
 
+/* Coordonnee verticale effective de NBG2 / NBG3, par ligne.
+ *
+ * NBG2 et NBG3 n'ont ni zoom ni line scroll : la ligne de l'ecran de scroll
+ * lue a chaque ligne d'affichage vient d'un compteur vertical interne,
+ * charge avec SCYN2/SCYN3 en debut de trame, incremente a chaque ligne, et
+ * RECHARGE a chaque ecriture de SCYN2/SCYN3 -- y compris en cours de trame.
+ * Un jeu qui reecrit SCYN3 a chaque ligne choisit donc directement la ligne
+ * source de chaque ligne d'affichage (Shienryu : ecrasement 320 -> 224 lignes
+ * du texte de l'ecran titre, SCYN3 = ligne * 10/7). Meme modele que Mednafen
+ * (NBG23_YCounter).
+ *
+ * Le renderer compose ligne source = scroll + ligne d'affichage ; on stocke
+ * donc ici la valeur de scroll EQUIVALENTE : (compteur - ligne * pas) & 0x7FF,
+ * pas = 2 en double-density. Sans ecriture en cours de trame elle vaut
+ * SCYN2/SCYN3, a l'identique du comportement precedent.
+ * Indice 0 = NBG2, indice 1 = NBG3. Rempli par Vdp2HBlankIN(). */
+extern u16 Vdp2Nbg23LineScrollY[2][VDP2_LINE_SNAPSHOT_MAX];
+
 // struct for Vdp2 part that shouldn't be saved
 typedef struct {
    int disptoggle;
