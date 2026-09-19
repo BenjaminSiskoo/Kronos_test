@@ -4248,6 +4248,32 @@ static void Vdp2GenLineinfo(vdp2draw_struct *info)
     }
 }
 
+/* Adresse couleur d'une couche VDP2 (palette) : offset CRAM + numero de
+ * palette + dot, repliee sur l'espace d'adressage de la Color RAM.
+ *
+ * ST-058-R2 §10.1 p.217 : l'offset (xxCAOS) est ADDITIONNE au code couleur
+ * et le resultat est une adresse de Color RAM ; en mode 0 / mode 2 le bit
+ * de poids fort de cette adresse est ignore. La somme deborde donc en
+ * rebouclant, elle ne sort jamais de la CRAM. Exemple, Tokimeki Memorial
+ * Forever With You (sauvegarde) : NBG0 256 couleurs, N0CAOS=1 (0x100) et
+ * palette 7 dans le pattern name (0x700) -> 0x800 + dot, soit les entrees
+ * 0x000-0x0FF en mode 1 (2048 couleurs).
+ *
+ * Sans ce repli, l'index etait transmis tel quel a la texture CRAM
+ * (2048 texels de large, cf. syncVDP2ColorLine) : texelFetch hors limites
+ * -> couleur nulle, toute la couche s'affichait en noir. Le chemin CPU
+ * (Vdp2ColorRamGetColorRaw) repliait deja, d'ou l'incoherence.
+ *
+ * Mode 1 : 2048 entrees de 16 bits -> 11 bits.
+ * Mode 2 : 1024 entrees de 32 bits -> 10 bits (la texture n'en contient
+ *          que 1024, cf. syncVDP2ColorLine).
+ * Mode 0 : 11 bits conserves, comme la texture CRAM (2048 texels) : seul le
+ *          debordement au-dela de 0x7FF, jusqu'ici noir, est corrige. */
+static INLINE u32 Vdp2CramIndexWrap(u32 cramindex)
+{
+  return (Vdp2Internal.ColorMode == 2) ? (cramindex & 0x3FF) : (cramindex & 0x7FF);
+}
+
 INLINE void Vdp2SetSpecialPriority(vdp2draw_struct *info, u8 dot, u32 *prio, u32 * cramindex ) {
   *prio = info->priority;
   if (info->specialprimode == 2) {
@@ -4357,7 +4383,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
   if (!(dot & 0xF) && ctrl->info.transparencyenable) {
     *ctrl->texture.textdata++ = 0x00000000;
   } else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4369,7 +4395,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4381,7 +4407,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4393,7 +4419,7 @@ static INLINE u32 Vdp2GetPixel4bpp(Vdp2Ctrl *ctrl, u32 addr) {
     *ctrl->texture.textdata++ = 0x00000000;
   }
   else {
-    cramindex = (ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+    cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xF))));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4413,7 +4439,7 @@ static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
   dot = (dotw & 0xFF00)>>8;
   if (!(dot & 0xFF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4422,7 +4448,7 @@ static INLINE u32 Vdp2GetPixel8bpp(Vdp2Ctrl *ctrl, u32 addr) {
   dot = (dotw & 0xFF);
   if (!(dot & 0xFF) && ctrl->info.transparencyenable) *ctrl->texture.textdata++ = 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4438,7 +4464,7 @@ static INLINE u32 Vdp2GetPixel16bpp(Vdp2Ctrl *ctrl, u32 addr) {
   u32 priority = 0;
   if ((dot == 0) && ctrl->info.transparencyenable) return 0x00000000;
   else {
-    cramindex = ctrl->info.coloroffset + dot;
+    cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset + dot);
     Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
     cc = Vdp2GetCCOn(ctrl, dot, cramindex);
     return VDP2COLOR(ctrl->info.idScreen, ctrl->info.alpha, priority, cc, cramindex);
@@ -4803,8 +4829,8 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
               u32 priority = 0;
-              u32 cramindex = (ctrl->info.coloroffset +
-                               ((ctrl->info.paladdr << 4) | (dot & 0xF)));
+              u32 cramindex = Vdp2CramIndexWrap((ctrl->info.coloroffset +
+                               ((ctrl->info.paladdr << 4) | (dot & 0xF))));
               Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
               u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
               *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
@@ -4824,8 +4850,8 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
               *ctrl->texture.textdata++ = 0x00000000;
             } else {
               u32 priority = 0;
-              u32 cramindex = ctrl->info.coloroffset +
-                              ((ctrl->info.paladdr << 4) | (dot & 0xFF));
+              u32 cramindex = Vdp2CramIndexWrap(ctrl->info.coloroffset +
+                              ((ctrl->info.paladdr << 4) | (dot & 0xFF)));
               Vdp2SetSpecialPriority(&ctrl->info, dot, &priority, &cramindex);
               u32 cc = Vdp2GetCCOn(ctrl, dot, cramindex);
               *ctrl->texture.textdata++ = VDP2COLOR(ctrl->info.idScreen,
@@ -5106,7 +5132,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if (!(dot & 0xF) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = (info->coloroffset + ((info->paladdr << 4) | (dot & 0xF)));
+      cramindex = Vdp2CramIndexWrap((info->coloroffset + ((info->paladdr << 4) | (dot & 0xF))));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
@@ -5126,7 +5152,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if (!(dot & 0xFF) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = info->coloroffset + ((info->paladdr << 4) | (dot & 0xFF));
+      cramindex = Vdp2CramIndexWrap(info->coloroffset + ((info->paladdr << 4) | (dot & 0xFF)));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
@@ -5146,7 +5172,7 @@ static INLINE u32 Vdp2RotationFetchPixel(vdp2draw_struct *info, int x, int y, in
     if ((dot == 0) && info->transparencyenable) return 0x00000000;
     else {
       int cc = 1;
-      cramindex = (info->coloroffset + dot);
+      cramindex = Vdp2CramIndexWrap((info->coloroffset + dot));
       Vdp2SetSpecialPriority(info, dot, &priority, &cramindex);
       switch (info->specialcolormode)
       {
