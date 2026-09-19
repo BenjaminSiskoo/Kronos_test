@@ -1197,7 +1197,7 @@ void UIYabause::on_aViewDebugSCSPDSP_triggered()
 void UIYabause::on_aViewDebugSCSP_triggered()
 {
 	YabauseLocker locker( mYabauseThread );
-	UIDebugSCSP( this ).exec();
+	UIDebugSCSP( mYabauseThread, this ).exec();
 }
 
 void UIYabause::on_aViewDebugSCSPChan_triggered()

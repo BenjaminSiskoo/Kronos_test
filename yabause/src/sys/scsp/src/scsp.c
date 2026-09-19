@@ -1490,8 +1490,16 @@ void generate_sample(struct Scsp * s, int rbp, int rbl, s16 * out_l, s16* out_r,
 	   scsp_dsp.updated = 0;
    }
 
-   for (i = 0; i < scsp_dsp.last_step; i++)
+   // BUG CORRIGE : ScspDspCheckBreakpoints() existe et est documentee dans
+   // scspdsp.h ("Called once per MPRO step ... from the scsp.c sample
+   // loop, right before ScspDspExec()") mais n'etait appelee nulle part
+   // dans tout le projet -- les breakpoints DSP SCSP ne pouvaient donc
+   // jamais se declencher, meme une fois l'UI (UIDebugSCSPDSP) cablee sur
+   // ScspDspAddCodeBreakpoint()/ScspDspSetBreakpointCallBack().
+   for (i = 0; i < scsp_dsp.last_step; i++) {
+      ScspDspCheckBreakpoints(i);
       ScspDspExec(&scsp_dsp, i, SoundRam);
+   }
 
    if (!scsp_dsp.mdec_ct){
      scsp_dsp.mdec_ct = (0x2000 << rbl);

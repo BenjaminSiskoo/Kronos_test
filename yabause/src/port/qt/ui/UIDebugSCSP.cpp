@@ -18,6 +18,10 @@
 */
 #include "UIDebugSCSP.h"
 #include "CommonDialogs.h"
+#include "UIDebugSCSPDSP.h"
+#include "UIDebugSCSPChan.h"
+#include "../QtYabause.h"
+#include "../YabauseThread.h"
 
 #include <QImageWriter>
 #include <QGraphicsPixmapItem>
@@ -25,8 +29,8 @@
 #include <QIODevice>
 #include <QTimer>
 
-UIDebugSCSP::UIDebugSCSP( QWidget* p )
-	: QDialog( p )
+UIDebugSCSP::UIDebugSCSP( YabauseThread *mYabauseThread, QWidget* p )
+	: QDialog( p ), mYabauseThread(mYabauseThread)
 {
 	// setup dialog
 	setupUi( this );
@@ -54,8 +58,13 @@ UIDebugSCSP::UIDebugSCSP( QWidget* p )
 	initAudio();
 #endif
 
-   // Disable DSP Register display
-   gbDSPControlRegisters->setVisible( false );
+   // BUG CORRIGE : gbDSPControlRegisters (masque en permanence,
+   // jamais alimente par aucun code) a ete retire du .ui et remplace par
+   // deux boutons de navigation vers les vrais debuggers dedies : voir
+   // on_pbOpenDSPDebugger_clicked() / on_pbOpenChannelViewer_clicked().
+   // (Connectes automatiquement par setupUi() via connectSlotsByName(),
+   // comme tous les autres "on_<objet>_<signal>" de ce fichier -- inutile
+   // de les connecter une deuxieme fois a la main.)
 
 	// retranslate widgets
 	QtYabause::retranslateWidget( this );
@@ -64,8 +73,14 @@ UIDebugSCSP::UIDebugSCSP( QWidget* p )
 UIDebugSCSP::~UIDebugSCSP()
 {
 #ifdef HAVE_QT_MULTIMEDIA
-	delete slot_workbuf;
-	delete slot_buf;
+	// BUG CORRIGE : slot_workbuf/slot_buf sont alloues avec "new u32[...]"
+	// / "new s16[...]" (new[] tableau), donc doivent etre liberes avec
+	// delete[] et non delete. Utiliser delete sur un tableau alloue par
+	// new[] est un comportement indefini en C++ (l'implementation ne
+	// connait pas la taille reelle du bloc a partir d'un simple delete) --
+	// meme bug dans stateChanged() ci-dessous.
+	delete[] slot_workbuf;
+	delete[] slot_buf;
 #endif
 }
 
@@ -133,8 +148,9 @@ void UIDebugSCSP::stateChanged(QAudio::State state)
 {
 	if (state == QAudio::IdleState)
 	{
-		delete slot_workbuf;
-		delete slot_buf;
+		// BUG CORRIGE : voir le destructeur -- delete[] pour des new[].
+		delete[] slot_workbuf;
+		delete[] slot_buf;
 		slot_workbuf = 0;
 		slot_buf = 0;
 		notified();
@@ -162,24 +178,52 @@ void UIDebugSCSP::on_sbSlotNumber_valueChanged ( int i )
       pbSaveAsWav->setEnabled(false);
       pbSaveSlotRegisters->setEnabled(false);
    }
+
+#ifdef HAVE_QT_MULTIMEDIA
+   // BUG CORRIGE (fonctionnalite manquante) : changer de slot pendant la
+   // lecture n'avait aucun effet sur l'audio -- le bouton restait sur
+   // "Stop Slot" mais continuait a jouer l'ancien slot, laissant croire a
+   // une previsualisation en direct qui n'existait pas vraiment. On
+   // redemarre maintenant la lecture sur le nouveau slot, comme changer
+   // de piste dans un lecteur audio.
+   if (audioOutput && !isPlaying)
+      startPlayingSlot(i);
+#endif
+}
+
+void UIDebugSCSP::on_pbOpenDSPDebugger_clicked()
+{
+   UIDebugSCSPDSP( mYabauseThread, this ).exec();
+}
+
+void UIDebugSCSP::on_pbOpenChannelViewer_clicked()
+{
+   UIDebugSCSPChan( this ).exec();
 }
 
 #ifdef HAVE_QT_MULTIMEDIA
-void UIDebugSCSP::on_pbPlaySlot_clicked ()
+void UIDebugSCSP::startPlayingSlot(int slot)
 {
 	audioBufferTimer->stop();
 	audioOutput->stop();
 
-	if (isPlaying) 
+	ScspSlotResetDebug(slot);
+	pbPlaySlot->setText(QtYabause::translate("Stop Slot"));
+	outputDevice = audioOutput->start();
+	isPlaying = false;
+	audioBufferTimer->start(20);
+}
+
+void UIDebugSCSP::on_pbPlaySlot_clicked ()
+{
+	if (isPlaying)
 	{
-		ScspSlotResetDebug(sbSlotNumber->value());
-		pbPlaySlot->setText(QtYabause::translate("Stop Slot"));
-		outputDevice = audioOutput->start();
-		isPlaying = false;
-		audioBufferTimer->start(20);
-	} 
-	else 
+		startPlayingSlot(sbSlotNumber->value());
+	}
+	else
 	{
+		audioBufferTimer->stop();
+		audioOutput->stop();
 		pbPlaySlot->setText(QtYabause::translate("Play Slot"));
 		isPlaying = true;
 	}

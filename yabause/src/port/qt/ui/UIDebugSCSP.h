@@ -26,36 +26,57 @@
 #include <QAudioOutput>
 #endif
 
+class YabauseThread;
+
 class UIDebugSCSP : public QDialog, public Ui::UIDebugSCSP
 {
 	Q_OBJECT
 private:
+	// Necessaire pour ouvrir UIDebugSCSPDSP/UIDebugCPU (constructeur exige
+	// un YabauseThread*) et pour le verrouiller le temps d'ouvrir cette
+	// fenetre, comme les autres boutons de navigation inter-debuggers.
+	YabauseThread *mYabauseThread;
+
 #ifdef HAVE_QT_MULTIMEDIA
-	QTimer *audioBufferTimer;
+	QTimer *audioBufferTimer = nullptr;
 
 	QAudioDeviceInfo audioDeviceInfo;
-	QAudioOutput *audioOutput;
-	QIODevice *outputDevice;
+	// Defauts explicites : on_sbSlotNumber_valueChanged() (auto-connecte
+	// par setupUi(), donc potentiellement declenche par les
+	// sbSlotNumber->setValue(...) tout au debut du constructeur, avant
+	// qu'initAudio() n'ait tourne) lit audioOutput/isPlaying pour savoir
+	// s'il doit redemarrer la lecture sur le nouveau slot. Sans ces
+	// initialisateurs, ce sont des pointeurs/bool non initialises a ce
+	// moment-la -- un member par defaut garantit un etat sur, avant meme
+	// le corps du constructeur.
+	QAudioOutput *audioOutput = nullptr;
+	QIODevice *outputDevice = nullptr;
 	QAudioFormat audioFormat;
-	bool isPlaying;
+	bool isPlaying = true;
 
-	u32 *slot_workbuf;
-	s16 *slot_buf;
+	u32 *slot_workbuf = nullptr;
+	s16 *slot_buf = nullptr;
 #endif
 
 public:
-	UIDebugSCSP( QWidget* parent = 0 );
+	UIDebugSCSP( YabauseThread *mYabauseThread, QWidget* parent = 0 );
 	~UIDebugSCSP();
 
 #ifdef HAVE_QT_MULTIMEDIA
 protected:
 	void initAudio();
+	// Factorise le (re)demarrage de la lecture, utilise par
+	// on_pbPlaySlot_clicked() et par le changement de slot pendant la
+	// lecture (voir on_sbSlotNumber_valueChanged).
+	void startPlayingSlot(int slot);
 #endif
 
 protected slots:
    void on_sbSlotNumber_valueChanged ( int i );
    void on_pbSaveAsWav_clicked ();
    void on_pbSaveSlotRegisters_clicked ();
+   void on_pbOpenDSPDebugger_clicked ();
+   void on_pbOpenChannelViewer_clicked ();
 #ifdef HAVE_QT_MULTIMEDIA
 	void on_pbPlaySlot_clicked ();
 	void notified();
