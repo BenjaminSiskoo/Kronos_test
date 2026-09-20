@@ -461,6 +461,31 @@ void fill_alfo_tables()
    }
 }
 
+void change_envelope_state(struct Slot * slot, enum EnvelopeStates new_state);
+
+// ST-077-R2 (LPCTL, "Loop Control Register"): loop processing and sound
+// memory access end only (1) after release, when the attenuation reaches its
+// maximum, or (2) when the loop is off and the read point reaches LEA.
+// A slot still keyed on keeps its address generator running even when its
+// envelope has decayed to silence (D1R/D2R), so CA ($408) keeps moving.
+// Case (2) is turned into a release at max attenuation in op2.
+static INLINE int slot_is_stopped(const struct Slot * slot)
+{
+   return (slot->state.envelope == RELEASE) && (slot->state.attenuation >= 0x3bf);
+}
+
+// A stopped slot no longer has a current address: its address generator is
+// back at the start of the waveform, so CA ($408) reads 0 for it.
+// TNN Motor Sports Hardcore 4x4 depends on this: it keys off its timing slot
+// (slot 1, loop over SA+0..LEA) and then polls CA until it reads 0 again
+// (loop at 0603BAAE-0603BAD8). The slot has no audible output once stopped,
+// and the next key-on restarts from offset 0 anyway, so only CA changes.
+static INLINE void slot_stop_address(struct Slot * slot)
+{
+   slot->state.sample_offset = 0;
+   slot->state.backwards = 0;
+}
+
 //pg, plfo
 void op1(struct Slot * slot)
 {
@@ -470,7 +495,7 @@ void op1(struct Slot * slot)
    int plfo_val = 0;
    int plfo_shifted = 0;
 
-   if (slot->state.attenuation >= 0x3bf)
+   if (slot_is_stopped(slot))
       return;
 
    if (slot->state.lfo_counter % lfo_step_table[slot->regs.lfof] == 0)
@@ -509,7 +534,7 @@ void op2(struct Slot * slot, struct Scsp * s)
    s32 md_out = 0;
    s32 sample_delta = slot->state.waveform_phase_value >> 18;
 
-   if (slot->state.attenuation >= 0x3bf)
+   if (slot_is_stopped(slot))
       return;
 
    if (slot->regs.mdl)
@@ -536,7 +561,10 @@ void op2(struct Slot * slot, struct Scsp * s)
       slot->state.sample_offset += sample_delta;
       if (slot->state.sample_offset >= slot->regs.lea)
       {
+         // ST-077-R2 end condition (2): the slot stops as if released.
          slot->state.attenuation = 0x3ff;
+         change_envelope_state(slot, RELEASE);
+         slot_stop_address(slot);
       }
    }
    else if (slot->regs.lpctl == 1)//normal loop
@@ -605,7 +633,7 @@ void op3(struct Slot * slot)
 {
    u32 addr = (slot->state.address_pointer);
 
-   if (slot->state.attenuation >= 0x3bf)
+   if (slot_is_stopped(slot))
       return;
 
    if (!slot->regs.pcm8b)
@@ -713,7 +741,7 @@ void op4(struct Slot * slot)
 {
    int sample_mod_4 = slot->state.envelope_steps_taken & 3;
 
-   if (slot->state.attenuation >= 0x3bf)
+   if (slot_is_stopped(slot))
       return;
 
    if (slot->state.envelope == ATTACK)
@@ -746,6 +774,10 @@ void op4(struct Slot * slot)
       do_decay(slot, slot->regs.d2r);}
    else if (slot->state.envelope == RELEASE){
       do_decay(slot, slot->regs.rr);}
+
+   // ST-077-R2 end condition (1): release reached maximum attenuation.
+   if (slot_is_stopped(slot))
+      slot_stop_address(slot);
 }
 
 s16 apply_volume(u16 tl, u16 slot_att, const s16 s)
@@ -978,6 +1010,11 @@ void keyon(struct Slot * slot)
 void keyoff(struct Slot * slot)
 {
    change_envelope_state(slot, RELEASE);
+
+   // Key-off of a slot whose envelope had already decayed to silence:
+   // it stops right away (ST-077-R2 end condition (1)).
+   if (slot_is_stopped(slot))
+      slot_stop_address(slot);
 }
 
 void keyonex(struct Scsp *s)
@@ -2994,11 +3031,11 @@ scsp_get_b (u32 a)
     case 0x07: // MOBUF
       return scsp_midi_out_read();
 
-    case 0x08: // CA(highest 3 bits)
-      return (scsp.ca >> 8);
+    case 0x08: // CA(highest 3 bits) -- register bits 10-8
+      return (scsp.ca >> 8) & 0x07;
 
-    case 0x09: // CA(lowest bit)/SGC/EG
-      return (scsp.ca & 0xE0) | (scsp.sgc << 5) | scsp.eg;
+    case 0x09: // CA(lowest bit)/SGC/EG -- register bits 7 / 6-5 / 4-0
+      return (scsp.ca & 0x80) | ((scsp.sgc & 3) << 5) | (scsp.eg & 0x1F);
 
     case 0x1E: // SCIEB(high byte)
       return (scsp.scieb >> 8);
@@ -3048,8 +3085,8 @@ scsp_get_w (u32 a)
     case 0x06: // MOBUF
       return scsp_midi_out_read();
 
-    case 0x08: // CA/SGC/EG
-      return (scsp.ca & 0x780) | (scsp.sgc << 5) | scsp.eg;
+    case 0x08: // CA/SGC/EG -- bits 10-7 / 6-5 / 4-0
+      return (scsp.ca & 0x780) | ((scsp.sgc & 3) << 5) | (scsp.eg & 0x1F);
 
     case 0x18: // TACTL
       return (scsp.timasd << 8);
@@ -3914,9 +3951,28 @@ scsp_update (s32 *bufL, s32 *bufR, u32 len)
 void
 scsp_update_monitor(void)
 {
-   scsp.ca = new_scsp.slots[scsp.mslc].state.sample_offset >> 5;
-   scsp.sgc = new_scsp.slots[scsp.mslc].state.envelope;
-   scsp.eg = new_scsp.slots[scsp.mslc].state.attenuation >> 5;
+   struct Slot *mon = &new_scsp.slots[scsp.mslc & 0x1F];
+
+   // CA = bits 15-12 of the sample offset from SA (ST-077-R2), kept here as
+   // offset >> 5 so that bits 10-7 of scsp.ca already sit where register
+   // $408 wants them. A stopped slot reads back CA = 0 (slot_stop_address).
+   if (slot_is_stopped(mon))
+      scsp.ca = 0;
+   else
+      scsp.ca = mon->state.sample_offset >> 5;
+
+   // SGC is 0 attack, 1 decay 1, 2 decay 2, 3 release. EnvelopeStates starts
+   // at ATTACK = 1, so the raw enum was one too high: RELEASE (4) landed in
+   // bit 7 (the CA LSB) and SGC read back as "attack".
+   scsp.sgc = ((u32)mon->state.envelope - 1) & 3;
+
+   // EG = top 5 bits of the envelope attenuation, 0x1F when fully decayed.
+   // This generator parks a finished envelope at 0x3BF instead of 0x3FF,
+   // which would read back as 0x1D forever: report it as 0x1F.
+   if (mon->state.attenuation >= 0x3bf)
+      scsp.eg = 0x1F;
+   else
+      scsp.eg = (mon->state.attenuation >> 5) & 0x1F;
 #ifdef PSP
    WRITE_THROUGH(scsp.ca);
    WRITE_THROUGH(scsp.sgc);
