@@ -100,6 +100,14 @@ extern int vdp2_is_odd_frame;
 static void Vdp2SetupVramBanks(Vdp2Ctrl *ctrl, int startLine)
 {
   int b;
+  /* Called first thing for every NBG ctrl (a stack variable): clear the
+   * bitmap fetch map here so no layer ever inherits garbage. Only
+   * Vdp2DrawNBG0/NBG1 fill it afterwards, via Vdp2SetupBitmapFetchMap(). */
+  memset(ctrl->bmp_chunk,   0, sizeof(ctrl->bmp_chunk));
+  memset(ctrl->bmp_chunk_n, 0, sizeof(ctrl->bmp_chunk_n));
+  memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
+  ctrl->bmp_group_bytes = 0;
+  ctrl->bmp_remap_any   = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) {
     const int cur = vdp2_is_odd_frame & 1;
     ctrl->field_split = 1;
@@ -152,6 +160,104 @@ static INLINE u8 Vdp2ZoneAccessCommand(const Vdp2 *regs, int b, int t)
              break;
   }
   return (t < 4) ? ((lo >> (12 - 4 * t)) & 0xF) : ((hi >> (12 - 4 * (t - 4))) & 0xF);
+}
+
+/* ---------------------------------------------------------------------------
+ * Bitmap NBG fetch map: which data the VDP2 really stores for each 8-dot
+ * group of a bitmap, given how the game scheduled its bitmap reads.
+ *
+ * The VDP2 User's Manual does not describe this. The model is the one of the
+ * MiSTer Saturn core (rtl/Saturn/VDP2/VDP2.sv, NBG_BM_CNT / NBG_CH_CNT and
+ * NxBMAddr() in VDP2_pkg.sv), a hardware reimplementation of the chip:
+ *
+ *   - One "cycle" of access timings (T0-T7, or T0-T3 in hi-res / exclusive
+ *     monitor modes, ST-58-R2 Figure 3.3 p.33) fetches one 8-dot group per
+ *     NBG. Each read brings one 32-bit chunk: 8 dots at 16 colours, 4 at
+ *     256, 2 at 2048/32K, 1 at 16M, hence 1, 2, 4 or 8 reads per group
+ *     (ST-58-R2 Table 3.3 p.34, SOA-6).
+ *   - A per-NBG counter (BM_CNT) steps once for every timing of the cycle at
+ *     which ANY bank carries this NBG's character/bitmap read command
+ *     (0100b-0101b, Table 3.5 p.40). At such a timing each such bank puts out
+ *     address = group base + BM_CNT x 4 bytes (BM_CNT taken modulo 4, or
+ *     modulo 8 at 16M colours).
+ *   - The read only happens in the bank that actually holds that address.
+ *     Chunks that do come back are stored one after the other (NBG_CH_CNT):
+ *     the first one gives the group's first dots, the second the next ones.
+ *   - Without partitioning (RAMCTL VRAMD/VRBMD = 0) VRAM-A1/B1 simply follow
+ *     the VRAM-A0/B0 cycle pattern registers (Vdp2ZoneAccessCommand).
+ *
+ * So for a group held in bank b the stored chunks are the BM_CNT values of
+ * the timings at which bank b has the command, in timing order. When the
+ * game spreads the reads of one bitmap in phase (all banks on the same
+ * timings, or the reads of each bank starting the cycle) that is 0, 1, ...:
+ * the identity. When it spreads them out of phase, the bank served later in
+ * the cycle gets chunks further along - data from the next group.
+ *
+ * Capcom Generation - Dai-5-shuu Kakutouka-tachi, art screens: hi-res 640,
+ * 256-colour 1024x512 bitmap filling the whole VRAM, NBG0 reads on T0-T1 of
+ * VRAM-A and T2-T3 of VRAM-B. VRAM-A groups store chunks 0,1 (identity);
+ * VRAM-B groups store chunks 2,3, i.e. 8 bytes (8 dots) further on. The game
+ * stores its VRAM-B half pre-shifted 8 dots to the right to compensate;
+ * reading it flat, Kronos showed the lower half of each picture 8 dots too
+ * far right with a strip of hidden bytes along its left edge. Ymir reaches
+ * the same result on this screen with an empirical rule (vdp_state.hpp,
+ * bitmap test case #1); the MiSTer model is the general mechanism behind it
+ * and also covers normal resolution, partitioned banks and colour depths
+ * other than 256.
+ *
+ * Unfetched positions (fewer reads in a bank than the group needs) keep the
+ * flat address here; on hardware they hold stale data from an earlier
+ * group, which is not modelled.
+ * ------------------------------------------------------------------------- */
+static void Vdp2SetupBitmapFetchMap(Vdp2Ctrl *ctrl, int nbg)
+{
+  const Vdp2 *regs = ctrl->regs;
+  const int isbmp = (nbg == 0) ? ((regs->CHCTLA & 0x0002) != 0)
+                               : ((regs->CHCTLA & 0x0200) != 0);
+  const int chcn  = (nbg == 0) ? ((regs->CHCTLA >> 4) & 0x7)
+                               : ((regs->CHCTLA >> 12) & 0x3);
+  const int nslots = ((regs->TVMD & 0x6) != 0) ? 4 : 8;
+  const u8  cpCmd  = (u8)(0x4 + nbg);
+  int groupChunks, cntMask;
+  int bmCnt = 0;
+  int t, b, p;
+
+  memset(ctrl->bmp_chunk,   0, sizeof(ctrl->bmp_chunk));
+  memset(ctrl->bmp_chunk_n, 0, sizeof(ctrl->bmp_chunk_n));
+  memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
+  ctrl->bmp_group_bytes = 0;
+  ctrl->bmp_remap_any   = 0;
+  if (!isbmp) return;
+
+  switch (chcn) {
+    case 0:  groupChunks = 1; cntMask = 3; break;   /* 16 colours        */
+    case 1:  groupChunks = 2; cntMask = 3; break;   /* 256 colours       */
+    case 2:
+    case 3:  groupChunks = 4; cntMask = 3; break;   /* 2048 / 32K colours */
+    case 4:  groupChunks = 8; cntMask = 7; break;   /* 16M colours       */
+    default: return;
+  }
+  ctrl->bmp_group_bytes = (u8)(groupChunks * 4);
+
+  for (t = 0; t < nslots; t++) {
+    int any = 0;
+    for (b = 0; b < 4; b++) {
+      if (Vdp2ZoneAccessCommand(regs, b, t) != cpCmd) continue;
+      any = 1;
+      if (ctrl->bmp_chunk_n[b] < 8)
+        ctrl->bmp_chunk[b][ctrl->bmp_chunk_n[b]++] = (u8)(bmCnt & cntMask);
+    }
+    if (any) bmCnt++;
+  }
+
+  for (b = 0; b < 4; b++) {
+    const int n = (ctrl->bmp_chunk_n[b] < groupChunks) ? ctrl->bmp_chunk_n[b]
+                                                       : groupChunks;
+    for (p = 0; p < n; p++) {
+      if (ctrl->bmp_chunk[b][p] != p) { ctrl->bmp_remap[b] = 1; break; }
+    }
+    if (ctrl->bmp_remap[b]) ctrl->bmp_remap_any = 1;
+  }
 }
 
 int GlWidth = 320;
@@ -1477,6 +1583,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   ctrl.regs = varVdp2Regs;
   Vdp2SetupVramBanks(&ctrl, startLine);
+  Vdp2SetupBitmapFetchMap(&ctrl, 0);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
@@ -2055,6 +2162,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
    * layer - Vdp2DrawNBG0() already consulted the frame-stable
    * snapshot below. Extended for consistency. */
   Vdp2SetupVramBanks(&ctrl, startLine);
+  Vdp2SetupBitmapFetchMap(&ctrl, 1);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
   ctrl.info.cor = 0;
@@ -4365,8 +4473,32 @@ static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
  * header-visibility assumption in this file) is endian-independent:
  * Vdp2Ram is a raw big-endian byte buffer regardless of host endianness,
  * and reading MSB-first here matches that on any host. */
+/* Bitmap data fetch address after Vdp2SetupBitmapFetchMap(). Bitmap bases
+ * are 0x20000-aligned and bitmap lines hold 512 or 1024 dots, so an 8-dot
+ * group is aligned on its own size in absolute VRAM and the chunk position
+ * can be taken from the address itself. The bank is the PHYSICAL one
+ * (0x20000 slices in 4 Mbit, 0x40000 in 8 Mbit), as in the MiSTer core; the
+ * unpartitioned mirroring is already folded into the map. Tile and rotation
+ * layers never carry a map. */
+static INLINE u32 Vdp2BitmapFetchAddr(Vdp2Ctrl *ctrl, u32 addr) {
+  if (ctrl->bmp_remap_any && ctrl->info.isbitmap) {
+    const int big  = (ctrl->regs->VRSIZE & 0x8000) != 0;
+    const u32 mask = big ? 0xFFFFF : 0x7FFFF;
+    const int bank = (int)(((addr & mask) >> (big ? 18 : 17)) & 3);
+    if (ctrl->bmp_remap[bank]) {
+      const u32 gbytes = ctrl->bmp_group_bytes;
+      const u32 base   = addr & ~(gbytes - 1);
+      const u32 p      = (addr - base) >> 2;
+      if (p < ctrl->bmp_chunk_n[bank])
+        return (base + ((u32)ctrl->bmp_chunk[bank][p] << 2) + (addr & 3)) & mask;
+    }
+  }
+  return addr;
+}
+
 static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s])
     return ctrl->vram_bank[s][off];
@@ -4375,6 +4507,7 @@ static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 1) < VDP2_VRAM_BANK_SIZE)
     return ((u16)ctrl->vram_bank[s][off] << 8) | ctrl->vram_bank[s][off + 1];
@@ -4383,6 +4516,7 @@ static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 3) < VDP2_VRAM_BANK_SIZE)
     return ((u32)ctrl->vram_bank[s][off] << 24) | ((u32)ctrl->vram_bank[s][off + 1] << 16) |
