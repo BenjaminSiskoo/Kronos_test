@@ -424,6 +424,30 @@ void StopTracing(std::unique_ptr<perfetto::TracingSession> tracing_session) {
 }
 #endif
 
+/* Emulation du cache SH-2 imposee par la base de jeux (utils/src/db.c,
+   SH2CacheDBList) : ces jeux dependent du cache reel des SH-2 et se bloquent
+   ou s'affichent mal sans son emulation (Tennis Arena : ecran noir apres le
+   BIOS). Le reglage de l'utilisateur est repris a chaque changement de jeu,
+   et seulement renforce pour les jeux de la liste. yabsys.usecache peut etre
+   modifie ici : les structures du cache sont initialisees par SH2Init()
+   quel que soit le reglage, et l'emulation ne demarre qu'a l'ecriture de CCR
+   par le jeu (enableCache()). */
+static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
+{
+   yabsys.usecache = init->usecache;
+   if ((yabsys.usecache == 0) && DBLookupForceSH2Cache()) {
+      yabsys.usecache = 1;
+      YuiMsg("SH2 cache emulation enabled for this game (game database)\n");
+   }
+   /* Passage d'un jeu de la liste a un autre sans emulation du cache : les
+      CPU ne doivent pas garder le cache actif du jeu precedent (un reset ne
+      remet pas cacheOn a 0). */
+   if (yabsys.usecache == 0) {
+      if (MSH2 != NULL) MSH2->cacheOn = 0;
+      if (SSH2 != NULL) SSH2->cacheOn = 0;
+   }
+}
+
 static int YabauseFullInit(yabauseinit_struct *init)
 {
 #ifdef _USE_PERFETTO_TRACE_
@@ -473,6 +497,9 @@ TRACE_EMULATOR("YabauseInit");
    // Now that we have some informations on current game, trying to auto-detect required settings
    if (init->auto_cart != 0)
       DBLookup(&init->carttype, &init->cartpath, init->supportdir);
+
+   // Some games need the SH2 cache emulation whatever the user setting is
+   YabauseApplySH2CacheDB(init);
 
    if (CartInit(init->cartpath, init->carttype) != 0)
    {
@@ -646,6 +673,8 @@ static int YabauseRefreshInit(yabauseinit_struct *init) {
 
   if (init->auto_cart != 0)
      DBLookup(&init->carttype, &init->cartpath, init->supportdir);
+
+  YabauseApplySH2CacheDB(init);
 
   if (CartInit(init->cartpath, init->carttype) != 0)
   {
