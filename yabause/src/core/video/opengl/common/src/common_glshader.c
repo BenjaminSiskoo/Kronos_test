@@ -903,6 +903,9 @@ ret.meshColor = vec4(0.0);\n \
 ret.mesh = 0;\n \
 "
 
+/* offcolID.a carries the layer's colour calculation enable for the current
+ * line (VIDCSReadColorOffset, vidcs.c): CCCTL may change from one line to
+ * the next, the uniform mode[] cannot. Mode 1 is NONE (opaque). */
 #define VDP2_SCREEN_SETUP(ID) "\
 ret.offset_color = offcol"Stringify(ID)".rgb;\n \
 if (((int(vdp2col"Stringify(ID)".a*255.0)&0x7) == prio) && (!inTransparentWindow("Stringify(ID)"))) {\n \
@@ -915,6 +918,7 @@ ret.lncl_off = is_lncl_off["Stringify(ID)"];\n \
 ret.layer = "Stringify(ID)";\n \
 ret.isRGB = (isRGB>>"Stringify(ID)")&0x1;\n \
 ret.Color.a = float((int(ret.Color.a*255.0)&0xF8)>>3)/31.0; \n \
+if ((ret.mode > 1) && (offcol"Stringify(ID)".a < 0.5)) { ret.mode = 1; ret.Color.a = 1.0; }\n \
 if (remPrio == 0) return ret;\n \
 }\n"
 
