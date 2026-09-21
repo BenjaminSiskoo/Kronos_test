@@ -3359,6 +3359,45 @@ static inline int encodeColorOffset(int v) {
     return (v + 128) & 0xFF; // neutral=128, shader decodes: (x/255.0-0.5)*2→[-1,+1]
 }
 
+/* ---------------------------------------------------------------------------
+ * Colour calculation enable, per line.
+ *
+ * CCCTL is an ordinary VDP2 register that games may rewrite in H-blank like
+ * any other: its effect is per line. The compositor used to take each
+ * layer's colour calculation mode (setupBlend(), commongl.c) from the line-0
+ * register snapshot for the whole picture, so a layer whose NxCCEN bit is
+ * only set further down the screen was never blended, and one set on line 0
+ * but cleared later stayed blended everywhere. The per-line colour
+ * calculation RATIO was already honoured (alpha_per_line[]); the enable was
+ * not.
+ *
+ * Die Hard Arcade (in-game HUD, NBG3, CCRNB = 0x0C00): CCCTL is 0x0002 on
+ * line 0, 0x000A from line 48 (N3CCEN set), 0x0002 from line 144 and 0x000A
+ * again from line 192. The player's life bar, above line 48, is opaque on
+ * the console; the enemies' bars, below, are half transparent. Kronos drew
+ * all of them opaque.
+ *
+ * The fix has two halves:
+ *   - VIDCSReadColorOffset() stores each layer's enable bit for each line in
+ *     the per-line texture that already carries the colour offset;
+ *   - the layer's blend mode (as is / ratio of top / ratio of second, CCMD
+ *     and CCRTMD) is taken from the first line on which the layer's colour
+ *     calculation is enabled, so the compositor is set up to blend at all,
+ *     and the shader then keeps it opaque on the lines where the bit is off.
+ * ------------------------------------------------------------------------- */
+Vdp2 *VIDCSBlendRegsForLayer(Vdp2 *base, int layer)
+{
+  static const u8 ccEnableBit[6] = {0, 1, 2, 3, 4, 0};
+  const int nl = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                 ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
+  int l;
+  if (layer < 0 || layer > RBG1) return base;
+  if ((base->CCCTL >> ccEnableBit[layer]) & 1) return base;
+  for (l = 0; l < nl; l++)
+    if ((Vdp2Lines[l].CCCTL >> ccEnableBit[layer]) & 1) return &Vdp2Lines[l];
+  return base;
+}
+
 void VIDCSReadColorOffset(void) {
     u8 offset[enBGMAX+1] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x1, 0x40, 0x20};
     /* Linear mapping physical pixel row → logical scan line.
@@ -3453,6 +3492,17 @@ for (int id = 0; id < enBGMAX+1; id++) {
                          | ((u32)(spccn  & 0x7) << 26)
                          | ((u32)(spcccs & 0x3) << 24);
         linebuf[line + 512*id] = sp_ctrl_bits | (col & 0x00FFFFFFu);
+    } else if (id <= RBG1) {
+        /* Colour calculation enable of this layer ON THIS LINE, in the alpha
+         * byte of its per-line word (unused by the colour offset, which only
+         * takes .rgb). CCCTL bits 0-4: N0CCEN..R0CCEN; RBG1 uses N0CCEN
+         * (ST-58-R2 §12.1). The compositor (VDP2_SCREEN_SETUP in
+         * common_glshader.c) turns the layer's blend mode off on lines where
+         * this is clear. See VIDCSBlendRegsForLayer() for why the layer mode
+         * itself no longer comes from line 0 alone. */
+        static const u8 ccEnableBit[6] = {0, 1, 2, 3, 4, 0};
+        const u32 ccOn = (lVdp2Regs->CCCTL >> ccEnableBit[id]) & 1;
+        linebuf[line + 512*id] = (ccOn ? 0xFF000000u : 0u) | (col & 0x00FFFFFFu);
     } else {
         linebuf[line + 512*id] = col;
     }
