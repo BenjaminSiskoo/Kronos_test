@@ -235,6 +235,49 @@ void SH2SetExecSet(int debug) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Vol de cycles de bus par le DMAC interne du SH-2 maitre.
+ *
+ * En mode vol de cycle (CHCR.TB = 0), le DMAC du SH-2 et le CPU se partagent
+ * le bus externe : pendant qu'un canal transfere, chaque acces externe du CPU
+ * (lecture hors cache, defaut de cache, ecriture) attend que le DMAC lui rende
+ * le bus (SH7604 Hardware Manual, section 9, modes de bus du DMAC). Kronos
+ * faisait avancer le DMAC sans jamais retarder le CPU.
+ *
+ * Modele et valeurs repris de Mednafen (ss/sh7095.inc,
+ * SH7095_DMA_RecalcRunning / DMA_PenaltyKludgeAmount, applique au seul SH-2
+ * maitre dans ss.c) : tant qu'un canal remplit la condition de marche
+ * (DMAOR : DME = 1, NMIF = AE = 0 ; CHCR : DE = 1, TE = 0), chaque acces
+ * externe du maitre coute 19 cycles de plus, 23 pour un canal en unites de
+ * 16 octets dont la source et la destination ne sont pas toutes deux en
+ * Work RAM-H.
+ *
+ * Tennis Arena en depend : pendant que le DMAC du maitre copie de la VRAM
+ * VDP2, le maitre depose deux commandes dans la file de l'esclave. La
+ * premiere fait remplir a l'esclave des tables qui recouvrent la file ; la
+ * seconde doit etre deposee apres ce remplissage. Le trajet du maitre entre
+ * les deux dure ~4100 cycles dans Mednafen (FRC en /128 : 4157 -> 4177)
+ * contre 769 dans Kronos, qui deposait la seconde commande trop tot : elle
+ * etait effacee, le premier DMA SCU de la liste de sprites etait illegal et
+ * le jeu restait sur un ecran noir apres le BIOS.
+ * ------------------------------------------------------------------------- */
+void SH2DMABusPenalty(SH2_struct *context) {
+  int penalty = 0;
+  if (context != MSH2) return;
+  if ((context->onchip.DMAOR & 0x07) != 0x01) return;
+  if ((context->onchip.CHCR0 & 0x03) == 0x01) {
+    int p = ((((context->onchip.CHCR0 >> 10) & 3) == 3) &&
+             ((context->onchip.SAR0 & context->onchip.DAR0 & 0x06000000) != 0x06000000)) ? 23 : 19;
+    if (p > penalty) penalty = p;
+  }
+  if ((context->onchip.CHCR1 & 0x03) == 0x01) {
+    int p = ((((context->onchip.CHCR1 >> 10) & 3) == 3) &&
+             ((context->onchip.SAR1 & context->onchip.DAR1 & 0x06000000) != 0x06000000)) ? 23 : 19;
+    if (p > penalty) penalty = p;
+  }
+  context->cycles += penalty;
+}
+
 void SH2UpdateABusAccess(SH2_struct *context, int on) {
   if (context->isAccessingCPUBUS != on) {
     context->isAccessingCPUBUS = on;
@@ -2312,15 +2355,27 @@ static inline void CacheWriteVal(SH2_struct *context, u32 addr, u32 val, u8 size
   u32 tag = (addr>>10)&0x7FFFF;
   u8 byte = addr&0xF;
   u8 way=context->tagWay[line][tag];
+  /* La ligne de cache est une memoire interne au SH-2 : y ecrire ne doit
+     passer ni par le gestionnaire de la zone externe ni par son modele de
+     temps.
+
+     Les gestionnaires Work RAM (HighWram/LowWramMemoryWrite*) comptent un
+     changement de rangee DRAM a partir de l'adresse recue et ajoutent des
+     cycles. Appeles ici avec l'adresse 0-15 de la ligne, ils voyaient une
+     rangee 0 fictive : +2 cycles (Work RAM-H) ou +4 (Work RAM-L) a chaque
+     mise a jour de ligne, et le suivi de rangee de la vraie memoire etait
+     fausse, si bien que l'ecriture reelle qui suit payait elle aussi un
+     changement de rangee. Le stockage de la ligne suit le format T2 des deux
+     Work RAM (seules zones mises en cache, voir enableCache()). */
   switch(size) {
   case 1:
-    WriteByteList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way], byte, val);
+    T2WriteByte(context->cacheData[line][way], byte, val);
     break;
   case 2:
-    WriteWordList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way], byte, val);
+    T2WriteWord(context->cacheData[line][way], byte, val);
     break;
   case 4:
-    WriteLongList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way], byte, val);
+    T2WriteLong(context->cacheData[line][way], byte, val);
     break;
   }
 }
@@ -2381,8 +2436,17 @@ void InvalidateCache(SH2_struct *ctx) {
       SH2WriteNotify(ctx,
                      (ctx->cacheTagArray[line][way] << 10) | (line << 4), 16);
 
+  /* tagWay est un index tag -> voie de 64 x 512 Ko = 32 Mo par CPU. Le
+     remettre entierement a 0x4 a chaque purge (CCR.CP) coutait un memset de
+     32 Mo ; un jeu qui purge a chaque image (Tennis Arena : CCR <- 11H dans
+     une commande de l'esclave) devenait tres lent avec le cache emule.
+     Seules les entrees des 256 lignes presentes peuvent designer une voie
+     valide : on ne remet que celles-la. Une entree perimee restante est sans
+     effet, chaque recherche verifiant cacheTagArray[line][way] == tag. */
+  for (line = 0; line < 64; line++)
+    for (way = 0; way < 4; way++)
+      ctx->tagWay[line][ctx->cacheTagArray[line][way] & 0x7FFFF] = 0x4;
   memset(ctx->cacheLRU, 0, 64);
-  memset(ctx->tagWay, 0x4, 64*0x80000);
   memset(ctx->cacheTagArray, 0x0, 64*4*sizeof(u32));
 #endif
   ctx->cycles += 1;
@@ -2448,6 +2512,7 @@ void CacheFetch(SH2_struct *context, u8* memory, u32 addr, u8 way) {
   u8 line = (addr>>4)&0x3F;
   u32 tag = (addr>>10)&0x7FFFF;
   SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+  SH2DMABusPenalty(context);   /* remplissage de ligne : acces externe */
   UpdateLRU(context, line, way);
   context->tagWay[line][tag] = way;
   context->cacheTagArray[line][way] = tag;
@@ -2467,6 +2532,9 @@ void CacheFetch(SH2_struct *context, u8* memory, u32 addr, u8 way) {
   // printf("\n");
 }
 
+/* Lecture en cache : le succes (hit) est servi par la memoire interne du
+   SH-2, lue directement (format T2), sans passer par le gestionnaire de la
+   Work RAM ni par son suivi de rangee DRAM (voir CacheWriteVal()). */
 u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
   u8 line = (addr>>4)&0x3F;
   u32 tag = (addr>>10)&0x7FFFF;
@@ -2475,7 +2543,7 @@ u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
   if (byte + 1 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
   if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
     UpdateLRU(context, line, way);
-    u8 ret = ReadByteList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way],byte);
+    u8 ret = T2ReadByte(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
     if (ret != ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr)) {
       YuiMsg("Read Byte addr %x from cache = %x (%x)\n", addr, ret, ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2487,7 +2555,7 @@ u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
   }
   way = getLRU(context, tag, line);
   CacheFetch(context, memory, addr, way);
-  u8 ret = ReadByteList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way],byte);
+  u8 ret = T2ReadByte(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
   if (ret != ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr)) {
     YuiMsg("Read Byte addr %x out of cache = %x (%x)\n", addr, ret, ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2506,7 +2574,7 @@ u16 CacheReadWord(SH2_struct *context,u8* memory, u32 addr) {
   if (byte + 2 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
   if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
     UpdateLRU(context, line, way);
-    u16 ret = ReadWordList[(addr >> 16) & 0xFFF](context, context->cacheData[line][way],byte);
+    u16 ret = T2ReadWord(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
     if (ret != ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr)) {
       YuiMsg("Read Word addr %x (%x) from of cache = %x (%x)\n", addr, (addr >> 16) & 0xFFF, ret, ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2518,7 +2586,7 @@ u16 CacheReadWord(SH2_struct *context,u8* memory, u32 addr) {
   }
   way = getLRU(context, tag, line);
   CacheFetch(context, memory, addr, way);
-  u16 ret = ReadWordList[(addr >> 16) & 0xFFF](context, context->cacheData[line][way],byte);
+  u16 ret = T2ReadWord(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
   if (ret != ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr)) {
     YuiMsg("Read Word addr %x (%x) out of cache = %x (%x)\n", addr, (addr >> 16) & 0xFFF, ret, ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2537,7 +2605,7 @@ u32 CacheReadLong(SH2_struct *context,u8* memory, u32 addr) {
   if (byte + 4 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
   if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
     UpdateLRU(context, line, way);
-    u32 ret = ReadLongList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way],byte);
+    u32 ret = T2ReadLong(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
     if (ret != ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr)) {
       YuiMsg("Read Long addr %x from cache = %x (%x)\n", addr, ret, ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2549,7 +2617,7 @@ u32 CacheReadLong(SH2_struct *context,u8* memory, u32 addr) {
   }
   way = getLRU(context, tag, line);
   CacheFetch(context, memory, addr, way);
-  u32 ret = ReadLongList[(addr >> 16) & 0xFFF](context,context->cacheData[line][way],byte);
+  u32 ret = T2ReadLong(context->cacheData[line][way],byte);
 #ifdef CACHE_DEBUG
   if (ret != ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr)) {
     YuiMsg("Read Long addr %x out of cache = %x (%x)\n", addr, ret, ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr));
@@ -2999,6 +3067,20 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
 
       int type = ((*dmac->CHCR & 0x0C00) >> 10);
       int eat = getEatClock(*dmac->SAR, *dmac->DAR);
+
+      /* VRAM VDP2 -> VRAM VDP2 : getEatClock() donnait 1 cycle par unite,
+         soit une copie quasi instantanee alors que les deux acces passent par
+         le B-Bus. Couts de Mednafen pour le DMAC du SH-2 (ss/scu.inc,
+         BBusRW, sh2_dma_time_thing) : lecture VDP2 10 cycles et ecriture
+         VDP2 5 cycles par mot de 16 bits, donc 15 par unite octet/mot, 30 par
+         long mot, 120 par bloc de 16 octets. Mesure dans Mednafen sur Tennis
+         Arena : TCR du canal 0 de 93CH a 898H (164 long mots) pendant ~4100
+         cycles, soit environ 25 cycles par long mot, CPU compris. Avec 1
+         cycle, la copie etait finie bien avant que le jeu en depende et le
+         vol de cycles sur le maitre (SH2DMABusPenalty) n'avait pas lieu. */
+      if (((*dmac->SAR & 0x0FF00000) == 0x05E00000) &&
+          ((*dmac->DAR & 0x0FF00000) == 0x05E00000))
+        eat = (type == 2) ? 30 : ((type == 3) ? 120 : 15);
 
       dmac->copy_clock += cycles;
 
