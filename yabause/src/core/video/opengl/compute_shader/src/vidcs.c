@@ -1,4 +1,4 @@
-/* Copyright 2003-2006 Guillaume Duhamel
+/* Copyright 2003-2006 Guillaume Duhamel/* Copyright 2003-2006 Guillaume Duhamel
     Copyright 2004 Lawrence Sebald
     Copyright 2004-2007 Theo Berkau
 
@@ -1971,6 +1971,11 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* MPOFN bits 6-4: NBG1 map offset (affects which VRAM area holds the map). */
     if ((a->MPOFN & 0x0070) != (b->MPOFN & 0x0070)) return 0;
+
+    /* MPABN1 (180044H) / MPCDN1 (180046H): NBG1 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN1 != b->MPABN1) return 0;
+    if (a->MPCDN1 != b->MPCDN1) return 0;
  
     /* BMPNA bits 10-8: NBG1 bitmap palette address (bitmap mode only).
      * Also bits 12,13: N1BMCC, N1BMPR. */
@@ -2405,6 +2410,11 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
      * picked up by another field. */
     if ((a->MPOFN & 0x0700) != (b->MPOFN & 0x0700)) return 0;
 
+    /* MPABN2 (180048H) / MPCDN2 (18004AH): NBG2 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN2 != b->MPABN2) return 0;
+    if (a->MPCDN2 != b->MPCDN2) return 0;
+
     /* PLSZ bits 7-4: NBG2 plane size. Affects map wrapping calculations. */
     if ((a->PLSZ & 0x00F0) != (b->PLSZ & 0x00F0)) return 0;
  
@@ -2655,6 +2665,11 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
 
     /* MPOFN bits 14-12: N3MP[8:6] — NBG3 map offset. */
     if ((a->MPOFN & 0x7000) != (b->MPOFN & 0x7000)) return 0;
+
+    /* MPABN3 (18004CH) / MPCDN3 (18004EH): NBG3 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN3 != b->MPABN3) return 0;
+    if (a->MPCDN3 != b->MPCDN3) return 0;
 
     if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
  
@@ -5281,6 +5296,18 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
   int screenH = _Ygl->rheight;
 
+  /* Lignes d'ecran de la zone courante. L'appelant (Vdp2DrawNBG0/NBG1)
+   * alloue la texture pour [screenY1, screenY2) seulement -- cellh vaut
+   * screenY2 - screenY1 -- avec exactement cette formule. Tracer les
+   * screenH lignes quel que soit le decoupage ecrivait au-dela de la texture
+   * des qu'une couche comptait plus d'une zone ; tant que la carte n'etait
+   * pas comparee dans sameVDP2RegNBG0/NBG1, ce chemin n'en voyait qu'une.
+   * v reste une ligne d'ecran ABSOLUE : lineinfo[v], la coordonnee
+   * verticale (v * incv) et cell_scroll_data[v >> fieldShift] en dependent. */
+  const int screenY1 = (_Ygl->rheight * ctrl->info.startLine) / yabsys.VBlankLineCount;
+  int screenY2       = (_Ygl->rheight * ctrl->info.endLine)   / yabsys.VBlankLineCount;
+  if (screenY2 > screenH) screenY2 = screenH;
+
   /* Etendue de la table de vertical cell scroll, en longwords. Calculee sur
    * ctrl->regs -- l'instantane de la zone -- et non sur Vdp2Regs : le rendu a
    * lieu en fin de trame, les registres vivants peuvent avoir change depuis.
@@ -5308,7 +5335,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     vcsDelay = (ctrl->info.idScreen == NBG1) ? vcst.delay[1] : vcst.delay[0];
   }
 
-  for (v = 0; v < screenH; v++) {
+  for (v = screenY1; v < screenY2; v++) {
     int targetv = 0;
 
     if (VDPLINE_SX(ctrl->info.islinescroll)) {
@@ -6255,6 +6282,18 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     if ((a->CRAOFA & 0x7) != (b->CRAOFA & 0x7)) return 0;
  
     if ((a->MPOFN & 0x7) != (b->MPOFN & 0x7)) return 0;
+
+    /* MPABN0 (180040H) / MPCDN0 (180042H): NBG0 map registers, plane A/B and
+     * plane C/D pattern name table lead addresses. VDP2 Manual ST-58-R2
+     * p.86-87, Table 4.8 p.83. Vdp2NBG0PlaneAddr() reads them from the zone
+     * snapshot, so a mid-frame rewrite must open a new zone, exactly like
+     * MPOFN above. Sonic Jam (Sonic 2, two-player split screen) switches both
+     * from 0x0404 to 0x0505 at field line 108: the top view reads page 4 and
+     * the bottom view page 5. Without these two tests the whole frame stayed
+     * one zone on page 4, and the bottom view showed the top player's tiles
+     * wherever the two views overlapped in the shared 64-cell-wide page. */
+    if (a->MPABN0 != b->MPABN0) return 0;
+    if (a->MPCDN0 != b->MPCDN0) return 0;
  
     if ((a->BMPNA & 0x37) != (b->BMPNA & 0x37)) return 0;
  
