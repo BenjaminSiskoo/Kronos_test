@@ -817,12 +817,17 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    {
       case 0x1:
       {
+        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
         SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         return ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
       case 0x4:
       {
+         /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
+            externe. Cache actif : seuls les defauts le sont (CacheFetch()).
+            Sans emulation du cache : lectures traitees comme des succes. */
+         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
            return context->cacheOn
@@ -881,11 +886,16 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
    {
       case 0x1:
       {
-        SH2UpdateABusAccess(context, 1);; //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
+        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         return ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0: //0x0 cache
       case 0x4:
+      /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
+         externe. Cache actif : seuls les defauts le sont (CacheFetch()).
+         Sans emulation du cache : lectures traitees comme des succes. */
+      if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
       if (context->cacheOn) SH2UpdateABusAccess(context, 0);
       else SH2UpdateABusAccess(context, 1);
            return context->cacheOn
@@ -968,12 +978,17 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
    {
       case 0x1: //0x0 no cache
       {
+        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
         SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         return ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
       case 0x4:
       {
+         /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
+            externe. Cache actif : seuls les defauts le sont (CacheFetch()).
+            Sans emulation du cache : lectures traitees comme des succes. */
+         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
         else SH2UpdateABusAccess(context, 1);
            return context->cacheOn
@@ -1031,6 +1046,9 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
    int id = addr >> 29;
    if (context == NULL) id =1;
    SH2WriteNotify(context, addr, 1);
+   /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
+      externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
    switch (id)
    {
       case 0x1:
@@ -1106,6 +1124,9 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
    if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 1);
 #endif
    SH2WriteNotify(context, addr, 2);
+   /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
+      externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
    switch (id)
    {
       case 0x1:
@@ -1183,6 +1204,9 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
    if ((addr & 3) && (context != NULL)) SH2AddressError(context, addr, 32, 1);
 #endif
    SH2WriteNotify(context, addr, 4);
+   /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
+      externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
    switch (id)
    {
       case 0x1:
