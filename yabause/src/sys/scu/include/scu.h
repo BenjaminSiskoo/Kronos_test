@@ -134,6 +134,40 @@ typedef struct
 
 extern Scu * ScuRegs;
 
+/* Arbitrage bus SH-2 / SCU-DMA.
+ *
+ * SCU User's Manual ST-097-R5 §1.1 p.2 : "Using the CPU-Bus, the CPU can
+ * access the work area while executing the DMA of the A-Bus and B-Bus."
+ * Pendant un transfert SCU-DMA, seul le CPU-Bus reste donc disponible au
+ * SH-2 ; un acces du SH-2 a l'A-bus ou au B-bus attend la fin du transfert.
+ * Mednafen (ss/scu.inc, SCU_FromSH2_BusRW_DB -> CheckForceDMAFinish())
+ * applique la meme regle sur 0x02000000-0x058FFFFF et 0x05A00000-0x05FBFFFF ;
+ * les registres SCU (0x05FE0000) n'en font pas partie, un jeu peut donc
+ * sonder DSTA (§3.2, Figure 3.13) sans forcer la fin.
+ *
+ * Tempest 2000 : une DMA recopie la liste de commandes VDP1 du menu, puis le
+ * CPU repose les bits de saut en VRAM VDP1. Sans cet arbitrage, la fin de la
+ * DMA ecrasait le saut ecrit par le CPU et le VDP1 tracait les anciennes
+ * commandes du copyright de l'ecran-titre sous le menu.
+ *
+ * ScuForceDMAFinish() termine d'un coup les transferts actifs, fin
+ * d'interruption comprise. */
+void ScuForceDMAFinish(void);
+
+static INLINE int ScuDmaIsRunning(void) {
+  return (ScuRegs != NULL) &&
+         ((ScuRegs->dma0.TransferNumber > 0) ||
+          (ScuRegs->dma1.TransferNumber > 0) ||
+          (ScuRegs->dma2.TransferNumber > 0));
+}
+
+/* addr : adresse SH-2 (zones 0x0/0x2/0x4 cache, cache-through, ...). */
+static INLINE int ScuIsSH2ABBusAddress(u32 addr) {
+  u32 p = addr & 0x07FFFFFF;
+  return ((p >= 0x02000000) && (p <= 0x058FFFFF)) ||
+         ((p >= 0x05A00000) && (p <= 0x05FBFFFF));
+}
+
 typedef struct
 {
    scucodebreakpoint_struct codebreakpoint[MAX_BREAKPOINTS];

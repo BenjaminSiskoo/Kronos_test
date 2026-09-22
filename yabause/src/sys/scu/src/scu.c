@@ -1219,7 +1219,6 @@ void SucDmaExec(scudmainfo_struct * dma, int * time ) {
  * s'est arrete au lieu de relire le debut de la table. DxWUP fait de meme
  * pour DxW -- en mode indirect DxW est l'adresse de la table, qui avance
  * alors apres la derniere entree (et DxRUP n'a pas d'effet).
- * Reference comportementale : Mednafen ss/scu.inc, UpdateDMAInner().
  *
  * Kronos ignorait ces deux bits : chaque declenchement par facteur
  * (ScuChekIntrruptDMA) rechargeait DxR/DxW d'origine. Un DMA H-blank arme
@@ -1409,6 +1408,16 @@ static void ScuDmaProc(scudmainfo_struct * dma, int time) {
   ScuDmaCheck(dma, time);
   setupBusConcurrency(dma);
   setupVdp1Concurrency(dma);
+}
+
+/* Voir scu.h. (ForceDMAFinish) : du niveau 2 au niveau 0.
+ * ScuDmaProc() avec un budget illimite est deja utilise pour achever un
+ * transfert en cours quand un niveau est relance (ecriture DxEN). */
+void ScuForceDMAFinish(void) {
+  if (ScuRegs == NULL) return;
+  if (ScuRegs->dma2.TransferNumber > 0) ScuDmaProc(&ScuRegs->dma2, 0x7FFFFFFF);
+  if (ScuRegs->dma1.TransferNumber > 0) ScuDmaProc(&ScuRegs->dma1, 0x7FFFFFFF);
+  if (ScuRegs->dma0.TransferNumber > 0) ScuDmaProc(&ScuRegs->dma0, 0x7FFFFFFF);
 }
 
 static void ScuDspExec(u32 timing) {

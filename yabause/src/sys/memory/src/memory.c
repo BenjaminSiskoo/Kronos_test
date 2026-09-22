@@ -802,6 +802,15 @@ void switchFB8bit()
     &VoidMem);
 }
 
+/* Un acces SH-2 a l'A-bus ou au B-bus attend la fin d'un SCU-DMA en cours
+ * (voir scu.h, ScuForceDMAFinish). Seuls les acces qui sortent reellement
+ * sur le bus sont concernes : les ecritures (write-through) et les lectures
+ * hors cache. Les acces DMA (context == NULL) ne passent pas par ici. */
+static INLINE void SH2WaitScuDmaOnABBus(SH2_struct *context, u32 addr) {
+  if ((context != NULL) && ScuDmaIsRunning() && ScuIsSH2ABBusAddress(addr))
+    ScuForceDMAFinish();
+}
+
 u8 FASTCALL DMAMappedMemoryReadByte(u32 addr) {
    return ReadByteList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
 }
@@ -819,6 +828,7 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
       {
         SH2DMABusPenalty(context);   /* acces externe (cache-through) */
         SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2WaitScuDmaOnABBus(context, addr);
         return ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
@@ -830,6 +840,7 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
          if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
+         if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
            return context->cacheOn
                    ? CacheReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
                    : ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
@@ -888,6 +899,7 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
       {
         SH2DMABusPenalty(context);   /* acces externe (cache-through) */
         SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2WaitScuDmaOnABBus(context, addr);
         return ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0: //0x0 cache
@@ -898,6 +910,7 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
       if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
       if (context->cacheOn) SH2UpdateABusAccess(context, 0);
       else SH2UpdateABusAccess(context, 1);
+      if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
            return context->cacheOn
                    ? CacheReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
                    : ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
@@ -980,6 +993,7 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
       {
         SH2DMABusPenalty(context);   /* acces externe (cache-through) */
         SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2WaitScuDmaOnABBus(context, addr);
         return ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
@@ -991,6 +1005,7 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
          if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
         else SH2UpdateABusAccess(context, 1);
+        if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
            return context->cacheOn
                    ? CacheReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
                    : ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
@@ -1048,7 +1063,10 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
    SH2WriteNotify(context, addr, 1);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+     SH2DMABusPenalty(context);
+     SH2WaitScuDmaOnABBus(context, addr);
+   }
    switch (id)
    {
       case 0x1:
@@ -1126,7 +1144,10 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
    SH2WriteNotify(context, addr, 2);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+     SH2DMABusPenalty(context);
+     SH2WaitScuDmaOnABBus(context, addr);
+   }
    switch (id)
    {
       case 0x1:
@@ -1206,7 +1227,10 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
    SH2WriteNotify(context, addr, 4);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) SH2DMABusPenalty(context);
+   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+     SH2DMABusPenalty(context);
+     SH2WaitScuDmaOnABBus(context, addr);
+   }
    switch (id)
    {
       case 0x1:
