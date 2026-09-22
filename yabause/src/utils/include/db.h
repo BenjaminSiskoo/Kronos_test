@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 void DBLookup(int* const cart_type, const char**  cartpath, const char * support_dir);
+int DBLookupForceSH2Cache(void);
 
 
 typedef struct GameDB_s{

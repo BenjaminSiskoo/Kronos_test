@@ -482,12 +482,46 @@ u32 FASTCALL Vdp2ColorRamReadLong(SH2_struct *context, u8* mem, u32 addr) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Ecritures en Color RAM.
+ *
+ * VDP2 User's Manual ST-58-R2 §3.4 p.43-45, Figure 3.10 "Color Data of the
+ * Color RAM" : en mode 0 (RGB 5:5:5, 1024 couleurs), la CRAM de 2 K mots est
+ * vue comme deux moities de 1 K mot contenant "Same Color Data". Le materiel
+ * duplique donc chaque ecriture dans l'autre moitie : l'entree N et l'entree
+ * N + 1024 (octet ^ 0x800) portent toujours la meme couleur. Ymir fait de meme
+ * (VDP2Mem::WriteCRAM, "address ^= 0x800" quand colorRAMMode == 0).
+ *
+ * Kronos n'ecrivait que la moitie visee. Le chemin CPU
+ * (Vdp2ColorRamGetColorRaw) masque l'index a 0x3FF et ne voyait rien, mais le
+ * rendu GPU garde 11 bits en mode 0 (Vdp2CramIndexWrap, texture CRAM de 2048
+ * texels) : une cellule dont le numero de palette pointe dans la moitie haute
+ * lisait des couleurs perimees, laissees la par un mode precedent.
+ *
+ * Sonic Jam, ecran de transition apres le choix d'un jeu : le menu tourne en
+ * mode 2 (RAMCTL = 0x2000), puis le jeu repasse en mode 0 et remplit la CRAM
+ * de blanc. Sur console, les deux moities deviennent blanches ; dans Kronos
+ * la moitie haute gardait les couleurs du menu, et les cellules 256 couleurs
+ * de NBG0 dont la palette depasse 1023 sortaient en blocs orange sur le blanc.
+ *
+ * Le changement de mode ne recopie rien : seules les ecritures faites en
+ * mode 0 sont dupliquees, comme sur le materiel. */
+static INLINE u32 Vdp2ColorRamMirrorAddr(u32 addr)
+{
+   return addr ^ 0x800;
+}
+
 void FASTCALL Vdp2ColorRamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0xFFF;
-   // printf("[VDP2] Update Coloram Byte %08X:%08X\n", addr, val);
    if (val != T2ReadByte(mem, addr)) {
      T2WriteByte(mem, addr, val);
      nbAddrToUpdate = 1;
+   }
+   if (Vdp2Internal.ColorMode == 0) {
+     const u32 m = Vdp2ColorRamMirrorAddr(addr);
+     if (val != T2ReadByte(mem, m)) {
+       T2WriteByte(mem, m, val);
+       nbAddrToUpdate = 1;
+     }
    }
 }
 
@@ -495,10 +529,16 @@ void FASTCALL Vdp2ColorRamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 v
 
 void FASTCALL Vdp2ColorRamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0xFFF;
-   // printf("[VDP2] Update Coloram Word %08X:%08X\n", addr, val);
    if (val != T2ReadWord(mem, addr)) {
      T2WriteWord(mem, addr, val);
      nbAddrToUpdate = 1;
+   }
+   if (Vdp2Internal.ColorMode == 0) {
+     const u32 m = Vdp2ColorRamMirrorAddr(addr);
+     if (val != T2ReadWord(mem, m)) {
+       T2WriteWord(mem, m, val);
+       nbAddrToUpdate = 1;
+     }
    }
 }
 
@@ -506,14 +546,10 @@ void FASTCALL Vdp2ColorRamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 
 
 void FASTCALL Vdp2ColorRamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0xFFF;
-   // printf("[VDP2] Update Coloram Long %08X:%08X\n", addr, val);
    T2WriteLong(mem, addr, val);
-   if (Vdp2Internal.ColorMode == 2) {
-     nbAddrToUpdate = 1;
-   }
-   else {
-     nbAddrToUpdate = 1;
-   }
+   if (Vdp2Internal.ColorMode == 0)
+     T2WriteLong(mem, Vdp2ColorRamMirrorAddr(addr), val);
+   nbAddrToUpdate = 1;
 }
 
 //////////////////////////////////////////////////////////////////////////////

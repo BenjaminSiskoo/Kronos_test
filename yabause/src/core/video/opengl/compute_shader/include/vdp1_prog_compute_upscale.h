@@ -362,7 +362,7 @@ SHADER_VERSION_COMPUTE
 "    return isOnAQuadLine(Pin, Quad[0], Quad[1], Quad[2], Quad[3], vec2(cmd[0].uAstepx, cmd[0].uAstepy)*upscale, vec2(cmd[0].uBstepx, cmd[0].uBstepy)*upscale, uint(float(cmd[0].nbStep)), uv);\n"
 "  } else {\n"
 "    if ((cmd[0].type == "Stringify(QUAD)")  || (cmd[0].type == "Stringify(QUAD_POLY)")) {\n"
-"     return isOnAQuad(Pin, Quad[0], Quad[2], uv);\n"
+"     return isOnAQuad(Pin, Quad[0], Quad[2]+upscale, uv);\n"
 "    } else if (cmd[0].type == "Stringify(POLYLINE)") {\n"
 "      if (isOnALine(Pin, Quad[0], Quad[1], uv) != 0u) return 1u;\n"
 "      if (isOnALine(Pin, Quad[1], Quad[2], uv) != 0u) return 1u;\n"

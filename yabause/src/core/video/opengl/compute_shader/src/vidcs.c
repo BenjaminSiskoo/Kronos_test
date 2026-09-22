@@ -1,4 +1,4 @@
-/* Copyright 2003-2006 Guillaume Duhamel
+/* Copyright 2003-2006 Guillaume Duhamel/* Copyright 2003-2006 Guillaume Duhamel
     Copyright 2004 Lawrence Sebald
     Copyright 2004-2007 Theo Berkau
 
@@ -100,6 +100,14 @@ extern int vdp2_is_odd_frame;
 static void Vdp2SetupVramBanks(Vdp2Ctrl *ctrl, int startLine)
 {
   int b;
+  /* Called first thing for every NBG ctrl (a stack variable): clear the
+   * bitmap fetch map here so no layer ever inherits garbage. Only
+   * Vdp2DrawNBG0/NBG1 fill it afterwards, via Vdp2SetupBitmapFetchMap(). */
+  memset(ctrl->bmp_chunk,   0, sizeof(ctrl->bmp_chunk));
+  memset(ctrl->bmp_chunk_n, 0, sizeof(ctrl->bmp_chunk_n));
+  memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
+  ctrl->bmp_group_bytes = 0;
+  ctrl->bmp_remap_any   = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) {
     const int cur = vdp2_is_odd_frame & 1;
     ctrl->field_split = 1;
@@ -152,6 +160,104 @@ static INLINE u8 Vdp2ZoneAccessCommand(const Vdp2 *regs, int b, int t)
              break;
   }
   return (t < 4) ? ((lo >> (12 - 4 * t)) & 0xF) : ((hi >> (12 - 4 * (t - 4))) & 0xF);
+}
+
+/* ---------------------------------------------------------------------------
+ * Bitmap NBG fetch map: which data the VDP2 really stores for each 8-dot
+ * group of a bitmap, given how the game scheduled its bitmap reads.
+ *
+ * The VDP2 User's Manual does not describe this. The model is the one of the
+ * MiSTer Saturn core (rtl/Saturn/VDP2/VDP2.sv, NBG_BM_CNT / NBG_CH_CNT and
+ * NxBMAddr() in VDP2_pkg.sv), a hardware reimplementation of the chip:
+ *
+ *   - One "cycle" of access timings (T0-T7, or T0-T3 in hi-res / exclusive
+ *     monitor modes, ST-58-R2 Figure 3.3 p.33) fetches one 8-dot group per
+ *     NBG. Each read brings one 32-bit chunk: 8 dots at 16 colours, 4 at
+ *     256, 2 at 2048/32K, 1 at 16M, hence 1, 2, 4 or 8 reads per group
+ *     (ST-58-R2 Table 3.3 p.34, SOA-6).
+ *   - A per-NBG counter (BM_CNT) steps once for every timing of the cycle at
+ *     which ANY bank carries this NBG's character/bitmap read command
+ *     (0100b-0101b, Table 3.5 p.40). At such a timing each such bank puts out
+ *     address = group base + BM_CNT x 4 bytes (BM_CNT taken modulo 4, or
+ *     modulo 8 at 16M colours).
+ *   - The read only happens in the bank that actually holds that address.
+ *     Chunks that do come back are stored one after the other (NBG_CH_CNT):
+ *     the first one gives the group's first dots, the second the next ones.
+ *   - Without partitioning (RAMCTL VRAMD/VRBMD = 0) VRAM-A1/B1 simply follow
+ *     the VRAM-A0/B0 cycle pattern registers (Vdp2ZoneAccessCommand).
+ *
+ * So for a group held in bank b the stored chunks are the BM_CNT values of
+ * the timings at which bank b has the command, in timing order. When the
+ * game spreads the reads of one bitmap in phase (all banks on the same
+ * timings, or the reads of each bank starting the cycle) that is 0, 1, ...:
+ * the identity. When it spreads them out of phase, the bank served later in
+ * the cycle gets chunks further along - data from the next group.
+ *
+ * Capcom Generation - Dai-5-shuu Kakutouka-tachi, art screens: hi-res 640,
+ * 256-colour 1024x512 bitmap filling the whole VRAM, NBG0 reads on T0-T1 of
+ * VRAM-A and T2-T3 of VRAM-B. VRAM-A groups store chunks 0,1 (identity);
+ * VRAM-B groups store chunks 2,3, i.e. 8 bytes (8 dots) further on. The game
+ * stores its VRAM-B half pre-shifted 8 dots to the right to compensate;
+ * reading it flat, Kronos showed the lower half of each picture 8 dots too
+ * far right with a strip of hidden bytes along its left edge. Ymir reaches
+ * the same result on this screen with an empirical rule (vdp_state.hpp,
+ * bitmap test case #1); the MiSTer model is the general mechanism behind it
+ * and also covers normal resolution, partitioned banks and colour depths
+ * other than 256.
+ *
+ * Unfetched positions (fewer reads in a bank than the group needs) keep the
+ * flat address here; on hardware they hold stale data from an earlier
+ * group, which is not modelled.
+ * ------------------------------------------------------------------------- */
+static void Vdp2SetupBitmapFetchMap(Vdp2Ctrl *ctrl, int nbg)
+{
+  const Vdp2 *regs = ctrl->regs;
+  const int isbmp = (nbg == 0) ? ((regs->CHCTLA & 0x0002) != 0)
+                               : ((regs->CHCTLA & 0x0200) != 0);
+  const int chcn  = (nbg == 0) ? ((regs->CHCTLA >> 4) & 0x7)
+                               : ((regs->CHCTLA >> 12) & 0x3);
+  const int nslots = ((regs->TVMD & 0x6) != 0) ? 4 : 8;
+  const u8  cpCmd  = (u8)(0x4 + nbg);
+  int groupChunks, cntMask;
+  int bmCnt = 0;
+  int t, b, p;
+
+  memset(ctrl->bmp_chunk,   0, sizeof(ctrl->bmp_chunk));
+  memset(ctrl->bmp_chunk_n, 0, sizeof(ctrl->bmp_chunk_n));
+  memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
+  ctrl->bmp_group_bytes = 0;
+  ctrl->bmp_remap_any   = 0;
+  if (!isbmp) return;
+
+  switch (chcn) {
+    case 0:  groupChunks = 1; cntMask = 3; break;   /* 16 colours        */
+    case 1:  groupChunks = 2; cntMask = 3; break;   /* 256 colours       */
+    case 2:
+    case 3:  groupChunks = 4; cntMask = 3; break;   /* 2048 / 32K colours */
+    case 4:  groupChunks = 8; cntMask = 7; break;   /* 16M colours       */
+    default: return;
+  }
+  ctrl->bmp_group_bytes = (u8)(groupChunks * 4);
+
+  for (t = 0; t < nslots; t++) {
+    int any = 0;
+    for (b = 0; b < 4; b++) {
+      if (Vdp2ZoneAccessCommand(regs, b, t) != cpCmd) continue;
+      any = 1;
+      if (ctrl->bmp_chunk_n[b] < 8)
+        ctrl->bmp_chunk[b][ctrl->bmp_chunk_n[b]++] = (u8)(bmCnt & cntMask);
+    }
+    if (any) bmCnt++;
+  }
+
+  for (b = 0; b < 4; b++) {
+    const int n = (ctrl->bmp_chunk_n[b] < groupChunks) ? ctrl->bmp_chunk_n[b]
+                                                       : groupChunks;
+    for (p = 0; p < n; p++) {
+      if (ctrl->bmp_chunk[b][p] != p) { ctrl->bmp_remap[b] = 1; break; }
+    }
+    if (ctrl->bmp_remap[b]) ctrl->bmp_remap_any = 1;
+  }
 }
 
 int GlWidth = 320;
@@ -1477,6 +1583,7 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
  
   ctrl.regs = varVdp2Regs;
   Vdp2SetupVramBanks(&ctrl, startLine);
+  Vdp2SetupBitmapFetchMap(&ctrl, 0);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG0;
   ctrl.info.coordincx = 1.0f;
@@ -1971,6 +2078,11 @@ static int sameVDP2RegNBG1(Vdp2 *a, Vdp2 *b)
  
     /* MPOFN bits 6-4: NBG1 map offset (affects which VRAM area holds the map). */
     if ((a->MPOFN & 0x0070) != (b->MPOFN & 0x0070)) return 0;
+
+    /* MPABN1 (180044H) / MPCDN1 (180046H): NBG1 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN1 != b->MPABN1) return 0;
+    if (a->MPCDN1 != b->MPCDN1) return 0;
  
     /* BMPNA bits 10-8: NBG1 bitmap palette address (bitmap mode only).
      * Also bits 12,13: N1BMCC, N1BMPR. */
@@ -2050,6 +2162,7 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
    * layer - Vdp2DrawNBG0() already consulted the frame-stable
    * snapshot below. Extended for consistency. */
   Vdp2SetupVramBanks(&ctrl, startLine);
+  Vdp2SetupBitmapFetchMap(&ctrl, 1);
   ctrl.info.dst = 0;
   ctrl.info.idScreen = NBG1;
   ctrl.info.cor = 0;
@@ -2405,6 +2518,11 @@ static int sameVDP2RegNBG2(Vdp2 *a, Vdp2 *b)
      * picked up by another field. */
     if ((a->MPOFN & 0x0700) != (b->MPOFN & 0x0700)) return 0;
 
+    /* MPABN2 (180048H) / MPCDN2 (18004AH): NBG2 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN2 != b->MPABN2) return 0;
+    if (a->MPCDN2 != b->MPCDN2) return 0;
+
     /* PLSZ bits 7-4: NBG2 plane size. Affects map wrapping calculations. */
     if ((a->PLSZ & 0x00F0) != (b->PLSZ & 0x00F0)) return 0;
  
@@ -2655,6 +2773,11 @@ static int sameVDP2RegNBG3(Vdp2 *a, Vdp2 *b)
 
     /* MPOFN bits 14-12: N3MP[8:6] — NBG3 map offset. */
     if ((a->MPOFN & 0x7000) != (b->MPOFN & 0x7000)) return 0;
+
+    /* MPABN3 (18004CH) / MPCDN3 (18004EH): NBG3 map registers. ST-58-R2
+     * p.86-87. Same reason as MPABN0/MPCDN0 in sameVDP2RegNBG0. */
+    if (a->MPABN3 != b->MPABN3) return 0;
+    if (a->MPCDN3 != b->MPCDN3) return 0;
 
     if ((a->PLSZ & 0x00C0) != (b->PLSZ & 0x00C0)) return 0;
  
@@ -3236,6 +3359,45 @@ static inline int encodeColorOffset(int v) {
     return (v + 128) & 0xFF; // neutral=128, shader decodes: (x/255.0-0.5)*2→[-1,+1]
 }
 
+/* ---------------------------------------------------------------------------
+ * Colour calculation enable, per line.
+ *
+ * CCCTL is an ordinary VDP2 register that games may rewrite in H-blank like
+ * any other: its effect is per line. The compositor used to take each
+ * layer's colour calculation mode (setupBlend(), commongl.c) from the line-0
+ * register snapshot for the whole picture, so a layer whose NxCCEN bit is
+ * only set further down the screen was never blended, and one set on line 0
+ * but cleared later stayed blended everywhere. The per-line colour
+ * calculation RATIO was already honoured (alpha_per_line[]); the enable was
+ * not.
+ *
+ * Die Hard Arcade (in-game HUD, NBG3, CCRNB = 0x0C00): CCCTL is 0x0002 on
+ * line 0, 0x000A from line 48 (N3CCEN set), 0x0002 from line 144 and 0x000A
+ * again from line 192. The player's life bar, above line 48, is opaque on
+ * the console; the enemies' bars, below, are half transparent. Kronos drew
+ * all of them opaque.
+ *
+ * The fix has two halves:
+ *   - VIDCSReadColorOffset() stores each layer's enable bit for each line in
+ *     the per-line texture that already carries the colour offset;
+ *   - the layer's blend mode (as is / ratio of top / ratio of second, CCMD
+ *     and CCRTMD) is taken from the first line on which the layer's colour
+ *     calculation is enabled, so the compositor is set up to blend at all,
+ *     and the shader then keeps it opaque on the lines where the bit is off.
+ * ------------------------------------------------------------------------- */
+Vdp2 *VIDCSBlendRegsForLayer(Vdp2 *base, int layer)
+{
+  static const u8 ccEnableBit[6] = {0, 1, 2, 3, 4, 0};
+  const int nl = (yabsys.VBlankLineCount >= VDP2_LINE_SNAPSHOT_MAX)
+                 ? VDP2_LINE_SNAPSHOT_MAX : yabsys.VBlankLineCount;
+  int l;
+  if (layer < 0 || layer > RBG1) return base;
+  if ((base->CCCTL >> ccEnableBit[layer]) & 1) return base;
+  for (l = 0; l < nl; l++)
+    if ((Vdp2Lines[l].CCCTL >> ccEnableBit[layer]) & 1) return &Vdp2Lines[l];
+  return base;
+}
+
 void VIDCSReadColorOffset(void) {
     u8 offset[enBGMAX+1] = {0x1, 0x2, 0x4, 0x8, 0x10, 0x1, 0x40, 0x20};
     /* Linear mapping physical pixel row → logical scan line.
@@ -3330,6 +3492,17 @@ for (int id = 0; id < enBGMAX+1; id++) {
                          | ((u32)(spccn  & 0x7) << 26)
                          | ((u32)(spcccs & 0x3) << 24);
         linebuf[line + 512*id] = sp_ctrl_bits | (col & 0x00FFFFFFu);
+    } else if (id <= RBG1) {
+        /* Colour calculation enable of this layer ON THIS LINE, in the alpha
+         * byte of its per-line word (unused by the colour offset, which only
+         * takes .rgb). CCCTL bits 0-4: N0CCEN..R0CCEN; RBG1 uses N0CCEN
+         * (ST-58-R2 §12.1). The compositor (VDP2_SCREEN_SETUP in
+         * common_glshader.c) turns the layer's blend mode off on lines where
+         * this is clear. See VIDCSBlendRegsForLayer() for why the layer mode
+         * itself no longer comes from line 0 alone. */
+        static const u8 ccEnableBit[6] = {0, 1, 2, 3, 4, 0};
+        const u32 ccOn = (lVdp2Regs->CCCTL >> ccEnableBit[id]) & 1;
+        linebuf[line + 512*id] = (ccOn ? 0xFF000000u : 0u) | (col & 0x00FFFFFFu);
     } else {
         linebuf[line + 512*id] = col;
     }
@@ -4350,8 +4523,32 @@ static INLINE u32 Vdp2GetCCOn(Vdp2Ctrl *ctrl, u8 dot, u32 cramindex) {
  * header-visibility assumption in this file) is endian-independent:
  * Vdp2Ram is a raw big-endian byte buffer regardless of host endianness,
  * and reading MSB-first here matches that on any host. */
+/* Bitmap data fetch address after Vdp2SetupBitmapFetchMap(). Bitmap bases
+ * are 0x20000-aligned and bitmap lines hold 512 or 1024 dots, so an 8-dot
+ * group is aligned on its own size in absolute VRAM and the chunk position
+ * can be taken from the address itself. The bank is the PHYSICAL one
+ * (0x20000 slices in 4 Mbit, 0x40000 in 8 Mbit), as in the MiSTer core; the
+ * unpartitioned mirroring is already folded into the map. Tile and rotation
+ * layers never carry a map. */
+static INLINE u32 Vdp2BitmapFetchAddr(Vdp2Ctrl *ctrl, u32 addr) {
+  if (ctrl->bmp_remap_any && ctrl->info.isbitmap) {
+    const int big  = (ctrl->regs->VRSIZE & 0x8000) != 0;
+    const u32 mask = big ? 0xFFFFF : 0x7FFFF;
+    const int bank = (int)(((addr & mask) >> (big ? 18 : 17)) & 3);
+    if (ctrl->bmp_remap[bank]) {
+      const u32 gbytes = ctrl->bmp_group_bytes;
+      const u32 base   = addr & ~(gbytes - 1);
+      const u32 p      = (addr - base) >> 2;
+      if (p < ctrl->bmp_chunk_n[bank])
+        return (base + ((u32)ctrl->bmp_chunk[bank][p] << 2) + (addr & 3)) & mask;
+    }
+  }
+  return addr;
+}
+
 static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s])
     return ctrl->vram_bank[s][off];
@@ -4360,6 +4557,7 @@ static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 1) < VDP2_VRAM_BANK_SIZE)
     return ((u16)ctrl->vram_bank[s][off] << 8) | ctrl->vram_bank[s][off + 1];
@@ -4368,6 +4566,7 @@ static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 3) < VDP2_VRAM_BANK_SIZE)
     return ((u32)ctrl->vram_bank[s][off] << 24) | ((u32)ctrl->vram_bank[s][off + 1] << 16) |
@@ -5281,6 +5480,18 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
 
   int screenH = _Ygl->rheight;
 
+  /* Lignes d'ecran de la zone courante. L'appelant (Vdp2DrawNBG0/NBG1)
+   * alloue la texture pour [screenY1, screenY2) seulement -- cellh vaut
+   * screenY2 - screenY1 -- avec exactement cette formule. Tracer les
+   * screenH lignes quel que soit le decoupage ecrivait au-dela de la texture
+   * des qu'une couche comptait plus d'une zone ; tant que la carte n'etait
+   * pas comparee dans sameVDP2RegNBG0/NBG1, ce chemin n'en voyait qu'une.
+   * v reste une ligne d'ecran ABSOLUE : lineinfo[v], la coordonnee
+   * verticale (v * incv) et cell_scroll_data[v >> fieldShift] en dependent. */
+  const int screenY1 = (_Ygl->rheight * ctrl->info.startLine) / yabsys.VBlankLineCount;
+  int screenY2       = (_Ygl->rheight * ctrl->info.endLine)   / yabsys.VBlankLineCount;
+  if (screenY2 > screenH) screenY2 = screenH;
+
   /* Etendue de la table de vertical cell scroll, en longwords. Calculee sur
    * ctrl->regs -- l'instantane de la zone -- et non sur Vdp2Regs : le rendu a
    * lieu en fin de trame, les registres vivants peuvent avoir change depuis.
@@ -5308,7 +5519,7 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
     vcsDelay = (ctrl->info.idScreen == NBG1) ? vcst.delay[1] : vcst.delay[0];
   }
 
-  for (v = 0; v < screenH; v++) {
+  for (v = screenY1; v < screenY2; v++) {
     int targetv = 0;
 
     if (VDPLINE_SX(ctrl->info.islinescroll)) {
@@ -6255,6 +6466,18 @@ static int sameVDP2RegNBG0(Vdp2 *a, Vdp2 *b)
     if ((a->CRAOFA & 0x7) != (b->CRAOFA & 0x7)) return 0;
  
     if ((a->MPOFN & 0x7) != (b->MPOFN & 0x7)) return 0;
+
+    /* MPABN0 (180040H) / MPCDN0 (180042H): NBG0 map registers, plane A/B and
+     * plane C/D pattern name table lead addresses. VDP2 Manual ST-58-R2
+     * p.86-87, Table 4.8 p.83. Vdp2NBG0PlaneAddr() reads them from the zone
+     * snapshot, so a mid-frame rewrite must open a new zone, exactly like
+     * MPOFN above. Sonic Jam (Sonic 2, two-player split screen) switches both
+     * from 0x0404 to 0x0505 at field line 108: the top view reads page 4 and
+     * the bottom view page 5. Without these two tests the whole frame stayed
+     * one zone on page 4, and the bottom view showed the top player's tiles
+     * wherever the two views overlapped in the shared 64-cell-wide page. */
+    if (a->MPABN0 != b->MPABN0) return 0;
+    if (a->MPCDN0 != b->MPCDN0) return 0;
  
     if ((a->BMPNA & 0x37) != (b->BMPNA & 0x37)) return 0;
  

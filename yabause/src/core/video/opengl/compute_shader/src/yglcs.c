@@ -39,6 +39,7 @@ extern int DrawVDP2Screen(Vdp2 *varVdp2Regs, int id);
 
 extern void YglUpdateVdp2Reg();
 extern SpriteMode setupBlend(Vdp2 *varVdp2Regs, int layer);
+extern Vdp2 *VIDCSBlendRegsForLayer(Vdp2 *base, int layer);
 extern int setupColorMode(Vdp2 *varVdp2Regs, int layer);
 extern int setupShadow(Vdp2 *varVdp2Regs, int layer);
 extern int setupBlur(Vdp2 *varVdp2Regs, int layer);
@@ -422,7 +423,10 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
       }
       if (vdp2screens[j] == RBG0) useLineColorOffset[id] = _Ygl->useLineColorOffset[0];
       if (vdp2screens[j] == RBG1) useLineColorOffset[id] = _Ygl->useLineColorOffset[1];
-      modescreens[id] =  setupBlend(varVdp2Regs, vdp2screens[j]);
+      /* Blend mode from the first line where this layer's colour
+       * calculation is enabled, not from line 0 only; the per-line enable
+       * is applied in the shader. See VIDCSBlendRegsForLayer() (vidcs.c). */
+      modescreens[id] =  setupBlend(VIDCSBlendRegsForLayer(varVdp2Regs, vdp2screens[j]), vdp2screens[j]);
       isRGB[id] = setupColorMode(varVdp2Regs, vdp2screens[j]);
       isBlur[id] = setupBlur(varVdp2Regs, vdp2screens[j]);
       isPerline[id] = vdp2screens[j];
