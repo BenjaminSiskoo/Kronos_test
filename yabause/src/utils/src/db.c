@@ -47,6 +47,41 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { NULL, 0x3939393939393939, CART_DRAM128MBIT, NULL } // Heart of Darkness
 };
 
+/* Jeux qui ont besoin de l'emulation du cache SH-2 : elle est activee pour
+   eux meme si l'option est desactivee (voir DBLookupForceSH2Cache()).
+
+   Sur la console le cache des deux SH-2 existe toujours ; sans son
+   emulation, Kronos applique un modele de temps simplifie (chaque lecture
+   d'instruction en Work RAM se paie) et ne reproduit ni les donnees perimees
+   en cache ni les durees relatives maitre/esclave dont certains jeux
+   dependent.
+
+   Sources :
+   - verifie dans Kronos : Tennis Arena ;
+
+
+   Seul Tennis Arena a ete teste dans Kronos. Un jeu de cette liste qui
+   regresserait avec le cache emule doit en etre retire. */
+static const char * const SH2CacheDBList[] = {
+   // verifie dans Kronos
+   "T-17703G",   // Tennis Arena (Japan) -- ecran noir apres le BIOS
+   NULL
+};
+
+/* Retourne 1 si le jeu en cours figure dans SH2CacheDBList. */
+int DBLookupForceSH2Cache(void)
+{
+   const char* game_code;
+   int i;
+   Cs2GetIP(0);
+   game_code = Cs2GetCurrentGmaecode();
+   if (game_code == NULL) return 0;
+   for (i = 0; SH2CacheDBList[i] != NULL; i++) {
+      if (strcmp(SH2CacheDBList[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
+
 static int does_file_exist(const char *filename)
 {
    struct stat st;
