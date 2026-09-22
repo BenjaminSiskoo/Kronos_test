@@ -60,6 +60,44 @@ extern VideoInterface_struct *VIDCoreList[];
 Vdp1 * Vdp1Regs;
 Vdp1External_struct Vdp1External;
 
+/* ------------------------------------------------------------------------
+ * Parametres d'erase/write verrouilles au changement de frame buffer.
+ *
+ * VDP1 User's Manual ST-013-R3 Table 4.1 p.34 : la periode de mise a jour
+ * interne de EWDR, EWLR et EWRR est "Frame buffer SW timing" -- une valeur
+ * ecrite ne prend effet qu'au changement de frame buffer suivant (p.46-47
+ * pour le format des registres). L'erase/write du mode 1-cycle et du mode
+ * manuel porte sur le frame buffer AFFICHE pendant le champ qui suit le
+ * changement ; l'erase V-blank porte sur ce meme buffer pendant le
+ * blanking. Mednafen (ss/vdp1.c, EraseParams rempli au swap) comme Ymir
+ * (VDP1Regs::LatchEraseParameters, appele depuis VDP::VDP1SwapFramebuffer)
+ * font de meme.
+ *
+ * Kronos differe l'effacement : Vdp1EraseWrite() ne fait que lever
+ * shallVdp1Erase[readframe], et VIDCSEraseWriteVdp1() s'execute au swap
+ * SUIVANT (ou a la premiere relecture CPU du buffer), soit une trame plus
+ * tard. Il lisait alors les registres courants : un jeu qui reprogramme la
+ * zone d'effacement entre deux ecrans (zone reduite, X3 = 0 pour couper
+ * l'erase, couleur differente) voyait le dernier effacement du buffer de
+ * l'ecran precedent fait avec les NOUVEAUX parametres.
+ * ------------------------------------------------------------------------ */
+static u16 Vdp1EraseLatchEWDR = 0;
+static u16 Vdp1EraseLatchEWLR = 0;
+static u16 Vdp1EraseLatchEWRR = 0;
+
+static void Vdp1LatchEraseParameters(void) {
+  if (Vdp1Regs == NULL) return;
+  Vdp1EraseLatchEWDR = Vdp1Regs->EWDR;
+  Vdp1EraseLatchEWLR = Vdp1Regs->EWLR;
+  Vdp1EraseLatchEWRR = Vdp1Regs->EWRR;
+}
+
+void Vdp1GetEraseLatch(u16 *ewdr, u16 *ewlr, u16 *ewrr) {
+  if (ewdr) *ewdr = Vdp1EraseLatchEWDR;
+  if (ewlr) *ewlr = Vdp1EraseLatchEWLR;
+  if (ewrr) *ewrr = Vdp1EraseLatchEWRR;
+}
+
 int vdp1_clock = 0;
 
 static int nbCmdToProcess = 0;
@@ -612,6 +650,10 @@ int Vdp1Init(void) {
    _Ygl->shallVdp1Erase[0] = 1;
    _Ygl->shallVdp1Erase[1] = 1;
 
+   Vdp1EraseLatchEWDR = 0;
+   Vdp1EraseLatchEWLR = 0;
+   Vdp1EraseLatchEWRR = 0;
+
    return 0;
 }
 
@@ -693,6 +735,7 @@ void Vdp1Reset(void) {
    VDP1_MASK = 0xFFFF;
    VIDCore->Vdp1Reset();
    vdp1_clock = 0;
+   Vdp1LatchEraseParameters();
 }
 
 int VideoSetSetting( int type, int value )
@@ -2593,6 +2636,9 @@ int Vdp1LoadState(const void * stream, UNUSED int version, int size)
      memset((void *)(&Vdp1External), 0, sizeof(Vdp1External_struct));
    }
    Vdp1External.updateVdp1Ram = 1;
+   /* Le verrou n'est pas serialise (format de savestate inchange) : on le
+    * reprend des registres restaures, comme au dernier swap. */
+   Vdp1LatchEraseParameters();
    if (Vdp1Regs->TVMR & 0x1) switchFB8bit();
    else switchFB16bit();
    return size;
@@ -3822,10 +3868,11 @@ static int getVdp1ErasePixelLine() {
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
 
-    int x1 = ((Vdp1Regs->EWLR >> 9) & 0x3F) * xunit;
-    int y1 =  (Vdp1Regs->EWLR) & 0x1FF;
-    int x3 = (((Vdp1Regs->EWRR >> 9) & 0x7F) * xunit) - 1;
-    int y3 =  (Vdp1Regs->EWRR) & 0x1FF;
+    /* Parametres verrouilles au dernier swap (cf. Vdp1LatchEraseParameters). */
+    int x1 = ((Vdp1EraseLatchEWLR >> 9) & 0x3F) * xunit;
+    int y1 =  (Vdp1EraseLatchEWLR) & 0x1FF;
+    int x3 = (((Vdp1EraseLatchEWRR >> 9) & 0x7F) * xunit) - 1;
+    int y3 =  (Vdp1EraseLatchEWRR) & 0x1FF;
 
     /* p.48: "Because the register setting for the Y coordinate is doubled
      * during double interlace, the actual coordinate value should be set to
@@ -3995,6 +4042,10 @@ void Vdp1SwitchFrame(void)
   checkFBSync();
   FRAMELOG("Switch Frame change VDP1 %d(%d)\n", yabsys.LineCount, yabsys.DecilineCount);
   VIDCore->Vdp1FrameChange();
+  /* Verrouillage APRES Vdp1FrameChange() : l'effacement differe execute
+   * dans ce dernier appartient au champ precedent et doit utiliser les
+   * parametres verrouilles au swap precedent (Mednafen / Ymir). */
+  Vdp1LatchEraseParameters();
   FRAMELOG("Change frames now draw %d, read %d (%d)\n", _Ygl->drawframe, _Ygl->readframe, yabsys.LineCount);
   Vdp1External.current_frame = !Vdp1External.current_frame;
   // Spec VDP1 §6.2 : LOPR = adresse dernière commande traitée

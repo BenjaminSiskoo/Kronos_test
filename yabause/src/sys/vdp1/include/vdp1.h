@@ -289,6 +289,11 @@ void Vdp1VBlankIN(void);
 void Vdp1VBlankIN_It(void);
 void Vdp1SwitchFrame(void);
 
+/* Parametres d'erase/write (EWDR, EWLR, EWRR) verrouilles au dernier
+ * changement de frame buffer -- a utiliser pour tout effacement 1-cycle,
+ * manuel ou V-blank (cf. vdp1.c, Vdp1LatchEraseParameters). */
+void Vdp1GetEraseLatch(u16 *ewdr, u16 *ewlr, u16 *ewrr);
+
 #ifdef __cplusplus
 }
 #endif
