@@ -6143,20 +6143,43 @@ static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_
       }
     }
 
+    /* PN lu dans la 2e moitie (T4-T7) : le CP est exploitable s'il est lu
+     * 4 a 7 timings apres le PN (modulo 8), c.-a-d. avec la meme latence que
+     * les paires documentees PN T4 -> CP T0..T3 (SOA-6, "VDP2 Cycle Pattern
+     * Registers", tableau PN/CP en mode normal). Le tableau SOA-6 ne liste
+     * pour T5/T6/T7 que les slots T0..T3 de la periode suivante ; les slots
+     * T4..T6 situes a +4..+7 du PN etaient donc traites comme illegaux et
+     * provoquaient a tort le decalage de 8 px (delayed).
+     *
+     * Cas reel : BlackFire, ecran "PREPARING FOR MISSION..." -- NBG3 256
+     * couleurs, PN3 en T6/T7, CP3 en T0,T1,T4,T5 (CYCA1 = 0x77007733). Sur
+     * console l'image n'est pas decalee ; avec l'ancien masque (0x0C) Kronos
+     * la decalait de 8 px et affichait une colonne verte a gauche.
+     *
+     * Masques verifies contre les 62 cas NBG scroll issus de captures
+     * console de la suite de tests d'acces VRAM de Ymir (source Ymir,
+     * vdp_vram_access_patterns_testdata.inc) : aucune regression, les cas
+     * "delay" (Dracula X PN/CP T4, SF Real Battle on Film PN T6/CP T0,
+     * Daytona CCE PN/CP T4, Sonic 3D Blast PN T5/CP T6-T7) restent decales.
+     *
+     *   PN T4 : CP T0..T3                0x0F  (inchange)
+     *   PN T5 : CP T1..T4                0x1E  (etait 0x0E)
+     *   PN T6 : CP T2..T5                0x3C  (etait 0x0C)
+     *   PN T7 : CP T3..T6                0x78  (etait 0x08) */
     if (ptn_access & 0x20) { // T5
-      if ((char_access & 0x0E) != 0) {
+      if ((char_access & 0x1E) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x40) { // T6
-      if ((char_access & 0x0C) != 0) {
+      if ((char_access & 0x3C) != 0) {
         return 0;
       }
     }
 
     if (ptn_access & 0x80) { // T7
-      if ((char_access & 0x08) != 0) {
+      if ((char_access & 0x78) != 0) {
         return 0;
       }
     }
