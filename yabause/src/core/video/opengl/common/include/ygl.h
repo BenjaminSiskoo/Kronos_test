@@ -406,6 +406,7 @@ typedef enum
   UP_HQ4X,
   UP_4XBRZ,
   UP_6XBRZ,
+  UP_SHARPEN,
 } UPMODE;
 
 typedef enum
@@ -696,6 +697,19 @@ typedef struct {
   u8 field_split;
   u8 cur_field;
   u8 order;
+  /* Bitmap NBG fetch map (see Vdp2SetupBitmapFetchMap() in vidcs.c).
+   * For a bitmap 8-dot group held in physical VRAM bank b, the p-th 32-bit
+   * chunk the VDP2 actually stores is data chunk bmp_chunk[b][p] of the
+   * group (p < bmp_chunk_n[b]). bmp_remap[b] is set when that differs from
+   * the identity, bmp_remap_any when any bank does; bmp_group_bytes is the
+   * group size in bytes (4, 8, 16 or 32 for 16, 256, 2048/32K, 16M colours).
+   * All zero for tile layers and for every layer whose bitmap reads are
+   * scheduled in phase. */
+  u8 bmp_chunk[4][8];
+  u8 bmp_chunk_n[4];
+  u8 bmp_remap[4];
+  u8 bmp_group_bytes;
+  u8 bmp_remap_any;
 } Vdp2Ctrl;
 
 typedef struct {

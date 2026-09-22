@@ -102,7 +102,8 @@ const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
 	<< Item("1", "HQ4x")
 	<< Item("2", "4xBRZ")
-	<< Item("3", "6xBRZ");
+	<< Item("3", "6xBRZ")
+	<< Item("4", "Sharpen (Adaptive)");
 
 const Items mResolutionMode = Items()
 	<< Item("1", "1x (original resolution of the Saturn)")
