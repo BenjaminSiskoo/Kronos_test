@@ -936,10 +936,19 @@ static int SH2HangWatchPeek(u32 addr, u32 *out)
 /* The dual-CPU idle loop of TECH#28 5.1: the slave masks every interrupt
    through SR and polls the FRT input capture flag until the master signals it.
    A slave with nothing to do sits there permanently. It is the expected state,
-   not a hang, and reporting it hides whatever the master is really doing. */
+   not a hang, and reporting it hides whatever the master is really doing.
+
+   Some titles put an exception inside that loop. Defcon 5 goes through vector
+   0x21 on every iteration, which lands in the boot ROM's default handler (a
+   bare RTE) and comes straight back: the loop then also reads the vector
+   table entry and the SR/PC pair the exception pushed and RTE pops. Those
+   reads are the exception mechanism itself, not something the loop waits on,
+   so they must not turn an idle slave into a reported hang. The loop is
+   still only idle if FTCSR is among the polled addresses. */
 static int SH2HangWatchIsIdleSlave(SH2_struct *context)
 {
    int i, n = 0;
+   u32 vbr, sp;
 
    if (!context->isslave)
       return 0;
@@ -948,14 +957,28 @@ static int SH2HangWatchIsIdleSlave(SH2_struct *context)
    if (((context->regs.SR.all >> 4) & 0xF) != 0xF)
       return 0;
 
+   vbr = context->regs.VBR & 0x0FFFFFFF;
+   sp  = context->regs.R[15] & 0x0FFFFFFF;
+
    for (i = 0; i < SH2_POLL_LOG; i++)
    {
       u32 a = context->hangWatch.pollAddr[i];
+      u32 m;
       if (a == 0)
          continue;
-      if (a != 0xFFFFFE11)
-         return 0;
-      n++;
+      if (a == 0xFFFFFE11)
+      {
+         n++;
+         continue;
+      }
+      m = a & 0x0FFFFFFF;
+      /* vector fetch: 256 vectors of 4 bytes */
+      if (m >= vbr && m < vbr + 0x400)
+         continue;
+      /* exception frame: SR and PC around the stack pointer */
+      if (m + 0x10 >= sp && m < sp + 0x10)
+         continue;
+      return 0;
    }
    return (n > 0);
 }
