@@ -486,6 +486,24 @@ static INLINE void slot_stop_address(struct Slot * slot)
    slot->state.backwards = 0;
 }
 
+// Loop end as seen by the address generator.
+// ST-077-R2: LSA and LEA are 16-bit sample counts from SA, and the loop end is
+// detected by a coincidence comparator on the address counter (Figure 4.19).
+// That counter is 16 bits wide as well: CA ($408) reads back its bits 15-12,
+// "the LSB indicates 4K (4096) samples". LEA = 0000H therefore ends the loop
+// only when the counter wraps from FFFFH back to 0000H, i.e. after 65536
+// samples - the only way to describe a buffer of exactly 64K samples.
+// The SEGA sound driver sets up its PCM stream buffer that way: Defcon 5 streams
+// its FMV audio through a 128 KB 16-bit ring (SA = 06000H, LSA = LEA = 0000H,
+// LPCTL = 1). Comparing the offset against a literal 0 sent it back to LSA on
+// every sample, so the slot never left sample 0, CA stayed 0, the driver
+// reported a play position of 0 at 7A0H (ST-166 "PCM Play Address"), the game
+// believed its ring never drained and stopped decoding once it filled.
+static INLINE s32 slot_loop_end(const struct Slot * slot)
+{
+   return slot->regs.lea ? (s32)slot->regs.lea : 0x10000;
+}
+
 //pg, plfo
 void op1(struct Slot * slot)
 {
@@ -559,7 +577,7 @@ void op2(struct Slot * slot, struct Scsp * s)
    if (slot->regs.lpctl == 0)//no loop
    {
       slot->state.sample_offset += sample_delta;
-      if (slot->state.sample_offset >= slot->regs.lea)
+      if (slot->state.sample_offset >= slot_loop_end(slot))
       {
          // ST-077-R2 end condition (2): the slot stops as if released.
          slot->state.attenuation = 0x3ff;
@@ -571,7 +589,7 @@ void op2(struct Slot * slot, struct Scsp * s)
    {
       slot->state.sample_offset += sample_delta;
 
-      if (slot->state.sample_offset >= slot->regs.lea)
+      if (slot->state.sample_offset >= slot_loop_end(slot))
          slot->state.sample_offset = slot->regs.lsa;
    }
    else if (slot->regs.lpctl == 2)//reverse
