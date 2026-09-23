@@ -3164,6 +3164,29 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
   if (currentInterrupt >= (sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])))
     return;
 
+  /* Le bit du registre d'etat des interruptions (IST, 25FE00A4H) retombe
+   * quand le SCU livre l'interruption au SH2 maitre. Kronos ne l'effacait
+   * que sur ecriture logicielle de IST : un facteur deja servi restait donc
+   * affiche a 1 pour toujours.
+   *
+   * ST-210 No. 07 / STTECH10 : ecrire dans IST est interdit aux applications
+   * (seuls SYS_SETSCUIM / SYS_CHGSCUIM du boot ROM le font, ST-162 2.1/2.2).
+   * Un programme ne peut donc voir un bit IST repasser a 0 que par ce
+   * mecanisme materiel. Mednafen (ss/scu.inc, CheckDoMasterInt) et Ymir
+   * (hw/scu/scu.cpp, UpdateMasterInterruptLevel) effacent le bit au moment
+   * ou l'interruption est presentee au maitre.
+   *
+   * Densetsu no Ogre Battle (T-5305G) attend, juste apres avoir demarre le
+   * slave, que son gestionnaire V-Blank OUT ait tourne : boucle a 060046A0
+   * sur (IST & 2) != 0. Avec un bit colle a 1, le maitre y restait
+   * indefiniment, ecran noir, sans erreur (IST lu 00002887 a chaque trame).
+   *
+   * Seul le maitre est concerne : les V-Blank IN / H-Blank IN du slave
+   * viennent directement du VDP2 et non du SCU (STTECH28 2.3), ils ne
+   * doivent pas effacer l'etat vu par le maitre. */
+  if (sh == MSH2)
+    ScuRegs->IST &= ~ScuInterrupt[currentInterrupt].status;
+
   ScuRegs->ITEdge &= ~ScuInterrupt[currentInterrupt].status;
   currentInterrupt = 0xFF;
   needEvaluate = 1;
