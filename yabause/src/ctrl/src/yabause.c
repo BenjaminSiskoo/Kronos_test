@@ -911,13 +911,18 @@ int YabauseEmulate(void) {
 //   SH2OnFrame(MSH2);
 //   SH2OnFrame(SSH2);
    u64 cpu_emutime = 0;
+   u64 scsp_frame_cycles;
+   u64 scsp_fed_cycles;
 
    TRACE_EMULATOR("YabauseEmulate");
    yabsys.LineCount = 0;
    yabsys.DecilineCount = 0;
 
-   ScspAddCycles((u64)(44100 * 256) / frames);
-   SyncCPUtoSCSP();
+   /* The sound thread gets its cycles line by line (see ScspSyncToLine in
+      scsp.c) and the frame handshake with it is done at the end of the
+      frame, once it has been given the whole frame. */
+   scsp_frame_cycles = (u64)(44100 * 256) / frames;
+   scsp_fed_cycles = 0;
 
    while (yabsys.LineCount < yabsys.MaxLineCount)
    {
@@ -1012,9 +1017,28 @@ int YabauseEmulate(void) {
       yabsys.DecilineCount  = (yabsys.DecilineCount+1)%DECILINE_STEP;
       if (yabsys.DecilineCount == 0) {
         yabsys.LineCount++;
+        {
+          /* sound cycles up to the end of this line; the sum over the frame
+             is exactly one frame of cycles */
+          u64 target = scsp_frame_cycles * (u64)yabsys.LineCount / (u64)yabsys.MaxLineCount;
+          if (target > scsp_fed_cycles) {
+            ScspAddCycles(target - scsp_fed_cycles);
+            scsp_fed_cycles = target;
+          }
+          /* keep the 68000 within a few lines of the SH2 */
+          if ((yabsys.LineCount & 7) == 0 && yabsys.LineCount < yabsys.MaxLineCount)
+            ScspSyncToLine();
+        }
       }
       PROFILE_STOP("Total Emulation");
    }
+
+   /* all of this frame's sound cycles have been handed out: wait for the
+      sound thread to run them and release it for the next frame (the
+      remainder covers a line count that changed during the frame) */
+   if (scsp_fed_cycles < scsp_frame_cycles)
+      ScspAddCycles(scsp_frame_cycles - scsp_fed_cycles);
+   SyncCPUtoSCSP();
 
    syncVideoMode();
    FPSDisplay();
