@@ -48,6 +48,56 @@
 #include "yui.h"
 #include "vdp1.h"
 
+/* ===== Instrumentation TEMPORAIRE -- ecrit E:\\Kronos64Bits\\kronos_boot.log */
+#include <stdarg.h>
+#define KBOOT_LOG_PATH   "E:\\Kronos64Bits\\kronos_boot.log"
+#define KBOOT_MAX_BEATS  400
+static FILE *kboot_fp = NULL;
+static int   kboot_failed = 0;
+static int   kboot_beats = 0;
+void KBootLog(const char *fmt, ...);
+
+void KBootLog(const char *fmt, ...)
+{
+   va_list ap;
+   if (kboot_failed) return;
+   if (kboot_fp == NULL)
+   {
+      kboot_fp = fopen(KBOOT_LOG_PATH, "w");
+      if (kboot_fp == NULL) { kboot_failed = 1; return; }
+   }
+   va_start(ap, fmt);
+   vfprintf(kboot_fp, fmt, ap);
+   va_end(ap);
+   fflush(kboot_fp);
+}
+
+static void KBootHeartbeat(void)
+{
+   u32 mpc = 0, msp = 0, mpr = 0, mvbr = 0, msr = 0, spc = 0;
+
+   if (kboot_failed || kboot_beats >= KBOOT_MAX_BEATS) return;
+   if ((yabsys.frame_count % 50) != 0) return;
+   kboot_beats++;
+
+   if (MSH2 != NULL)
+   {
+      SH2GetRegisters(MSH2, &MSH2->regs);
+      mpc = MSH2->regs.PC;  msp = MSH2->regs.R[15]; mpr = MSH2->regs.PR;
+      mvbr = MSH2->regs.VBR; msr = MSH2->regs.SR.all;
+   }
+   if (SSH2 != NULL) { SH2GetRegisters(SSH2, &SSH2->regs); spc = SSH2->regs.PC; }
+
+   KBootLog("[f%06d] M PC=%08X SP=%08X PR=%08X SR=%08X | S run=%d PC=%08X | "
+            "VDP1 PTMR=%04X EDSR=%04X | VDP2 TVMD=%04X BGON=%04X | "
+            "SCU IMS=%08X IST=%08X | CD st=%02X\n",
+            yabsys.frame_count, mpc, msp, mpr, msr,
+            (int)yabsys.IsSSH2Running, spc,
+            Vdp1Regs ? Vdp1Regs->PTMR : 0xFFFF, Vdp1Regs ? Vdp1Regs->EDSR : 0xFFFF,
+            Vdp2Regs ? Vdp2Regs->TVMD : 0xFFFF, Vdp2Regs ? Vdp2Regs->BGON : 0xFFFF,
+            ScuRegs ? ScuRegs->IMS : 0xFFFFFFFF, ScuRegs ? ScuRegs->IST : 0xFFFFFFFF,
+            Cs2Area ? Cs2Area->status : 0xFF);
+}
 #include "bios.h"
 #include "movie.h"
 #include "osdcore.h"
@@ -883,6 +933,7 @@ u64 g_m68K_dec_cycle = 0;
 int YabauseEmulate(void) {
    int ret = 0;
    yabsys.frame_count++;
+   KBootHeartbeat();
 
    unsigned int m68kcycles;       // Integral M68k cycles per call
    unsigned int m68kcenticycles;  // 1/100 M68k cycles per call
@@ -911,13 +962,18 @@ int YabauseEmulate(void) {
 //   SH2OnFrame(MSH2);
 //   SH2OnFrame(SSH2);
    u64 cpu_emutime = 0;
+   u64 scsp_frame_cycles;
+   u64 scsp_fed_cycles;
 
    TRACE_EMULATOR("YabauseEmulate");
    yabsys.LineCount = 0;
    yabsys.DecilineCount = 0;
 
-   ScspAddCycles((u64)(44100 * 256) / frames);
-   SyncCPUtoSCSP();
+   /* The sound thread gets its cycles line by line (see ScspSyncToLine in
+      scsp.c) and the frame handshake with it is done at the end of the
+      frame, once it has been given the whole frame. */
+   scsp_frame_cycles = (u64)(44100 * 256) / frames;
+   scsp_fed_cycles = 0;
 
    while (yabsys.LineCount < yabsys.MaxLineCount)
    {
@@ -1012,9 +1068,28 @@ int YabauseEmulate(void) {
       yabsys.DecilineCount  = (yabsys.DecilineCount+1)%DECILINE_STEP;
       if (yabsys.DecilineCount == 0) {
         yabsys.LineCount++;
+        {
+          /* sound cycles up to the end of this line; the sum over the frame
+             is exactly one frame of cycles */
+          u64 target = scsp_frame_cycles * (u64)yabsys.LineCount / (u64)yabsys.MaxLineCount;
+          if (target > scsp_fed_cycles) {
+            ScspAddCycles(target - scsp_fed_cycles);
+            scsp_fed_cycles = target;
+          }
+          /* keep the 68000 within a few lines of the SH2 */
+          if ((yabsys.LineCount & 7) == 0 && yabsys.LineCount < yabsys.MaxLineCount)
+            ScspSyncToLine();
+        }
       }
       PROFILE_STOP("Total Emulation");
    }
+
+   /* all of this frame's sound cycles have been handed out: wait for the
+      sound thread to run them and release it for the next frame (the
+      remainder covers a line count that changed during the frame) */
+   if (scsp_fed_cycles < scsp_frame_cycles)
+      ScspAddCycles(scsp_frame_cycles - scsp_fed_cycles);
+   SyncCPUtoSCSP();
 
    syncVideoMode();
    FPSDisplay();
