@@ -57,8 +57,6 @@ extern u32 backup_file_size;
 void FASTCALL BiosBUPRead(SH2_struct * sh);
 //////////////////////////////////////////////////////////////////////////////
 
-extern void KBootLog(const char *fmt, ...);
-static int kb_func_n = 0;
 
 void BiosInit(SH2_struct *context)
 {
@@ -1614,9 +1612,6 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
 {
    int addr = (sh->regs.PC & 0xFFFFF);
    SH2GetRegisters(sh, &sh->regs);
-   if (kb_func_n < 1500) { kb_func_n++;
-      KBootLog("BIOS appel @%05X (PR=%08X R4=%08X R5=%08X R6=%08X)\n",
-               addr, sh->regs.PR, sh->regs.R[4], sh->regs.R[5], sh->regs.R[6]); }
    // Let's see if it's a bios function
    switch((addr - 0x200) >> 2)
    {
