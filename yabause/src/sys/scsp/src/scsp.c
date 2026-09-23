@@ -304,6 +304,7 @@ struct SlotState
 
    int num;
    int is_muted;
+   int keyed;   // internal KEY_ON state latched by KYONEX (ST-077-R2 Figure 4.8)
 };
 
 struct Slot
@@ -959,10 +960,22 @@ void scsp_debug_get_envelope(int chan, int * env, int * state)
 
 
 
+// ST-077-R2 Figure 4.8 (KEY_ON and KEY_OFF Sequence): KYONEX latches each
+// slot's KYONB into an internal KEY_ON state. A KYONEX that finds KYONB = 1
+// on a slot already in the ON state is ignored ("Ignore"); only a slot that
+// went through KEY_OFF can be keyed on again.
+// That state is not the envelope: a one-shot that reaches LEA stops as if
+// released (end condition (2), op2) but stays keyed on until its KYONB is
+// cleared. Testing the envelope instead restarted every finished one-shot
+// whose KYONB was still 1 on the next KYONEX, i.e. whenever the sound driver
+// started any other sound. The SEGA driver leaves KYONB set on its one-shots:
+// Defcon 5's gunshot (slots 18/19, 8-bit, no loop) played again each time
+// another sound was keyed on, three or four times per shot.
 void keyon(struct Slot * slot)
 {
-   if (slot->state.envelope == RELEASE )
+   if (!slot->state.keyed)
    {
+      slot->state.keyed = 1;
      change_envelope_state(slot, ATTACK);
       slot->state.attenuation = 0x280;
       slot->state.sample_counter = 0;
@@ -1027,6 +1040,7 @@ void keyon(struct Slot * slot)
 
 void keyoff(struct Slot * slot)
 {
+   slot->state.keyed = 0;
    change_envelope_state(slot, RELEASE);
 
    // Key-off of a slot whose envelope had already decayed to silence:
@@ -6228,6 +6242,8 @@ if (IsM68KRunning != newM68state) {
     MemStateRead((void *)&new_scsp.slots[i].state.lfo_pos, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.num, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.is_muted, sizeof(u32), 1, stream);
+    // not in the save state: a slot that is still sounding is keyed on
+    new_scsp.slots[i].state.keyed = (new_scsp.slots[i].state.envelope != RELEASE);
 
   }
 
