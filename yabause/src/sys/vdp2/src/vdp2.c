@@ -123,6 +123,25 @@ const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame) {
   return best;
 }
 
+/* See vdp2.h. 4 Mbit only: with 8 Mbit VRAM the renderer keeps reading
+ * the live VRAM, as before. */
+static u8  Vdp2ComposeVram[0x80000];
+static int Vdp2ComposeVramValid = 0;
+
+void Vdp2CaptureComposeVram(void) {
+  if ((Vdp2Ram == NULL) || (Vdp2Regs->VRSIZE & 0x8000)) {
+    Vdp2ComposeVramValid = 0;
+    return;
+  }
+  memcpy(Vdp2ComposeVram, Vdp2Ram, sizeof(Vdp2ComposeVram));
+  Vdp2ComposeVramValid = 1;
+}
+
+const u8 *Vdp2GetComposeVram(void) {
+  if (!Vdp2ComposeVramValid || (Vdp2Regs->VRSIZE & 0x8000)) return NULL;
+  return Vdp2ComposeVram;
+}
+
 void Vdp2VramSnapshotSwap(void) {
   Vdp2VramSwappedThisFrame = 1;
   Vdp2VramCaptureSlot = 1 - Vdp2VramCaptureSlot;
@@ -875,6 +894,9 @@ void Vdp2VBlankIN(void) {
      dropFrameDisplay();
      isSkipped = 1;
    } else {
+     /* Freeze the VRAM the frame is composed from: the async cell thread
+      * decodes it while the SH-2 runs the V-blank (see vdp2.h). */
+     Vdp2CaptureComposeVram();
      VIDCore->Vdp2Draw();
      isSkipped = 0;
    }

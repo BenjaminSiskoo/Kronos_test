@@ -108,6 +108,10 @@ static void Vdp2SetupVramBanks(Vdp2Ctrl *ctrl, int startLine)
   memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
   ctrl->bmp_group_bytes = 0;
   ctrl->bmp_remap_any   = 0;
+  /* VRAM figee au V-blank IN (vdp2.h, Vdp2CaptureComposeVram) : les
+   * cellules decodees par le thread asynchrone ne doivent pas voir les
+   * ecritures que le SH-2 fait pendant le V-blank. */
+  ctrl->vram_compose    = Vdp2GetComposeVram();
   if (_Ygl->interlace == DOUBLE_INTERLACE) {
     const int cur = vdp2_is_odd_frame & 1;
     ctrl->field_split = 1;
@@ -4552,6 +4556,8 @@ static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s])
     return ctrl->vram_bank[s][off];
+  if (ctrl->vram_compose && s >= 0)
+    return T1ReadByte((u8 *)ctrl->vram_compose, addr & 0x7FFFF);
   return Vdp2RamReadByte(NULL, Vdp2Ram, addr);
 }
 
@@ -4561,6 +4567,8 @@ static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 1) < VDP2_VRAM_BANK_SIZE)
     return ((u16)ctrl->vram_bank[s][off] << 8) | ctrl->vram_bank[s][off + 1];
+  if (ctrl->vram_compose && s >= 0 && (addr & 0x7FFFF) < 0x7FFFF)
+    return T1ReadWord((u8 *)ctrl->vram_compose, addr & 0x7FFFF);
   return Vdp2RamReadWord(NULL, Vdp2Ram, addr);
 }
 
@@ -4571,6 +4579,8 @@ static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 3) < VDP2_VRAM_BANK_SIZE)
     return ((u32)ctrl->vram_bank[s][off] << 24) | ((u32)ctrl->vram_bank[s][off + 1] << 16) |
            ((u32)ctrl->vram_bank[s][off + 2] << 8) | (u32)ctrl->vram_bank[s][off + 3];
+  if (ctrl->vram_compose && s >= 0 && (addr & 0x7FFFF) < 0x7FFFD)
+    return T1ReadLong((u8 *)ctrl->vram_compose, addr & 0x7FFFF);
   return Vdp2RamReadLong(NULL, Vdp2Ram, addr);
 }
 

@@ -107,6 +107,26 @@ void Vdp2VramSnapshotSwap(void);
  * the caller reads the live VRAM. */
 const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame);
 
+/* VRAM as it was when the frame is composed (V-blank IN).
+ *
+ * Kronos composes a frame once, at V-blank IN, and its compute-shader
+ * renderer hands the layer decoding (NBG cells, and a plain NBG0/NBG1
+ * bitmap as a single 512x256 cell) to the async cell thread
+ * (CELL_ASYNC). That thread used to read the live VRAM while the SH-2
+ * kept running the V-blank, so a game that rewrites VRAM right at the
+ * start of the V-blank raced the decoding. Chaos Control erases and
+ * redraws its NBG1 bitmap aiming cursor on lines 225-231 (PAL, 224
+ * display lines): depending on how far the thread had got, the top of
+ * the circle was read erased or half redrawn and flickered, while the
+ * bottom, read later, was complete.
+ *
+ * Vdp2CaptureComposeVram() copies the 4 Mbit VRAM just before the frame
+ * is drawn; the renderer's VRAM reads use that copy (after the Kronos#520
+ * bank snapshots, which keep priority). Vdp2GetComposeVram() returns NULL
+ * with 8 Mbit VRAM (VRSIZE bit 15), where the live VRAM is still read. */
+void Vdp2CaptureComposeVram(void);
+const u8 *Vdp2GetComposeVram(void);
+
 u8 FASTCALL     Vdp2RamReadByte(SH2_struct *context, u8*, u32);
 u16 FASTCALL    Vdp2RamReadWord(SH2_struct *context, u8*, u32);
 u32 FASTCALL    Vdp2RamReadLong(SH2_struct *context, u8*, u32);
