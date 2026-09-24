@@ -841,12 +841,36 @@ static void updateFBCRChange() {
 }
 
 static u8 FBCREraseUpdated = 0;
+/* Effacement programme au changement de frame buffer.
+ *
+ * VDP1 User's Manual ST-013-R3 §4.2, Table 4.3(a) p.41 : au passage du mode
+ * 1-cycle au mode manuel (change) (note 3), la ligne ou FCM = FCT = 1 est
+ * ecrit montre encore "Display and erase/write" : c'est le champ en cours,
+ * regi par le mode 1-cycle en vigueur lors du changement precedent. Le champ
+ * suivant, premier champ en mode manuel, est "Display / Draw" : le buffer
+ * affiche n'est PAS efface. p.39, Change (Manual Mode) : "Because erase/write
+ * is not performed, it is necessary to specify erase in the prior field".
+ *
+ * Mednafen (ss/vdp1.c, fin de V-blank : effacement seulement si FCM = 0 ou
+ * si FCM = 1, FCT = 0 est en attente) et Ymir (VDP::BeginHPhaseLeftBorder,
+ * erase = !fbSwapMode ou declenchement manuel avec FCT = 0) font de meme :
+ * aucun effacement supplementaire a la transition.
+ *
+ * Kronos ajoutait ici un "dernier effacement" (onelasterase) quand FCM
+ * passait de 0 a 1, introduit pour Return Fire (f692be74d). Il efface le
+ * buffer affiche au premier champ manuel, que le jeu a deja trace. Gex, en
+ * pause, passe de FBCR = 00 a FBCR = 03 et trace la scene figee dans les
+ * DEUX buffers (une fois dans chacun) avant de ne plus tracer que le menu :
+ * l'effacement en trop detruisait la scene dans l'un d'eux, et l'affichage
+ * alternait a chaque champ entre la scene + menu et le menu seul.
+ *
+ * Le champ onelasterase reste dans Vdp1External_struct (taille des
+ * sauvegardes d'etat, affichage de debogage) mais n'est plus arme. */
 static void updateFBCRErase() {
   if (FBCREraseUpdated == 0) return;
   u8 m = decodeFBCRMode();
-  /* onelasterase is a sticky flag across one frame — fold it in. */
-  Vdp1External.onecycleerase = ((m >> 4) & 0x1) | Vdp1External.onelasterase;
-  Vdp1External.onelasterase = 0;
+  Vdp1External.onecycleerase = (m >> 4) & 0x1;
+  Vdp1External.onelasterase  = 0;
   Vdp1External.manualerase   = (m >> 3) & 0x1;
   FBCREraseUpdated = 0;
 }
@@ -953,10 +977,9 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
 
     case 0x02: // FBCR
       /* IMPORTANT : Le BIOS utilise le mode manuel pour l'animation des cristaux.
-         On ne doit pas filtrer trop agressivement ici. */
-      if (((Vdp1Regs->FBCR & 0x02) == 0) && ((val & 0x02) != 0) && (((Vdp1Regs->TVMR >> 3) & 0x01) != 1)) {
-        Vdp1External.onelasterase = 1;
-      }
+         On ne doit pas filtrer trop agressivement ici.
+         Pas d'effacement supplementaire au passage 1-cycle -> manuel :
+         voir updateFBCRErase(). */
       Vdp1Regs->FBCR = val & 0x001F; 
       FBCREraseUpdated = 1;
       FBCRChangeUpdated = 1;
