@@ -969,6 +969,45 @@ u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
       nothing reported. */
    if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
 #endif
+   /* Fetch d'instruction avec le cache du SH-2 active mais non emule.
+    *
+    * Quand l'emulation du cache est coupee (yabsys.usecache = 0, reglage par
+    * defaut), context->cacheOn reste a 0 meme si le jeu a mis CCR.CE a 1.
+    * Chaque fetch passait alors par HighWramMemoryReadWord() /
+    * LowWramMemoryReadWord(), qui facturent 2 / 4 cycles a chaque changement
+    * de ligne DRAM : une boucle dont les donnees sont dans une autre ligne
+    * que le code payait ce surcout sur presque chaque instruction. Sur le
+    * materiel, avec CE = 1 et le remplissage des instructions autorise
+    * (CCR.ID = 0), le code d'une boucle est servi par le cache et ne sort
+    * pas sur le bus.
+    *
+    * Robo Pit : le programme principal du maitre prepare une image en
+    * environ 2 champs + 72 lignes au lieu de moins de 2 champs. Il arme
+    * alors trop tard le compteur 060FFC13 lu par son handler V-blank OUT,
+    * qui choisit "change" sans "erase" (FBCR = 3 a chaque champ au lieu de
+    * l'alternance 2/3) : le frame buffer VDP1 n'est plus jamais efface et
+    * les arbres qui tombent laissent une trainee dans le ciel. Sans ce
+    * surcout (KRONOS_NO_FETCH_COST), l'image est prete des la ligne 4 et le
+    * jeu reste en alternance erase/change.
+    *
+    * Dans ce cas precis -- cache non emule, CE = 1, ID = 0, zone cachee
+    * (adresses 0x0xxxxxxx) en Work RAM -- le fetch est donc traite comme un
+    * succes de cache : lecture directe, sans cycle DRAM, sans modifier la
+    * ligne DRAM courante et sans acces au bus. Les autres cas (cache emule,
+    * CE = 0, zone cache-through, BIOS, cartouche) sont inchanges, de meme que
+    * les lectures et ecritures de donnees. */
+   if ((context != NULL) && (yabsys.usecache == 0) && ((addr >> 29) == 0) &&
+       ((context->onchip.CCR & 0x03) == 0x01)) {
+      u32 page = (addr >> 16) & 0xFFF;
+      if ((page >= 0x600) && (page <= 0x7FF)) {
+         SH2UpdateABusAccess(context, 0);
+         return T2ReadWord(HighWram, addr & 0xFFFFF);
+      }
+      if ((page >= 0x020) && (page <= 0x02F)) {
+         SH2UpdateABusAccess(context, 0);
+         return T2ReadWord(LowWram, addr & 0xFFFFF);
+      }
+   }
    return SH2ReadWordRaw(context, addr);
 }
 
