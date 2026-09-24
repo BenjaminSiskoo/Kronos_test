@@ -78,6 +78,7 @@ extern void vdp1_update_banding(void);
 extern void vdp1_update_mesh(void);
 extern void vdp1_update_performance(void);
 extern void startVdp1Render(void);
+extern void vdp1_write_frame(int frame);
 extern void startVdp1RenderUpscale(void);
 extern void endVdp1Render(void);
 extern void endVdp1RenderUpscale(void);
