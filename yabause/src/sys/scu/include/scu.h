@@ -335,6 +335,7 @@ void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector);
 void ScuSendVBlankIN(void);
 void ScuSendVBlankOUT(void);
 void ScuSendHBlankIN(void);
+void ScuHBlankInVBlank(void);
 void ScuSendTimer0(void);
 void ScuSendTimer1(void);
 void ScuSendDSPEnd(void);
