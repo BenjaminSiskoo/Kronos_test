@@ -76,103 +76,47 @@ extern void resetSyncVideo(void);
 //////////////////////////////////////////////////////////////////////////////
 // Modele de temps de recherche (seek) du bloc optique
 //
-// Reprend l'intention du commit FCare/Kronos 8328b5e ("Fix CS2 seeking and
-// reading time"), mais corrige deux regressions apparues avec le modele
-// geometrique qui l'a remplace :
+// Formule de Mednafen (ss/cdb.c, DRIVEPHASE_SEEK_START3), dans son unite de
+// 44100*256 par seconde :
+//   12 secteurs a double vitesse (80 ms, reaccrochage)
+//   + 26 unites par secteur de distance vers l'avant, 28 vers l'arriere
+//   + 1 secteur si l'on recule ou si l'on saute 150 secteurs ou plus.
+// Soit environ 87 ms pour une recherche courte.
 //
-//   1. le temps de seek etait calcule entre FAD et *playendFAD*, c.-a-d.
-//      proportionnel a la LONGUEUR de la zone a lire, alors qu'il doit
-//      dependre de la DISTANCE PARCOURUE par le bloc optique, donc de
-//      l'ecart entre la position courante de la tete et la position visee
-//      (c'est exactement ce que faisait 8328b5e avec current_fad) ;
-//   2. la table blckNb[] saturait autour de FAD 113000 : au-dela (~25 min
-//      de disque, soit les 2/3 exterieurs), les deux boucles retournaient
-//      la meme valeur 46875, l'ecart tombait a 0 et le seek devenait
-//      instantane.
+// Le modele precedent (b2facad, geometrie de la spirale, 20 ms a 100 ms)
+// cherchait environ quatre fois plus vite que Mednafen. Tant que les donnees
+// etaient lues en 1x (voir Cs2SetTiming()), la lenteur de la lecture le
+// masquait ; en 2x, la chronologie de 3D Mission Shooting se compressait
+// davantage que sur la console : le lecteur video demarrait avant que le
+// reste du jeu soit pret, prenait un chemin de reprise (060D7E90) et
+// appelait une routine absente (060ECE74), d'ou un plantage dans la boucle
+// d'arret du BIOS au lieu de la video.
 //
-// Le modele ci-dessous est ferme (O(1), plus de table de 187 Ko ni de
-// double balayage de 46875 iterations a chaque commande Play) et
-// physiquement coherent :
-//
-//   pas de piste p = 1.6 um, zone programme de r0 = 23 mm a 58 mm
-//   piste i au rayon        r(i) = r0 + i*p                (spirale d'Archimede)
-//   longueur cumulee        L(n) = somme_{i<n} 2*pi*r(i)
-//                                = 2*pi*( n*r0 + p*n*(n-1)/2 )
-//   densite lineaire constante (CLV) => FAD(n) = FAD_MAX * L(n)/L(N)
-//
-// Verification : L(N) ~= 5.57 km pour N = 21875 pistes, soit ~16.7 mm par
-// secteur a 333000 FAD -- ce qui correspond bien a la vitesse lineaire CLV
-// de 1.2-1.4 m/s a 75 secteurs/s. L'ancien modele annoncait 107 mm/bloc.
-//
-// Le temps est ensuite suppose lineaire en deplacement radial (mouvement du
-// chariot), borne par CS2_SEEK_TIME_MAX_US (course complete) et
-// CS2_SEEK_TIME_MIN_US (latence de rotation + reaccrochage de la PLL).
-//
-// >>> Ces deux constantes sont les seuls boutons a tourner si un jeu regresse.
-//     Elles sont calees sur la plage qui existait dans le code AVANT la
-//     regression de 2022 :
-//         #define SEEK_TIME     (60000*5)   ->  100 ms de course complete
-//         #define SEEK_TIME_MIN (60000)     ->   20 ms de plancher
-//     Le plancher de 20 ms a ete revalide sur Zero Divide (issue #1417).
-//     L'ancien commentaire du code notait par ailleurs qu'Athlete King
-//     exige au minimum 2856 unites, soit ~0.95 ms : compatible.
-//     Pour memoire, master donnait de facto ~0.8 ms pour une course
-//     complete, c.-a-d. aucune simulation de seek.
+// Un FAD invalide (0xFFFFFFFF apres un Stop) est traite comme le bord
+// exterieur, comme le faisait le modele precedent.
+//////////////////////////////////////////////////////////////////////////////
 #define CS2_SEEK_FAD_MAX        333000u   /* 74 min * 4500 FAD/min           */
-#define CS2_SEEK_TIME_MAX_US    100000u   /* course complete : 100 ms        */
-#define CS2_SEEK_TIME_MIN_US     20000u   /* plancher : 20 ms                */
 
 /* _periodictiming est exprime en microsecondes * 3 (cf. Cs2Exec_unit) */
 #define CS2_US_TO_PERIODIC(us)  ((u32)(us) * 3u)
-#define SEEK_TIME               CS2_US_TO_PERIODIC(CS2_SEEK_TIME_MAX_US)
-
-#define CS2_SEEK_R0             23.0      /* mm : debut de la zone programme */
-#define CS2_SEEK_PITCH          0.0016    /* mm : pas de piste (1.6 um)      */
-#define CS2_SEEK_NB_TRACKS      21875.0   /* (58 - 23) / 0.0016              */
-
-// Position radiale (exprimee en nombre de pistes depuis le bord interieur)
-// correspondant a un FAD donne. Inversion analytique de L(n).
-static double Cs2FADToTrackIndex(u32 fad)
-{
-   const double r0 = CS2_SEEK_R0;
-   const double p  = CS2_SEEK_PITCH;
-   const double N  = CS2_SEEK_NB_TRACKS;
-   double ltot, l, b, disc;
-
-   /* un FAD invalide (0xFFFFFFFF apres un Stop) est traite comme le bord
-      exterieur : la tete est parkee, il faudra une course complete */
-   if (fad > CS2_SEEK_FAD_MAX)
-      fad = CS2_SEEK_FAD_MAX;
-
-   /* le facteur 2*pi se simplifie entre ltot et l : inutile de le porter */
-   ltot = N * r0 + p * N * (N - 1.0) / 2.0;
-   l    = ltot * ((double)fad / (double)CS2_SEEK_FAD_MAX);
-
-   /* resolution de  (p/2)*n^2 + (r0 - p/2)*n - l = 0,  racine positive */
-   b    = r0 - p / 2.0;
-   disc = b * b + 2.0 * p * l;
-   if (disc < 0.0) disc = 0.0;
-   return (sqrt(disc) - b) / p;
-}
 
 // Duree du seek entre deux FAD, en unites de _periodictiming (us * 3).
 static u32 Cs2ComputeSeekTiming(u32 from_fad, u32 to_fad)
 {
-   double dtracks, us;
-   u32 timing;
+   const double unit_us = 1000000.0 / (44100.0 * 256.0);
+   const double sector  = (44100.0 * 256.0) / 150.0;   /* 1 secteur a 2x */
+   double units;
+   long delta;
 
-   dtracks = fabs(Cs2FADToTrackIndex(to_fad) - Cs2FADToTrackIndex(from_fad));
-   if (dtracks > CS2_SEEK_NB_TRACKS)
-      dtracks = CS2_SEEK_NB_TRACKS;
+   if (from_fad > CS2_SEEK_FAD_MAX) from_fad = CS2_SEEK_FAD_MAX;
+   if (to_fad > CS2_SEEK_FAD_MAX)   to_fad   = CS2_SEEK_FAD_MAX;
 
-   us = (double)CS2_SEEK_TIME_MIN_US
-      + (double)(CS2_SEEK_TIME_MAX_US - CS2_SEEK_TIME_MIN_US)
-        * (dtracks / CS2_SEEK_NB_TRACKS);
+   delta = (long)from_fad - (long)to_fad;   /* Mednafen : CurPosInfo.fad - CurSector */
+   units  = 12.0 * sector;
+   units += (double)labs(delta) * ((delta < 0) ? 28.0 : 26.0);
+   units += (delta < 0 || delta >= 150) ? sector : 0.0;
 
-   timing = CS2_US_TO_PERIODIC((u32)us);
-   if (timing > SEEK_TIME)          /* garde-fou perdu depuis 8328b5e */
-      timing = SEEK_TIME;
-   return timing;
+   return CS2_US_TO_PERIODIC((u32)(units * unit_us));
 }
 
 
@@ -670,8 +614,8 @@ int Cs2Init(int coreid, const char *cdpath, const char *mpegpath) {
 
    Cs2Reset();
 
-   /* la table blckNb[] est remplacee par Cs2FADToTrackIndex() : plus rien a
-      precalculer ici (cf. modele de seek en haut du fichier) */
+   /* plus rien a precalculer pour le temps de seek (cf. modele en haut du
+      fichier) */
 
 #if 0
    // This stuff need to go elsewhere
@@ -1184,9 +1128,20 @@ int Cs2GetTimeToNextSector(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Cadence de lecture : CD-DA en vitesse standard (1x), donnees CD-ROM en
+ * double vitesse (2x).
+ *
+ * Le bit 4 du drapeau d'Initialize CD System (vitesse standard, memorise dans
+ * speed1x) n'est plus applique, comme dans Mednafen (ss/cdb.c, COMMAND_INIT :
+ * "CD read speed (unused?)") et Ymir (cdblock.cpp, CmdInitializeCDSystem :
+ * selection 1x laissee en commentaire, bit 7 = keepSettings). ST-162 (1.7)
+ * donne au bit 7 le sens "1 : aucun changement" ; 3D Mission Shooting envoie
+ * 90 puis attend un flux a 2x. Kronos lisait ses videos en 1x, 80 secteurs
+ * par seconde au lieu de 150 : videos lentes et hachees.
+ * ST-162 1.7 (d) : le CD-DA est toujours lu en vitesse standard. */
 void Cs2SetTiming(int playing) {
   if (playing) {
-     if (Cs2Area->isaudio || Cs2Area->speed1x == 1) {
+     if (Cs2Area->isaudio) {
        Cs2Area->_periodictiming = 40000;  // 13333.333... * 3
      }
      else {
