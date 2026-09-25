@@ -960,6 +960,105 @@ u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
    return SH2ReadWordRaw(context, addr);
 }
 
+/* Modele de temps du cache d'instructions du SH-2 quand le jeu active le
+ * cache (CCR.CE = 1, CCR.ID = 0) et que son emulation est coupee
+ * (yabsys.usecache = 0, reglage par defaut).
+ *
+ * Il ne suit que les etiquettes : l'instruction est toujours lue en Work
+ * RAM, il ne peut donc y avoir aucune donnee perimee. 64 lignes de
+ * 16 octets par CPU, 4 voies, remplacement LRU ; 2 voies (voies 2 et 3)
+ * quand CCR.TW = 1 (cache 2 Ko + 2 Ko de RAM). SH7604 Hardware Manual,
+ * chapitre 8. Les lectures de donnees ne sont pas suivies.
+ *
+ * Cout d'un defaut (remplissage de ligne) :
+ *   - Work RAM-H, SDRAM (CS3) : lecture en rafale de 16 octets (SH7604
+ *     manuel 7.5.3, Tr + Tc + Td1..Td4 + Tap), 7 cycles, valeur de Mednafen
+ *     (ss/sh7095.inc, lecture en rafale : seul le premier mot long est
+ *     facture) ;
+ *   - Work RAM-L (CS0, 16 bits) : 8 acces de 7 cycles (Mednafen, ss/ss.c).
+ * Un succes ne coute rien et ne sort pas sur le bus.
+ *
+ * Avant, sans emulation du cache, chaque fetch payait 2 / 4 cycles a chaque
+ * changement de rangee DRAM (HighWram/LowWramMemoryReadWord()), rangee
+ * partagee avec les donnees : une boucle dont les donnees sont dans une
+ * autre rangee que son code payait sur presque chaque instruction (Robo Pit,
+ * trainees des arbres). 549ffef avait rendu tous ces fetchs gratuits, ce qui
+ * cassait 3D Mission Shooting (ecran noir apres le logo GAGA). Ce modele
+ * garde les boucles gratuites et fait payer le code qui n'est pas en cache.
+ *
+ * SH2LegacyFetchTiming (liste SH2LegacyFetchDBList de utils/src/db.c)
+ * rend l'ancien cout au jeu en cours : voir db.c pour Space Jam. */
+#define SH2_FETCH_MISS_HWRAM 7
+#define SH2_FETCH_MISS_LWRAM 56
+static u32 SH2FetchCacheTag[2][64][4];
+static u8  SH2FetchCacheAge[2][64][4];
+static int SH2FetchCacheReady = 0;
+static int SH2LegacyFetchTiming = 0;
+
+static void SH2FetchCacheClear(int cpu)
+{
+   int l, w;
+   for (l = 0; l < 64; l++)
+      for (w = 0; w < 4; w++) {
+         SH2FetchCacheTag[cpu][l][w] = 0xFFFFFFFF;
+         SH2FetchCacheAge[cpu][l][w] = (u8)w;
+      }
+}
+
+/* Purge complete (CCR.CP, sh2core.c), ou des deux CPU si context == NULL. */
+void SH2FetchCachePurge(SH2_struct *context)
+{
+   if ((context == NULL) || (context == MSH2)) SH2FetchCacheClear(0);
+   if ((context == NULL) || (context == SSH2)) SH2FetchCacheClear(1);
+   SH2FetchCacheReady = 1;
+}
+
+/* Purge d'une ligne : ecriture en zone 4xxxxxxx (SH7604 manuel 8.4.7). */
+static void SH2FetchCachePurgeLine(SH2_struct *context, u32 addr)
+{
+   int w, cpu;
+   u32 tag = (addr >> 10) & 0x7FFFF;
+   if ((context == NULL) || !SH2FetchCacheReady) return;
+   cpu = (context == SSH2) ? 1 : 0;
+   for (w = 0; w < 4; w++)
+      if (SH2FetchCacheTag[cpu][(addr >> 4) & 0x3F][w] == tag)
+         SH2FetchCacheTag[cpu][(addr >> 4) & 0x3F][w] = 0xFFFFFFFF;
+}
+
+/* Jeu de la liste SH2LegacyFetchDBList : ancien cout du fetch. */
+void SH2SetLegacyFetchTiming(int on)
+{
+   SH2LegacyFetchTiming = on;
+}
+
+/* 1 = succes, 0 = defaut (la ligne est alors chargee). */
+static int SH2FetchCacheAccess(SH2_struct *context, u32 addr)
+{
+   int cpu = (context == SSH2) ? 1 : 0;
+   int line = (addr >> 4) & 0x3F;
+   u32 tag = (addr >> 10) & 0x7FFFF;
+   int first = (context->onchip.CCR & 0x08) ? 2 : 0;   /* CCR.TW */
+   int w, k, victim = first;
+   u8 old;
+   if (!SH2FetchCacheReady) SH2FetchCachePurge(NULL);
+   for (w = first; w < 4; w++) {
+      if (SH2FetchCacheTag[cpu][line][w] == tag) {
+         old = SH2FetchCacheAge[cpu][line][w];
+         for (k = first; k < 4; k++)
+            if (SH2FetchCacheAge[cpu][line][k] < old) SH2FetchCacheAge[cpu][line][k]++;
+         SH2FetchCacheAge[cpu][line][w] = 0;
+         return 1;
+      }
+      if (SH2FetchCacheAge[cpu][line][w] > SH2FetchCacheAge[cpu][line][victim]) victim = w;
+   }
+   old = SH2FetchCacheAge[cpu][line][victim];
+   for (k = first; k < 4; k++)
+      if (SH2FetchCacheAge[cpu][line][k] < old) SH2FetchCacheAge[cpu][line][k]++;
+   SH2FetchCacheAge[cpu][line][victim] = 0;
+   SH2FetchCacheTag[cpu][line][victim] = tag;
+   return 0;
+}
+
 u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
 {
 #ifdef SH2_TRAP_ADDRESS_ERROR
@@ -969,42 +1068,34 @@ u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
       nothing reported. */
    if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
 #endif
-   /* Fetch d'instruction avec le cache du SH-2 active mais non emule.
-    *
-    * Quand l'emulation du cache est coupee (yabsys.usecache = 0, reglage par
-    * defaut), context->cacheOn reste a 0 meme si le jeu a mis CCR.CE a 1.
-    * Chaque fetch passait alors par HighWramMemoryReadWord() /
-    * LowWramMemoryReadWord(), qui facturent 2 / 4 cycles a chaque changement
-    * de ligne DRAM : une boucle dont les donnees sont dans une autre ligne
-    * que le code payait ce surcout sur presque chaque instruction. Sur le
-    * materiel, avec CE = 1 et le remplissage des instructions autorise
-    * (CCR.ID = 0), le code d'une boucle est servi par le cache et ne sort
-    * pas sur le bus.
-    *
-    * Robo Pit : le programme principal du maitre prepare une image en
-    * environ 2 champs + 72 lignes au lieu de moins de 2 champs. Il arme
-    * alors trop tard le compteur 060FFC13 lu par son handler V-blank OUT,
-    * qui choisit "change" sans "erase" (FBCR = 3 a chaque champ au lieu de
-    * l'alternance 2/3) : le frame buffer VDP1 n'est plus jamais efface et
-    * les arbres qui tombent laissent une trainee dans le ciel. Sans ce
-    * surcout (KRONOS_NO_FETCH_COST), l'image est prete des la ligne 4 et le
-    * jeu reste en alternance erase/change.
-    *
-    * Dans ce cas precis -- cache non emule, CE = 1, ID = 0, zone cachee
-    * (adresses 0x0xxxxxxx) en Work RAM -- le fetch est donc traite comme un
-    * succes de cache : lecture directe, sans cycle DRAM, sans modifier la
-    * ligne DRAM courante et sans acces au bus. Les autres cas (cache emule,
-    * CE = 0, zone cache-through, BIOS, cartouche) sont inchanges, de meme que
-    * les lectures et ecritures de donnees. */
-   if ((context != NULL) && (yabsys.usecache == 0) && ((addr >> 29) == 0) &&
-       ((context->onchip.CCR & 0x03) == 0x01)) {
+   /* Cache SH-2 active par le jeu (CCR.CE = 1, CCR.ID = 0) mais non emule
+    * (yabsys.usecache = 0) : le fetch passe par le modele de cache
+    * d'instructions a etiquettes (SH2FetchCacheAccess()). Succes : pas
+    * d'acces externe, aucun cycle. Defaut : remplissage d'une ligne de
+    * 16 octets. Les autres cas (cache emule, CE = 0, ID = 1, zone
+    * cache-through, BIOS, cartouche) et les jeux de la liste
+    * SH2LegacyFetchDBList restent sur SH2ReadWordRaw(). */
+   if ((context != NULL) && !SH2LegacyFetchTiming && (yabsys.usecache == 0) &&
+       ((addr >> 29) == 0) && ((context->onchip.CCR & 0x03) == 0x01)) {
       u32 page = (addr >> 16) & 0xFFF;
       if ((page >= 0x600) && (page <= 0x7FF)) {
-         SH2UpdateABusAccess(context, 0);
+         if (SH2FetchCacheAccess(context, addr)) {
+            SH2UpdateABusAccess(context, 0);
+         } else {
+            context->cycles += SH2_FETCH_MISS_HWRAM;
+            lastHWRamBankCol = (addr >> 10) & 0x3FF;
+            SH2UpdateABusAccess(context, 1);
+         }
          return T2ReadWord(HighWram, addr & 0xFFFFF);
       }
       if ((page >= 0x020) && (page <= 0x02F)) {
-         SH2UpdateABusAccess(context, 0);
+         if (SH2FetchCacheAccess(context, addr)) {
+            SH2UpdateABusAccess(context, 0);
+         } else {
+            context->cycles += SH2_FETCH_MISS_LWRAM;
+            lastLWRamBankCol = (addr >> 11) & 0x1FF;
+            SH2UpdateABusAccess(context, 1);
+         }
          return T2ReadWord(LowWram, addr & 0xFFFFF);
       }
    }
@@ -1130,6 +1221,7 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
       case 0x2:
       {
          // Purge Area
+         SH2FetchCachePurgeLine(context, addr);
          CacheInvalidate(context, addr);
          return;
       }
@@ -1212,6 +1304,7 @@ CACHE_LOG("ww %x %x\n", addr, addr >> 29);
       case 0x2:
       {
          // Purge Area
+         SH2FetchCachePurgeLine(context, addr);
          CacheInvalidate(context, addr);
          return;
       }
@@ -1294,6 +1387,7 @@ CACHE_LOG("wl %x %x\n", addr, addr >> 29);
       case 0x2:
       {
          // Purge Area
+         SH2FetchCachePurgeLine(context, addr);
          CacheInvalidate(context, addr);
          return;
       }
