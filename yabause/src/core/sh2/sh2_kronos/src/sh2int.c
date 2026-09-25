@@ -113,8 +113,12 @@ void SH2HandleInterrupts(SH2_struct *context)
   if ((context->intPriority != 0x0) && (context->intVector != 0xB)
       && (context->intPriority <= context->regs.SR.part.I))
   {
-    if (context->intc.irl == 0) context->intc.irl = context->intPriority;
+    if (context->intc.irl == 0) {
+      context->intc.irl = context->intPriority;
+      context->intc.d = context->intVector;
+    }
     context->intPriority = 0;
+    SH2InterruptDeferred(context);   /* le SCU garde sa demande */
     UNLOCK(context);
     return;
   }
@@ -128,6 +132,7 @@ void SH2HandleInterrupts(SH2_struct *context)
     SH2MappedMemoryWriteLong(context, context->regs.R[15], context->regs.PC);
     context->regs.SR.part.I = context->intPriority;
 
+    SH2InterruptTaken(context);   /* acquitte le SCU maintenant que l'interruption est prise */
     context->intPriority = 0; //Flag for next IT
     context->branchDepth = 0;
     insertInterruptReturnHandling(context); //Insert a new interrupt handling once this one will have been executed
