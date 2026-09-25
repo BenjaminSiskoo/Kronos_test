@@ -3198,12 +3198,18 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
  * ScuAcceptInterrupt(), qui acquitte currentInterrupt, effacerait alors la
  * mauvaise source, et la plus prioritaire serait perdue. Le verrou n'est
  * libere que s'il porte bien cette source ; sinon la source verrouillee reste
- * presentee au CPU. Vecteur hors SCU : rien a faire. */
+ * presentee au CPU. Vecteur hors SCU : rien a faire.
+ *
+ * Le bit IST n'est efface que si le verrou porte encore cette source, comme
+ * le faisait ScuAcceptInterrupt(). Il ne l'est pas quand le slave a deja pris
+ * la meme source (V-Blank IN, H-Blank IN, presentees aux deux CPU) et libere
+ * le verrou partage : l'effacer dans ce cas faisait bloquer Space Jam juste
+ * avant d'entrer en jeu. ITEdge (le front deja servi) est toujours efface. */
 void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector) {
   int i;
   for (i = 0; i < (int)(sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])); i++) {
     if (ScuInterrupt[i].vector != vector) continue;
-    if (sh == MSH2)
+    if ((sh == MSH2) && (currentInterrupt == i))
       ScuRegs->IST &= ~ScuInterrupt[i].status;
     ScuRegs->ITEdge &= ~ScuInterrupt[i].status;
     if (currentInterrupt == i) currentInterrupt = 0xFF;
