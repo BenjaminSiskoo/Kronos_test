@@ -1261,18 +1261,34 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
  * honoured as-is (it is applied normally in the texture/draw paths); do NOT
  * force it to 0. */
 
+/* Valeurs de retour de Vdp1NormalSpriteDraw() :
+ *    1 : sprite transmis au moteur de rendu ;
+ *    0 : commande valide qui ne dessine rien (taille nulle, hors ecran) ;
+ *   -1 : commande invalide -- l'appelant abandonne la fin de la ligne.
+ *
+ * Une table de commande entierement a zero est un sprite normal VALIDE
+ * (CMDCTRL = 0000h : Comm = 0, sprite normal ; ST-013-R3 §6.1). Rien dans
+ * le manuel VDP1 n'en fait une commande invalide. Taille 0, mode couleur 0
+ * (banque 16 couleurs) et code couleur 0, qui est transparent (SPD = 0,
+ * §6.3) : le materiel ne dessine rien et passe a la table suivante apres
+ * l'avoir lue. Mednafen (ss/vdp1_sprite.c SpriteBase) et Ymir
+ * (VDP1Cmd_DrawNormalSprite, cout simpleQuadTiming(max(w,1), max(h,1)))
+ * n'ont aucun cas particulier pour elle et continuent la liste.
+ *
+ * Densetsu no Ogre Battle remplit sa table de pres de 350 de ces commandes
+ * vides avant les sprites de Warren et du texte (cmd 356 et suivantes).
+ * Chaque commande vide renvoyait -1, ce qui remettait vdp1_clock a 0 et
+ * coutait une ligne d'affichage entiere : la liste ne depassait jamais
+ * ~260 commandes avant la trame suivante, et Warren et le texte n'etaient
+ * jamais dessines. */
 static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   int ret = 1;
   if (emptyCmd(cmd)) {
-    // damaged data
-	/* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
-     * For invalid/malformed commands the hardware aborts after fetching
-     * the full 32-byte command table (16 cycles) plus abort overhead.
-     * 70 cycles = empirical value matching hardware measurement;
-     * no exact figure given in VDP1 Manual for malformed-command penalty. */
-    yabsys.vdp1cycles += 70;
-    return -1;
+    /* Lecture de la table de 32 octets : 16 cycles, comme les commandes
+     * de clipping et de coordonnees locales plus bas. Rien a dessiner. */
+    yabsys.vdp1cycles += 16;
+    return 0;
   }
 
   if ((cmd->CMDSIZE & 0x8000)) {
@@ -1297,13 +1313,11 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
   if ((cmd->w == 0) || (cmd->h == 0)) {
-    /* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
-     * For invalid/malformed commands the hardware aborts after fetching
-     * the full 32-byte command table (16 cycles) plus abort overhead.
-     * 70 cycles = empirical value matching hardware measurement;
-     * no exact figure given in VDP1 Manual for malformed-command penalty. */
-    yabsys.vdp1cycles += 70;
-    ret = 0;
+    /* Taille nulle : commande valide qui ne produit pas de texture
+     * exploitable. Cout de lecture de la table plus un pixel (Ymir compte
+     * max(w,1) x max(h,1)), puis table suivante, sans perdre la ligne. */
+    yabsys.vdp1cycles += 16 + 1;
+    return 0;
   }
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
@@ -2221,7 +2235,11 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
            if (!sameCmd(&cmd, &oldCmd)) {
              ret = Vdp1NormalSpriteDraw(&cmd, ram, regs);
              if (ret == 1) nbCmdToProcess++;
-             else {
+             /* ret == 0 : commande valide sans pixel a tracer (table vide,
+              * taille nulle, sprite hors du clipping systeme). Le VDP1 passe
+              * a la table suivante ; seule une commande invalide (-1) fait
+              * attendre la ligne suivante. */
+             else if (ret < 0) {
                FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
                vdp1_clock = 0; //Incorrect command, wait next line to continue
              }
