@@ -3365,19 +3365,73 @@ void ScuSendVBlankOUT(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 
+/* Timer 0 : compte les debuts de H-Blank IN depuis le V-Blank OUT, sur TOUTES
+
+ * les lignes de la trame, V-Blank compris. ST-210 (SCU Final Specs:
+
+ * Precautions, n. 30) et TECH#10 : en NTSC non entrelace, T0C = 225 a 263
+
+ * declenche l'interruption pendant le V-Blank, seules les valeurs 264 a 1023
+
+ * n'en declenchent pas. Mednafen (ss/scu.inc, SCU_SetHBVB) incremente
+
+ * Timer0_Counter a chaque debut de H-Blank.
+
+ * Kronos ne comptait que pendant les lignes affichees (ScuSendHBlankIN()
+
+ * n'est appele que la) : un T0C au-dela de 224/240/256 n'etait jamais atteint.
+
+ * Finalist programme T0C = F6h (ligne 246) pour interroger la manette, et
+
+ * affichait "Please insert a controller in control port 1". */
+
+static void ScuTimer0Count(void) {
+
+   ScuRegs->timer0++;
+
+   if (ScuRegs->T1MD & 0x1)
+
+   {
+
+      // if timer0 equals timer 0 compare register, do an interrupt
+
+     if (ScuRegs->timer0 == ScuRegs->T0C) {
+
+        ScuSendTimer0();
+
+        ScuRegs->timer0_set = 1;
+
+     }
+
+     else {
+
+       ScuRegs->timer0_set = 0;
+
+     }
+
+   }
+
+}
+
+
+
+/* Debut de H-Blank IN pendant le V-Blank : seul le Timer 0 avance (pas
+
+   d'interruption H-Blank IN ici, comme avant). */
+
+void ScuHBlankInVBlank(void) {
+
+   ScuTimer0Count();
+
+}
+
+
+
 void ScuSendHBlankIN(void) {
   SetInterrupt(HBLANK_IN);
-   ScuRegs->timer0++;
+   ScuTimer0Count();
    if (ScuRegs->T1MD & 0x1)
    {
-      // if timer0 equals timer 0 compare register, do an interrupt
-     if (ScuRegs->timer0 == ScuRegs->T0C) {
-        ScuSendTimer0();
-        ScuRegs->timer0_set = 1;
-     }
-     else {
-       ScuRegs->timer0_set = 0;
-     }
 
      // if (ScuRegs->timer1_set == 1) {
         // ScuRegs->timer1_set = 0;
