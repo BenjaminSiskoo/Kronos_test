@@ -396,6 +396,16 @@ static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
       if (MSH2 != NULL) MSH2->cacheOn = 0;
       if (SSH2 != NULL) SSH2->cacheOn = 0;
    }
+   /* Modele de temps du fetch sans emulation du cache (memory.c) : il
+      repart de lignes vides a chaque jeu, et les jeux de
+      SH2LegacyFetchDBList (utils/src/db.c) gardent l'ancien cout. */
+   SH2FetchCachePurge(NULL);
+   {
+      int legacy = DBLookupLegacySH2FetchTiming();
+      SH2SetLegacyFetchTiming(legacy);
+      if (legacy)
+         YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
+   }
 }
 
 static int YabauseFullInit(yabauseinit_struct *init)
