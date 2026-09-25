@@ -3192,6 +3192,26 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
   needEvaluate = 1;
 }
 
+/* Le maitre prend l'interruption de vecteur 'vector' (mode vecteur externe) :
+ * acquitte CETTE source. Entre la reservation par le SH-2 et la prise, le SCU
+ * a pu presenter une source plus prioritaire (currentInterrupt a change) :
+ * ScuAcceptInterrupt(), qui acquitte currentInterrupt, effacerait alors la
+ * mauvaise source, et la plus prioritaire serait perdue. Le verrou n'est
+ * libere que s'il porte bien cette source ; sinon la source verrouillee reste
+ * presentee au CPU. Vecteur hors SCU : rien a faire. */
+void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector) {
+  int i;
+  for (i = 0; i < (int)(sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])); i++) {
+    if (ScuInterrupt[i].vector != vector) continue;
+    if (sh == MSH2)
+      ScuRegs->IST &= ~ScuInterrupt[i].status;
+    ScuRegs->ITEdge &= ~ScuInterrupt[i].status;
+    if (currentInterrupt == i) currentInterrupt = 0xFF;
+    needEvaluate = 1;
+    return;
+  }
+}
+
 static void ScuTestInterruptMask(u8 i)
 {
    int mask = 0;
