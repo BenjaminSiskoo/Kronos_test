@@ -89,9 +89,15 @@ static const char * const SH2CacheDBList[] = {
    B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
    jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
 static const char * const SH2LegacyFetchDBList[] = {
+   "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
+   "T-10310G", // DX Jinsei Game II
+   "T-22303G", // Ginga Eiyuu Densetsu Plus
+   "T-7645G", // Ishin no Arashi
+   "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
    "T-8119G",    // Space Jam (Japan)
    "T-8125H",    // Space Jam (USA)
    "T-8125H-50", // Space Jam (Europe)
+   "T-27808G", // Yuukyuu Gensoukyoku ensemble
    NULL
 };
 
