@@ -1783,6 +1783,7 @@ void FASTCALL OnchipWriteByte(SH2_struct *context, u32 addr, u8 val) {
          return;
       case 0x092:
          context->onchip.CCR = val & 0xCF;
+         if (val & 0x10) SH2FetchCachePurge(context);   /* CCR.CP : modele de temps du fetch (memory.c) */
 		 if (val & 0x10){
 			 InvalidateCache(context);
 		 }
@@ -1937,6 +1938,7 @@ void FASTCALL OnchipWriteWord(SH2_struct *context, u32 addr, u16 val) {
          return;
       case 0x092:
          context->onchip.CCR = val & 0xCF;
+         if (val & 0x10) SH2FetchCachePurge(context);   /* CCR.CP : modele de temps du fetch (memory.c) */
 		 if (val & 0x10){
 			 InvalidateCache(context);
 		 }
