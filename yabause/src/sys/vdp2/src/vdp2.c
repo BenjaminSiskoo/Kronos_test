@@ -916,6 +916,16 @@ void Vdp2HBlankIN_It(void) {
     Vdp2Regs->TVSTAT |= 0x0004;
     ScuSendHBlankIN();
   }
+  else if (yabsys.LineCount < yabsys.MaxLineCount - 2) {
+    /* Le Timer 0 du SCU compte aussi les H-Blank IN du V-Blank (ST-210 n. 30,
+       voir ScuHBlankInVBlank() dans scu.c). Seulement jusqu'a la ligne du
+       V-Blank OUT (MaxLineCount - 2, voir YabauseEmulate()) : les lignes qui
+       le suivent feraient avancer le compteur avant la ligne 0 et decaleraient
+       d'une ligne le Timer 0 de tous les jeux par rapport a Kronos jusqu'ici
+       (ST-210 et Mednafen placent pourtant T0C = 1 sur le H-Blank IN qui
+       precede la premiere ligne affichee : a verifier separement). */
+    ScuHBlankInVBlank();
+  }
   SH2UpdateABusAccess(MSH2, 0);
   SH2UpdateABusAccess(SSH2, 0);
   SH2ClearCPUConcurrency(MSH2, VDP2_RAM_LOCK);
