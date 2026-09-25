@@ -510,7 +510,16 @@ static void SmpcINTBACK(void) {
       ScuSendSystemManager();
       return;
   }
-  if (SmpcRegs->IREG[0] != 0x0) {
+  /* Statut demande seulement si le quartet bas d'IREG0 est non nul (bit 0 :
+     acquisition du statut). Les bits 7 et 6 d'IREG0 sont les demandes
+     "continuer" et "interrompre" : un jeu peut deja ecrire IREG0 = 80 pendant
+     que la commande attend son execution. L'ancien test (IREG0 != 0) prenait
+     alors un INTBACK "peripheriques seuls" (IREG0 = 00, IREG1 = 08) pour une
+     demande de statut, et renvoyait le statut au lieu des manettes
+     (Finalist / 3D Mission Shooting : "Please insert a controller in control
+     port 1"). Mednafen (ss/smpc.c, CMD_INTBACK) teste IREG[0] & 0xF, Ymir
+     (smpc.cpp, INTBACK) IREG[0] == 0x01. */
+  if (SmpcRegs->IREG[0] & 0x0F) {
       // Return non-peripheral data
       SMPCLOG("non peripheral require controlers %d\n", (SmpcRegs->IREG[1]&0x8)!=0);
       SmpcInternalVars->firstPeri = ((SmpcRegs->IREG[1] & 0x8) >> 3);
