@@ -489,27 +489,53 @@ static int CheckHeader(UNUSED u32 device)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static int CalcSaveSize(u32 tableaddr, int blocksize)
+// Walks the block list of the save starting at 'block' and returns the
+// number of blocks listed (the first block is not counted).
+// When the list does not fit in the first block, it continues in the blocks
+// it lists (in order), after their 4 bytes header: this is the same chaining
+// used by BiosBUPWrite/BiosBUPImport (writing) and ReadBlockTable (reading).
+// If 'usedtbl' is not NULL, every listed block is marked as used in it.
+static int CalcSaveSize(u32 addr, u32 block, u32 blocksize, u32 size, u8 *usedtbl)
 {
-   int numblocks=0;
+   u32 totalblocks = size / blocksize;
+   u32 mask = (blocksize << 1) - 1;
+   u32 tableaddr = addr + (block * blocksize * 2) + 0x45;
+   u16 *list;
+   u32 numblocks = 0;
+   u32 blocksread = 0;
 
+   if ((list = (u16 *)malloc(sizeof(u16) * totalblocks)) == NULL)
+      return 0;
 
-   // Now figure out how many blocks this save is
    for(;;)
    {
-       u16 block;
-       if (((tableaddr - 1) & ((blocksize << 1) - 1)) == 0) {
-         tableaddr += 8;
-       }
-       block = (DMAMappedMemoryReadByte(tableaddr) << 8) | DMAMappedMemoryReadByte(tableaddr + 2);
-//       LOG("CalcSaveSize: %08X,%d,%04X numblocks", tableaddr, numblocks, block);
-       if (block == 0)
+      u16 next = (DMAMappedMemoryReadByte(tableaddr) << 8) | DMAMappedMemoryReadByte(tableaddr + 2);
+
+      if (next == 0)
          break;
-       tableaddr += 4;
-       numblocks++;
+
+      // Broken list: stop instead of reading/writing out of bounds
+      if (next < 2 || next >= totalblocks || numblocks >= totalblocks)
+      {
+         LOG("CalcSaveSize: broken block list (block %d, entry %d = %04X)\n", block, numblocks, next);
+         break;
+      }
+
+      list[numblocks++] = next;
+      if (usedtbl)
+         usedtbl[next] = 1;
+
+      tableaddr += 4;
+      if ((((tableaddr - 1) & mask) == 0) && (blocksread < numblocks))
+      {
+         // The list continues in the next block of the save
+         tableaddr = addr + (list[blocksread] * blocksize * 2) + 9;
+         blocksread++;
+      }
    }
 
-   return numblocks;
+   free(list);
+   return (int)numblocks;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -525,9 +551,13 @@ static u32 GetFreeSpace(UNUSED u32 device, u32 size, u32 addr, u32 blocksize)
       if (((s8)DMAMappedMemoryReadByte(addr + i + 1)) < 0)
       {
          // Now figure out how many blocks this save is
-         usedblocks += (CalcSaveSize(addr+i+0x45, blocksize) + 1);
+         usedblocks += (CalcSaveSize(addr, i / (blocksize << 1), blocksize, size, NULL) + 1);
       }
    }
+
+   // Avoid an unsigned underflow if the memory is corrupted
+   if ((usedblocks + 2) >= (size / blocksize))
+      return 0;
 
    return ((size / blocksize) - 2 - usedblocks);
 }
@@ -591,9 +621,13 @@ static u32 FindSave2(UNUSED u32 device, const char *string, u32 blockoffset, u32
          // the data over
          for (i3 = 0; i3 < 11; i3++)
          {
-            if (DMAMappedMemoryReadByte(addr+i+0x9+(i3*2)) != string[i3])
+            // Compare as unsigned bytes: Japanese file names use half-width
+            // katakana (0xA1-0xDF) which are negative when char is signed
+            u8 data = (u8)string[i3];
+
+            if (DMAMappedMemoryReadByte(addr+i+0x9+(i3*2)) != data)
             {
-               if (string[i3] == 0)
+               if (data == 0)
                   // There's no string to match
                   return ((i / blocksize) >> 1);
                else
@@ -603,7 +637,7 @@ static u32 FindSave2(UNUSED u32 device, const char *string, u32 blockoffset, u32
             else
             {
                // Match
-               if (i3 == 10 || string[i3] == 0)
+               if (i3 == 10 || data == 0)
                   return ((i / blocksize) >> 1);
             }
          }
@@ -626,7 +660,6 @@ static u16 *GetFreeBlocks(u32 addr, u32 blocksize, u32 numblocks, u32 size)
 {
    u8 *blocktbl;
    u16 *freetbl;
-   u32 tableaddr;
    u32 i;
    u32 blockcount=0;
 
@@ -641,22 +674,10 @@ static u16 *GetFreeBlocks(u32 addr, u32 blocksize, u32 numblocks, u32 size)
       // Find a block with the start of a save
       if (((s8)DMAMappedMemoryReadByte(addr + i + 1)) < 0)
       {
-         tableaddr = addr+i+0x45;
          blocktbl[i / (blocksize << 1)] = 1;
 
          // Now let's figure out which blocks are used
-         for(;;)
-         {
-            u16 block;
-            if (((tableaddr-1) & ((blocksize << 1) - 1)) == 0)
-               tableaddr += 8;
-            block = (DMAMappedMemoryReadByte(tableaddr) << 8) | DMAMappedMemoryReadByte(tableaddr + 2);
-            if (block == 0)
-               break;
-            tableaddr += 4;
-            // block is used
-            blocktbl[block] = 1;
-         }
+         CalcSaveSize(addr, i / (blocksize << 1), blocksize, size, blocktbl);
       }
    }
 
@@ -681,6 +702,13 @@ static u16 *GetFreeBlocks(u32 addr, u32 blocksize, u32 numblocks, u32 size)
 
    // Ok, we're all done
    free(blocktbl);
+
+   // Not enough free blocks: don't return a partially filled table
+   if (blockcount < numblocks)
+   {
+      free(freetbl);
+      return NULL;
+   }
 
    return freetbl;
 }
@@ -867,7 +895,7 @@ void FASTCALL BiosBUPStatus(SH2_struct * sh)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6], size); // Size of Backup Ram (in bytes)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x4, size / blocksize); // Size of Backup Ram (in blocks)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x8, blocksize); // Size of block
-   SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0xC, ((blocksize - 6) * freeblocks) - 30); // Free space(in bytes)
+   SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0xC, (((blocksize - 6) * freeblocks) > 30) ? (((blocksize - 6) * freeblocks) - 30) : 0); // Free space(in bytes)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x10, freeblocks); // Free space(in blocks)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x14, aftersize / blocksize); // writable block size
 
@@ -990,10 +1018,11 @@ void FASTCALL BiosBUPWrite(SH2_struct * sh)
       sh->regs.R[5]++;
    }
 
-   // Copy over language
-   SH2MappedMemoryWriteByte(sh, workaddr+0x1F, SH2MappedMemoryReadByte(sh, sh->regs.R[5]));
+   // Skip comment NUL terminator (BupDir.comment[10], offset 0x16)
    sh->regs.R[5]++;
 
+   // Copy over language (BupDir.language, offset 0x17)
+   SH2MappedMemoryWriteByte(sh, workaddr+0x1F, SH2MappedMemoryReadByte(sh, sh->regs.R[5]));
    sh->regs.R[5]++;
 
    // Copy over date
@@ -1149,8 +1178,8 @@ void FASTCALL BiosBUPDirectory(SH2_struct * sh)
       return;
    }
 
-   // Count Max size
-   for (i = 0; i < 256; i++)
+   // Count Max size (a save uses at least one block)
+   for (i = 0; i < (size / blocksize); i++)
    {
       u32 block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], blockoffset, size, addr, blocksize);
 
@@ -1202,11 +1231,12 @@ void FASTCALL BiosBUPDirectory(SH2_struct * sh)
          sh->regs.R[7]++;
       }
 
-      // Copy over language
-      SH2MappedMemoryWriteByte(sh, sh->regs.R[7], SH2MappedMemoryReadByte(sh, block+0x1F));
+      // Comment NUL terminator (BupDir.comment[10], offset 0x16)
+      SH2MappedMemoryWriteByte(sh, sh->regs.R[7], 0);
       sh->regs.R[7]++;
 
-      SH2MappedMemoryWriteByte(sh, sh->regs.R[7], 0);
+      // Copy over language (BupDir.language, offset 0x17)
+      SH2MappedMemoryWriteByte(sh, sh->regs.R[7], SH2MappedMemoryReadByte(sh, block+0x1F));
       sh->regs.R[7]++;
 
       // Copy over date
@@ -1325,96 +1355,59 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static void ConvertMonthAndDay(SH2_struct *sh, u32 data, u32 monthaddr, u32 dayaddr, int type)
+// Date format used by the backup library: minutes since 1980/01/01 00:00.
+// Years are handled by 4 years cycles (0x5B5 days), the first year of each
+// cycle being a leap year.
+static void ConvertMonthAndDayMem(u32 data, u8* monthaddr, u8 * dayaddr, int leap)
 {
-   int i;
-   u16 monthtbl[11] = { 31, 31+28, 31+28+31, 31+28+31+30, 31+28+31+30+31,
-                        31+28+31+30+31+30, 31+28+31+30+31+30+31,
-                        31+28+31+30+31+30+31+31, 31+28+31+30+31+30+31+31+30,
-                        31+28+31+30+31+30+31+31+30+31,
-                        31+28+31+30+31+30+31+31+30+31+30 };
+   // Days elapsed before the start of each month
+   static const u16 monthtbl[2][13] = {
+      { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365 },
+      { 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366 } };
+   int i = leap ? 1 : 0;
+   int month = 1;
 
-   if (data < monthtbl[0])
-   {
-      // Month
-      SH2MappedMemoryWriteByte(sh, monthaddr, 1);
+   // data is the day of the year, starting at 0
+   while (month < 12 && data >= monthtbl[i][month])
+      month++;
 
-      // Day
-      SH2MappedMemoryWriteByte(sh, dayaddr, (u8)(data + 1));
-      return;
-   }
-
-   for (i = 1; i < 11; i++)
-   {
-      if (data <= monthtbl[i])
-         break;
-   }
-
-   if (type == 1)
-   {
-      // Month
-      SH2MappedMemoryWriteByte(sh, monthaddr, (u8)(i + 1));
-
-      // Day
-      if ((i + 1) == 2)
-         SH2MappedMemoryWriteByte(sh, dayaddr, (u8)(data - monthtbl[(i - 1)] + 1));
-      else
-         SH2MappedMemoryWriteByte(sh, dayaddr, (u8)(data - monthtbl[(i - 1)]));
-   }
-   else
-   {
-      // Month
-      SH2MappedMemoryWriteByte(sh, monthaddr, (u8)(i + 1));
-
-      // Day
-      SH2MappedMemoryWriteByte(sh, dayaddr, (u8)(data - monthtbl[(i - 1)] + 1));
-   }
+   *monthaddr = (u8)month;
+   *dayaddr = (u8)(data - monthtbl[i][month - 1] + 1);
 }
 
-static void ConvertMonthAndDayMem(u32 data, u8* monthaddr, u8 * dayaddr, int type)
+static void ConvertBupDate(u32 date, u8 *year, u8 *month, u8 *day, u8 *hour, u8 *minute, u8 *week)
 {
-   int i;
-   u16 monthtbl[11] = { 31, 31+28, 31+28+31, 31+28+31+30, 31+28+31+30+31,
-                        31+28+31+30+31+30, 31+28+31+30+31+30+31,
-                        31+28+31+30+31+30+31+31, 31+28+31+30+31+30+31+31+30,
-                        31+28+31+30+31+30+31+31+30+31,
-                        31+28+31+30+31+30+31+31+30+31+30 };
+   u32 div;
+   u32 yearremainder;
+   u32 yearoffset;
 
-   if (data < monthtbl[0])
+   *hour = (u8)((date % 0x5A0) / 0x3C);
+   *minute = (u8)(date % 0x3C);
+
+   // Days since 1980/01/01 (a tuesday)
+   div = date / 0x5A0;
+
+   // Week (sunday = 0)
+   if (div > 0xAB71)
+      *week = (u8)((div + 1) % 7);
+   else
+      *week = (u8)((div + 2) % 7);
+
+   yearremainder = div % 0x5B5;
+   if (yearremainder >= 0x16E)
    {
-      // Month
-      *monthaddr = 1;
-
-      // Day
-      *dayaddr = (u8)(data + 1);
-      return;
-   }
-
-   for (i = 1; i < 11; i++)
-   {
-      if (data <= monthtbl[i])
-         break;
-   }
-
-   if (type == 1)
-   {
-      // Month
-      *monthaddr = (u8)(i + 1);
-
-      // Day
-      if ((i + 1) == 2)
-         *dayaddr = (u8)(data - monthtbl[(i - 1)] + 1);
-      else
-         *dayaddr = (u8)(data - monthtbl[(i - 1)]);
+      // 2nd, 3rd or 4th year of the cycle (365 days)
+      yearoffset = (yearremainder - 1) / 0x16D;
+      ConvertMonthAndDayMem((yearremainder - 1) % 0x16D, month, day, 0);
    }
    else
    {
-      // Month
-      *monthaddr = (u8)(i + 1);
-
-      // Day
-      *dayaddr = (u8)(data - monthtbl[(i - 1)] + 1);
+      // 1st year of the cycle (leap year, 366 days)
+      yearoffset = 0;
+      ConvertMonthAndDayMem(yearremainder, month, day, 1);
    }
+
+   *year = (u8)(((div / 0x5B5) * 4) + yearoffset);
 }
 
 
@@ -1422,46 +1415,21 @@ static void ConvertMonthAndDayMem(u32 data, u8* monthaddr, u8 * dayaddr, int typ
 
 void FASTCALL BiosBUPGetDate(SH2_struct * sh)
 {
-   u32 date;
-   u32 div;
-   u32 yearoffset;
-   u32 yearremainder;
+   u8 year, month, day, hour, minute, week;
 
    SH2GetRegisters(sh, &sh->regs);
 
    LOG_BUP("BiosBUPGetDate. PR = %08X\n", sh->regs.PR);
 
-   date = sh->regs.R[4];
+   ConvertBupDate(sh->regs.R[4], &year, &month, &day, &hour, &minute, &week);
 
-   // Time
-   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+3, (u8)((date % 0x5A0) / 0x3C));
-
-   // Minute
-   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+4, (u8)(date % 0x3C));
-
-   div = date / 0x5A0;
-
-   // Week
-   if (div > 0xAB71)
-      SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+5, (u8)((div + 1) % 7));
-   else
-      SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+5, (u8)((div + 2) % 7));
-
-   yearremainder = div % 0x5B5;
-
-   if (yearremainder > 0x16E)
-   {
-      yearoffset = (yearremainder - 1) / 0x16D;
-      ConvertMonthAndDay(sh, (yearremainder - 1) % 0x16D, sh->regs.R[5]+1, sh->regs.R[5]+2, 0);
-   }
-   else
-   {
-      yearoffset = 0;
-      ConvertMonthAndDay(sh, 0, sh->regs.R[5]+1, sh->regs.R[5]+2, 1);
-   }
-
-   // Year
-   SH2MappedMemoryWriteByte(sh, sh->regs.R[5], (u8)(((div / 0x5B5) * 4) + yearoffset));
+   // BupDate structure
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5], year);
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+1, month);
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+2, day);
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+3, hour);
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+4, minute);
+   SH2MappedMemoryWriteByte(sh, sh->regs.R[5]+5, week);
 
    sh->regs.PC = sh->regs.PR;
    SH2SetRegisters(sh, &sh->regs);
@@ -1496,7 +1464,8 @@ void FASTCALL BiosBUPSetDate(SH2_struct * sh)
    if (data != 1 && data < 13)
    {
       date += monthtbl[data - 2];
-      if (date > 2 && remainder == 0)
+      // Leap year (1st year of the cycle): add February 29th after February
+      if (data > 2 && remainder == 0)
          date++;
    }
 
@@ -1807,9 +1776,6 @@ saveinfo_struct *BupGetSaveList(u32 device, int *numsaves)
    u32 i, j;
    u32 workaddr;
    u32 date;
-   u32 div;
-   u32 yearremainder;
-   u32 yearoffset;
 
    ret = GetDeviceStats(device, &size, &addr, &blocksize);
 
@@ -1857,34 +1823,15 @@ saveinfo_struct *BupGetSaveList(u32 device, int *numsaves)
          // Copy over language
          save[savecount].language = DMAMappedMemoryReadByte(workaddr+0x1F);
 
-         // Copy over Date(fix me)
+         // Copy over Date
          date = (DMAMappedMemoryReadByte(workaddr+0x35) << 24) |
                     (DMAMappedMemoryReadByte(workaddr+0x37) << 16) |
                     (DMAMappedMemoryReadByte(workaddr+0x39) << 8) |
                     DMAMappedMemoryReadByte(workaddr+0x3B);
 
         save[savecount].date = date;
-        save[savecount].hour = (u8)((date % 0x5A0) / 0x3C);
-        save[savecount].minute = (u8)(date % 0x3C);
-
-        div = date / 0x5A0;
-        if (div > 0xAB71)
-          save[savecount].week = (u8)((div + 1) % 7);
-        else
-          save[savecount].week = (u8)((div + 2) % 7);
-
-        yearremainder = div % 0x5B5;
-        if (yearremainder > 0x16E)
-        {
-           yearoffset = (yearremainder - 1) / 0x16D;
-           ConvertMonthAndDayMem((yearremainder - 1) % 0x16D, &save[savecount].month, &save[savecount].day, 0);
-        }
-        else
-        {
-           yearoffset = 0;
-           ConvertMonthAndDayMem((yearremainder - 1), &save[savecount].month, &save[savecount].day, 1);
-        }
-        save[savecount].year = (u8)(((div / 0x5B5) * 4) + yearoffset);
+        ConvertBupDate(date, &save[savecount].year, &save[savecount].month, &save[savecount].day,
+                       &save[savecount].hour, &save[savecount].minute, &save[savecount].week);
 
          // Copy over data size
          save[savecount].datasize = (DMAMappedMemoryReadByte(workaddr+0x3D) << 24) |
@@ -1893,7 +1840,7 @@ saveinfo_struct *BupGetSaveList(u32 device, int *numsaves)
                                     DMAMappedMemoryReadByte(workaddr+0x43);
 
          // Calculate size in blocks
-         save[savecount].blocksize = CalcSaveSize(workaddr+0x45, blocksize) + 1;
+         save[savecount].blocksize = CalcSaveSize(addr, i / (blocksize << 1), blocksize, size, NULL) + 1;
          savecount++;
       }
    }
@@ -2075,18 +2022,19 @@ int BiosBUPExport(u32 device, const char *savename, char ** buf, int * bufsize )
   i=0;
   while (datasize > 0)
   {
-    (*buf)[i] = DMAMappedMemoryReadByte(tableaddr);
-     //fputc( SH2MappedMemoryReadByte(tableaddr),fp );
-     datasize--;
-     i++;
-     tableaddr+=2;
-
+     // Move to the next block only when there is still data to read
+     // (as BiosBUPRead does), so blocktbl is never read past its end
      if (((tableaddr-1) & ((blocksize << 1) - 1)) == 0)
      {
         // Load up the next block
         tableaddr = addr + (blocktbl[blocksread] * blocksize * 2) + 9;
         blocksread++;
      }
+
+     (*buf)[i] = DMAMappedMemoryReadByte(tableaddr);
+     datasize--;
+     i++;
+     tableaddr+=2;
   }
   //fclose(fp);
   free(blocktbl);
@@ -2128,9 +2076,9 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
 
    // Let's figure out how many blocks will be needed for the save
    datasize = bufsize;
-   savesize = (datasize + 0x1D) / (blocksize - 6);
-   if ((datasize + 0x1D) % (blocksize - 6))
-      savesize++;
+   // Same computation as BiosBUPWrite (30 bytes header + 2 bytes per block
+   // in the block list, 4 bytes reserved at the start of each block)
+   savesize = 1 + ((datasize + 0x1D) / (blocksize - 6));
 
    // Will it blend? Err... fit
    if (savesize > GetFreeSpace(device, size, addr, blocksize))
@@ -2227,21 +2175,20 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
    rindex=0;
    while (datasize > 0)
    {
-      DMAMappedMemoryWriteByte(workaddr, buf[rindex]);
-      //fputc(SH2MappedMemoryReadByte(sh->regs.R[6]),fp);
-
-      //LOG("write block=%d, baddr = %08X, %08X, %02X", blockswritten, blocktbl[blockswritten], workaddr, SH2MappedMemoryReadByte(sh->regs.R[6]));
-
-      datasize--;
-      rindex++;
-      workaddr+=2;
-
+      // Move to the next block only when there is still data to write
+      // (as BiosBUPWrite does), so blocktbl is never read past its end
       if (((workaddr-1) & ((blocksize << 1) - 1)) == 0)
       {
          // Next block
          blockswritten++;
          workaddr = addr + (blocktbl[blockswritten] * blocksize * 2) + 9;
       }
+
+      DMAMappedMemoryWriteByte(workaddr, buf[rindex]);
+
+      datasize--;
+      rindex++;
+      workaddr+=2;
    }
    //fclose(fp);
    free(blocktbl);
@@ -2370,7 +2317,7 @@ int BiosBUPStatusMem(SH2_struct *sh, int device, devicestatus_struct * status )
    status->totalsize = size; // Size of Backup Ram (in bytes)
    status->totalblock = size / blocksize; // Size of Backup Ram (in blocks)
    status->blocksize = blocksize; // Size of block
-   status->freesize = ((blocksize - 6) * freeblocks) - 30; // Free space(in bytes)
+   status->freesize = (((blocksize - 6) * freeblocks) > 30) ? (((blocksize - 6) * freeblocks) - 30) : 0; // Free space(in bytes)
    status->freeblock = freeblocks; // Free space(in blocks)
    status->datanum = aftersize / blocksize; // writable block size
    return 0;
