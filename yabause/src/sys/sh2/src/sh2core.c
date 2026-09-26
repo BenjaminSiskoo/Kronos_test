@@ -344,8 +344,33 @@ static int isDMABlocked(SH2_struct *context) {
   return (context->isAccessingCPUBUS != 0)&&((context->blockingMask & A_BUS_ACCESS)!=0);
 }
 
+/* A CPU is blocked (SH2BlockableExec skips it, SH2KronosInterpreterExecSave
+ * rolls back the instruction that blocked it and replays it later) when:
+ *   - an SCU DMA holds the CPU bus (blockingMask & A_BUS_ACCESS), or
+ *   - it accessed a VDP2 VRAM bank that has no CPU slot during the display
+ *     period (isAccessingVram & blockingMask, see vdp2RamAccessCPUCheck).
+ *
+ * isAccessingCPUBUS on its own (the CPU went out on the external bus through
+ * a cache-through access) used to block the CPU too. Outside an SCU DMA that
+ * only happened while a VDP2 VRAM lock was armed, i.e. from line 1 to the
+ * next H-blank IN (Vdp2HBlankIN_It clears both), and it had nothing to do
+ * with that lock: any A-bus or B-bus access in that window was rolled back.
+ * The access itself had already been made, and replaying it is not harmless
+ * for a register with a read side effect.
+ *
+ * Spot Goes to Hollywood reads its menu archive one sector at a time with
+ * the SBL copy loop at 0603026A (mov.l @r6,r8 from the CD block data
+ * transfer register 25818000), while the title screen leaves VRAM-A without
+ * a CPU slot (CYCA0 = 44445555). When that loop was running on line 1, the
+ * read was rolled back and replayed: one long of the sector was consumed
+ * twice, the rest of the sector landed 4 bytes early in LWRAM, and the last
+ * read of the loop found the transfer empty and returned 0. The compressed
+ * PASSWORD and CHEAT SCREEN pictures were then decoded into noise.
+ *
+ * With an SCU DMA on the CPU bus the A_BUS_ACCESS term already blocks, so
+ * dropping the isAccessingCPUBUS term changes nothing in that case. */
 void SH2UpdateBlockedState(SH2_struct *context){
-  context->isBlocked =  (context->isAccessingCPUBUS != 0)||((context->blockingMask & A_BUS_ACCESS)!=0);
+  context->isBlocked  = ((context->blockingMask & A_BUS_ACCESS)!=0);
   context->isBlocked |= ((context->isAccessingVram & context->blockingMask)!=0);
 }
 
