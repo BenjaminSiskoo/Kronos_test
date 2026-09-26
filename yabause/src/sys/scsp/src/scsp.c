@@ -5198,9 +5198,32 @@ M68KStop (void)
        no DSP program was loaded, and the game had no sound at all.
 
        Saturn only: on ST-V the 68000 is driven through PDR2 and this path is
-       not the SMPC sound reset. */
-    if (!yabsys.isSTV)
+       not the SMPC sound reset.
+
+       MEM4MB (register 400h bit 9) is kept across SNDOFF. Kronos applies it
+       to sound RAM accesses: with MEM4MB = 0 the RAM is folded every 128 KB
+       (SoundRamReadXxx / SoundRamWriteXxx). Grand Slam (Virgin, USA) stops the sound CPU,
+       then clears the whole 512 KB and builds its own sound RAM heap at
+       25A0B000-25A7FFFF from the SH-2 before its new 68000 program sets
+       MEM4MB again. With MEM4MB cleared by SNDOFF, the clear of 25A2B000
+       folded onto 25A0B000 and wiped the heap header: every allocation in
+       sound RAM failed, a NULL node went into a linked list and the master
+       SH-2 walked into address errors on the loading screen. The game works
+       on hardware, so MEM4MB cannot have dropped back to 1 Mbit there.
+       Mednafen (ss/smpc.c TurnSoundCPUOff -> SOUND_Reset68K) and Ymir
+       (SMPC::SNDOFF -> SCSP::SetCPUEnabled(false)) only reset the 68000 and
+       leave every SCSP register, MEM4MB included, untouched. ST-166 and
+       ST-241 ("Activating the sound driver") write 02h to 25B00400 after
+       SOUND OFF as part of the power-on sequence, when sound memory and the
+       SCSP are in an unknown state. Only the registers Independence Day needs
+       cleared (timers, interrupts, slots) are reset here. */
+    if (!yabsys.isSTV) {
+      u32 mem4b = scsp.mem4b;
       scsp_reset();
+      scsp.mem4b = mem4b;
+      if (mem4b)
+        *(u16 *)&scsp_ccr[0x00 ^ 2] |= 0x0200;   /* register 400h, MEM4MB */
+    }
     IsM68KRunning = 0;
   }
 }
