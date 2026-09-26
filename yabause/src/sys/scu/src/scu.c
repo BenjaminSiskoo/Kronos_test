@@ -2905,14 +2905,43 @@ struct intCtrl ScuInterrupt[30] = {
 
 };
 
+/* Ecriture partielle (octet ou mot) du registre d'etat des interruptions
+ * IST (25FE00A4H-25FE00A7H). Le registre fait 32 bits ; une ecriture
+ * octet ou mot ne concerne que les bits de sa voie (le SH-2 est gros-boutiste :
+ * A4 = bits 31-24, A5 = 23-16, A6 = 15-8, A7 = 7-0). Comme pour l'ecriture
+ * mot long, un 0 efface le bit et un 1 le laisse tel quel.
+ *
+ * L'ancien code faisait "IST &= val" avec val sur 8 bits en A7 : les bits
+ * 31-8 etaient tous effaces (interruptions A-Bus, fins de DMA, fin de trace
+ * sprite...) et les ecritures en A4/A5/A6 etaient ignorees. Mednafen
+ * (ss/scu.inc, case 0xA4 : IPending &= DB | ~mask) applique le masque de voie.
+ *
+ * TECH#10 / ST-210 No. 07 interdit aux applications d'ecrire dans IST ; le
+ * boot ROM le fait (SYS_SETSCUIM / SYS_CHGSCUIM, ST-162 2.1/2.2) en mot long.
+ * Ce chemin ne sert donc qu'a un logiciel qui ne respecte pas cette regle. */
+static void ScuWriteISTPartial(u32 val, u32 lanemask)
+{
+   u32 keep = val | ~lanemask;
+   if (needEvaluate != 0) {
+     ScuTestAllInterrupt();
+   }
+   ScuRegs->IST &= keep;
+   ScuRegs->ITEdge &= keep;
+   needEvaluate = 1;
+}
+
 void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
    addr &= 0xFF;
    switch(addr) {
+      case 0xA4:
+      case 0xA5:
+      case 0xA6:
       case 0xA7:
-         ScuRegs->IST &= val; // double check this
-         ScuRegs->ITEdge &= val;
-         needEvaluate = 1;
+      {
+         u32 shift = (3 - (addr & 3)) * 8;
+         ScuWriteISTPartial((u32)val << shift, 0xFFu << shift);
          return;
+      }
       default:
          LOG("Unhandled SCU Register byte write %08X\n", addr);
          return;
@@ -2921,9 +2950,20 @@ void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, UNUSED u16 val) {
+void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
    addr &= 0xFF;
-   LOG("Unhandled SCU Register word write %08X\n", addr);
+   switch(addr) {
+      case 0xA4:
+      case 0xA6:
+      {
+         u32 shift = (addr & 2) ? 0 : 16;
+         ScuWriteISTPartial((u32)val << shift, 0xFFFFu << shift);
+         return;
+      }
+      default:
+         LOG("Unhandled SCU Register word write %08X\n", addr);
+         return;
+   }
 }
 
 //////////////////////////////////////////////////////////////////////////////
