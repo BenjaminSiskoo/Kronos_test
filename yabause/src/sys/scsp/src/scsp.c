@@ -4903,6 +4903,39 @@ SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Cost of an SH-2 write to sound RAM over the SCU B-bus.
+ *
+ * Reads already pay for the bus (SyncSh2And68k adds 50 cycles), but writes
+ * were free: an SH-2 filling sound RAM ran at Work RAM speed. On hardware the
+ * SCSP is on the B-bus and every 16-bit access holds it for a long time.
+ * Mednafen (ss/scu.inc, BBusRW_DB_*_W1_*, SCSP branch) books 2 + 17 bus cycles
+ * for a 16-bit (or 8-bit) SH-2 write, and 2 + 17 then 13 for the two halves of
+ * a 32-bit one; the writes are posted, so a CPU that writes again right away
+ * waits for the previous one to finish. A copy or clear loop therefore runs
+ * at about one write per bus access time, which is what is charged here.
+ *
+ * Ginga Eiyuu Densetsu Plus depends on it. After its clock change the master
+ * wakes the slave with a "build tables" command (0x08), rewrites the 68000
+ * vector area of sound RAM (256 long writes at 25A00000, 06025EA4), then
+ * queues the next commands for the slave. The slave's table (060F51D8, three
+ * 1 KB planes) overlaps the command queue at 060F55D8. On hardware the sound
+ * RAM loop keeps the master busy for several lines, the slave has written its
+ * table first and the queued commands survive. With free writes the master
+ * queued its commands first, the slave's table overwrote them, the "display
+ * list" command never ran, the frame-ready flag (060FFCA8) stayed 0 and both
+ * CPUs waited for each other forever (black screen after the video with the
+ * debug core, stuck on the TrueMotion screen with the performance core).
+ *
+ * DMA and 68000 accesses pass context == NULL and are not charged here. */
+#define SCSP_SH2_WRITE16_CYCLES 19   /* 2 + 17 */
+#define SCSP_SH2_WRITE32_CYCLES 32   /* 2 + 17 + 13 */
+
+static INLINE void SoundRamSh2WriteCost(SH2_struct *context, u32 cycles)
+{
+  if (context != NULL)
+    SH2Core->AddCycle(context, cycles);
+}
+
 void FASTCALL
 SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 {
@@ -4914,6 +4947,7 @@ SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 
   T2WriteByte (mem, addr, val);
   M68K->WriteNotify (addr, 1);
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -4969,6 +5003,7 @@ SoundRamWriteWord (SH2_struct *context, u8* mem, u32 addr, u16 val)
   //SCSPLOG("SoundRamWriteWord %08X:%04X", addr, val);
   T2WriteWord (mem, addr, val);
   M68K->WriteNotify (addr, 2);
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5015,7 +5050,7 @@ SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
   //SCSPLOG("SoundRamWriteLong %08X:%08X", addr, val);
   T2WriteLong (mem, addr, val);
   M68K->WriteNotify (addr, 4);
-
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE32_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
