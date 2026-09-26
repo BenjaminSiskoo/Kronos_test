@@ -51,6 +51,11 @@ SmpcInternal * SmpcInternalVars;
 
 static u8 * SmpcRegsT;
 static int intback_wait_for_vblankout = 0;
+static u32 vblankout_wait_frame = 0;   /* trame du dernier decompte de intback_wait_for_vblankout */
+static int ckchg_reset_done = 0;       /* CKCHG : VDP1/VDP2/SCU deja remis a zero au debut de la commande */
+static int ckchg_start_pending = 0;    /* CKCHG ecrit dans COMREG : remise a zero a faire au prochain SmpcExec */
+static int intback_sf_clear_pending = 0; /* INTBACK abandonne au V-Blank IN : SF retombe une ligne plus tard */
+static int intback_sf_clear_line = 0;
 static u8 bustmp = 0;
 static const char *smpcfilename = NULL;
 
@@ -214,6 +219,31 @@ static void SmpcSYSRES(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Debut d'un CKCHG352/320 : remise a zero de VDP1, VDP2 et du SCU et arret de
+   l'esclave, AU DEBUT de la commande. Le NMI n'est envoye que plusieurs trames
+   plus tard (SmpcSetTiming / SmpcExec).
+
+   Mednafen (ss/smpc.c, CMD_CKCHG352/320) fait exactement cet ordre : resets,
+   puis attente de plusieurs V-Blank, puis NMI au debut du vsync. Pendant
+   l'attente, le SCU vient d'etre remis a zero (IMS = BFFF, tout masque) : les
+   V-Blank IN / OUT et H-Blank IN qui surviennent restent donc memorises dans
+   IST sans etre servis. Le programme retrouve ces bits a 1 quand il reprend.
+
+   Kronos remettait le SCU a zero juste APRES le V-Blank OUT, au moment du NMI :
+   IST repartait a 0 et le bit V-Blank OUT ne remontait qu'une trame plus tard.
+   Discworld masque V-Blank OUT juste apres son CKCHG320 et lit deux fois IST
+   en attendant ce bit (06013F20 / 06013F28) ; sa boucle ne relit pas IST
+   ensuite, donc le maitre tournait indefiniment (ecran noir). */
+static void SmpcCKCHGStart(void) {
+   Vdp1Reset();
+   Vdp2Reset();
+   ScuReset(0);
+   YabauseStopSlave();
+   ckchg_reset_done = 1;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void SmpcCKCHG352(void) {
    // Set DOTSEL
    SmpcInternalVars->dotsel = 1;
@@ -225,13 +255,19 @@ void SmpcCKCHG352(void) {
    // timers) -- sinon le son est tue a chaque changement de mode video.
    // Plus de ScspHalt/ScspUnLockThread non plus : on ne halte plus le thread
    // audio pendant le CKCHG (voir SmpcSetTiming case 0xE/0xF, test mednafen).
-   Vdp1Reset();
-   Vdp2Reset();
-   ScuReset(0);
+   // Deja fait au debut de la commande (SmpcCKCHGStart) quand la commande
+   // passe par le SMPC ; le BIOS HLE (BiosChangeSystemClock) appelle cette
+   // fonction directement et garde l'ancien comportement.
+   if (!ckchg_reset_done) {
+     Vdp1Reset();
+     Vdp2Reset();
+     ScuReset(0);
 
-   // Clear VDP1/VDP2 ram
+     // Clear VDP1/VDP2 ram
 
-   YabauseStopSlave();
+     YabauseStopSlave();
+   }
+   ckchg_reset_done = 0;
 
    // change clock
    YabauseChangeTiming(CLKTYPE_28MHZ);
@@ -252,13 +288,17 @@ void SmpcCKCHG320(void) {
    // Reset VDP1, VDP2, SCU
    // [FIX] idem CKCHG352 : pas de ScspReset() (quartz son independant) et plus
    // de halt/unlock du thread audio (voir SmpcSetTiming case 0xE/0xF).
-   Vdp1Reset();
-   Vdp2Reset();
-   ScuReset(0);
+   // Voir SmpcCKCHG352.
+   if (!ckchg_reset_done) {
+     Vdp1Reset();
+     Vdp2Reset();
+     ScuReset(0);
 
-   // Clear VDP1/VDP2 ram
+     // Clear VDP1/VDP2 ram
 
-   YabauseStopSlave();
+     YabauseStopSlave();
+   }
+   ckchg_reset_done = 0;
 
    // change clock
    YabauseChangeTiming(CLKTYPE_26MHZ);
@@ -672,13 +712,34 @@ static void processCommand(void) {
 }
 
 void SmpcExec(s32 t) {
+  /* Remise a zero du debut de CKCHG faite ici, hors de l'ecriture de COMREG
+     par le SH-2 (on ne remet pas le SCU et les VDP a zero au milieu d'une
+     instruction), au pas de ligne suivant. */
+  if (ckchg_start_pending) {
+    ckchg_start_pending = 0;
+    SmpcCKCHGStart();
+  }
+  /* Fin differee de l'INTBACK abandonne au V-Blank IN (voir SmpcINTBACKEnd). */
+  if (intback_sf_clear_pending && (yabsys.LineCount != intback_sf_clear_line)) {
+    intback_sf_clear_pending = 0;
+    SmpcRegs->SF = 0;
+  }
   if (intback_wait_for_vblankout != 0)
   {
-    if (yabsys.LineCount == yabsys.MaxLineCount - 1)
+    /* Un decompte par trame (SmpcExec peut etre appele plusieurs fois sur
+       la meme ligne). 1 = jusqu'au prochain V-Blank OUT ; CKCHG demande 2
+       sans decompter la trame en cours, soit 2 a 3 trames comme Mednafen,
+       avec toujours au moins un V-Blank OUT apres la remise a zero. */
+    if ((yabsys.LineCount == yabsys.MaxLineCount - 1) &&
+        (vblankout_wait_frame != yabsys.frame_count))
     {
-      intback_wait_for_vblankout = 0;
-      SmpcInternalVars->timing = 1;
-      SMPCLOG("Intback after vblank out\n");
+      vblankout_wait_frame = yabsys.frame_count;
+      intback_wait_for_vblankout--;
+      if (intback_wait_for_vblankout <= 0) {
+        intback_wait_for_vblankout = 0;
+        SmpcInternalVars->timing = 1;
+        SMPCLOG("Intback after vblank out\n");
+      }
     }
   }
   if (SmpcInternalVars->timing > 0) {
@@ -694,11 +755,45 @@ void SmpcExec(s32 t) {
 
 
 
+/* Appele au V-Blank IN : fin de la fenetre d'un INTBACK.
+   ST-162 (System Library User's Guide, 4.2.3) : les donnees qui n'ont pas pu
+   etre acquises au V-Blank IN qui suit l'INTBACK "ne peuvent plus etre
+   acquises ensuite". Un INTBACK dont le rapport de statut a ete rendu mais
+   qui attend encore une demande "continuer" (firstPeri != 0) est donc abandonne
+   lui aussi, pas seulement une commande en cours d'execution. Sans ca, le
+   prochain INTBACK du jeu etait pris pour la suite de l'ancien et renvoyait les
+   manettes au lieu du statut (Discworld). Meme comportement que Mednafen
+   (ss/smpc.c, PendingVB -> AbortJR) et Ymir (SMPC::TriggerVBlankIN). */
 void SmpcINTBACKEnd(void) {
-  if ((SmpcRegs->COMREG == 0x10) && ((SmpcRegs->SF != 0) || (SmpcInternalVars->timing>0))) {
+  if (SmpcRegs->COMREG != 0x10) return;
+  if ((SmpcRegs->SF != 0) || (SmpcInternalVars->timing>0) || (intback_wait_for_vblankout != 0)) {
       SMPCLOG("Intback Abort %d\n", SmpcInternalVars->timing);
-      SmpcRegs->SF = 0; //End command without interrupt - not enough time
+      /* End command without interrupt - not enough time.
+         SF ne retombe pas a l'instant du V-Blank IN : le SMPC doit d'abord
+         voir le front et abandonner la lecture (Mednafen, ss/smpc.c :
+         PendingVB -> AbortJR, SMPC_EAT_CLOCKS(87) avant SF = false, soit
+         ~22 us). Le gestionnaire V-Blank IN du jeu, pris au meme moment,
+         lit donc encore SF = 1.
+         Discworld en depend : son gestionnaire V-Blank IN ne lance un
+         nouvel INTBACK que si SF = 0, et son gestionnaire V-Blank OUT ne
+         remet son compteur de rapports a zero que si SF = 0. Avec un SF
+         efface avant le gestionnaire V-Blank IN, un nouvel INTBACK
+         repartait aussitot, SF valait 1 a chaque V-Blank OUT, le compteur
+         restait bloque a 4 et plus aucune demande "continuer" n'etait
+         envoyee : SF restait a 1 et le programme principal, qui attend
+         SF = 0 en 06015A84, ne repartait jamais (ecran noir).
+         SF est donc efface une ligne plus tard (SmpcExec), sauf si une
+         nouvelle commande est ecrite entre-temps. */
+      intback_sf_clear_pending = 1;
+      intback_sf_clear_line = yabsys.LineCount;
       SmpcInternalVars->timing = -1;
+      intback_wait_for_vblankout = 0; // ne pas executer l'INTBACK abandonne au V-Blank OUT
+  }
+  if (SmpcInternalVars->firstPeri != 0) {
+      SMPCLOG("Intback timeout: pending continue dropped\n");
+      SmpcInternalVars->firstPeri = 0;
+      SmpcInternalVars->port1.size = 0;
+      SmpcInternalVars->port2.size = 0;
   }
 }
 
@@ -792,7 +887,11 @@ static void SmpcSetTiming(void) {
         // On NE halte PAS le thread audio (pas de SmpcPreCKCHG) : le SCSP est sur
         // un quartz independant et n'est pas reinitialise ici, donc rien a
         // proteger, et on evite un trou de son pendant l'attente du vblank.
-         intback_wait_for_vblankout = 1; // delai generique "jusqu'au vblank-out"
+         // Remise a zero de VDP1/VDP2/SCU au debut de la commande, NMI apres
+         // deux trames completes (voir SmpcCKCHGStart, ordre de Mednafen).
+         ckchg_start_pending = 1;
+         intback_wait_for_vblankout = 2;
+         vblankout_wait_frame = yabsys.frame_count;
          SmpcInternalVars->timing = 0;
          SmpcRegs->SF = 1;
          return;
@@ -933,6 +1032,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
          }
          return;
       case 0x1F:
+         intback_sf_clear_pending = 0;   /* nouvelle commande : ne pas effacer son SF */
          SmpcSetTiming();
          return;
       case 0x63:
