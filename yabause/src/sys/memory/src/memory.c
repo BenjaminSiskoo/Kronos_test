@@ -815,6 +815,41 @@ u8 FASTCALL DMAMappedMemoryReadByte(u32 addr) {
    return ReadByteList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
 }
 
+/* Lecture de donnees SH-2 en zone cache (adresses 0xxxxxxx) de la Work RAM
+ * quand le cache n'est PAS emule (yabsys.usecache = 0) mais que le jeu l'a
+ * active (CCR.CE = 1).
+ *
+ * Le cache du SH7604 est unifie (instructions et donnees, SH7604 Hardware
+ * Manual, chapitre 8). Le modele a etiquettes de SH2FetchWord() ne suivait
+ * que les instructions ; les lectures de donnees passaient par
+ * HighWram/LowWramMemoryRead*(), qui facturent un changement de rangee
+ * DRAM (+2 / +4) tant que context->cacheOn = 0, c'est-a-dire toujours sans
+ * emulation, et qui ignorent les purges du cache.
+ *
+ * Les lectures de donnees passent maintenant par le meme modele
+ * (SH2UnemulatedCacheDataRead(), plus bas) : un succes ne coute rien et ne
+ * sort pas sur le bus ; un defaut remplit une ligne de 16 octets au meme
+ * cout qu'un fetch (7 cycles en Work RAM-H, 56 en Work RAM-L) et l'alloue,
+ * sauf si CCR.OD = 1 (remplacement des donnees interdit). Les ecritures ne
+ * changent pas : cache en ecriture immediate, sans allocation.
+ *
+ * Fully Cowled Mini Yonku (ecran NOW LOADING) : juste apres avoir reveille
+ * l'esclave par MINIT (06014F74), le maitre revient de sa routine de frame
+ * et teste en 0604DA70 que l'esclave traite encore sa file (pointeur de
+ * lecture 260FFC44 pas encore revenu au debut). Chaque commande de l'esclave
+ * commence par purger son cache (CCR = 11H, 06014632) : sur le materiel,
+ * toutes ses lectures de variables qui suivent sont des defauts, et il
+ * finit bien apres le test du maitre, dont les donnees restent en cache.
+ * Dans Kronos, ces lectures ne payaient au plus qu'un changement de rangee :
+ * mesure, maitre au test 295 cycles apres le MINIT, esclave revenu au debut
+ * de sa file des 225 cycles ; le maitre attendait indefiniment.
+ *
+ * Pas de raccourci quand des points d'arret memoire sont poses, ni pour les
+ * jeux de SH2LegacyFetchDBList (ancien temps d'acces, voir db.c).
+ * Retour : 1 = Work RAM-H, 2 = Work RAM-L, 0 = chemin normal. */
+static int SH2UnemulatedCacheDataPath(SH2_struct *context, u32 addr);
+static void SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region);
+
 u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr) {
 CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    int id = addr >> 29;
@@ -837,6 +872,13 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
          /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
             Sans emulation du cache : lectures traitees comme des succes. */
+         {
+           const int hit = SH2UnemulatedCacheDataPath(context, addr);
+           if (hit != 0) {
+             SH2UnemulatedCacheDataRead(context, addr, hit);
+             return T2ReadByte((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
+           }
+         }
          if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
          if (context->cacheOn) SH2UpdateABusAccess(context, 0);
          else SH2UpdateABusAccess(context, 1);
@@ -957,6 +999,15 @@ u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
 #ifdef SH2_HANG_WATCH
    if ((context != NULL) && context->hangWatch.armed) SH2HangWatchLogRead(context, addr);
 #endif
+   /* Lecture de donnees (les fetchs passent par SH2FetchWord()) : voir
+      SH2UnemulatedCacheDataPath(). */
+   {
+     const int hit = SH2UnemulatedCacheDataPath(context, addr);
+     if (hit != 0) {
+       SH2UnemulatedCacheDataRead(context, addr, hit);
+       return T2ReadWord((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
+     }
+   }
    return SH2ReadWordRaw(context, addr);
 }
 
@@ -1059,6 +1110,56 @@ static int SH2FetchCacheAccess(SH2_struct *context, u32 addr)
    return 0;
 }
 
+/* Lecture de donnees dans le meme modele (cache unifie) : voir le
+ * commentaire avant SH2MappedMemoryReadByte(). */
+static int SH2UnemulatedCacheDataPath(SH2_struct *context, u32 addr)
+{
+   u32 page;
+   if ((context == NULL) || yabsys.usecache || SH2LegacyFetchTiming) return 0;
+   if ((addr >> 29) != 0) return 0;
+   if ((context->onchip.CCR & 0x01) == 0) return 0;
+   if (context->bp.nummemorybreakpoints != 0) return 0;
+   page = (addr >> 16) & 0xFFF;
+   if ((page >= 0x600) && (page <= 0x7FF)) return 1;
+   if ((page >= 0x020) && (page <= 0x02F)) return 2;
+   return 0;
+}
+
+static void SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region)
+{
+   int hit;
+   if (context->onchip.CCR & 0x04) {
+      /* CCR.OD = 1 : un defaut de donnee n'alloue pas de ligne. */
+      int cpu = (context == SSH2) ? 1 : 0;
+      int line = (addr >> 4) & 0x3F;
+      u32 tag = (addr >> 10) & 0x7FFFF;
+      int first = (context->onchip.CCR & 0x08) ? 2 : 0;
+      int w;
+      if (!SH2FetchCacheReady) SH2FetchCachePurge(NULL);
+      hit = 0;
+      for (w = first; w < 4; w++)
+         if (SH2FetchCacheTag[cpu][line][w] == tag) { hit = 1; break; }
+      if (hit) {
+         /* succes : mise a jour LRU comme un acces normal */
+         (void)SH2FetchCacheAccess(context, addr);
+      }
+   } else {
+      hit = SH2FetchCacheAccess(context, addr);
+   }
+   if (hit) {
+      SH2UpdateABusAccess(context, 0);
+      return;
+   }
+   if (region == 1) {
+      context->cycles += SH2_FETCH_MISS_HWRAM;
+      lastHWRamBankCol = (addr >> 10) & 0x3FF;
+   } else {
+      context->cycles += SH2_FETCH_MISS_LWRAM;
+      lastLWRamBankCol = (addr >> 11) & 0x1FF;
+   }
+   SH2UpdateABusAccess(context, 1);
+}
+
 u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
 {
 #ifdef SH2_TRAP_ADDRESS_ERROR
@@ -1132,6 +1233,13 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
          /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
             Sans emulation du cache : lectures traitees comme des succes. */
+         {
+           const int hit = SH2UnemulatedCacheDataPath(context, addr);
+           if (hit != 0) {
+             SH2UnemulatedCacheDataRead(context, addr, hit);
+             return T2ReadLong((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
+           }
+         }
          if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
         else SH2UpdateABusAccess(context, 1);
