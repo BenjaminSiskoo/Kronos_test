@@ -105,6 +105,8 @@ void ScuDeInit(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+static void ScuDmaEndReset(void);
+
 void ScuReset(u8 powering_up) {
    if (ScuRegs == NULL) return;
 
@@ -146,6 +148,7 @@ void ScuReset(u8 powering_up) {
    ScuRegs->dma0.id = 1;
    ScuRegs->dma1.id = 2;
    ScuRegs->dma2.id = 3;
+   ScuDmaEndReset();
 
    currentInterrupt = 0xFF;
 
@@ -1245,6 +1248,95 @@ static void ScuDmaUpdateStartAddresses(scudmainfo_struct * dma, int indirect) {
   }
 }
 
+/* Fin des transferts SCU-DMA lances par une ecriture DxEN (facteur 111B).
+ *
+ * Pendant qu'un transfert touche le bus CPU (Work RAM), Kronos arrete le
+ * SH-2 pour toute sa duree (setupBusConcurrency(), A_BUS_ACCESS). Sur le
+ * materiel, le SCU ne prend le bus CPU que pour ses propres acces a la Work
+ * RAM ; un transfert vers le B-Bus (VDP1, VDP2, SCSP) est limite par ce
+ * B-Bus, et le CPU continue d'avancer pendant ce temps. Ici, le CPU restait
+ * donc fige juste apres l'ecriture DxEN, et l'interruption de fin etait
+ * prise avant meme les instructions suivantes.
+ *
+ * Or plusieurs jeux initialisent leur drapeau "DMA en cours" APRES avoir
+ * lance le transfert. Fully Cowled Mini Yonku : D2EN en 06014C9C, puis 8
+ * dans le drapeau 060FFCBD en 06014CA0 ; le gestionnaire de fin de DMA
+ * niveau 2 (06014690) y ajoute le bit 2. Relevé kronos_dma2.log : DMA de
+ * 400H octets vers la RAM son lance en 06014C9C, fin 493 cycles plus tard,
+ * interruption prise avec PC interrompu = 06014CA0, puis le 8 ecrase le
+ * bit 2 ; le gestionnaire V-Blank IN attend ensuite ce bit indefiniment en
+ * 06014740 (gel sur l'ecran PRESS START).
+ *
+ * Ymir (hw/scu/scu.cpp, SCU::Advance() et RunDMA()) decrit le meme probleme
+ * (jeux DeJig, Advanced V.G.) et retarde l'interruption de fin des seuls
+ * transferts immediats : 1 cycle vers 05C00000-05FBFFFF (VDP1/VDP2, Gunbird),
+ * 33 ailleurs, plus min(compte >> 4, 32). On reprend ces valeurs. Le delai
+ * est decompte dans ScuExec(), apres la fin du transfert, donc sur du temps
+ * ou le CPU tourne de nouveau (le bus CPU est libere a la fin). L'etat du
+ * DMA (DSTA, TransferNumber) est deja "termine" pendant le delai, comme dans
+ * Ymir. Hors de l'etat sauvegarde (quelques dizaines de cycles au plus). */
+static u8  ScuDmaImmediate[4];       /* indice : dma->id (1-3) */
+static s32 ScuDmaImmediateDelay[4];  /* delai calcule au lancement */
+static s32 ScuDmaEndPending[4];      /* >0 : fin a signaler dans N cycles */
+
+static void ScuDmaEndReset(void) {
+  memset(ScuDmaImmediate, 0, sizeof(ScuDmaImmediate));
+  memset(ScuDmaImmediateDelay, 0, sizeof(ScuDmaImmediateDelay));
+  memset(ScuDmaEndPending, 0, sizeof(ScuDmaEndPending));
+}
+
+static void ScuDmaSendEnd(int mode) {
+  switch (mode) {
+  case 0:
+    //LOG("DMA0 Finished!");
+    ScuSendLevel0DMAEnd();
+    break;
+  case 1:
+    //LOG("DMA1 Finished!");
+    ScuSendLevel1DMAEnd();
+    break;
+  case 2:
+    //LOG("DMA2 Finished!");
+    ScuSendLevel2DMAEnd();
+    break;
+  }
+}
+
+/* Appele au lancement par DxEN, apres ScuSetAddValue() : WriteAddress et
+ * TransferNumber sont ceux du premier transfert (entree de table comprise). */
+static void ScuDmaMarkImmediate(scudmainfo_struct * dma) {
+  u32 dst = dma->WriteAddress & 0x7FFFFFF;
+  s32 delay = ((dst >= 0x5C00000) && (dst <= 0x5FBFFFF)) ? 1 : 33;
+  s32 count = dma->TransferNumber;
+  if (dma->id >= 4) return;
+  if (ScuDmaEndPending[dma->id] > 0) {
+    /* Fin precedente pas encore signalee : ne pas la perdre. */
+    ScuDmaEndPending[dma->id] = 0;
+    ScuDmaSendEnd(dma->mode);
+  }
+  if (count > 0) delay += ((count >> 4) < 32) ? (count >> 4) : 32;
+  ScuDmaImmediate[dma->id] = 1;
+  ScuDmaImmediateDelay[dma->id] = delay;
+}
+
+static void ScuDmaSignalEnd(scudmainfo_struct * dma) {
+  if ((dma->id < 4) && ScuDmaImmediate[dma->id]) {
+    ScuDmaImmediate[dma->id] = 0;
+    ScuDmaEndPending[dma->id] = ScuDmaImmediateDelay[dma->id];
+    return;
+  }
+  ScuDmaSendEnd(dma->mode);
+}
+
+static void ScuDmaEndDelayTick(scudmainfo_struct * dma, u32 timing) {
+  if ((dma->id >= 4) || (ScuDmaEndPending[dma->id] <= 0)) return;
+  ScuDmaEndPending[dma->id] -= (s32)timing;
+  if (ScuDmaEndPending[dma->id] <= 0) {
+    ScuDmaEndPending[dma->id] = 0;
+    ScuDmaSendEnd(dma->mode);
+  }
+}
+
 void ScuDmaCheck(scudmainfo_struct * dma, int time) {
   int atime = time;
   if (dma->TransferNumber > 0) {
@@ -1256,20 +1348,7 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             /* Fin de table : DxWUP fait avancer DxW apres la derniere
              * entree (DxRUP est sans effet en mode indirect). */
             ScuDmaUpdateStartAddresses(dma, 1);
-            switch (dma->mode) {
-            case 0:
-              //LOG("DMA0 Finished!");
-              ScuSendLevel0DMAEnd();
-              break;
-            case 1:
-              //LOG("DMA1 Finished!");
-              ScuSendLevel1DMAEnd();
-              break;
-            case 2:
-              //LOG("DMA2 Finished!");
-              ScuSendLevel2DMAEnd();
-              break;
-            }
+            ScuDmaSignalEnd(dma);
             dma->TransferNumber = 0;
             return;
           }
@@ -1292,20 +1371,7 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
         /* Mode direct : DxRUP / DxWUP reportent les adresses atteintes
          * dans DxR / DxW pour le prochain declenchement. */
         ScuDmaUpdateStartAddresses(dma, 0);
-        switch (dma->mode) {
-        case 0:
-          //LOG("DMA0 Finished!");
-          ScuSendLevel0DMAEnd();
-          break;
-        case 1:
-          //LOG("DMA1 Finished!");
-          ScuSendLevel1DMAEnd();
-          break;
-        case 2:
-          //LOG("DMA2 Finished!");
-          ScuSendLevel2DMAEnd();
-          break;
-        }
+        ScuDmaSignalEnd(dma);
       }
     }
   }
@@ -2030,6 +2096,9 @@ static void ScuDspExec(u32 timing) {
 void ScuExec(u32 timing) {
 
   ScuTestAllInterrupt();
+  ScuDmaEndDelayTick(&ScuRegs->dma0, timing);
+  ScuDmaEndDelayTick(&ScuRegs->dma1, timing);
+  ScuDmaEndDelayTick(&ScuRegs->dma2, timing);
   ScuDmaProc(&ScuRegs->dma0, (int)timing - ScuRegs->dma0.consumedCycles);
   ScuDmaProc(&ScuRegs->dma1, (int)timing - ScuRegs->dma1.consumedCycles);
   ScuDmaProc(&ScuRegs->dma2, (int)timing - ScuRegs->dma2.consumedCycles);
@@ -3016,6 +3085,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma0.AddValue = ScuRegs->D0AD;
             ScuRegs->dma0.ModeAddressUpdate = ScuRegs->D0MD;
             ScuSetAddValue(&ScuRegs->dma0);
+            ScuDmaMarkImmediate(&ScuRegs->dma0);
             ScuRegs->dma0.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma0, ScuRegs->dma0.consumedCycles);
          }
@@ -3051,6 +3121,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma1.AddValue = ScuRegs->D1AD;
             ScuRegs->dma1.ModeAddressUpdate = ScuRegs->D1MD;
             ScuSetAddValue(&ScuRegs->dma1);
+            ScuDmaMarkImmediate(&ScuRegs->dma1);
             ScuRegs->dma1.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma1, ScuRegs->dma1.consumedCycles);
          }
@@ -3087,6 +3158,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma2.AddValue = ScuRegs->D2AD;
             ScuRegs->dma2.ModeAddressUpdate = ScuRegs->D2MD;
             ScuSetAddValue(&ScuRegs->dma2);
+            ScuDmaMarkImmediate(&ScuRegs->dma2);
             ScuRegs->dma2.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma2, ScuRegs->dma2.consumedCycles);
          }
@@ -3675,6 +3747,7 @@ int ScuLoadState(const void * stream, UNUSED int version, int size)
    ScuRegs->dma0.id = 1;
    ScuRegs->dma1.id = 2;
    ScuRegs->dma2.id = 3;
+   ScuDmaEndReset();
    if (version == 4) {
       MemStateRead((void *)ScuRegs, sizeof(Scu)-sizeof(scudmainfo_struct)*3, 1, stream);
       MemStateRead((void *)(&ScuRegs->dma0), sizeof(scudmainfo_struct)-sizeof(u32), 1, stream);
