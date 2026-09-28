@@ -4,7 +4,7 @@
 #include "cs2.h"
 #include "db.h"
 
-#define NB_GAMES_DB 31
+#define NB_GAMES_DB 35
 
 static GameDB GameDBList[NB_GAMES_DB] = {
    // note : SNK games were developped for 1MB cart,
@@ -19,6 +19,10 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { "T-1515G", 0, CART_DRAM8MBIT, NULL }, // Waku Waku 7
    { "T-3111G", 0, CART_DRAM8MBIT, NULL }, // Metal Slug
    { "GS-9107", 0, CART_DRAM8MBIT, NULL }, // Fighter's History Dynamite
+   { "T-16103H-09", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (FRENCH)
+   { "GS-9123", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (JAP)
+   { "T-16103H", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (USA)
+   { "T-81", 0, CART_DRAM8MBIT, NULL }, // Destruction Derby Prototyp   
    // other games should be fine with 4MB cart
    { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Astra Superstars
    { "T-9904G", 0, CART_DRAM32MBIT, NULL }, // Magical Night Dreams - Cotton 2
