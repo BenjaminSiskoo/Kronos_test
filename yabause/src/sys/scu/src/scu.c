@@ -32,6 +32,76 @@
 #include "yabause.h"
 #include <inttypes.h>
 
+/* Ecritures d'une DMA SCU dans la zone des registres VDP1 (25D00000-25D7FFFF).
+ *
+ * Quand une DMA sequentielle entre dans cette zone, seule sa premiere
+ * ecriture de registre est prise en compte ; les suivantes sont ignorees.
+ * C'est le comportement de Mednafen (ss/scu.inc, SCU_DMA_VDP1WriteIgnoreKludge,
+ * remis a 0 par StartDMATransfer() et par toute ecriture DMA dans la VRAM ou
+ * le frame buffer VDP1) : une ecriture est ignoree si elle vise 25D00004 ou
+ * au-dela alors qu'une ecriture de registre a deja eu lieu, ou si son rang
+ * est impair.
+ *
+ * GunBlaze-S (T-19710G) : un fichier de sprites sans donnees (en-tete MAD,
+ * compteurs nuls, FAD 0DFF) fait lancer au jeu une DMA niveau 0 de
+ * 06095728 vers 25C20620 avec D0C = 0, soit 100000H octets (TECH#39). Elle
+ * traverse la VRAM et le frame buffer VDP1 puis la zone des registres.
+ * Kronos appliquait toutes ces ecritures (et, avec addr &= 0xFF dans
+ * Vdp1WriteWord, repetees tous les 256 octets) : PTMR finissait a 0, le VDP1
+ * ne tracait plus, EDSR.CEF ne remontait jamais et la synchronisation de
+ * changement de frame du jeu (V-Blank OUT 0605CC54, attente 0605CB1E)
+ * bouclait sur un ecran noir. Avec cette regle, seul TVMR est ecrit par la
+ * DMA et PTMR garde la valeur 2 posee par le jeu. */
+static u32 ScuDmaVdp1RegWriteCount = 0;
+
+static INLINE void ScuDmaVdp1RegReset(void) {
+  ScuDmaVdp1RegWriteCount = 0;
+}
+
+static INLINE int ScuDmaVdp1RegWriteIgnored(u32 addr) {
+  u32 a = addr & 0x07FFFFFF;
+  int ignore;
+  if ((a < 0x05C00000) || (a > 0x05D7FFFF))
+    return 0;
+  if (a < 0x05D00000) {
+    /* VRAM ou frame buffer VDP1 */
+    ScuDmaVdp1RegWriteCount = 0;
+    return 0;
+  }
+  ignore = ((a >= 0x05D00004) && (ScuDmaVdp1RegWriteCount > 0))
+        || (ScuDmaVdp1RegWriteCount & 1);
+  ScuDmaVdp1RegWriteCount++;
+  return ignore;
+}
+
+static void ScuDmaWriteByte(u32 addr, u8 val) {
+  if (ScuDmaVdp1RegWriteIgnored(addr)) return;
+  DMAMappedMemoryWriteByte(addr, val);
+}
+
+static void ScuDmaWriteWord(u32 addr, u16 val) {
+  if (ScuDmaVdp1RegWriteIgnored(addr)) return;
+  DMAMappedMemoryWriteWord(addr, val);
+}
+
+static void ScuDmaWriteLong(u32 addr, u32 val) {
+  u32 a = addr & 0x07FFFFFF;
+  if ((a >= 0x05D00000) && (a <= 0x05D7FFFF)) {
+    /* registres VDP1 : bus 16 bits, deux ecritures */
+    ScuDmaWriteWord(addr, (u16)(val >> 16));
+    ScuDmaWriteWord(addr + 2, (u16)val);
+    return;
+  }
+  (void)ScuDmaVdp1RegWriteIgnored(addr);
+  DMAMappedMemoryWriteLong(addr, val);
+}
+
+/* Toutes les ecritures DMA de ce fichier passent par les fonctions
+   ci-dessus. */
+#define DMAMappedMemoryWriteByte ScuDmaWriteByte
+#define DMAMappedMemoryWriteWord ScuDmaWriteWord
+#define DMAMappedMemoryWriteLong ScuDmaWriteLong
+
 Scu * ScuRegs;
 scudspregs_struct * ScuDsp;
 scubp_struct * ScuBP;
@@ -842,6 +912,9 @@ static void ScuClampIndirectTransferNumber(scudmainfo_struct * dmainfo) {
 
 void ScuSetAddValue(scudmainfo_struct * dmainfo) {
 
+  /* nouveau transfert (Mednafen : StartDMATransfer) */
+  ScuDmaVdp1RegReset();
+
   if (dmainfo->AddValue & 0x100)
     dmainfo->ReadAdd = 4;
   else
@@ -1357,6 +1430,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             dma->WriteAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 4);
             dma->ReadAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 8);
             dma->InDirectAdress += 0xC;
+            /* entree suivante de la table : nouveau transfert (Mednafen :
+               NextIndirect -> StartDMATransfer) */
+            ScuDmaVdp1RegReset();
             /* Meme borne qu'au chargement initial de la table : chaque
              * entree rechargee est un compte sur 20 bits (STTECH39). */
             ScuClampIndirectTransferNumber(dma);
