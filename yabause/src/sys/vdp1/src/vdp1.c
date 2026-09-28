@@ -3516,7 +3516,10 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       {
          // 4 bpp LUT mode
          u32 temp;
-         u32 colorLut = cmd.CMDCOLR * 8;
+         /* LUT : adresse = CMDCOLR x 8, bits 1-0 de CMDCOLR ignores,
+          * comme dans le renderer (vdp1_prog_compute.h) et Mednafen
+          * (ss/vdp1_sprite.c). */
+         u32 colorLut = (cmd.CMDCOLR & 0xFFFC) * 8;
          u16 i;
 
          for(i = 0;i < h[0];i++)
