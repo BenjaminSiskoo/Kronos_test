@@ -153,6 +153,21 @@ YabMutex * g_scsp_set_cyc_mtx = NULL;
 YabMutex * g_scsp_set_cond_mtx = NULL;
 YabCond * g_scsp_set_cyc_cond = NULL;
 
+/* Samples in the current frame, set by the main thread at the start of each
+   frame (ScspSetFrameSamples): 882 in PAL, 735 or 736 in NTSC (59.94 Hz). */
+static volatile u32 scsp_frame_samples = 735;
+
+void ScspSetFrameSamples(u32 samples)
+{
+  if (samples == 0)
+    return;
+  if (g_scsp_set_cyc_mtx != NULL)
+    YabThreadLock(g_scsp_set_cyc_mtx);
+  scsp_frame_samples = samples;
+  if (g_scsp_set_cyc_mtx != NULL)
+    YabThreadUnLock(g_scsp_set_cyc_mtx);
+}
+
 #define CLOCK_SYNC_SHIFT (4)
 
 enum EnvelopeStates
@@ -304,6 +319,7 @@ struct SlotState
 
    int num;
    int is_muted;
+   int keyed;   // internal KEY_ON state latched by KYONEX (ST-077-R2 Figure 4.8)
 };
 
 struct Slot
@@ -959,10 +975,22 @@ void scsp_debug_get_envelope(int chan, int * env, int * state)
 
 
 
+// ST-077-R2 Figure 4.8 (KEY_ON and KEY_OFF Sequence): KYONEX latches each
+// slot's KYONB into an internal KEY_ON state. A KYONEX that finds KYONB = 1
+// on a slot already in the ON state is ignored ("Ignore"); only a slot that
+// went through KEY_OFF can be keyed on again.
+// That state is not the envelope: a one-shot that reaches LEA stops as if
+// released (end condition (2), op2) but stays keyed on until its KYONB is
+// cleared. Testing the envelope instead restarted every finished one-shot
+// whose KYONB was still 1 on the next KYONEX, i.e. whenever the sound driver
+// started any other sound. The SEGA driver leaves KYONB set on its one-shots:
+// Defcon 5's gunshot (slots 18/19, 8-bit, no loop) played again each time
+// another sound was keyed on, three or four times per shot.
 void keyon(struct Slot * slot)
 {
-   if (slot->state.envelope == RELEASE )
+   if (!slot->state.keyed)
    {
+      slot->state.keyed = 1;
      change_envelope_state(slot, ATTACK);
       slot->state.attenuation = 0x280;
       slot->state.sample_counter = 0;
@@ -1027,6 +1055,7 @@ void keyon(struct Slot * slot)
 
 void keyoff(struct Slot * slot)
 {
+   slot->state.keyed = 0;
    change_envelope_state(slot, RELEASE);
 
    // Key-off of a slot whose envelope had already decayed to silence:
@@ -4889,6 +4918,39 @@ SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Cost of an SH-2 write to sound RAM over the SCU B-bus.
+ *
+ * Reads already pay for the bus (SyncSh2And68k adds 50 cycles), but writes
+ * were free: an SH-2 filling sound RAM ran at Work RAM speed. On hardware the
+ * SCSP is on the B-bus and every 16-bit access holds it for a long time.
+ * Mednafen (ss/scu.inc, BBusRW_DB_*_W1_*, SCSP branch) books 2 + 17 bus cycles
+ * for a 16-bit (or 8-bit) SH-2 write, and 2 + 17 then 13 for the two halves of
+ * a 32-bit one; the writes are posted, so a CPU that writes again right away
+ * waits for the previous one to finish. A copy or clear loop therefore runs
+ * at about one write per bus access time, which is what is charged here.
+ *
+ * Ginga Eiyuu Densetsu Plus depends on it. After its clock change the master
+ * wakes the slave with a "build tables" command (0x08), rewrites the 68000
+ * vector area of sound RAM (256 long writes at 25A00000, 06025EA4), then
+ * queues the next commands for the slave. The slave's table (060F51D8, three
+ * 1 KB planes) overlaps the command queue at 060F55D8. On hardware the sound
+ * RAM loop keeps the master busy for several lines, the slave has written its
+ * table first and the queued commands survive. With free writes the master
+ * queued its commands first, the slave's table overwrote them, the "display
+ * list" command never ran, the frame-ready flag (060FFCA8) stayed 0 and both
+ * CPUs waited for each other forever (black screen after the video with the
+ * debug core, stuck on the TrueMotion screen with the performance core).
+ *
+ * DMA and 68000 accesses pass context == NULL and are not charged here. */
+#define SCSP_SH2_WRITE16_CYCLES 19   /* 2 + 17 */
+#define SCSP_SH2_WRITE32_CYCLES 32   /* 2 + 17 + 13 */
+
+static INLINE void SoundRamSh2WriteCost(SH2_struct *context, u32 cycles)
+{
+  if (context != NULL)
+    SH2Core->AddCycle(context, cycles);
+}
+
 void FASTCALL
 SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 {
@@ -4900,6 +4962,7 @@ SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 
   T2WriteByte (mem, addr, val);
   M68K->WriteNotify (addr, 1);
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -4955,6 +5018,7 @@ SoundRamWriteWord (SH2_struct *context, u8* mem, u32 addr, u16 val)
   //SCSPLOG("SoundRamWriteWord %08X:%04X", addr, val);
   T2WriteWord (mem, addr, val);
   M68K->WriteNotify (addr, 2);
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5001,7 +5065,7 @@ SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
   //SCSPLOG("SoundRamWriteLong %08X:%08X", addr, val);
   T2WriteLong (mem, addr, val);
   M68K->WriteNotify (addr, 4);
-
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE32_CYCLES);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5045,7 +5109,7 @@ ScspInit (int coreid)
   m68kexecptr = M68K->Exec;
 
   // Allocate enough memory for each channel buffer(may have to change)
-  scspsoundlen = 44100 / fps;
+  scspsoundlen = (fps == 50) ? 882 : 736; /* nominal, rounded up (59.94 Hz) */
   scsplines = 263;
   scspsoundbufs = 10; // should be enough to prevent skipping
   scspsoundbufsize = scspsoundlen * scspsoundbufs;
@@ -5184,9 +5248,32 @@ M68KStop (void)
        no DSP program was loaded, and the game had no sound at all.
 
        Saturn only: on ST-V the 68000 is driven through PDR2 and this path is
-       not the SMPC sound reset. */
-    if (!yabsys.isSTV)
+       not the SMPC sound reset.
+
+       MEM4MB (register 400h bit 9) is kept across SNDOFF. Kronos applies it
+       to sound RAM accesses: with MEM4MB = 0 the RAM is folded every 128 KB
+       (SoundRamReadXxx / SoundRamWriteXxx). Grand Slam (Virgin, USA) stops the sound CPU,
+       then clears the whole 512 KB and builds its own sound RAM heap at
+       25A0B000-25A7FFFF from the SH-2 before its new 68000 program sets
+       MEM4MB again. With MEM4MB cleared by SNDOFF, the clear of 25A2B000
+       folded onto 25A0B000 and wiped the heap header: every allocation in
+       sound RAM failed, a NULL node went into a linked list and the master
+       SH-2 walked into address errors on the loading screen. The game works
+       on hardware, so MEM4MB cannot have dropped back to 1 Mbit there.
+       Mednafen (ss/smpc.c TurnSoundCPUOff -> SOUND_Reset68K) and Ymir
+       (SMPC::SNDOFF -> SCSP::SetCPUEnabled(false)) only reset the 68000 and
+       leave every SCSP register, MEM4MB included, untouched. ST-166 and
+       ST-241 ("Activating the sound driver") write 02h to 25B00400 after
+       SOUND OFF as part of the power-on sequence, when sound memory and the
+       SCSP are in an unknown state. Only the registers Independence Day needs
+       cleared (timers, interrupts, slots) are reset here. */
+    if (!yabsys.isSTV) {
+      u32 mem4b = scsp.mem4b;
       scsp_reset();
+      scsp.mem4b = mem4b;
+      if (mem4b)
+        *(u16 *)&scsp_ccr[0x00 ^ 2] |= 0x0200;   /* register 400h, MEM4MB */
+    }
     IsM68KRunning = 0;
   }
 }
@@ -5214,7 +5301,10 @@ int
 ScspChangeVideoFormat (int type)
 {
   fps = type ? 50.0 : 60.0;
-  scspsoundlen = 44100 / (type ? 50 : 60);
+  /* default until the main thread sets the real count of the frame */
+  scsp_frame_samples = type ? 882 : 735;
+  /* nominal samples per frame, rounded up (736 at 59.94 Hz) */
+  scspsoundlen = type ? 882 : 736;
   scsplines = type ? 313 : 263;
   scspsoundbufsize = scspsoundlen * scspsoundbufs;
 
@@ -5457,7 +5547,10 @@ void* ScspAsynMainCpu( void * p ){
 
   while (thread_running)
   {
-    int framecnt = (44100 * samplecnt) / fps; // 11289600/60
+    /* End of the frame in 68000 cycles. Read under g_scsp_set_cyc_mtx each
+       time cycles are taken: the main thread sets the sample count of the
+       frame before it hands out its first cycles. */
+    int framecnt = (int)(scsp_frame_samples * samplecnt);
     while (g_scsp_lock)
     {
 	    YabThreadUSleep(1000);
@@ -5468,6 +5561,7 @@ void* ScspAsynMainCpu( void * p ){
     newCycles = 0;
     m68k_inc += cycleRequest;
     scsp_pending_inc = m68k_inc;
+    framecnt = (int)(scsp_frame_samples * samplecnt);
     YabThreadUnLock(g_scsp_set_cyc_mtx);
     if (cycleRequest == 0){
       YabThreadCondWait(g_scsp_set_cyc_cond, g_scsp_set_cond_mtx);
@@ -5476,6 +5570,7 @@ void* ScspAsynMainCpu( void * p ){
       newCycles = 0;
       m68k_inc += cycleRequest;
       scsp_pending_inc = m68k_inc;
+      framecnt = (int)(scsp_frame_samples * samplecnt);
       YabThreadUnLock(g_scsp_set_cyc_mtx);
     }
 
@@ -5549,31 +5644,40 @@ void ScspExecAsync() {
 
   if (ScspInternalVars->scsptiming1 >= scsplines)
   {
-     s32 *bufL, *bufR;
+     /* Samples actually produced during this frame (one per 256 68000
+        cycles, see new_scsp_exec): 882 in PAL, 735 or 736 in NTSC. The
+        frame length is no longer a fixed scspsoundlen, so the samples are
+        copied into the ring buffer one by one, wrapping at its end, instead
+        of rewinding scspsoundgenpos to 0 (which would now leave a gap of
+        stale samples at the end of the buffer). */
+     u32 len = (new_scsp_outbuf_pos > 0) ? (u32)new_scsp_outbuf_pos : 0;
+     u32 i;
 
      ScspInternalVars->scsptiming1 -= scsplines;
      ScspInternalVars->scsptiming2 = 0;
 
-     // Update sound buffers
-     if (scspsoundgenpos + scspsoundlen > scspsoundbufsize)
-        scspsoundgenpos = 0;
+     if (len > 900)
+        len = 900;  /* size of new_scsp_outbuf_l/r */
+     if (len > scspsoundbufsize)
+        len = scspsoundbufsize;
 
-     if (scspsoundoutleft + scspsoundlen > scspsoundbufsize)
+     if (scspsoundoutleft + len > scspsoundbufsize)
      {
-        u32 overrun = (scspsoundoutleft + scspsoundlen) -
-           scspsoundbufsize;
+        u32 overrun = (scspsoundoutleft + len) - scspsoundbufsize;
         SCSPLOG("WARNING: Sound buffer overrun, %lu samples\n",
            (long)overrun);
         scspsoundoutleft -= overrun;
      }
 
-     bufL = (s32 *)&scspchannel[0].data32[scspsoundgenpos];
-     bufR = (s32 *)&scspchannel[1].data32[scspsoundgenpos];
-     memset(bufL, 0, sizeof(u32) * scspsoundlen);
-     memset(bufR, 0, sizeof(u32) * scspsoundlen);
-     new_scsp_update_samples(bufL, bufR, scspsoundlen);
-     scspsoundgenpos += scspsoundlen;
-     scspsoundoutleft += scspsoundlen;
+     for (i = 0; i < len; i++)
+     {
+        u32 pos = (scspsoundgenpos + i) % scspsoundbufsize;
+        scspchannel[0].data32[pos] = (u32)new_scsp_outbuf_l[i];
+        scspchannel[1].data32[pos] = (u32)new_scsp_outbuf_r[i];
+     }
+     new_scsp_outbuf_pos = 0;
+     scspsoundgenpos = (scspsoundgenpos + len) % scspsoundbufsize;
+     scspsoundoutleft += len;
   }
 
   while (scspsoundoutleft > 0 &&
@@ -6228,6 +6332,8 @@ if (IsM68KRunning != newM68state) {
     MemStateRead((void *)&new_scsp.slots[i].state.lfo_pos, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.num, sizeof(u32), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].state.is_muted, sizeof(u32), 1, stream);
+    // not in the save state: a slot that is still sounding is keyed on
+    new_scsp.slots[i].state.keyed = (new_scsp.slots[i].state.envelope != RELEASE);
 
   }
 

@@ -32,6 +32,76 @@
 #include "yabause.h"
 #include <inttypes.h>
 
+/* Ecritures d'une DMA SCU dans la zone des registres VDP1 (25D00000-25D7FFFF).
+ *
+ * Quand une DMA sequentielle entre dans cette zone, seule sa premiere
+ * ecriture de registre est prise en compte ; les suivantes sont ignorees.
+ * C'est le comportement de Mednafen (ss/scu.inc, SCU_DMA_VDP1WriteIgnoreKludge,
+ * remis a 0 par StartDMATransfer() et par toute ecriture DMA dans la VRAM ou
+ * le frame buffer VDP1) : une ecriture est ignoree si elle vise 25D00004 ou
+ * au-dela alors qu'une ecriture de registre a deja eu lieu, ou si son rang
+ * est impair.
+ *
+ * GunBlaze-S (T-19710G) : un fichier de sprites sans donnees (en-tete MAD,
+ * compteurs nuls, FAD 0DFF) fait lancer au jeu une DMA niveau 0 de
+ * 06095728 vers 25C20620 avec D0C = 0, soit 100000H octets (TECH#39). Elle
+ * traverse la VRAM et le frame buffer VDP1 puis la zone des registres.
+ * Kronos appliquait toutes ces ecritures (et, avec addr &= 0xFF dans
+ * Vdp1WriteWord, repetees tous les 256 octets) : PTMR finissait a 0, le VDP1
+ * ne tracait plus, EDSR.CEF ne remontait jamais et la synchronisation de
+ * changement de frame du jeu (V-Blank OUT 0605CC54, attente 0605CB1E)
+ * bouclait sur un ecran noir. Avec cette regle, seul TVMR est ecrit par la
+ * DMA et PTMR garde la valeur 2 posee par le jeu. */
+static u32 ScuDmaVdp1RegWriteCount = 0;
+
+static INLINE void ScuDmaVdp1RegReset(void) {
+  ScuDmaVdp1RegWriteCount = 0;
+}
+
+static INLINE int ScuDmaVdp1RegWriteIgnored(u32 addr) {
+  u32 a = addr & 0x07FFFFFF;
+  int ignore;
+  if ((a < 0x05C00000) || (a > 0x05D7FFFF))
+    return 0;
+  if (a < 0x05D00000) {
+    /* VRAM ou frame buffer VDP1 */
+    ScuDmaVdp1RegWriteCount = 0;
+    return 0;
+  }
+  ignore = ((a >= 0x05D00004) && (ScuDmaVdp1RegWriteCount > 0))
+        || (ScuDmaVdp1RegWriteCount & 1);
+  ScuDmaVdp1RegWriteCount++;
+  return ignore;
+}
+
+static void ScuDmaWriteByte(u32 addr, u8 val) {
+  if (ScuDmaVdp1RegWriteIgnored(addr)) return;
+  DMAMappedMemoryWriteByte(addr, val);
+}
+
+static void ScuDmaWriteWord(u32 addr, u16 val) {
+  if (ScuDmaVdp1RegWriteIgnored(addr)) return;
+  DMAMappedMemoryWriteWord(addr, val);
+}
+
+static void ScuDmaWriteLong(u32 addr, u32 val) {
+  u32 a = addr & 0x07FFFFFF;
+  if ((a >= 0x05D00000) && (a <= 0x05D7FFFF)) {
+    /* registres VDP1 : bus 16 bits, deux ecritures */
+    ScuDmaWriteWord(addr, (u16)(val >> 16));
+    ScuDmaWriteWord(addr + 2, (u16)val);
+    return;
+  }
+  (void)ScuDmaVdp1RegWriteIgnored(addr);
+  DMAMappedMemoryWriteLong(addr, val);
+}
+
+/* Toutes les ecritures DMA de ce fichier passent par les fonctions
+   ci-dessus. */
+#define DMAMappedMemoryWriteByte ScuDmaWriteByte
+#define DMAMappedMemoryWriteWord ScuDmaWriteWord
+#define DMAMappedMemoryWriteLong ScuDmaWriteLong
+
 Scu * ScuRegs;
 scudspregs_struct * ScuDsp;
 scubp_struct * ScuBP;
@@ -105,6 +175,8 @@ void ScuDeInit(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+static void ScuDmaEndReset(void);
+
 void ScuReset(u8 powering_up) {
    if (ScuRegs == NULL) return;
 
@@ -146,6 +218,7 @@ void ScuReset(u8 powering_up) {
    ScuRegs->dma0.id = 1;
    ScuRegs->dma1.id = 2;
    ScuRegs->dma2.id = 3;
+   ScuDmaEndReset();
 
    currentInterrupt = 0xFF;
 
@@ -839,6 +912,9 @@ static void ScuClampIndirectTransferNumber(scudmainfo_struct * dmainfo) {
 
 void ScuSetAddValue(scudmainfo_struct * dmainfo) {
 
+  /* nouveau transfert (Mednafen : StartDMATransfer) */
+  ScuDmaVdp1RegReset();
+
   if (dmainfo->AddValue & 0x100)
     dmainfo->ReadAdd = 4;
   else
@@ -1245,6 +1321,95 @@ static void ScuDmaUpdateStartAddresses(scudmainfo_struct * dma, int indirect) {
   }
 }
 
+/* Fin des transferts SCU-DMA lances par une ecriture DxEN (facteur 111B).
+ *
+ * Pendant qu'un transfert touche le bus CPU (Work RAM), Kronos arrete le
+ * SH-2 pour toute sa duree (setupBusConcurrency(), A_BUS_ACCESS). Sur le
+ * materiel, le SCU ne prend le bus CPU que pour ses propres acces a la Work
+ * RAM ; un transfert vers le B-Bus (VDP1, VDP2, SCSP) est limite par ce
+ * B-Bus, et le CPU continue d'avancer pendant ce temps. Ici, le CPU restait
+ * donc fige juste apres l'ecriture DxEN, et l'interruption de fin etait
+ * prise avant meme les instructions suivantes.
+ *
+ * Or plusieurs jeux initialisent leur drapeau "DMA en cours" APRES avoir
+ * lance le transfert. Fully Cowled Mini Yonku : D2EN en 06014C9C, puis 8
+ * dans le drapeau 060FFCBD en 06014CA0 ; le gestionnaire de fin de DMA
+ * niveau 2 (06014690) y ajoute le bit 2. Relevé kronos_dma2.log : DMA de
+ * 400H octets vers la RAM son lance en 06014C9C, fin 493 cycles plus tard,
+ * interruption prise avec PC interrompu = 06014CA0, puis le 8 ecrase le
+ * bit 2 ; le gestionnaire V-Blank IN attend ensuite ce bit indefiniment en
+ * 06014740 (gel sur l'ecran PRESS START).
+ *
+ * Ymir (hw/scu/scu.cpp, SCU::Advance() et RunDMA()) decrit le meme probleme
+ * (jeux DeJig, Advanced V.G.) et retarde l'interruption de fin des seuls
+ * transferts immediats : 1 cycle vers 05C00000-05FBFFFF (VDP1/VDP2, Gunbird),
+ * 33 ailleurs, plus min(compte >> 4, 32). On reprend ces valeurs. Le delai
+ * est decompte dans ScuExec(), apres la fin du transfert, donc sur du temps
+ * ou le CPU tourne de nouveau (le bus CPU est libere a la fin). L'etat du
+ * DMA (DSTA, TransferNumber) est deja "termine" pendant le delai, comme dans
+ * Ymir. Hors de l'etat sauvegarde (quelques dizaines de cycles au plus). */
+static u8  ScuDmaImmediate[4];       /* indice : dma->id (1-3) */
+static s32 ScuDmaImmediateDelay[4];  /* delai calcule au lancement */
+static s32 ScuDmaEndPending[4];      /* >0 : fin a signaler dans N cycles */
+
+static void ScuDmaEndReset(void) {
+  memset(ScuDmaImmediate, 0, sizeof(ScuDmaImmediate));
+  memset(ScuDmaImmediateDelay, 0, sizeof(ScuDmaImmediateDelay));
+  memset(ScuDmaEndPending, 0, sizeof(ScuDmaEndPending));
+}
+
+static void ScuDmaSendEnd(int mode) {
+  switch (mode) {
+  case 0:
+    //LOG("DMA0 Finished!");
+    ScuSendLevel0DMAEnd();
+    break;
+  case 1:
+    //LOG("DMA1 Finished!");
+    ScuSendLevel1DMAEnd();
+    break;
+  case 2:
+    //LOG("DMA2 Finished!");
+    ScuSendLevel2DMAEnd();
+    break;
+  }
+}
+
+/* Appele au lancement par DxEN, apres ScuSetAddValue() : WriteAddress et
+ * TransferNumber sont ceux du premier transfert (entree de table comprise). */
+static void ScuDmaMarkImmediate(scudmainfo_struct * dma) {
+  u32 dst = dma->WriteAddress & 0x7FFFFFF;
+  s32 delay = ((dst >= 0x5C00000) && (dst <= 0x5FBFFFF)) ? 1 : 33;
+  s32 count = dma->TransferNumber;
+  if (dma->id >= 4) return;
+  if (ScuDmaEndPending[dma->id] > 0) {
+    /* Fin precedente pas encore signalee : ne pas la perdre. */
+    ScuDmaEndPending[dma->id] = 0;
+    ScuDmaSendEnd(dma->mode);
+  }
+  if (count > 0) delay += ((count >> 4) < 32) ? (count >> 4) : 32;
+  ScuDmaImmediate[dma->id] = 1;
+  ScuDmaImmediateDelay[dma->id] = delay;
+}
+
+static void ScuDmaSignalEnd(scudmainfo_struct * dma) {
+  if ((dma->id < 4) && ScuDmaImmediate[dma->id]) {
+    ScuDmaImmediate[dma->id] = 0;
+    ScuDmaEndPending[dma->id] = ScuDmaImmediateDelay[dma->id];
+    return;
+  }
+  ScuDmaSendEnd(dma->mode);
+}
+
+static void ScuDmaEndDelayTick(scudmainfo_struct * dma, u32 timing) {
+  if ((dma->id >= 4) || (ScuDmaEndPending[dma->id] <= 0)) return;
+  ScuDmaEndPending[dma->id] -= (s32)timing;
+  if (ScuDmaEndPending[dma->id] <= 0) {
+    ScuDmaEndPending[dma->id] = 0;
+    ScuDmaSendEnd(dma->mode);
+  }
+}
+
 void ScuDmaCheck(scudmainfo_struct * dma, int time) {
   int atime = time;
   if (dma->TransferNumber > 0) {
@@ -1256,20 +1421,7 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             /* Fin de table : DxWUP fait avancer DxW apres la derniere
              * entree (DxRUP est sans effet en mode indirect). */
             ScuDmaUpdateStartAddresses(dma, 1);
-            switch (dma->mode) {
-            case 0:
-              //LOG("DMA0 Finished!");
-              ScuSendLevel0DMAEnd();
-              break;
-            case 1:
-              //LOG("DMA1 Finished!");
-              ScuSendLevel1DMAEnd();
-              break;
-            case 2:
-              //LOG("DMA2 Finished!");
-              ScuSendLevel2DMAEnd();
-              break;
-            }
+            ScuDmaSignalEnd(dma);
             dma->TransferNumber = 0;
             return;
           }
@@ -1278,6 +1430,9 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
             dma->WriteAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 4);
             dma->ReadAddress = DMAMappedMemoryReadLong(dma->InDirectAdress + 8);
             dma->InDirectAdress += 0xC;
+            /* entree suivante de la table : nouveau transfert (Mednafen :
+               NextIndirect -> StartDMATransfer) */
+            ScuDmaVdp1RegReset();
             /* Meme borne qu'au chargement initial de la table : chaque
              * entree rechargee est un compte sur 20 bits (STTECH39). */
             ScuClampIndirectTransferNumber(dma);
@@ -1292,20 +1447,7 @@ void ScuDmaCheck(scudmainfo_struct * dma, int time) {
         /* Mode direct : DxRUP / DxWUP reportent les adresses atteintes
          * dans DxR / DxW pour le prochain declenchement. */
         ScuDmaUpdateStartAddresses(dma, 0);
-        switch (dma->mode) {
-        case 0:
-          //LOG("DMA0 Finished!");
-          ScuSendLevel0DMAEnd();
-          break;
-        case 1:
-          //LOG("DMA1 Finished!");
-          ScuSendLevel1DMAEnd();
-          break;
-        case 2:
-          //LOG("DMA2 Finished!");
-          ScuSendLevel2DMAEnd();
-          break;
-        }
+        ScuDmaSignalEnd(dma);
       }
     }
   }
@@ -2030,6 +2172,9 @@ static void ScuDspExec(u32 timing) {
 void ScuExec(u32 timing) {
 
   ScuTestAllInterrupt();
+  ScuDmaEndDelayTick(&ScuRegs->dma0, timing);
+  ScuDmaEndDelayTick(&ScuRegs->dma1, timing);
+  ScuDmaEndDelayTick(&ScuRegs->dma2, timing);
   ScuDmaProc(&ScuRegs->dma0, (int)timing - ScuRegs->dma0.consumedCycles);
   ScuDmaProc(&ScuRegs->dma1, (int)timing - ScuRegs->dma1.consumedCycles);
   ScuDmaProc(&ScuRegs->dma2, (int)timing - ScuRegs->dma2.consumedCycles);
@@ -2905,14 +3050,43 @@ struct intCtrl ScuInterrupt[30] = {
 
 };
 
+/* Ecriture partielle (octet ou mot) du registre d'etat des interruptions
+ * IST (25FE00A4H-25FE00A7H). Le registre fait 32 bits ; une ecriture
+ * octet ou mot ne concerne que les bits de sa voie (le SH-2 est gros-boutiste :
+ * A4 = bits 31-24, A5 = 23-16, A6 = 15-8, A7 = 7-0). Comme pour l'ecriture
+ * mot long, un 0 efface le bit et un 1 le laisse tel quel.
+ *
+ * L'ancien code faisait "IST &= val" avec val sur 8 bits en A7 : les bits
+ * 31-8 etaient tous effaces (interruptions A-Bus, fins de DMA, fin de trace
+ * sprite...) et les ecritures en A4/A5/A6 etaient ignorees. Mednafen
+ * (ss/scu.inc, case 0xA4 : IPending &= DB | ~mask) applique le masque de voie.
+ *
+ * TECH#10 / ST-210 No. 07 interdit aux applications d'ecrire dans IST ; le
+ * boot ROM le fait (SYS_SETSCUIM / SYS_CHGSCUIM, ST-162 2.1/2.2) en mot long.
+ * Ce chemin ne sert donc qu'a un logiciel qui ne respecte pas cette regle. */
+static void ScuWriteISTPartial(u32 val, u32 lanemask)
+{
+   u32 keep = val | ~lanemask;
+   if (needEvaluate != 0) {
+     ScuTestAllInterrupt();
+   }
+   ScuRegs->IST &= keep;
+   ScuRegs->ITEdge &= keep;
+   needEvaluate = 1;
+}
+
 void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
    addr &= 0xFF;
    switch(addr) {
+      case 0xA4:
+      case 0xA5:
+      case 0xA6:
       case 0xA7:
-         ScuRegs->IST &= val; // double check this
-         ScuRegs->ITEdge &= val;
-         needEvaluate = 1;
+      {
+         u32 shift = (3 - (addr & 3)) * 8;
+         ScuWriteISTPartial((u32)val << shift, 0xFFu << shift);
          return;
+      }
       default:
          LOG("Unhandled SCU Register byte write %08X\n", addr);
          return;
@@ -2921,9 +3095,20 @@ void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, UNUSED u16 val) {
+void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
    addr &= 0xFF;
-   LOG("Unhandled SCU Register word write %08X\n", addr);
+   switch(addr) {
+      case 0xA4:
+      case 0xA6:
+      {
+         u32 shift = (addr & 2) ? 0 : 16;
+         ScuWriteISTPartial((u32)val << shift, 0xFFFFu << shift);
+         return;
+      }
+      default:
+         LOG("Unhandled SCU Register word write %08X\n", addr);
+         return;
+   }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2976,6 +3161,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma0.AddValue = ScuRegs->D0AD;
             ScuRegs->dma0.ModeAddressUpdate = ScuRegs->D0MD;
             ScuSetAddValue(&ScuRegs->dma0);
+            ScuDmaMarkImmediate(&ScuRegs->dma0);
             ScuRegs->dma0.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma0, ScuRegs->dma0.consumedCycles);
          }
@@ -3011,6 +3197,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma1.AddValue = ScuRegs->D1AD;
             ScuRegs->dma1.ModeAddressUpdate = ScuRegs->D1MD;
             ScuSetAddValue(&ScuRegs->dma1);
+            ScuDmaMarkImmediate(&ScuRegs->dma1);
             ScuRegs->dma1.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma1, ScuRegs->dma1.consumedCycles);
          }
@@ -3047,6 +3234,7 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
             ScuRegs->dma2.AddValue = ScuRegs->D2AD;
             ScuRegs->dma2.ModeAddressUpdate = ScuRegs->D2MD;
             ScuSetAddValue(&ScuRegs->dma2);
+            ScuDmaMarkImmediate(&ScuRegs->dma2);
             ScuRegs->dma2.consumedCycles = (sh->target_cycles - sh->cycles)/2;
             ScuDmaProc(&ScuRegs->dma2, ScuRegs->dma2.consumedCycles);
          }
@@ -3164,9 +3352,58 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
   if (currentInterrupt >= (sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])))
     return;
 
+  /* Le bit du registre d'etat des interruptions (IST, 25FE00A4H) retombe
+   * quand le SCU livre l'interruption au SH2 maitre. Kronos ne l'effacait
+   * que sur ecriture logicielle de IST : un facteur deja servi restait donc
+   * affiche a 1 pour toujours.
+   *
+   * ST-210 No. 07 / STTECH10 : ecrire dans IST est interdit aux applications
+   * (seuls SYS_SETSCUIM / SYS_CHGSCUIM du boot ROM le font, ST-162 2.1/2.2).
+   * Un programme ne peut donc voir un bit IST repasser a 0 que par ce
+   * mecanisme materiel. Mednafen (ss/scu.inc, CheckDoMasterInt) et Ymir
+   * (hw/scu/scu.cpp, UpdateMasterInterruptLevel) effacent le bit au moment
+   * ou l'interruption est presentee au maitre.
+   *
+   * Densetsu no Ogre Battle (T-5305G) attend, juste apres avoir demarre le
+   * slave, que son gestionnaire V-Blank OUT ait tourne : boucle a 060046A0
+   * sur (IST & 2) != 0. Avec un bit colle a 1, le maitre y restait
+   * indefiniment, ecran noir, sans erreur (IST lu 00002887 a chaque trame).
+   *
+   * Seul le maitre est concerne : les V-Blank IN / H-Blank IN du slave
+   * viennent directement du VDP2 et non du SCU (STTECH28 2.3), ils ne
+   * doivent pas effacer l'etat vu par le maitre. */
+  if (sh == MSH2)
+    ScuRegs->IST &= ~ScuInterrupt[currentInterrupt].status;
+
   ScuRegs->ITEdge &= ~ScuInterrupt[currentInterrupt].status;
   currentInterrupt = 0xFF;
   needEvaluate = 1;
+}
+
+/* Le maitre prend l'interruption de vecteur 'vector' (mode vecteur externe) :
+ * acquitte CETTE source. Entre la reservation par le SH-2 et la prise, le SCU
+ * a pu presenter une source plus prioritaire (currentInterrupt a change) :
+ * ScuAcceptInterrupt(), qui acquitte currentInterrupt, effacerait alors la
+ * mauvaise source, et la plus prioritaire serait perdue. Le verrou n'est
+ * libere que s'il porte bien cette source ; sinon la source verrouillee reste
+ * presentee au CPU. Vecteur hors SCU : rien a faire.
+ *
+ * Le bit IST n'est efface que si le verrou porte encore cette source, comme
+ * le faisait ScuAcceptInterrupt(). Il ne l'est pas quand le slave a deja pris
+ * la meme source (V-Blank IN, H-Blank IN, presentees aux deux CPU) et libere
+ * le verrou partage : l'effacer dans ce cas faisait bloquer Space Jam juste
+ * avant d'entrer en jeu. ITEdge (le front deja servi) est toujours efface. */
+void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector) {
+  int i;
+  for (i = 0; i < (int)(sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])); i++) {
+    if (ScuInterrupt[i].vector != vector) continue;
+    if ((sh == MSH2) && (currentInterrupt == i))
+      ScuRegs->IST &= ~ScuInterrupt[i].status;
+    ScuRegs->ITEdge &= ~ScuInterrupt[i].status;
+    if (currentInterrupt == i) currentInterrupt = 0xFF;
+    needEvaluate = 1;
+    return;
+  }
 }
 
 static void ScuTestInterruptMask(u8 i)
@@ -3316,19 +3553,73 @@ void ScuSendVBlankOUT(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 
+/* Timer 0 : compte les debuts de H-Blank IN depuis le V-Blank OUT, sur TOUTES
+
+ * les lignes de la trame, V-Blank compris. ST-210 (SCU Final Specs:
+
+ * Precautions, n. 30) et TECH#10 : en NTSC non entrelace, T0C = 225 a 263
+
+ * declenche l'interruption pendant le V-Blank, seules les valeurs 264 a 1023
+
+ * n'en declenchent pas. Mednafen (ss/scu.inc, SCU_SetHBVB) incremente
+
+ * Timer0_Counter a chaque debut de H-Blank.
+
+ * Kronos ne comptait que pendant les lignes affichees (ScuSendHBlankIN()
+
+ * n'est appele que la) : un T0C au-dela de 224/240/256 n'etait jamais atteint.
+
+ * Finalist programme T0C = F6h (ligne 246) pour interroger la manette, et
+
+ * affichait "Please insert a controller in control port 1". */
+
+static void ScuTimer0Count(void) {
+
+   ScuRegs->timer0++;
+
+   if (ScuRegs->T1MD & 0x1)
+
+   {
+
+      // if timer0 equals timer 0 compare register, do an interrupt
+
+     if (ScuRegs->timer0 == ScuRegs->T0C) {
+
+        ScuSendTimer0();
+
+        ScuRegs->timer0_set = 1;
+
+     }
+
+     else {
+
+       ScuRegs->timer0_set = 0;
+
+     }
+
+   }
+
+}
+
+
+
+/* Debut de H-Blank IN pendant le V-Blank : seul le Timer 0 avance (pas
+
+   d'interruption H-Blank IN ici, comme avant). */
+
+void ScuHBlankInVBlank(void) {
+
+   ScuTimer0Count();
+
+}
+
+
+
 void ScuSendHBlankIN(void) {
   SetInterrupt(HBLANK_IN);
-   ScuRegs->timer0++;
+   ScuTimer0Count();
    if (ScuRegs->T1MD & 0x1)
    {
-      // if timer0 equals timer 0 compare register, do an interrupt
-     if (ScuRegs->timer0 == ScuRegs->T0C) {
-        ScuSendTimer0();
-        ScuRegs->timer0_set = 1;
-     }
-     else {
-       ScuRegs->timer0_set = 0;
-     }
 
      // if (ScuRegs->timer1_set == 1) {
         // ScuRegs->timer1_set = 0;
@@ -3532,6 +3823,7 @@ int ScuLoadState(const void * stream, UNUSED int version, int size)
    ScuRegs->dma0.id = 1;
    ScuRegs->dma1.id = 2;
    ScuRegs->dma2.id = 3;
+   ScuDmaEndReset();
    if (version == 4) {
       MemStateRead((void *)ScuRegs, sizeof(Scu)-sizeof(scudmainfo_struct)*3, 1, stream);
       MemStateRead((void *)(&ScuRegs->dma0), sizeof(scudmainfo_struct)-sizeof(u32), 1, stream);

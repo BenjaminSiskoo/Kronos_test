@@ -780,14 +780,41 @@ int VIDCSGenFrameBuffer() {
   if (rebuild_frame_buffer == 0){
     return 0;
   }
-  vdp1_framebuffer[0] = (u32*)malloc(0x20000*4);
-  vdp1_framebuffer[1] = (u32*)malloc(0x20000*4);
+  /* La regeneration recree les textures des deux frame buffers VDP1
+   * (vdp1_compute_init -> generateComputeBuffer), qui repartent effaces.
+   * Leur contenu est donc sauvegarde ici puis restaure.
+   *
+   * CORRECTION (Sexy Parodius, gel a la selection du vaisseau) : la
+   * restauration televersait bien les pixels sauvegardes dans
+   * vdp1AccessTex, mais ne les reportait jamais dans le frame buffer :
+   * ce report (vdp1_write) n'a lieu que si vdp1IsNotEmpty[frame] != -1,
+   * valeur que la restauration fixait justement a -1. Tout ce que le VDP1
+   * ne retrace pas a chaque trame etait donc perdu a chaque changement de
+   * resolution. Le jeu range les graphismes des vaisseaux dans la partie
+   * non affichee du frame buffer (colonnes 320 a 511 des lignes de 1024
+   * octets, cf. VDP1 User's Manual : frame buffer 512x256 en 16 bpp), puis
+   * les relit en verifiant une somme de controle et recommence tant
+   * qu'elle differe : apres le passage 224 -> 240 lignes, la relecture
+   * ne rendait plus que des zeros et la boucle ne se terminait jamais.
+   * On reporte maintenant le contenu restaure dans chaque frame buffer,
+   * puis on vide vdp1AccessTex comme le fait checkFBSync() apres un report,
+   * pour que ces pixels ne soient pas reappliques plus tard par-dessus des
+   * traces plus recents.
+   *
+   * La sauvegarde couvre aussi toute la capacite du mode courant (1024x256
+   * en Hi-Res) et non plus seulement 512x256 : les index de pixel sont
+   * lineaires dans les deux tampons (pas de 512 ou 1024 selon le mode),
+   * on restaure donc le minimum des tailles avant et apres regeneration. */
+  u32 fbPixSaved = (u32)(512.0f * vdp1access_allocated_wdensity * 256.0f * vdp1access_allocated_hdensity);
+  if (fbPixSaved > 1024 * 256) fbPixSaved = 1024 * 256;
+  vdp1_framebuffer[0] = (u32*)malloc(fbPixSaved*4);
+  vdp1_framebuffer[1] = (u32*)malloc(fbPixSaved*4);
   if (_Ygl->default_fbo == -1) _Ygl->default_fbo = YuiGetFB();
   if (YglTM_vdp2 == NULL) YglTM_vdp2= YglTMInit(1024, 1024);
 
   for (int j = 0; j<2; j++) {
     u32* buf = getVDP1Framebuffer(j);
-    for (int i=0; i<0x20000; i++) {
+    for (u32 i=0; i<fbPixSaved; i++) {
       vdp1_framebuffer[j][i] = (T1ReadLong((u8*)buf, i*4) & 0xFFFF);
     }
     invalidateVDP1ReadFramebuffer(j);
@@ -796,14 +823,21 @@ int VIDCSGenFrameBuffer() {
   YglDestroy();
   YglGenerate();
 
+  u32 fbPixRestore = (u32)(512.0f * vdp1access_allocated_wdensity * 256.0f * vdp1access_allocated_hdensity);
+  if (fbPixRestore > fbPixSaved) fbPixRestore = fbPixSaved;
+
   for (int j = 0; j<2; j++) {
     u32 *buf = getVDP1WriteFramebuffer(j);
-    for (int i = 0; i < 0x20000; i++) {
+    for (u32 i = 0; i < fbPixRestore; i++) {
       buf[i] = (vdp1_framebuffer[j][i]&0xFFFF)|0xFF000000;
     }
     updateVdp1DrawingFBMem(j);
+    /* Report dans le frame buffer lui-meme (texture du compute shader). */
+    vdp1_write_frame(j);
     _Ygl->vdp1IsNotEmpty[j] = -1;
+    /* Vide vdp1AccessTex (et invalide la copie de lecture CPU). */
     _Ygl->FBDirty[j] = 1;
+    clearVDP1Framebuffer(j);
   }
   free(vdp1_framebuffer[0]);
   free(vdp1_framebuffer[1]);

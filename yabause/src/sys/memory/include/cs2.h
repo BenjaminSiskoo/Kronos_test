@@ -412,6 +412,11 @@ int Cs2ForceCloseTray( int coreid, const char * cdpath );
 // is not initialised.
 int Cs2SaveDebugReport(const char *filename);
 
+// Returns 1 if a MPEG card (Video CD card) is present, 0 otherwise.
+// Used by the HLE BIOS (BiosCheckMPEGCard) : without this prototype the call
+// in bios.c is an implicit declaration, which is an error with GCC >= 14.
+int Cs2IsMpegCardPresent(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -916,6 +916,16 @@ void Vdp2HBlankIN_It(void) {
     Vdp2Regs->TVSTAT |= 0x0004;
     ScuSendHBlankIN();
   }
+  else if (yabsys.LineCount < yabsys.MaxLineCount - 2) {
+    /* Le Timer 0 du SCU compte aussi les H-Blank IN du V-Blank (ST-210 n. 30,
+       voir ScuHBlankInVBlank() dans scu.c). Seulement jusqu'a la ligne du
+       V-Blank OUT (MaxLineCount - 2, voir YabauseEmulate()) : les lignes qui
+       le suivent feraient avancer le compteur avant la ligne 0 et decaleraient
+       d'une ligne le Timer 0 de tous les jeux par rapport a Kronos jusqu'ici
+       (ST-210 et Mednafen placent pourtant T0C = 1 sur le H-Blank IN qui
+       precede la premiere ligne affichee : a verifier separement). */
+    ScuHBlankInVBlank();
+  }
   SH2UpdateABusAccess(MSH2, 0);
   SH2UpdateABusAccess(SSH2, 0);
   SH2ClearCPUConcurrency(MSH2, VDP2_RAM_LOCK);
@@ -1264,6 +1274,42 @@ void Vdp2VBlankOUT(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Valeur du compteur V telle que le VDP2 la presente dans VCNT.
+ *
+ * Le compteur n'est pas lineaire sur toute la trame : a partir du debut de
+ * la synchro verticale, il continue a 0x200 - (nombre total de lignes),
+ * de sorte que la derniere ligne de la trame vaut toujours 0x1FF et que la
+ * premiere ligne affichee vaut 0. En entrelace double densite, la valeur
+ * est doublee et VCT0 donne le champ (0 = champ impair, ST-058-R2
+ * tableau 2.4). Mednafen, vdp2.c : GetNLVCounter() et VTimings[][][].
+ *
+ * Kronos rendait LineCount tel quel (0..262) : pendant le V-Blank, VCNT
+ * valait 0xED..0x106 au lieu de 0x1E6..0x1FF. Chaos Seed ne lit la manette
+ * pendant ses videos que depuis son gestionnaire V-Blank OUT, apres avoir
+ * attendu que VCNT quitte 0x1FF puis verifie qu'il vaut 0 ou 1 (06018540) ;
+ * avec 0x106 la lecture etait sautee a chaque trame et Start ne passait
+ * pas la video. */
+static u16 Vdp2HwVCounter(void)
+{
+   /* debut de la synchro verticale selon PAL/NTSC et VRESO (Mednafen,
+    * VTimings[pal][vres][VPHASE_VSYNC - 1]) et nombre total de lignes */
+   static const int vsync_start[2][4] = { { 0x0ED, 0x0F5, 0x0ED, 0x0F5 },
+                                          { 0x103, 0x10B, 0x113, 0x113 } };
+   static const int total[2] = { 0x107, 0x139 };
+   const int pal = yabsys.IsPal ? 1 : 0;
+   const int vres = (Vdp2Regs->TVMD >> 4) & 0x3;
+   u32 v = (u32)yabsys.LineCount;
+
+   if ((int)v >= vsync_start[pal][vres])
+      v = v + 0x200 - (u32)total[pal];
+   v &= 0x1FF;
+   if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0x3)
+      v = (v << 1) | (vdp2_is_odd_frame ? 0 : 1);
+   return (u16)(v & 0x3FF);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void Vdp2SendExternalLatch(int trigger, int hcnt, int vcnt)
 {
   if (trigger) {
@@ -1296,7 +1342,7 @@ u16 FASTCALL Vdp2ReadWord(SH2_struct *context, u8* mem, u32 addr) {
          {
             // Latch HV counter on read
             // Vdp2Regs->HCNT = (yabsys.DecilineCount * _Ygl->rwidth / DECILINE_STEP) << 1;
-            Vdp2Regs->VCNT = yabsys.LineCount;
+            Vdp2Regs->VCNT = Vdp2HwVCounter();
             Vdp2Regs->TVSTAT |= 0x200;
          }
 

@@ -48,56 +48,6 @@
 #include "yui.h"
 #include "vdp1.h"
 
-/* ===== Instrumentation TEMPORAIRE -- ecrit E:\\Kronos64Bits\\kronos_boot.log */
-#include <stdarg.h>
-#define KBOOT_LOG_PATH   "E:\\Kronos64Bits\\kronos_boot.log"
-#define KBOOT_MAX_BEATS  400
-static FILE *kboot_fp = NULL;
-static int   kboot_failed = 0;
-static int   kboot_beats = 0;
-void KBootLog(const char *fmt, ...);
-
-void KBootLog(const char *fmt, ...)
-{
-   va_list ap;
-   if (kboot_failed) return;
-   if (kboot_fp == NULL)
-   {
-      kboot_fp = fopen(KBOOT_LOG_PATH, "w");
-      if (kboot_fp == NULL) { kboot_failed = 1; return; }
-   }
-   va_start(ap, fmt);
-   vfprintf(kboot_fp, fmt, ap);
-   va_end(ap);
-   fflush(kboot_fp);
-}
-
-static void KBootHeartbeat(void)
-{
-   u32 mpc = 0, msp = 0, mpr = 0, mvbr = 0, msr = 0, spc = 0;
-
-   if (kboot_failed || kboot_beats >= KBOOT_MAX_BEATS) return;
-   if ((yabsys.frame_count % 50) != 0) return;
-   kboot_beats++;
-
-   if (MSH2 != NULL)
-   {
-      SH2GetRegisters(MSH2, &MSH2->regs);
-      mpc = MSH2->regs.PC;  msp = MSH2->regs.R[15]; mpr = MSH2->regs.PR;
-      mvbr = MSH2->regs.VBR; msr = MSH2->regs.SR.all;
-   }
-   if (SSH2 != NULL) { SH2GetRegisters(SSH2, &SSH2->regs); spc = SSH2->regs.PC; }
-
-   KBootLog("[f%06d] M PC=%08X SP=%08X PR=%08X SR=%08X | S run=%d PC=%08X | "
-            "VDP1 PTMR=%04X EDSR=%04X | VDP2 TVMD=%04X BGON=%04X | "
-            "SCU IMS=%08X IST=%08X | CD st=%02X\n",
-            yabsys.frame_count, mpc, msp, mpr, msr,
-            (int)yabsys.IsSSH2Running, spc,
-            Vdp1Regs ? Vdp1Regs->PTMR : 0xFFFF, Vdp1Regs ? Vdp1Regs->EDSR : 0xFFFF,
-            Vdp2Regs ? Vdp2Regs->TVMD : 0xFFFF, Vdp2Regs ? Vdp2Regs->BGON : 0xFFFF,
-            ScuRegs ? ScuRegs->IMS : 0xFFFFFFFF, ScuRegs ? ScuRegs->IST : 0xFFFFFFFF,
-            Cs2Area ? Cs2Area->status : 0xFF);
-}
 #include "bios.h"
 #include "movie.h"
 #include "osdcore.h"
@@ -227,33 +177,97 @@ void YuiTimedSwapBuffers(){
 
 static int fpsframecount = 0;
 static int vdp1fpsframecount = 0;
-static int fps = 0;
-static int vdp1fps = 0;
+static double fps = 0.0;
+static double vdp1fps = 0.0;
+static u64 fpsticks = 0;
+
+/* Frame pacing
+   The frame rate is the exact fraction frameRateNum / frameRateDen Hz
+   (NTSC 60000/1001 = 59.94 Hz, PAL 50/1 = 50 Hz, see YabauseSetVideoFormat).
+   One frame lasts tickfreq * frameRateDen / frameRateNum ticks:
+   yabsys.OneFrameTime holds the integer part and frameTimeRem the remainder,
+   which frameTimeFrac carries from one frame to the next so that the long
+   term rate stays exact whatever the resolution of the tick counter.
+
+   nextFrameTime is an absolute deadline. It is only moved forward by one
+   frame period per frame, so a frame that ends late (host hiccup, oversleep)
+   is paid back by the following ones instead of being lost. It is only
+   re-based on "now" when the emulation is really behind (more than
+   SYNC_MAX_LAG_DIV-th of a second), or after a reset/resume. */
+static u64 frameRateNum = 60000;
+static u64 frameRateDen = 1001;
+static u64 frameTimeRem = 0;
+static u64 frameTimeFrac = 0;
+
+/* Sound samples per frame. The SCSP runs at 44100 Hz (22.5792 MHz / 512)
+   whatever the video standard, so a frame lasts 44100 * frameRateDen /
+   frameRateNum samples: 882 in PAL, 735.735 in NTSC. scspSampleFrac carries
+   the fractional part from frame to frame, so NTSC frames get 735 or 736
+   samples and a second of emulation gives exactly 44100 samples, in step with
+   the frame pacing (59.94 Hz) and with the audio output. It used to be
+   44100 / 60 = 735 samples per frame, i.e. 44056 samples per second at
+   59.94 Hz: the output buffer slowly ran dry. */
+static u64 scspSampleFrac = 0;
+
+/* The OS sleep is only precise to about a millisecond (Windows timer
+   granularity, scheduler latency elsewhere): sleep until SYNC_SPIN_US before
+   the deadline, then yield until the deadline itself. */
+#ifdef WIN32
+#define SYNC_SPIN_US (2000)
+#else
+#define SYNC_SPIN_US (500)
+#endif
+#define SYNC_MAX_LAG_DIV (10)
+
+static void advanceFrameDeadline(void) {
+  nextFrameTime += (int64_t)yabsys.OneFrameTime;
+  frameTimeFrac += frameTimeRem;
+  if (frameTimeFrac >= frameRateNum) {
+    frameTimeFrac -= frameRateNum;
+    nextFrameTime++;
+  }
+}
 
 static void syncVideoMode(void) {
-  int64_t sleep = 0;
   int64_t now;
-  int64_t delay = 0;
   YuiEndOfFrame();
-  now = YabauseGetTicks();
-  if (nextFrameTime == 0) nextFrameTime = YabauseGetTicks();
-  if(nextFrameTime > now) {
-    if (isAutoFrameSkip() == 0) {
-      sleep = ((nextFrameTime - now)*1000000.0)/yabsys.tickfreq;
-      delay = YabThreadUSleep(sleep) * yabsys.tickfreq/1000000.0;
-      nextFrameTime += delay;
+  now = (int64_t)YabauseGetTicks();
+  if (nextFrameTime == 0) {
+    nextFrameTime = now;
+    frameTimeFrac = 0;
+  }
+  if (isAutoFrameSkip() == 0) {
+    const int64_t spin = (int64_t)((yabsys.tickfreq * SYNC_SPIN_US) / 1000000);
+    if (nextFrameTime - now > spin) {
+      u64 us = ((u64)(nextFrameTime - now - spin) * 1000000) / yabsys.tickfreq;
+      /* The value returned by YabThreadUSleep (the part of the request
+         shorter than the sleep granularity) is not added to the deadline
+         any more: it was pushing every following frame late. */
+      YabThreadUSleep((u32)us);
+      now = (int64_t)YabauseGetTicks();
+    }
+    while (now < nextFrameTime) {
+      YabThreadYield();
+      now = (int64_t)YabauseGetTicks();
     }
   }
-  nextFrameTime  += yabsys.OneFrameTime;
-  // if ((isAutoFrameSkip() == 0)||(fpsframecount == 0)) {
-  //   now = YabauseGetTicks();
-  // }
-  if (fpsframecount == 0) nextFrameTime = YabauseGetTicks() + yabsys.OneFrameTime;
-
+  /* Too far behind: forget the lost time instead of running flat out to
+     catch it up. */
+  if (now - nextFrameTime > (int64_t)(yabsys.tickfreq / SYNC_MAX_LAG_DIV)) {
+    nextFrameTime = now;
+    frameTimeFrac = 0;
+  }
+  advanceFrameDeadline();
+  /* The deadline used to be re-based on "now" each time the FPS counter
+     started a new second (fpsframecount == 0): the time slept past the
+     deadline was lost once per second, hence the 59/60 and 49/50 readings.
+     Pacing and FPS measurement are now independent. */
 }
 
 void resetSyncVideo(void) {
   nextFrameTime = 0;
+  frameTimeFrac = 0;
+  fpsticks = 0; /* restart the FPS measurement window too */
   resetFrameSkip();
 }
 
@@ -378,8 +392,6 @@ int YabauseSh2Init(yabauseinit_struct *init)
    return 0;
 }
 
-static u64 fpsticks = 0;
-
 #ifdef _USE_PERFETTO_TRACE_
 
 std::unique_ptr<perfetto::TracingSession> myTracingSession;
@@ -445,6 +457,16 @@ static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
    if (yabsys.usecache == 0) {
       if (MSH2 != NULL) MSH2->cacheOn = 0;
       if (SSH2 != NULL) SSH2->cacheOn = 0;
+   }
+   /* Modele de temps du fetch sans emulation du cache (memory.c) : il
+      repart de lignes vides a chaque jeu, et les jeux de
+      SH2LegacyFetchDBList (utils/src/db.c) gardent l'ancien cout. */
+   SH2FetchCachePurge(NULL);
+   {
+      int legacy = DBLookupLegacySH2FetchTiming();
+      SH2SetLegacyFetchTiming(legacy);
+      if (legacy)
+         YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
    }
 }
 
@@ -892,23 +914,38 @@ u32 YabauseGetCpuTime(){
 //////////////////////////////////////////////////////////////////////////////
 static void FPSDisplay(void)
 {
+  const u64 now = YabauseGetTicks();
+  const double target = (double)frameRateNum / (double)frameRateDen;
+
   fpsframecount++;
-  u64 now = YabauseGetTicks();
-  if (now >= fpsticks + yabsys.tickfreq)
+  if ((fpsticks == 0) || (now < fpsticks))
   {
-    u64 delta = now - (fpsticks + yabsys.tickfreq);
-    fps = fpsframecount;
-    vdp1fps = vdp1fpsframecount;
+    /* start (or restart after a reset/resume) of a measurement window */
+    fpsticks = now;
     fpsframecount = 0;
     vdp1fpsframecount = 0;
-    fpsticks = YabauseGetTicks() - delta;
   }
+  else if ((now - fpsticks) >= yabsys.tickfreq)
+  {
+    /* Frames per second = frames shown / real elapsed time of the window.
+       Counting whole frames in a one second window could only give 59 or 60
+       for a 59.94 Hz output (and 49 or 51 around 50 Hz as soon as a frame
+       fell on the edge of the window). */
+    const double elapsed = (double)(now - fpsticks);
+    fps = (fpsframecount > 0) ? ((double)fpsframecount * (double)yabsys.tickfreq) / elapsed : 0.0;
+    vdp1fps = (vdp1fpsframecount > 0) ? ((double)vdp1fpsframecount * (double)yabsys.tickfreq) / elapsed : 0.0;
+    fpsframecount = 0;
+    vdp1fpsframecount = 0;
+    fpsticks = now;
+  }
+  /* The measurement stays exact (fractional); only the display is rounded
+     to the nearest integer, so 59.94 Hz shows as 60 and 50 Hz as 50. */
   if (isAutoFrameSkip() == 0) {
-    OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02d/%02d FPS", fps, yabsys.IsPal ? 50 : 60);
-    OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02d FPS", vdp1fps);
+    OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02.0f/%02.0f FPS", fps, target);
+    OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02.0f FPS", vdp1fps);
   } else {
-    OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02d FPS", fps);
-    OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02d FPS", vdp1fps);
+    OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02.0f FPS", fps);
+    OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02.0f FPS", vdp1fps);
   }
 }
 
@@ -933,21 +970,11 @@ u64 g_m68K_dec_cycle = 0;
 int YabauseEmulate(void) {
    int ret = 0;
    yabsys.frame_count++;
-   KBootHeartbeat();
 
    unsigned int m68kcycles;       // Integral M68k cycles per call
    unsigned int m68kcenticycles;  // 1/100 M68k cycles per call
 
-   int frames = 0;
-
-   if (yabsys.IsPal)
-   {
-     frames = 50;
-   }
-   else
-   {
-     frames = 60;
-   }
+   u32 scsp_frame_samples;
 
    DoMovie();
 
@@ -972,7 +999,14 @@ int YabauseEmulate(void) {
    /* The sound thread gets its cycles line by line (see ScspSyncToLine in
       scsp.c) and the frame handshake with it is done at the end of the
       frame, once it has been given the whole frame. */
-   scsp_frame_cycles = (u64)(44100 * 256) / frames;
+   scspSampleFrac += (u64)44100 * frameRateDen;
+   scsp_frame_samples = (u32)(scspSampleFrac / frameRateNum);
+   scspSampleFrac -= (u64)scsp_frame_samples * frameRateNum;
+   /* the sound thread must know where this frame ends before it gets the
+      first cycles of it */
+   ScspSetFrameSamples(scsp_frame_samples);
+   /* 256 68000 cycles (11.2896 MHz) per sample */
+   scsp_frame_cycles = (u64)scsp_frame_samples * 256;
    scsp_fed_cycles = 0;
 
    while (yabsys.LineCount < yabsys.MaxLineCount)
@@ -1246,8 +1280,18 @@ void YabauseSetVideoFormat(int type) {
 #elif defined(HAVE_LIBSDL)
    yabsys.tickfreq = 1000;
 #endif
-   yabsys.OneFrameTime =
-      type ? (yabsys.tickfreq / 50) : (yabsys.tickfreq * 1001 / 60000);
+   /* NTSC: 60/1.001 Hz, PAL: 50 Hz, kept as an exact fraction. */
+   if (type) {
+      frameRateNum = 50;
+      frameRateDen = 1;
+   } else {
+      frameRateNum = 60000;
+      frameRateDen = 1001;
+   }
+   yabsys.OneFrameTime = (yabsys.tickfreq * frameRateDen) / frameRateNum;
+   frameTimeRem = (yabsys.tickfreq * frameRateDen) % frameRateNum;
+   frameTimeFrac = 0;
+   scspSampleFrac = 0;
    /* TVSTAT bit 0 (PAL) is how a game learns which video standard it is
       running on. An OR can only ever set it: once the bit is 1 it stays 1,
       and VIDEOFORMATTYPE_NTSC is 0, so the NTSC branch of every caller ORs

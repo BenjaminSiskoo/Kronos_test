@@ -60,6 +60,10 @@ int DMAProc(SH2_struct *context, int cycles );
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Interruption IRL du SCU reservee par le maitre mais pas encore prise
+ * (voir SH2EvaluateInterrupt() et SH2InterruptTaken()). */
+static u8 SH2ScuAckPending[2];
+
 void SH2IntcSetIrl(SH2_struct *sh, u8 irl, u8 d)
 {
   if (sh->intc.irl != irl) {
@@ -68,6 +72,26 @@ void SH2IntcSetIrl(SH2_struct *sh, u8 irl, u8 d)
     SH2EvaluateInterrupt(sh);
   }
 }
+/* Le maitre prend reellement l'interruption reservee : le SCU est acquitte
+   pour la source dont le vecteur est pris (mode vecteur externe), ou pour sa
+   source verrouillee en auto-vecteur. */
+void SH2InterruptTaken(SH2_struct *sh)
+{
+  if ((sh != MSH2) || !SH2ScuAckPending[0]) return;
+  SH2ScuAckPending[0] = 0;
+  if (sh->onchip.ICR & 0x1)
+    ScuAcceptInterruptVector(sh, sh->intVector);
+  else
+    ScuAcceptInterrupt(sh);
+}
+
+/* L'interruption reservee est remise en attente (SR.I releve entre-temps) :
+   le SCU ne l'a pas acquittee et la presentera de nouveau. */
+void SH2InterruptDeferred(SH2_struct *sh)
+{
+  if (sh == MSH2) SH2ScuAckPending[0] = 0;
+}
+
 void SH2IntcSetNmi(SH2_struct *sh)
 {
   sh->intc.nmi = 0x1;
@@ -100,8 +124,26 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
        dans la branche vecteur externe : en auto-vecteur, currentInterrupt
        restait arme et ScuTestInterruptMask() ressortait aussitot sur
        "if (currentInterrupt <= i) return;", si bien qu'apres la toute premiere
-       interruption plus aucune n'etait presentee au CPU. */
-    ScuAcceptInterrupt(sh);
+       interruption plus aucune n'etait presentee au CPU.
+
+       Pour le maitre, il n'est relache qu'au moment ou le CPU PREND
+       l'interruption (SH2InterruptTaken(), appele par SH2HandleInterrupts()),
+       pas ici. Cette fonction ne fait que la reserver : entre les deux, le
+       programme peut encore relever SR.I, et SH2HandleInterrupts() remet alors
+       la demande en attente. Le SCU l'avait deja consideree comme servie :
+       son bit IST et son front ITEdge etaient effaces et le verrou libere,
+       si bien qu'une autre source prenait la ligne IRL et que la demande
+       disparaissait (Mechanical Violator Hakaider : fin de DMA niveau 0
+       perdue pendant la video d'intro, le jeu l'attend indefiniment).
+       Sur le materiel, le SCU maintient sa demande tant que le SH-2 ne l'a
+       pas acquittee en lisant le vecteur lors de l'exception (SH7604
+       Hardware Manual, chapitre 5, interruptions IRL et mode vecteur
+       externe).
+
+       L'esclave garde l'ancien comportement : ses interruptions SCU sont en
+       auto-vecteur et le verrou est partage avec le maitre. */
+    if (sh == MSH2) SH2ScuAckPending[0] = 1;
+    else ScuAcceptInterrupt(sh);
     sh->intc.irl = 0;
   }
   else if (((sh->onchip.DVCR & 0x3)==0x3) && (((sh->onchip.IPRA >> 12) & 0xF) > sh->regs.SR.part.I)) //DIVU
@@ -302,8 +344,33 @@ static int isDMABlocked(SH2_struct *context) {
   return (context->isAccessingCPUBUS != 0)&&((context->blockingMask & A_BUS_ACCESS)!=0);
 }
 
+/* A CPU is blocked (SH2BlockableExec skips it, SH2KronosInterpreterExecSave
+ * rolls back the instruction that blocked it and replays it later) when:
+ *   - an SCU DMA holds the CPU bus (blockingMask & A_BUS_ACCESS), or
+ *   - it accessed a VDP2 VRAM bank that has no CPU slot during the display
+ *     period (isAccessingVram & blockingMask, see vdp2RamAccessCPUCheck).
+ *
+ * isAccessingCPUBUS on its own (the CPU went out on the external bus through
+ * a cache-through access) used to block the CPU too. Outside an SCU DMA that
+ * only happened while a VDP2 VRAM lock was armed, i.e. from line 1 to the
+ * next H-blank IN (Vdp2HBlankIN_It clears both), and it had nothing to do
+ * with that lock: any A-bus or B-bus access in that window was rolled back.
+ * The access itself had already been made, and replaying it is not harmless
+ * for a register with a read side effect.
+ *
+ * Spot Goes to Hollywood reads its menu archive one sector at a time with
+ * the SBL copy loop at 0603026A (mov.l @r6,r8 from the CD block data
+ * transfer register 25818000), while the title screen leaves VRAM-A without
+ * a CPU slot (CYCA0 = 44445555). When that loop was running on line 1, the
+ * read was rolled back and replayed: one long of the sector was consumed
+ * twice, the rest of the sector landed 4 bytes early in LWRAM, and the last
+ * read of the loop found the transfer empty and returned 0. The compressed
+ * PASSWORD and CHEAT SCREEN pictures were then decoded into noise.
+ *
+ * With an SCU DMA on the CPU bus the A_BUS_ACCESS term already blocks, so
+ * dropping the isAccessingCPUBUS term changes nothing in that case. */
 void SH2UpdateBlockedState(SH2_struct *context){
-  context->isBlocked =  (context->isAccessingCPUBUS != 0)||((context->blockingMask & A_BUS_ACCESS)!=0);
+  context->isBlocked  = ((context->blockingMask & A_BUS_ACCESS)!=0);
   context->isBlocked |= ((context->isAccessingVram & context->blockingMask)!=0);
 }
 
@@ -487,6 +554,7 @@ CACHE_LOG("%s reset\n", (context==SSH2)?"SSH2":"MSH2" );
 
    SH2Core->SetSR(context, 0x000000F0);
    SH2Core->SetGBR(context, 0x00000000);
+   if (context == MSH2) SH2ScuAckPending[0] = 0;
    SH2Core->SetVBR(context, 0x00000000);
    SH2Core->SetMACH(context, 0x00000000);
    SH2Core->SetMACL(context, 0x00000000);
@@ -1783,6 +1851,7 @@ void FASTCALL OnchipWriteByte(SH2_struct *context, u32 addr, u8 val) {
          return;
       case 0x092:
          context->onchip.CCR = val & 0xCF;
+         if (val & 0x10) SH2FetchCachePurge(context);   /* CCR.CP : modele de temps du fetch (memory.c) */
 		 if (val & 0x10){
 			 InvalidateCache(context);
 		 }
@@ -1937,6 +2006,7 @@ void FASTCALL OnchipWriteWord(SH2_struct *context, u32 addr, u16 val) {
          return;
       case 0x092:
          context->onchip.CCR = val & 0xCF;
+         if (val & 0x10) SH2FetchCachePurge(context);   /* CCR.CP : modele de temps du fetch (memory.c) */
 		 if (val & 0x10){
 			 InvalidateCache(context);
 		 }

@@ -445,6 +445,10 @@ typedef struct
 void SH2IntcSetIrl(SH2_struct *sh, u8 irl, u8 d);
 void SH2IntcSetNmi(SH2_struct *sh);
 void SH2EvaluateInterrupt(SH2_struct *sh);
+/* Interruption IRL du SCU reservee par SH2EvaluateInterrupt() : prise
+   (acquitte le SCU) ou remise en attente (SR.I releve entre-temps). */
+void SH2InterruptTaken(SH2_struct *sh);
+void SH2InterruptDeferred(SH2_struct *sh);
 
 typedef struct SH2_struct_s
 {

@@ -1,11 +1,10 @@
-
 #include <sys/stat.h>
 
 #include "cs0.h"
 #include "cs2.h"
 #include "db.h"
 
-#define NB_GAMES_DB 31
+#define NB_GAMES_DB 35
 
 static GameDB GameDBList[NB_GAMES_DB] = {
    // note : SNK games were developped for 1MB cart,
@@ -20,6 +19,10 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { "T-1515G", 0, CART_DRAM8MBIT, NULL }, // Waku Waku 7
    { "T-3111G", 0, CART_DRAM8MBIT, NULL }, // Metal Slug
    { "GS-9107", 0, CART_DRAM8MBIT, NULL }, // Fighter's History Dynamite
+   { "T-16103H-09", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (FRENCH)
+   { "GS-9123", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (JAP)
+   { "T-16103H", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (USA)
+   { "T-81", 0, CART_DRAM8MBIT, NULL }, // Destruction Derby Prototyp   
    // other games should be fine with 4MB cart
    { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Astra Superstars
    { "T-9904G", 0, CART_DRAM32MBIT, NULL }, // Magical Night Dreams - Cotton 2
@@ -67,6 +70,54 @@ static const char * const SH2CacheDBList[] = {
    "T-17703G",   // Tennis Arena (Japan) -- ecran noir apres le BIOS
    NULL
 };
+
+/* Jeux qui gardent l'ancien cout du fetch d'instruction sans emulation du
+   cache (voir SH2FetchWord() dans memory.c) : chaque fetch en Work RAM paie
+   un changement de rangee DRAM, rangee partagee avec les donnees.
+
+   Space Jam : l'ordonnanceur de taches du jeu (06020242) lit EXTEN puis
+   VCNT au debut de chaque trame et en deduit le temps deja ecoule
+   (VCNT x 229 ticks du FRT par ligne, 06020258) ; une tache de chargement
+   (06013674) ne travaille que si ce temps reste sous un budget d'environ
+   196 lignes (06013712). Le maitre y arrive depuis le V-Blank OUT par un
+   chemin d'environ 700 instructions (trois interruptions, lecture des
+   manettes au SMPC). Sur la console ce chemin depasse une ligne et VCNT est
+   lu a 0. Dans Kronos, ou les acces aux registres SCU/VDP/SMPC, l'entree en
+   interruption et les ecritures ne coutent presque rien, il ne tient plus
+   qu'avec l'ancien cout du fetch : sinon VCNT est lu a 312, le budget est
+   depasse, les taches ne finissent jamais, la reserve de 40 blocs se remplit
+   et le jeu s'arrete (lecture volontaire en 00000001, 0602054C) juste avant
+   d'entrer en jeu.
+
+   A retirer quand le cout des acces aux registres (Mednafen : SCU 8 cycles,
+   B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
+   jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
+static const char * const SH2LegacyFetchDBList[] = {
+   "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
+   "T-10310G", // DX Jinsei Game II
+   "T-22303G", // Ginga Eiyuu Densetsu Plus
+   "T-7645G", // Ishin no Arashi
+   "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
+   "T-8119G",    // Space Jam (Japan)
+   "T-8125H",    // Space Jam (USA)
+   "T-8125H-50", // Space Jam (Europe)
+   "T-27808G", // Yuukyuu Gensoukyoku ensemble
+   NULL
+};
+
+/* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
+int DBLookupLegacySH2FetchTiming(void)
+{
+   const char* game_code;
+   int i;
+   Cs2GetIP(0);
+   game_code = Cs2GetCurrentGmaecode();
+   if (game_code == NULL) return 0;
+   for (i = 0; SH2LegacyFetchDBList[i] != NULL; i++) {
+      if (strcmp(SH2LegacyFetchDBList[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
 
 /* Retourne 1 si le jeu en cours figure dans SH2CacheDBList. */
 int DBLookupForceSH2Cache(void)

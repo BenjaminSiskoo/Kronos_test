@@ -330,10 +330,12 @@ void FASTCALL	ScuWriteWord(SH2_struct *sh,u8*, u32, u16);
 void FASTCALL	ScuWriteLong(SH2_struct *sh,u8*, u32, u32);
 
 void ScuAcceptInterrupt(SH2_struct *sh);
+void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector);
 
 void ScuSendVBlankIN(void);
 void ScuSendVBlankOUT(void);
 void ScuSendHBlankIN(void);
+void ScuHBlankInVBlank(void);
 void ScuSendTimer0(void);
 void ScuSendTimer1(void);
 void ScuSendDSPEnd(void);

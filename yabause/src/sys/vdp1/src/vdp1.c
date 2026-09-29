@@ -841,12 +841,36 @@ static void updateFBCRChange() {
 }
 
 static u8 FBCREraseUpdated = 0;
+/* Effacement programme au changement de frame buffer.
+ *
+ * VDP1 User's Manual ST-013-R3 §4.2, Table 4.3(a) p.41 : au passage du mode
+ * 1-cycle au mode manuel (change) (note 3), la ligne ou FCM = FCT = 1 est
+ * ecrit montre encore "Display and erase/write" : c'est le champ en cours,
+ * regi par le mode 1-cycle en vigueur lors du changement precedent. Le champ
+ * suivant, premier champ en mode manuel, est "Display / Draw" : le buffer
+ * affiche n'est PAS efface. p.39, Change (Manual Mode) : "Because erase/write
+ * is not performed, it is necessary to specify erase in the prior field".
+ *
+ * Mednafen (ss/vdp1.c, fin de V-blank : effacement seulement si FCM = 0 ou
+ * si FCM = 1, FCT = 0 est en attente) et Ymir (VDP::BeginHPhaseLeftBorder,
+ * erase = !fbSwapMode ou declenchement manuel avec FCT = 0) font de meme :
+ * aucun effacement supplementaire a la transition.
+ *
+ * Kronos ajoutait ici un "dernier effacement" (onelasterase) quand FCM
+ * passait de 0 a 1, introduit pour Return Fire (f692be74d). Il efface le
+ * buffer affiche au premier champ manuel, que le jeu a deja trace. Gex, en
+ * pause, passe de FBCR = 00 a FBCR = 03 et trace la scene figee dans les
+ * DEUX buffers (une fois dans chacun) avant de ne plus tracer que le menu :
+ * l'effacement en trop detruisait la scene dans l'un d'eux, et l'affichage
+ * alternait a chaque champ entre la scene + menu et le menu seul.
+ *
+ * Le champ onelasterase reste dans Vdp1External_struct (taille des
+ * sauvegardes d'etat, affichage de debogage) mais n'est plus arme. */
 static void updateFBCRErase() {
   if (FBCREraseUpdated == 0) return;
   u8 m = decodeFBCRMode();
-  /* onelasterase is a sticky flag across one frame — fold it in. */
-  Vdp1External.onecycleerase = ((m >> 4) & 0x1) | Vdp1External.onelasterase;
-  Vdp1External.onelasterase = 0;
+  Vdp1External.onecycleerase = (m >> 4) & 0x1;
+  Vdp1External.onelasterase  = 0;
   Vdp1External.manualerase   = (m >> 3) & 0x1;
   FBCREraseUpdated = 0;
 }
@@ -953,10 +977,9 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
 
     case 0x02: // FBCR
       /* IMPORTANT : Le BIOS utilise le mode manuel pour l'animation des cristaux.
-         On ne doit pas filtrer trop agressivement ici. */
-      if (((Vdp1Regs->FBCR & 0x02) == 0) && ((val & 0x02) != 0) && (((Vdp1Regs->TVMR >> 3) & 0x01) != 1)) {
-        Vdp1External.onelasterase = 1;
-      }
+         On ne doit pas filtrer trop agressivement ici.
+         Pas d'effacement supplementaire au passage 1-cycle -> manuel :
+         voir updateFBCRErase(). */
       Vdp1Regs->FBCR = val & 0x001F; 
       FBCREraseUpdated = 1;
       FBCRChangeUpdated = 1;
@@ -1238,18 +1261,34 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
  * honoured as-is (it is applied normally in the texture/draw paths); do NOT
  * force it to 0. */
 
+/* Valeurs de retour de Vdp1NormalSpriteDraw() :
+ *    1 : sprite transmis au moteur de rendu ;
+ *    0 : commande valide qui ne dessine rien (taille nulle, hors ecran) ;
+ *   -1 : commande invalide -- l'appelant abandonne la fin de la ligne.
+ *
+ * Une table de commande entierement a zero est un sprite normal VALIDE
+ * (CMDCTRL = 0000h : Comm = 0, sprite normal ; ST-013-R3 §6.1). Rien dans
+ * le manuel VDP1 n'en fait une commande invalide. Taille 0, mode couleur 0
+ * (banque 16 couleurs) et code couleur 0, qui est transparent (SPD = 0,
+ * §6.3) : le materiel ne dessine rien et passe a la table suivante apres
+ * l'avoir lue. Mednafen (ss/vdp1_sprite.c SpriteBase) et Ymir
+ * (VDP1Cmd_DrawNormalSprite, cout simpleQuadTiming(max(w,1), max(h,1)))
+ * n'ont aucun cas particulier pour elle et continuent la liste.
+ *
+ * Densetsu no Ogre Battle remplit sa table de pres de 350 de ces commandes
+ * vides avant les sprites de Warren et du texte (cmd 356 et suivantes).
+ * Chaque commande vide renvoyait -1, ce qui remettait vdp1_clock a 0 et
+ * coutait une ligne d'affichage entiere : la liste ne depassait jamais
+ * ~260 commandes avant la trame suivante, et Warren et le texte n'etaient
+ * jamais dessines. */
 static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   int ret = 1;
   if (emptyCmd(cmd)) {
-    // damaged data
-	/* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
-     * For invalid/malformed commands the hardware aborts after fetching
-     * the full 32-byte command table (16 cycles) plus abort overhead.
-     * 70 cycles = empirical value matching hardware measurement;
-     * no exact figure given in VDP1 Manual for malformed-command penalty. */
-    yabsys.vdp1cycles += 70;
-    return -1;
+    /* Lecture de la table de 32 octets : 16 cycles, comme les commandes
+     * de clipping et de coordonnees locales plus bas. Rien a dessiner. */
+    yabsys.vdp1cycles += 16;
+    return 0;
   }
 
   if ((cmd->CMDSIZE & 0x8000)) {
@@ -1274,13 +1313,11 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
   if ((cmd->w == 0) || (cmd->h == 0)) {
-    /* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
-     * For invalid/malformed commands the hardware aborts after fetching
-     * the full 32-byte command table (16 cycles) plus abort overhead.
-     * 70 cycles = empirical value matching hardware measurement;
-     * no exact figure given in VDP1 Manual for malformed-command penalty. */
-    yabsys.vdp1cycles += 70;
-    ret = 0;
+    /* Taille nulle : commande valide qui ne produit pas de texture
+     * exploitable. Cout de lecture de la table plus un pixel (Ymir compte
+     * max(w,1) x max(h,1)), puis table suivante, sans perdre la ligne. */
+    yabsys.vdp1cycles += 16 + 1;
+    return 0;
   }
 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
@@ -2198,7 +2235,11 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
            if (!sameCmd(&cmd, &oldCmd)) {
              ret = Vdp1NormalSpriteDraw(&cmd, ram, regs);
              if (ret == 1) nbCmdToProcess++;
-             else {
+             /* ret == 0 : commande valide sans pixel a tracer (table vide,
+              * taille nulle, sprite hors du clipping systeme). Le VDP1 passe
+              * a la table suivante ; seule une commande invalide (-1) fait
+              * attendre la ligne suivante. */
+             else if (ret < 0) {
                FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
                vdp1_clock = 0; //Incorrect command, wait next line to continue
              }
@@ -3475,7 +3516,10 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       {
          // 4 bpp LUT mode
          u32 temp;
-         u32 colorLut = cmd.CMDCOLR * 8;
+         /* LUT : adresse = CMDCOLR x 8, bits 1-0 de CMDCOLR ignores,
+          * comme dans le renderer (vdp1_prog_compute.h) et Mednafen
+          * (ss/vdp1_sprite.c). */
+         u32 colorLut = (cmd.CMDCOLR & 0xFFFC) * 8;
          u16 i;
 
          for(i = 0;i < h[0];i++)

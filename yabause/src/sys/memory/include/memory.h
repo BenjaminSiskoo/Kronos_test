@@ -361,6 +361,11 @@ extern "C" {
   u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr);
   /* Same read, flagged as an instruction fetch. */
   u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr);
+  /* Modele de temps du cache d'instructions sans emulation du cache
+     (memory.c) : purge (CCR.CP ; NULL = les deux CPU) et ancien cout du
+     fetch pour les jeux de SH2LegacyFetchDBList (utils/src/db.c). */
+  void SH2FetchCachePurge(SH2_struct *context);
+  void SH2SetLegacyFetchTiming(int on);
   u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr);
   void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val);
   void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val);

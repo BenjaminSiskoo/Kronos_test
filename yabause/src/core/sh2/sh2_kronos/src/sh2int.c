@@ -113,8 +113,12 @@ void SH2HandleInterrupts(SH2_struct *context)
   if ((context->intPriority != 0x0) && (context->intVector != 0xB)
       && (context->intPriority <= context->regs.SR.part.I))
   {
-    if (context->intc.irl == 0) context->intc.irl = context->intPriority;
+    if (context->intc.irl == 0) {
+      context->intc.irl = context->intPriority;
+      context->intc.d = context->intVector;
+    }
     context->intPriority = 0;
+    SH2InterruptDeferred(context);   /* le SCU garde sa demande */
     UNLOCK(context);
     return;
   }
@@ -128,6 +132,7 @@ void SH2HandleInterrupts(SH2_struct *context)
     SH2MappedMemoryWriteLong(context, context->regs.R[15], context->regs.PC);
     context->regs.SR.part.I = context->intPriority;
 
+    SH2InterruptTaken(context);   /* acquitte le SCU maintenant que l'interruption est prise */
     context->intPriority = 0; //Flag for next IT
     context->branchDepth = 0;
     insertInterruptReturnHandling(context); //Insert a new interrupt handling once this one will have been executed
@@ -402,6 +407,17 @@ int SH2KronosInterpreterInit(void)
             cacheId[i] = 1;
             break;
           case 0x020: // CS0
+          /* CS0, 4 premiers Mo : c'est la taille du cache de decodage CS0
+           * (cacheMask[2] = 0x1FFFFF demi-mots), donc aucun repliement. Seul
+           * le premier Mo etait executable : un saut plus loin tombait dans
+           * FetchInvalid (exception "instruction invalide"). Batman Forever
+           * (ST-V) execute du code directement depuis sa ROM de programme en
+           * 0x223AD8B4 et 0x223AD2D0 (sortie de l'ecran PRESS START) ; son
+           * gestionnaire d'exception relancait alors le programme, qui
+           * remettait sa RAM a zero en pleine DMA : ecran noir. */
+          case 0x021:
+          case 0x022:
+          case 0x023:
             krfetchlist[i] = SH2FetchWord;
             cacheId[i] = 2;
             break;

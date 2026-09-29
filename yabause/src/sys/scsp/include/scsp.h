@@ -100,6 +100,7 @@ void ScspReset(void);
 void ScspHalt(void);
 int ScspChangeVideoFormat(int type);
 void ScspAddCycles(u64 cycles);
+void ScspSetFrameSamples(u32 samples);
 void ScspSyncToLine(void);
 void ScspConvert32uto16s(s32 *srcL, s32 *srcR, s16 *dst, u32 len);
 void ScspReceiveCDDA(const u8 *sector);

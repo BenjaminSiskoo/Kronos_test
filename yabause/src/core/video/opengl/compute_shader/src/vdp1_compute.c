@@ -1817,7 +1817,13 @@ void vdp1_clear(int id, float *col, float *colOdd, int xdiv, int* lim) {
 	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 }
 
-void vdp1_write() {
+/* Reporte dans le frame buffer VDP1 `frame` (texture du compute shader) les
+ * pixels ecrits par le CPU/DMA et deja televerses dans vdp1AccessTex[frame].
+ * vdp1_write() ne le fait que pour le frame buffer de trace ; la
+ * regeneration des ressources GL (VIDCSGenFrameBuffer) doit pouvoir le faire
+ * pour les deux frame buffers, afin de leur rendre le contenu qu'elle a
+ * sauvegarde avant de les recreer. */
+void vdp1_write_frame(int frame) {
 	int progId = WRITE;
 	float ratio = 1.0f/_Ygl->vdp1ratio;
 
@@ -1826,13 +1832,17 @@ void vdp1_write() {
 	}
   glUseProgram(prg_vdp1[progId]);
 
-	glBindImageTexture(0, get_vdp1_tex(_Ygl->drawframe), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
-	glBindImageTexture(1, _Ygl->vdp1AccessTex[_Ygl->drawframe], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+	glBindImageTexture(0, get_vdp1_tex(frame), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+	glBindImageTexture(1, _Ygl->vdp1AccessTex[frame], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
 	glUniform2f(2, ratio, ratio);
 
 	glDispatchCompute(work_groups_x, work_groups_y, 1); //might be better to launch only the right number of workgroup
 	glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+}
+
+void vdp1_write() {
+	vdp1_write_frame(_Ygl->drawframe);
 }
 
 u32* vdp1_read(int frame) {
