@@ -32,7 +32,7 @@ extern "C" {
 //YuiMsg
 #define ROTATED 1
 
-#define NB_STV_GAMES 111
+#define NB_STV_GAMES 119
 
 GameLink availableGames[NB_STV_GAMES];
 BiosLink biosLink;
@@ -2594,6 +2594,167 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "ic32",	0x0c00000, 0x0200000, 0x8ebfd947,
         GAME_WORD_BLOB, "ic34",	0x0e00000, 0x0200000, 0x22b7180f,
         GAME_WORD_BLOB, "ic36",	0x1000000, 0x0200000, 0x5b83914c,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  // --- Nouveaux jeux ajoutes depuis mame/src/mame/sega/stv.cpp (a jour) ---
+  {
+    "pclub2bb",
+    NULL,
+    "Print Club 2 Banpresto Bono Bono (J 970925 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0x525d9690,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x8bde60c5,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0xc057b121,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0x5ca801e6,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x03b9eacf,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclub2bu",
+    NULL,
+    "Print Club 2 Banpresto Ultraman (J 970604 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0x869d7837,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x7bdd8e08,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0x4086c7ed,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0x5ca801e6,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x03b9eacf,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclub2ev",
+    NULL,
+    "Print Club 2 Evangelion (J 970319 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0xe6001adf,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x255b3cd2,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0x64ac47ba,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0xff9643ca,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x03b9eacf,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclub2ts",
+    NULL,
+    "Print Club 2 Tsubuyaki Shiro (J 970708 V1.100)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0xa8fef41b,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x5f550c41,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0xb26d9dba,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0x4b9df566,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x03b9eacf,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic32",	0x0c00000, 0x0200000, 0x3438c564,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic34",	0x0e00000, 0x0200000, 0x8d89877e,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic36",	0x1000000, 0x0200000, 0x8d89877e,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclub2sr",
+    NULL,
+    "Showa Retro Print Club 2 (J 980217 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0x83bc85e3,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x35721f04,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0x1b621078,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0x295970fc,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x2cc5a926,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclub2lc",
+    NULL,
+    "Print Club 2 Lamb Chop and Friends (J 990520 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0xa86f1ee5,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0xc15fd4d6,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0x71267925,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0xc92f8a94,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0xa6eb45e0,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic32",	0x0c00000, 0x0200000, 0x3438c564,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic34",	0x0e00000, 0x0200000, 0x8d89877e,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic36",	0x1000000, 0x0200000, 0x8d89877e,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "pclubnbc",
+    NULL,
+    "Print Club Nightmare Before Christmas (J 980717 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0xb0207086,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic24",	0x0400000, 0x0200000, 0x1241ae77,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic26",	0x0600000, 0x0200000, 0xd7ff1134,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic28",	0x0800000, 0x0200000, 0xde38b841,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic30",	0x0a00000, 0x0200000, 0x499edabf,
+        GAME_WORD_BLOB, "lh28f016sut-10.ic32",	0x0c00000, 0x0200000, 0x9a4109e5,
+        GAME_END, "", 0, 0, 0
+    },
+    STV,
+  },
+  {
+    "slotbatt",
+    NULL,
+    "Slot Battler (J 020703 V1.000)",
+    STV_REGION_JP,
+    0,
+    0,
+    NULL,
+    NV_1P,
+    {
+        GAME_WORD_BLOB, "ic22",	0x0200000, 0x0200000, 0x0aea3b2c,
+        GAME_WORD_BLOB, "ic24",	0x0400000, 0x0200000, 0x6428ef0f,
+        GAME_WORD_BLOB, "ic26",	0x0600000, 0x0200000, 0x9a4109e5,
+        GAME_WORD_BLOB, "ic28",	0x0800000, 0x0200000, 0x9a4109e5,
+        GAME_WORD_BLOB, "ic30",	0x0a00000, 0x0200000, 0x9a4109e5,
+        GAME_WORD_BLOB, "ic32",	0x0c00000, 0x0200000, 0x9a4109e5,
         GAME_END, "", 0, 0, 0
     },
     STV,
