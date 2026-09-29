@@ -153,6 +153,21 @@ YabMutex * g_scsp_set_cyc_mtx = NULL;
 YabMutex * g_scsp_set_cond_mtx = NULL;
 YabCond * g_scsp_set_cyc_cond = NULL;
 
+/* Samples in the current frame, set by the main thread at the start of each
+   frame (ScspSetFrameSamples): 882 in PAL, 735 or 736 in NTSC (59.94 Hz). */
+static volatile u32 scsp_frame_samples = 735;
+
+void ScspSetFrameSamples(u32 samples)
+{
+  if (samples == 0)
+    return;
+  if (g_scsp_set_cyc_mtx != NULL)
+    YabThreadLock(g_scsp_set_cyc_mtx);
+  scsp_frame_samples = samples;
+  if (g_scsp_set_cyc_mtx != NULL)
+    YabThreadUnLock(g_scsp_set_cyc_mtx);
+}
+
 #define CLOCK_SYNC_SHIFT (4)
 
 enum EnvelopeStates
@@ -5094,7 +5109,7 @@ ScspInit (int coreid)
   m68kexecptr = M68K->Exec;
 
   // Allocate enough memory for each channel buffer(may have to change)
-  scspsoundlen = 44100 / fps;
+  scspsoundlen = (fps == 50) ? 882 : 736; /* nominal, rounded up (59.94 Hz) */
   scsplines = 263;
   scspsoundbufs = 10; // should be enough to prevent skipping
   scspsoundbufsize = scspsoundlen * scspsoundbufs;
@@ -5286,7 +5301,10 @@ int
 ScspChangeVideoFormat (int type)
 {
   fps = type ? 50.0 : 60.0;
-  scspsoundlen = 44100 / (type ? 50 : 60);
+  /* default until the main thread sets the real count of the frame */
+  scsp_frame_samples = type ? 882 : 735;
+  /* nominal samples per frame, rounded up (736 at 59.94 Hz) */
+  scspsoundlen = type ? 882 : 736;
   scsplines = type ? 313 : 263;
   scspsoundbufsize = scspsoundlen * scspsoundbufs;
 
@@ -5529,7 +5547,10 @@ void* ScspAsynMainCpu( void * p ){
 
   while (thread_running)
   {
-    int framecnt = (44100 * samplecnt) / fps; // 11289600/60
+    /* End of the frame in 68000 cycles. Read under g_scsp_set_cyc_mtx each
+       time cycles are taken: the main thread sets the sample count of the
+       frame before it hands out its first cycles. */
+    int framecnt = (int)(scsp_frame_samples * samplecnt);
     while (g_scsp_lock)
     {
 	    YabThreadUSleep(1000);
@@ -5540,6 +5561,7 @@ void* ScspAsynMainCpu( void * p ){
     newCycles = 0;
     m68k_inc += cycleRequest;
     scsp_pending_inc = m68k_inc;
+    framecnt = (int)(scsp_frame_samples * samplecnt);
     YabThreadUnLock(g_scsp_set_cyc_mtx);
     if (cycleRequest == 0){
       YabThreadCondWait(g_scsp_set_cyc_cond, g_scsp_set_cond_mtx);
@@ -5548,6 +5570,7 @@ void* ScspAsynMainCpu( void * p ){
       newCycles = 0;
       m68k_inc += cycleRequest;
       scsp_pending_inc = m68k_inc;
+      framecnt = (int)(scsp_frame_samples * samplecnt);
       YabThreadUnLock(g_scsp_set_cyc_mtx);
     }
 
@@ -5621,31 +5644,40 @@ void ScspExecAsync() {
 
   if (ScspInternalVars->scsptiming1 >= scsplines)
   {
-     s32 *bufL, *bufR;
+     /* Samples actually produced during this frame (one per 256 68000
+        cycles, see new_scsp_exec): 882 in PAL, 735 or 736 in NTSC. The
+        frame length is no longer a fixed scspsoundlen, so the samples are
+        copied into the ring buffer one by one, wrapping at its end, instead
+        of rewinding scspsoundgenpos to 0 (which would now leave a gap of
+        stale samples at the end of the buffer). */
+     u32 len = (new_scsp_outbuf_pos > 0) ? (u32)new_scsp_outbuf_pos : 0;
+     u32 i;
 
      ScspInternalVars->scsptiming1 -= scsplines;
      ScspInternalVars->scsptiming2 = 0;
 
-     // Update sound buffers
-     if (scspsoundgenpos + scspsoundlen > scspsoundbufsize)
-        scspsoundgenpos = 0;
+     if (len > 900)
+        len = 900;  /* size of new_scsp_outbuf_l/r */
+     if (len > scspsoundbufsize)
+        len = scspsoundbufsize;
 
-     if (scspsoundoutleft + scspsoundlen > scspsoundbufsize)
+     if (scspsoundoutleft + len > scspsoundbufsize)
      {
-        u32 overrun = (scspsoundoutleft + scspsoundlen) -
-           scspsoundbufsize;
+        u32 overrun = (scspsoundoutleft + len) - scspsoundbufsize;
         SCSPLOG("WARNING: Sound buffer overrun, %lu samples\n",
            (long)overrun);
         scspsoundoutleft -= overrun;
      }
 
-     bufL = (s32 *)&scspchannel[0].data32[scspsoundgenpos];
-     bufR = (s32 *)&scspchannel[1].data32[scspsoundgenpos];
-     memset(bufL, 0, sizeof(u32) * scspsoundlen);
-     memset(bufR, 0, sizeof(u32) * scspsoundlen);
-     new_scsp_update_samples(bufL, bufR, scspsoundlen);
-     scspsoundgenpos += scspsoundlen;
-     scspsoundoutleft += scspsoundlen;
+     for (i = 0; i < len; i++)
+     {
+        u32 pos = (scspsoundgenpos + i) % scspsoundbufsize;
+        scspchannel[0].data32[pos] = (u32)new_scsp_outbuf_l[i];
+        scspchannel[1].data32[pos] = (u32)new_scsp_outbuf_r[i];
+     }
+     new_scsp_outbuf_pos = 0;
+     scspsoundgenpos = (scspsoundgenpos + len) % scspsoundbufsize;
+     scspsoundoutleft += len;
   }
 
   while (scspsoundoutleft > 0 &&
