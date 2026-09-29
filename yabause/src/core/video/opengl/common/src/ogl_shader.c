@@ -482,6 +482,12 @@ uniform int win1_mode; \n \
 uniform int win_op; \n \
 uniform int win_all; \n \
 uniform int nbFrame; \n \
+uniform int u_field_weave; \n \
+uniform int u_vdp1_rot; \n \
+uniform mat4 rotVdp1Odd; \n \
+uniform mat4 rotVdp1Even; \n \
+uniform vec2 vdp1ShiftOdd; \n \
+uniform vec2 vdp1ShiftEven; \n \
 uniform vec2 vdp1Shift; \n \
 uniform mat4 rotVdp1; \n \
 int PosY = int(gl_FragCoord.y);\n \
@@ -489,6 +495,18 @@ int PosX = int(gl_FragCoord.x);\n \
 ivec2 getFBCoord() {\n \
  vec4 scaledPos = gl_FragCoord;\n \
  scaledPos.xy *= u_emu_vdp1_ratio;\n \
+ if (u_vdp1_rot != 0) {\n \
+  vec2 pix = floor(scaledPos.xy);\n \
+  vec4 emuPos = vec4(floor(pix / vdp1Ratio), 0.0, 1.0);\n \
+  mat4 R = rotVdp1;\n \
+  vec2 S = vdp1Shift;\n \
+  if (u_field_weave != 0) {\n \
+   if ((int(floor(pix.y * 2.0 / vdp1Ratio.y)) & 1) == 0) { R = rotVdp1Odd; S = vdp1ShiftOdd; }\n \
+   else { R = rotVdp1Even; S = vdp1ShiftEven; }\n \
+  }\n \
+  vec2 fbEmu = floor((R*emuPos).xy + S);\n \
+  return ivec2(fbEmu*vdp1Ratio + floor(vdp1Ratio*0.5));\n \
+ }\n \
  return ivec2((rotVdp1*scaledPos).xy+vdp1Shift*vdp1Ratio) ;\n \
 "
 
@@ -1326,6 +1344,39 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
    * window enabled). Bit layout identical to win_op. */
   glUniform1i(glGetUniformLocation(vdp2blit_prg, "win_all"), _Ygl->win_all_draw);
 
+  /* Entrelace simple densite (TVMD.LSMD = 2), resolution interne >= 2x :
+   * les deux champs sont affiches ensemble, comme sur un televiseur, avec
+   * deux demi-lignes par ligne emulee. Le champ IMPAIR occupe la
+   * demi-ligne du haut (ST-058-R2 tableau 2.4 : en double densite VCT0 = 0
+   * designe le champ impair, soit les lignes paires 0, 2, 4... ; Mednafen,
+   * vdp2.c : ligne de sortie = (ligne << 1) | SurfInterlaceField avec
+   * SurfInterlaceField = !Odd).
+   *
+   * Shienryu (frame buffer VDP1 en rotation) ecrit Xst = 319.0 au champ
+   * pair et 319.5 au champ impair, dXst < 0 : chaque champ lit l'autre
+   * moitie des 320 colonnes ; les couches VDP2 qui dependent de cette
+   * table different aussi d'un champ a l'autre. Chaque demi-ligne doit
+   * donc montrer le contenu de SON champ.
+   *
+   * - La table est choisie par la demi-ligne elle-meme (getFBCoord() :
+   *   haut -> table du champ impair, bas -> table du champ pair ; les deux
+   *   tables sont memorisees plus bas).
+   * - Chaque image composee n'ecrit qu'UNE des deux demi-lignes, celle de
+   *   SON champ (TVSTAT.ODD = 1 : demi-ligne du haut), l'autre restant
+   *   celle de l'image precedente (nbFrame dans le shader). Les couches
+   *   VDP2 (RBG0 lit la meme table de rotation) sont calculees pour le
+   *   champ courant et doivent aller a sa place ; le frame buffer VDP1,
+   *   lui, ne change pas d'un champ a l'autre dans Shienryu (liste de
+   *   commandes identique, pas de HSS), et la table choisie par demi-ligne
+   *   suffit a le lire correctement. Ecrire les deux demi-lignes a chaque
+   *   image faisait trembler les textes VDP2 ; ecrire la demi-ligne de
+   *   l'autre champ les rayait (PRESS START).
+   * En 1x, et hors simple densite, rien ne change. */
+  {
+    const int weave = (_Ygl->interlace == SINGLE_INTERLACE) && (_Ygl->vdp1ratio >= 2.0f);
+    glUniform1i(glGetUniformLocation(vdp2blit_prg, "u_field_weave"), weave);
+  }
+
   if (_Ygl->interlace == NORMAL_INTERLACE){
     //double density interlaced or progressive _ Do not mix fields. Maybe required by double density. To check
     glUniform1i(glGetUniformLocation(vdp2blit_prg, "nbFrame"),2);
@@ -1342,13 +1393,20 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
   float mX = 0.0f, mY = 0.0f;
   YglLoadIdentity(&m);
   if (Vdp1Regs->TVMR & 0x02) {
-    float Xsp = Vdp1ParaA.deltaXst;
-    float Xp = Vdp1ParaA.Xst;
-    float Ysp = Vdp1ParaA.deltaYst;
-    float Yp = Vdp1ParaA.Yst;
+    /* ST-058-R2 p. 159, lecture en rotation du frame buffer : debut de
+     * ligne calcule sur 20 bits (signe + 10 bits entiers + 9 bits
+     * decimaux), increment horizontal sur 12 bits (signe + 2 bits entiers
+     * + 9 bits decimaux) : les decimales plus fines que 1/512 sont
+     * ignorees (Shienryu : dXst -1.42871 -> -1.4296875). */
+#define VDP1_ROT_Q9(v) ((float)(floor((double)(v) * 512.0) / 512.0))
+    float Xsp = VDP1_ROT_Q9(Vdp1ParaA.deltaXst);
+    float Xp = VDP1_ROT_Q9(Vdp1ParaA.Xst);
+    float Ysp = VDP1_ROT_Q9(Vdp1ParaA.deltaYst);
+    float Yp = VDP1_ROT_Q9(Vdp1ParaA.Yst);
 
-    float dX = Vdp1ParaA.deltaX;
-    float dY = Vdp1ParaA.deltaY;
+    float dX = VDP1_ROT_Q9(Vdp1ParaA.deltaX);
+    float dY = VDP1_ROT_Q9(Vdp1ParaA.deltaY);
+#undef VDP1_ROT_Q9
 
     m.m[0][0] = dX;
     m.m[0][1] = dY;
@@ -1361,6 +1419,68 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
   }
   glUniform2f(glGetUniformLocation(vdp2blit_prg, "vdp1Shift"), mX, mY);
   glUniformMatrix4fv(glGetUniformLocation(vdp2blit_prg, "rotVdp1"), 1, 0, (GLfloat*)m.m);
+
+  /* Tables de rotation des deux champs pour l'affichage simultane (voir
+   * plus haut). Elles ne sont PAS rangees selon la parite du champ lue a la
+   * composition : selon l'instant ou la composition s'execute et les images
+   * sautees, cette parite ne correspond pas toujours a la table lue, et les
+   * deux champs s'echangeaient d'une image a l'autre (texte qui tremble).
+   *
+   * On garde la derniere table (A) et la derniere table differente (B) ;
+   * un jeu qui alterne deux tables (Shienryu) a toujours les deux. La
+   * demi-ligne du bas d'une ligne est a y + 0.5, donc plus loin dans la
+   * direction de balayage vertical d = (dXst, dYst) : sa table est celle
+   * dont le point de depart est le plus avance selon d, soit
+   * (S_bas - S_haut) . d > 0. Shienryu : S_impair = (319.5, -56),
+   * S_pair = (319.0, -56), d = (-1.43, 0) -> pair en bas, impair en haut,
+   * comme le ST-058-R2 (tableau 2.4) et Mednafen. Si le jeu n'alterne pas,
+   * B est oublie apres 8 images composees sans changement. */
+  {
+    static YglMatrix rotA, rotB;
+    static float shA[2], shB[2];
+    static int validA = 0, validB = 0;
+    static int sameCount = 0;
+    const int rot = (Vdp1Regs->TVMR & 0x02) ? 1 : 0;
+    YglMatrix *mTop = &m, *mBot = &m;
+    float topX = mX, topY = mY, botX = mX, botY = mY;
+    if (rot) {
+      const int sameA = validA && (shA[0] == mX) && (shA[1] == mY) &&
+                        (memcmp(rotA.m, m.m, sizeof(m.m)) == 0);
+      if (!sameA) {
+        if (validA) {
+          rotB = rotA; shB[0] = shA[0]; shB[1] = shA[1]; validB = 1;
+        }
+        rotA = m; shA[0] = mX; shA[1] = mY; validA = 1;
+        sameCount = 0;
+      } else if (++sameCount >= 8) {
+        /* table stable depuis 8 images composees : le jeu n'alterne plus,
+         * B ne doit pas garder une ancienne table */
+        validB = 0;
+        sameCount = 8;
+      }
+      if (validB) {
+        const float dxs = rotA.m[1][0], dys = rotA.m[1][1];
+        const float dot = (shB[0] - shA[0]) * dxs + (shB[1] - shA[1]) * dys;
+        if (dot > 0.0f) {
+          mTop = &rotA; topX = shA[0]; topY = shA[1];
+          mBot = &rotB; botX = shB[0]; botY = shB[1];
+        } else {
+          mTop = &rotB; topX = shB[0]; topY = shB[1];
+          mBot = &rotA; botX = shA[0]; botY = shA[1];
+        }
+      } else {
+        mTop = mBot = &rotA;
+        topX = botX = shA[0]; topY = botY = shA[1];
+      }
+    } else {
+      validA = validB = 0;
+    }
+    glUniform1i(glGetUniformLocation(vdp2blit_prg, "u_vdp1_rot"), rot);
+    glUniformMatrix4fv(glGetUniformLocation(vdp2blit_prg, "rotVdp1Odd"), 1, 0, (GLfloat*)mTop->m);
+    glUniformMatrix4fv(glGetUniformLocation(vdp2blit_prg, "rotVdp1Even"), 1, 0, (GLfloat*)mBot->m);
+    glUniform2f(glGetUniformLocation(vdp2blit_prg, "vdp1ShiftOdd"), topX, topY);
+    glUniform2f(glGetUniformLocation(vdp2blit_prg, "vdp1ShiftEven"), botX, botY);
+  }
 
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_BLEND);
