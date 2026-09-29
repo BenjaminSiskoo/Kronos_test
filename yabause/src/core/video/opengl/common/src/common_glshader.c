@@ -1381,7 +1381,9 @@ ivec2 addr = ivec2(textureSize(s_back, 0) * v_texcoord.st);\n \
 colorback = texelFetch( s_back, addr,0 );\n \
 ivec2 linepos = ivec2(int(PosY * u_emu_height), 0);\n \
 linepos.y = is_perline[7];\n \
-if ((int(PosY/vdp1Ratio.y)&0x1) == nbFrame) {\n \
+int fieldRow = int(float(PosY)/vdp1Ratio.y);\n \
+if (u_field_weave != 0) fieldRow = int(float(PosY)*2.0/vdp1Ratio.y) + 1;\n \
+if ((fieldRow&0x1) == nbFrame) {\n \
   discard;\n \
 };\n \
 offset_color = texelFetch( s_perline, linepos,0 ).rgb;\n \
