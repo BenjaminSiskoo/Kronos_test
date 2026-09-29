@@ -2785,6 +2785,12 @@ int SH2InterpreterInit()
             fetchlist[i] = SH2MappedMemoryReadWord;
             break;
           case 0x020: // CS0
+          /* CS0, 4 premiers Mo executables, comme l'interpreteur Kronos
+           * (sh2_kronos/src/sh2int.c) : Batman Forever (ST-V) execute du
+           * code depuis sa ROM de programme en 0x223AD8B4. */
+          case 0x021:
+          case 0x022:
+          case 0x023:
             fetchlist[i] = SH2MappedMemoryReadWord;
             break;
           case 0x05c: // Fighting Viper
