@@ -996,6 +996,34 @@ u8 do_th_mode(u8 val, PortData_struct* port)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Direct mode (PDR/DDR) read-back of a port with NOTHING plugged in.
+ *
+ * The port lines are pulled up, so every line the SMPC does not drive
+ * (DDR bit = 0) reads as 1; the lines it drives read back what was written.
+ * Mednafen (ss/smpc.c, UpdateIOBus + IODevice_base_UpdateBus): the bus of an
+ * empty port is (DataOut | ~DataDir) & 0x7F. PERCore marks an empty port with
+ * port status F0h (direct connection, no peripheral, PerPortReset()).
+ *
+ * The TH (DDR 40h) and TH/TR (DDR 60h) paths below answered for an empty
+ * port as if a pad were there: do_th_mode() returns the pad ID CFh for any
+ * port, and the TH/TR nibbles came from the port's data bytes, left at 0 -
+ * all buttons "pressed", pad data being active low.
+ *
+ * Heisei Tensai Bakabon (T-17001G) reads both pads in direct mode (06006A..,
+ * loop 060051F4) and soft-resets when a pad holds A+B+C and presses Start
+ * (06006C16-06006C38, jsr 06004000). With port 2 empty it saw 1FFFh, every
+ * button, and jumped back to its entry point every time: the disc access
+ * sequence restarted forever and the screen stayed black. */
+static INLINE int SmpcPortIsEmpty(PortData_struct *port)
+{
+   return port->data[0] == 0xF0;
+}
+static INLINE u8 SmpcEmptyPortRead(u8 val, u8 ddr)
+{
+   ddr &= 0x7F;
+   return (u8)((val & 0x80) | (val & ddr) | (~ddr & 0x7F));
+}
+
 void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    u8 oldVal;
    if(!(addr & 0x1)) return;
@@ -1086,6 +1114,10 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                SMPCLOG("smpc\t: PDR1 Peripheral Unknown Control Method not implemented 0x%x\n", SmpcRegs->DDR[0] & 0x7F);
                break;
          }
+         /* Nothing plugged in: pulled-up lines (see SmpcEmptyPortRead). The
+            3Fh method (ST-V EEPROM on port 1) is not a pad port. */
+         if (SmpcPortIsEmpty(&PORTDATA1) && (SmpcRegs->DDR[0] & 0x7F) != 0x3F)
+            SmpcRegs->PDR[0] = SmpcEmptyPortRead(val, SmpcRegs->DDR[0]);
 	break;
 	  case 0x77: // PDR2
 		  // FIX ME (should support other peripherals)
@@ -1134,6 +1166,10 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 			  SMPCLOG("smpc\t: PDR2 Peripheral Unknown Control Method not implemented 0x%x\n", SmpcRegs->DDR[1] & 0x7F);
 			  break;
 		  }
+		  /* Nothing plugged in: pulled-up lines (see SmpcEmptyPortRead). The
+		     18h method on port 2 drives the sound CPU reset, not a pad. */
+		  if (SmpcPortIsEmpty(&PORTDATA2) && (SmpcRegs->DDR[1] & 0x7F) != 0x18)
+		     SmpcRegs->PDR[1] = SmpcEmptyPortRead(val, SmpcRegs->DDR[1]);
 		  break;
 	  case 0x79: // DDR1
          switch (SmpcRegs->DDR[0] & 0x7F) { // Which Control Method do we use?
