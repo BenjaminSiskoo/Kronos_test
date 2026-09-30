@@ -610,24 +610,27 @@ void op2(struct Slot * slot, struct Scsp * s)
    }
    else if (slot->regs.lpctl == 2)//reverse
    {
-      if (!slot->state.backwards)
-         slot->state.sample_offset += sample_delta;
-      else
-         slot->state.sample_offset -= sample_delta;
-
+      // ST-077-R2 LPCTL, figure 4.10 "Reversal Loop" : lecture en avant de
+      // SA jusqu'a LSA seulement, puis en arriere de LEA vers LSA, en
+      // repartant de LEA a chaque passage. Mednafen (scsp.inc) fait de meme :
+      // au passage de LoopStart l'adresse est renvoyee a LoopEnd et lue a
+      // l'envers. L'ancien code lisait d'abord en avant jusqu'a LEA (la
+      // boucle etait jouee une fois a l'endroit avant d'etre inversee).
       if (!slot->state.backwards)
       {
-         if (slot->state.sample_offset >= slot->regs.lea)
+         slot->state.sample_offset += sample_delta;
+         if (slot->state.sample_offset >= slot->regs.lsa)
          {
-            slot->state.sample_offset = slot->regs.lea;
+            slot->state.sample_offset = (s32)slot->regs.lea - (slot->state.sample_offset - (s32)slot->regs.lsa);
             slot->state.backwards = 1;
          }
       }
       else
       {
          //backwards
+         slot->state.sample_offset -= sample_delta;
          if (slot->state.sample_offset <= slot->regs.lsa)
-            slot->state.sample_offset = slot->regs.lea;
+            slot->state.sample_offset += (s32)slot->regs.lea - (s32)slot->regs.lsa;
       }
    }
    else if (slot->regs.lpctl == 3)//ping pong
@@ -662,18 +665,54 @@ void op2(struct Slot * slot, struct Scsp * s)
 }
 
 
+// Generateur de bruit interne (SSCTL = 1) : registre a decalage de 17 bits,
+// avance une fois par slot et par echantillon (Mednafen, ss/scsp.inc :
+// LFSR = (LFSR >> 1) | (((LFSR >> 5) ^ LFSR) & 1) << 16, valeur initiale 1).
+static u32 scsp_noise_lfsr = 1;
+
 //waveform dram read
+// SSCTL (source de l'echantillon, ST-077-R2) : 0 = RAM son, 1 = bruit
+// interne, 2 et 3 = donnee nulle. Le compteur d'adresse avance dans tous les
+// cas (op2), CA reste donc valable pour un slot muet.
+// Ce coeur lisait toujours la RAM son : I Love Mickey Mouse utilise le slot 31
+// comme horloge (SSCTL = 2, SA = 0, OCT = 5, DISDL = 7) et ses operateurs FM
+// sont aussi en SSCTL = 2 ; ils jouaient le tampon audio en 00000 a 32 fois
+// sa vitesse (fragment qui se repete par-dessus la musique) et saturaient le
+// son au lancement du jeu depuis le menu.
 void op3(struct Slot * slot)
 {
    u32 addr = (slot->state.address_pointer);
+   u32 lfsr = scsp_noise_lfsr;
+
+   scsp_noise_lfsr = (lfsr >> 1) | ((((lfsr >> 5) ^ lfsr) & 1) << 16);
 
    if (slot_is_stopped(slot))
       return;
 
-   if (!slot->regs.pcm8b)
-     slot->state.wave = SoundRamReadWord(NULL, SoundRam, addr); //SoundRamReadWord(addr);
-   else
-     slot->state.wave = SoundRamReadByte(NULL, SoundRam, addr) << 8; //SoundRamReadByte(addr) << 8;
+   switch (slot->regs.ssctl)
+   {
+   case 0:
+      if (!slot->regs.pcm8b)
+        slot->state.wave = SoundRamReadWord(NULL, SoundRam, addr); //SoundRamReadWord(addr);
+      else
+        slot->state.wave = SoundRamReadByte(NULL, SoundRam, addr) << 8; //SoundRamReadByte(addr) << 8;
+      break;
+   case 1:
+      slot->state.wave = (u16)(lfsr << 8);
+      break;
+   default:
+      slot->state.wave = 0;
+      break;
+   }
+
+   // SBCTL (ST-077-R2 tableau 4.11) : bit 0 inverse les bits autres que le
+   // bit de signe, bit 1 inverse le bit de signe de la donnee d'entree, quelle
+   // que soit sa source (Mednafen : SBXOR = 0000/7FFF/8000/FFFF). Ce coeur
+   // l'ignorait.
+   if (slot->regs.sbctl & 1)
+      slot->state.wave ^= 0x7FFF;
+   if (slot->regs.sbctl & 2)
+      slot->state.wave ^= 0x8000;
 
    slot->state.output = slot->state.wave;
 }
