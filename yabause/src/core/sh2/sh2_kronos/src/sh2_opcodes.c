@@ -225,12 +225,37 @@ static void SH2andi(SH2_struct * sh, u32 d)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Read-modify-write and the blocked-CPU rollback.
+ *
+ * When a CPU becomes blocked in the middle of an instruction (an SCU DMA
+ * holds the CPU bus, or a VDP2 VRAM bank has no CPU slot), the ExecSave
+ * loops of sh2int.c restore the registers saved before the instruction and
+ * replay it later. Memory is not restored. For a read-modify-write this is
+ * wrong: the write has already landed, and the replay reads it back.
+ *
+ * The block is raised by the first external access of the instruction, i.e.
+ * by the READ (SH2UpdateABusAccess(context, 1) from the cache-through path
+ * recomputes isBlocked, which may be stale since SH2SetCPUConcurrency()
+ * set A_BUS_ACCESS). Once the read went through unblocked, the write cannot
+ * block any more (isAccessingCPUBUS is already 1, and SH2WaitScuDmaOnABBus()
+ * can only end a DMA). So: if the read blocked, leave memory alone and let
+ * the whole instruction be replayed.
+ *
+ * Actua Golf: both CPUs run the same allocator at 06056DDC, which takes the
+ * TAS.B semaphores 060702DD then 060702DE and releases them at 06056E3A /
+ * 06056E3E. The slave's TAS.B on 060702DE found 00 and wrote 80, the rollback
+ * replayed it, the replay found 80 and returned T = 0. The slave then spun on
+ * a lock it owned itself, holding 060702DD, and the master spun on that one:
+ * both SH2 frozen, with 060702DC = 01 80 80 00 (write watch, frame 3669). */
+#define SH2_RMW_READ_BLOCKED(sh) ((sh)->isBlocked != 0)
+
 static void SH2andm(SH2_struct * sh, u32 d)
 {
    s32 temp;
    s32 source = d;
 
    temp = (s32) SH2MappedMemoryReadByte(sh, sh->regs.GBR + sh->regs.R[0]);
+   if (SH2_RMW_READ_BLOCKED(sh)) return;   /* replayed whole, see above */
    temp &= source;
    SH2MappedMemoryWriteByte(sh, (sh->regs.GBR + sh->regs.R[0]),temp);
    sh->regs.PC += 2;
@@ -1623,6 +1648,7 @@ static void SH2orm(SH2_struct * sh, u32 imm)
    s32 source = imm;
 
    temp = (s32) SH2MappedMemoryReadByte(sh, sh->regs.GBR + sh->regs.R[0]);
+   if (SH2_RMW_READ_BLOCKED(sh)) return;   /* see SH2andm */
    temp |= source;
    SH2MappedMemoryWriteByte(sh, sh->regs.GBR + sh->regs.R[0],temp);
    sh->regs.PC += 2;
@@ -2142,6 +2168,12 @@ static void SH2tas(SH2_struct * sh, u32 n)
 
    temp=(s32) SH2MappedMemoryReadByte(sh, tasaddr);
 
+   /* If the read blocked the CPU, the instruction will be rolled back and
+      replayed: do not take the semaphore now, or the replay finds it already
+      set, returns T = 0 and the CPU waits forever on a lock it owns (see
+      SH2andm, Actua Golf). */
+   if (SH2_RMW_READ_BLOCKED(sh)) return;
+
    if (temp==0)
       sh->regs.SR.part.T=1;
    else
@@ -2238,6 +2270,7 @@ static void SH2xorm(SH2_struct * sh, u32 imm)
    s32 temp;
 
    temp = (s32) SH2MappedMemoryReadByte(sh, sh->regs.GBR + sh->regs.R[0]);
+   if (SH2_RMW_READ_BLOCKED(sh)) return;   /* see SH2andm: XOR is not idempotent */
    temp ^= imm;
    SH2MappedMemoryWriteByte(sh, sh->regs.GBR + sh->regs.R[0],temp);
    sh->regs.PC += 2;
