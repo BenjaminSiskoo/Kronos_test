@@ -247,7 +247,13 @@ static void SH2andi(SH2_struct * sh, u32 d)
  * replayed it, the replay found 80 and returned T = 0. The slave then spun on
  * a lock it owned itself, holding 060702DD, and the master spun on that one:
  * both SH2 frozen, with 060702DC = 01 80 80 00 (write watch, frame 3669). */
-#define SH2_RMW_READ_BLOCKED(sh) ((sh)->isBlocked != 0)
+/* Only when the rollback will really happen (see
+ * SH2InstructionWillBeReplayed() in sh2core.c): testing isBlocked alone froze
+ * the CPU on a stale isBlocked = 1 while it ran on SH2StandardExec, which
+ * never rolls back - the instruction skipped its write, kept its PC and ran
+ * again forever. The InterruptibleExec pointer is not enough either: see
+ * SH2InstructionWillBeReplayed() (Hop Step Idol no longer booted). */
+#define SH2_RMW_READ_BLOCKED(sh) SH2InstructionWillBeReplayed(sh)
 
 static void SH2andm(SH2_struct * sh, u32 d)
 {
