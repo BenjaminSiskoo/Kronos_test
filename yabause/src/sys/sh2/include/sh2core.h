@@ -449,6 +449,10 @@ void SH2EvaluateInterrupt(SH2_struct *sh);
    (acquitte le SCU) ou remise en attente (SR.I releve entre-temps). */
 void SH2InterruptTaken(SH2_struct *sh);
 void SH2InterruptDeferred(SH2_struct *sh);
+/* V-Blank IN / H-Blank IN lines of the slave SH2 (TECH#28 2.3): level
+   signals from the VDP2 through the DCC, not SCU interrupts. */
+void SH2SlaveSetHBlank(int active);
+void SH2SlaveSetVBlank(int active);
 
 typedef struct SH2_struct_s
 {

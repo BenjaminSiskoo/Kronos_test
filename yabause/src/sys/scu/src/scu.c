@@ -3435,8 +3435,10 @@ static void ScuTestInterruptMask(u8 i)
      if (newInterrupt != 0xFF) {
        currentInterrupt = newInterrupt;
        SH2IntcSetIrl(MSH2, ScuInterrupt[currentInterrupt].level, ScuInterrupt[currentInterrupt].vector);
-       if ((currentInterrupt == VBLANK_IN) && (yabsys.IsSSH2Running)) SH2IntcSetIrl(SSH2, 6, 0x43); //Slave is in auto vector mode
-       if ((currentInterrupt == HBLANK_IN) && (yabsys.IsSSH2Running)) SH2IntcSetIrl(SSH2, 2, 0x41);
+       /* Plus rien pour le slave ici : ses V-Blank IN / H-Blank IN ne passent
+          pas par le SCU (STTECH28 2.3) et ne dependent ni de IMS ni de
+          l'arbitrage du maitre. Ils sont pilotes par les fronts de blanking du
+          VDP2, voir SH2SlaveSetHBlank() / SH2SlaveSetVBlank(). */
      }
    }
 }

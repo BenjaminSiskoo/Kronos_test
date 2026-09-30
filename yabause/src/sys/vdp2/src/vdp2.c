@@ -862,6 +862,8 @@ void resetFrameSkip(void) {
 
 void Vdp2VBlankIN_It(void) {
   Vdp2Regs->TVSTAT |= 0x0008;
+  /* slave IRL6, level for the whole V-Blank (STTECH28 2.3) */
+  SH2SlaveSetVBlank(1);
   ScuSendVBlankIN();
 }
 
@@ -912,6 +914,9 @@ void Vdp2VBlankIN(void) {
 
 
 void Vdp2HBlankIN_It(void) {
+  /* slave IRL2, level for the whole H-Blank, on every line (STTECH28 2.3);
+     during the V-Blank the slave sees IRL6 anyway */
+  SH2SlaveSetHBlank(1);
   if (yabsys.LineCount < yabsys.VBlankLineCount) {
     Vdp2Regs->TVSTAT |= 0x0004;
     ScuSendHBlankIN();
@@ -1152,6 +1157,8 @@ void Vdp2HBlankIN(void) {
 
 extern int vdp1_clock;
 void Vdp2StartVisibleLine(void) {
+  /* fin du H-Blank : la ligne IRL2 du slave retombe (STTECH28 2.3) */
+  SH2SlaveSetHBlank(0);
   #if defined(HAVE_LIBGL) || defined(__ANDROID__) || defined(IOS)
   if(yabsys.LineCount == 0) {
     //Mettre a jour la texture des index.
@@ -1198,6 +1205,7 @@ Vdp2 * Vdp2RestoreRegs(int line, Vdp2* lines) {
 //////////////////////////////////////////////////////////////////////////////
 void Vdp2VBlankOUT_It(void) {
   Vdp2Regs->TVSTAT = ((Vdp2Regs->TVSTAT & ~0x0008) & ~0x0002) | (vdp2_is_odd_frame << 1);
+  SH2SlaveSetVBlank(0);
   ScuSendVBlankOUT();
 }
 

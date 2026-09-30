@@ -64,6 +64,89 @@ int DMAProc(SH2_struct *context, int cycles );
  * (voir SH2EvaluateInterrupt() et SH2InterruptTaken()). */
 static u8 SH2ScuAckPending[2];
 
+/* V-Blank IN and H-Blank IN of the slave SH2.
+ *
+ * TECH#28 2.3 ("Slave CPU Interrupts"): the slave's interrupts are not set
+ * from the SCU but from the DCC. H-Blank IN is IRL2, vector 41H; V-Blank IN is
+ * IRL6, vector 43H. Both are LEVEL signals, active for the whole blank period:
+ * when the handler returns while the blank is still on, the interrupt is taken
+ * again. The slave has no SCU mask; only SR masks them.
+ *
+ * Kronos raised them from ScuTestInterruptMask(), i.e. only when the SCU had
+ * just picked V-Blank IN / H-Blank IN for the MASTER. That had three effects
+ * the hardware does not have:
+ *  - the slave lost its blank interrupts whenever the master had them masked
+ *    in IMS or the SCU was holding another master request;
+ *  - a request the slave could not take (SR masked) stayed pending forever and
+ *    fired long after the blank had ended, and the next H-Blank IN overwrote a
+ *    pending V-Blank IN;
+ *  - the slave taking it called ScuAcceptInterrupt(): that cleared the master
+ *    edge in ITEdge and released currentInterrupt, so a master with SR masking
+ *    V-Blank IN at that moment got its pending IRL overwritten by the next SCU
+ *    source and never ran its V-Blank IN handler for that frame.
+ *
+ * Mednafen does the same as the bulletin (ss/scu.inc, SCU_SetHBVB):
+ *   SH7095_SetIRL(&CPU[1], ((VB | HB) << 1) | (VB << 2));
+ * The lines below are driven by the VDP2 blank edges (vdp2.c). */
+static u8 SlaveHBlankLine = 0;
+static u8 SlaveVBlankLine = 0;
+
+static u8 SH2SlaveBlankIrl(void)
+{
+  if (SlaveVBlankLine) return 6;
+  if (SlaveHBlankLine) return 2;
+  return 0;
+}
+
+static void SH2SlaveBlankApply(void)
+{
+  u8 irl = SH2SlaveBlankIrl();
+  if (SSH2 == NULL) return;
+  SSH2->intc.irl = irl;
+  SSH2->intc.d = (irl == 6) ? 0x43 : 0x41;
+  if ((irl != 0) && yabsys.IsSSH2Running)
+    SH2EvaluateInterrupt(SSH2);
+}
+
+void SH2SlaveSetHBlank(int active)
+{
+  u8 v = (active != 0);
+  if (SlaveHBlankLine == v) return;
+  SlaveHBlankLine = v;
+  SH2SlaveBlankApply();
+}
+
+void SH2SlaveSetVBlank(int active)
+{
+  u8 v = (active != 0);
+  if (SlaveVBlankLine == v) return;
+  SlaveVBlankLine = v;
+  SH2SlaveBlankApply();
+}
+
+/* Highest priority among the on-chip sources currently requesting. Only used
+ * for the slave, whose IRL is now a level that stays asserted: without this
+ * check an asserted blank line (checked first below) would keep an on-chip
+ * source of higher priority -- the FRT input capture used for master/slave
+ * communication is level 15 (ST-162 1.1) -- waiting for the whole blank.
+ * SH7604: on equal levels, IRL wins over the on-chip modules. */
+static u8 SH2OnchipPendingLevel(SH2_struct *sh)
+{
+  u8 lvl = 0;
+  u8 p;
+#define ONCHIP_TAKE(cond, prio) if (cond) { p = (u8)(prio); if (p > lvl) lvl = p; }
+  ONCHIP_TAKE((sh->onchip.DVCR & 0x3) == 0x3, (sh->onchip.IPRA >> 12) & 0xF)
+  ONCHIP_TAKE((sh->onchip.CHCR0 & 0x6) == 0x6, (sh->onchip.IPRA >> 8) & 0xF)
+  ONCHIP_TAKE((sh->onchip.CHCR1 & 0x6) == 0x6, (sh->onchip.IPRA >> 8) & 0xF)
+  ONCHIP_TAKE((sh->wdt.isinterval != 0) && ((sh->onchip.WTCSR & 0x80) != 0), (sh->onchip.IPRA >> 4) & 0xF)
+  ONCHIP_TAKE(((sh->onchip.SCR & 0x40) != 0) && ((sh->onchip.SSR & 0x78) != 0), (sh->onchip.IPRB >> 12) & 0xF)
+  ONCHIP_TAKE(((sh->onchip.SCR & 0x80) != 0) && ((sh->onchip.SSR & 0x80) != 0), (sh->onchip.IPRB >> 12) & 0xF)
+  ONCHIP_TAKE(((sh->onchip.SCR & 0x04) != 0) && ((sh->onchip.SSR & 0x04) != 0), (sh->onchip.IPRB >> 12) & 0xF)
+  ONCHIP_TAKE((sh->onchip.TIER & sh->onchip.FTCSR & 0x8E) != 0, (sh->onchip.IPRB >> 8) & 0xF)
+#undef ONCHIP_TAKE
+  return lvl;
+}
+
 void SH2IntcSetIrl(SH2_struct *sh, u8 irl, u8 d)
 {
   if (sh->intc.irl != irl) {
@@ -89,7 +172,21 @@ void SH2InterruptTaken(SH2_struct *sh)
    le SCU ne l'a pas acquittee et la presentera de nouveau. */
 void SH2InterruptDeferred(SH2_struct *sh)
 {
-  if (sh == MSH2) SH2ScuAckPending[0] = 0;
+  u8 irl;
+  if (sh == MSH2) {
+    SH2ScuAckPending[0] = 0;
+    return;
+  }
+  /* Slave: its only IRL sources are the two blank lines, and a line is a
+     level. SH2HandleInterrupts() has just put the deferred request back into
+     intc.irl; replace it with what the lines say now. A blank that ended in
+     the meantime must not come back, and a deferred on-chip request must not
+     be left in intc.irl, where the slave (which no longer clears intc.irl
+     when it latches it) would take it over and over as a phantom IRL. The
+     on-chip sources are flags and are re-evaluated from them anyway. */
+  irl = SH2SlaveBlankIrl();
+  sh->intc.irl = irl;
+  sh->intc.d = (irl == 6) ? 0x43 : 0x41;
 }
 
 void SH2IntcSetNmi(SH2_struct *sh)
@@ -107,7 +204,8 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
     sh->intPriority = 0xF;
     sh->intc.nmi = 0;
   }
-  else if ((sh->intc.irl != 0)&&(sh->intc.irl > sh->regs.SR.part.I)) //Test IRL
+  else if ((sh->intc.irl != 0)&&(sh->intc.irl > sh->regs.SR.part.I)
+           && ((sh == MSH2) || (sh->intc.irl >= SH2OnchipPendingLevel(sh)))) //Test IRL
   {
     //interrupt on IRL, determine the priority
     sh->intPriority = sh->intc.irl;
@@ -140,11 +238,15 @@ void SH2EvaluateInterrupt(SH2_struct *sh) {
        Hardware Manual, chapitre 5, interruptions IRL et mode vecteur
        externe).
 
-       L'esclave garde l'ancien comportement : ses interruptions SCU sont en
-       auto-vecteur et le verrou est partage avec le maitre. */
-    if (sh == MSH2) SH2ScuAckPending[0] = 1;
-    else ScuAcceptInterrupt(sh);
-    sh->intc.irl = 0;
+       L'esclave, lui, n'a rien a acquitter : ses IRL viennent du DCC et non
+       du SCU (STTECH28 2.3), il ne doit donc toucher ni IST, ni ITEdge, ni
+       le verrou currentInterrupt du maitre. Et ce sont des niveaux : la
+       ligne reste active tant que dure le blanking, intc.irl n'est pas
+       efface (voir SH2SlaveSetHBlank() / SH2SlaveSetVBlank()). */
+    if (sh == MSH2) {
+      SH2ScuAckPending[0] = 1;
+      sh->intc.irl = 0;
+    }
   }
   else if (((sh->onchip.DVCR & 0x3)==0x3) && (((sh->onchip.IPRA >> 12) & 0xF) > sh->regs.SR.part.I)) //DIVU
   {
