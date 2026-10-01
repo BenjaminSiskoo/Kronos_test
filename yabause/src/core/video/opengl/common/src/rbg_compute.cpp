@@ -217,30 +217,28 @@ SHADER_VERSION_COMPUTE
 "  return 0;\n"
 " }\n"
 
-"bool isWindowInside(uint x, uint y)\n"
+// Rotation parameter window (RPMD = 3), ST-058-R2 p.190 / p.193-195, WCTLD
+// bits 7-0 (window_area_mode = WCTLD & 0x8F): RPW0A bit 0, RPW0E bit 1,
+// RPW1A bit 2, RPW1E bit 3, RPLOG bit 7 (0 = OR, 1 = AND). A window gives
+// "inside XOR area"; a disabled window gives RPLOG. Parameter B is used where
+// the result is true, parameter A elsewhere. Same as Mednafen
+// (ss/vdp2_render.c, GetCWV + GetWinRotAB: rotabsel = cwv, 1 = B).
+// rotWin[0..511] = W0 spans, rotWin[512..1023] = W1 spans, one per line,
+// (Lx | Rx << 16); an empty line holds Lx = 0xFF, Rx = 0 (Rx < Lx).
+// The previous version tested "window_area_mode == 1" only: with W0 enabled
+// it always took the "outside" branch and then selected parameter A there,
+// i.e. A and B were swapped (All-Star Baseball '97: field drawn with the
+// stands parameters under the top 45 lines, ST-058 wants B outside W0).
+"bool isRotParamB(uint x, uint y)\n"
 "{\n"
-"  uint upLx = rotWin[y] & 0xFFFFu;\n"
-"  uint upRx = (rotWin[y] >> 16) & 0xFFFFu;\n"
-"  // inside\n"
-"  if (window_area_mode == 1)\n"
-"  {\n"
-"    if (rotWin[y] == 0u) return false;\n"
-"    if (x >= upLx && x <= upRx)\n"
-"    {\n"
-"      return true;\n"
-"    }\n"
-"    else {\n"
-"      return false;\n"
-"    }\n"
-"    // outside\n"
-"  }\n"
-"  else {\n"
-"    if (rotWin[y] == 0u) return true;\n"
-"    if (x < upLx) return true;\n"
-"    if (x > upRx) return true;\n"
-"    return false;\n"
-"  }\n"
-"  return false;\n"
+"  bool logic = ((window_area_mode & 0x80) != 0);\n"
+"  uint w0 = rotWin[y];\n"
+"  uint w1 = rotWin[512u + y];\n"
+"  bool in0 = (x >= (w0 & 0xFFFFu)) && (x <= ((w0 >> 16) & 0xFFFFu));\n"
+"  bool in1 = (x >= (w1 & 0xFFFFu)) && (x <= ((w1 >> 16) & 0xFFFFu));\n"
+"  bool v0 = ((window_area_mode & 0x02) != 0) ? (in0 != ((window_area_mode & 0x01) != 0)) : logic;\n"
+"  bool v1 = ((window_area_mode & 0x08) != 0) ? (in1 != ((window_area_mode & 0x04) != 0)) : logic;\n"
+"  return logic ? (v0 && v1) : (v0 || v1);\n"
 "}\n"
 
 "uint get_cram_msb(uint colorindex) { \n"
@@ -412,59 +410,28 @@ const char prg_rbg_rpmd2_2w[] =
 "  }\n";
 
 
+// RPMD = 3: the window alone chooses the parameter. A coefficient whose
+// MSB is 1 makes the dot transparent (ST-058-R2 6.4); it does NOT switch to
+// the other parameter -- that is RPMD = 2 only. Mednafen: rot_tp =
+// (coeff < 0) for the parameter chosen by GetWinRotAB(). The old code fell
+// back to the other parameter on a transparent coefficient, so the part of
+// the screen meant to show the layers under RBG0 (All-Star Baseball '97:
+// the stands between the score bar and the field horizon) showed the other
+// parameter's map instead, unscaled.
 const char prg_get_param_mode03[] =
 "//prg_get_param_mode03\n"
-"  if( isWindowInside( uint(pos.x), uint(pos.y) ) ) { "
-"    paramid = 0; \n"
-"    if( para[paramid].coefenab != 0 ){ \n"
-"      if( GetKValue(paramid,pos,ky,kx,Xp,lineaddr ) == -1 ) { \n"
-"        paramid=1;\n"
-"        ky = para[paramid].ky; kx = para[paramid].kx; Xp = para[paramid].Xp; lineaddr = para[paramid].lineaddr; \n"
-"        if( para[paramid].coefenab != 0 ){ \n"
-"          if( GetKValue(paramid,pos,ky,kx,Xp,lineaddr ) == -1 ) { \n"
-"          if (para[paramid].linecoefenab != 0) imageStore(lnclSurface, texel, Vdp2ColorRamGetColorOffset(lineaddr));\n"
-"          else imageStore(lnclSurface, texel, vec4(0.0));\n"
-"          imageStore(outSurface, texel, vec4(0.0)); return;\n"
-"          } \n"
-"          }else{ \n"
-"            ky = para[paramid].ky; \n"
-"            kx = para[paramid].kx; \n"
-"            lineaddr = para[paramid].lineaddr; \n"
-"            Xp = para[paramid].Xp; \n"
-"          }\n"
-"        }\n"
-"      }else{\n"
-"        ky = para[paramid].ky; \n"
-"        kx = para[paramid].kx; \n"
-"        lineaddr = para[paramid].lineaddr; \n"
-"        Xp = para[paramid].Xp; \n"
-"      }\n"
-"    }else{\n"
-"      paramid = 1; \n"
-"      if( para[paramid].coefenab != 0 ){ \n"
-"        if( GetKValue(paramid,pos,ky,kx,Xp,lineaddr ) == -1 ) { \n"
-"          paramid=0;\n"
-"          ky = para[paramid].ky; kx = para[paramid].kx; Xp = para[paramid].Xp; lineaddr = para[paramid].lineaddr; \n"
-"          if( para[paramid].coefenab != 0 ){ \n"
-"            if( GetKValue(paramid,pos,ky,kx,Xp,lineaddr ) == -1 ) { \n"
-"              if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
-"              else imageStore(lnclSurface,texel,vec4(0.0));\n"
-"   	         imageStore(outSurface,texel,vec4(0.0)); return;\n"
-"            } \n"
-"          }else{ \n"
-"            ky = para[paramid].ky; \n"
-"            kx = para[paramid].kx; \n"
-"            lineaddr = para[paramid].lineaddr; \n"
-"            Xp = para[paramid].Xp; \n"
-"          }\n"
-"        }\n"
-"      }else{\n"
-"        ky = para[paramid].ky; \n"
-"        kx = para[paramid].kx; \n"
-"        lineaddr = para[paramid].lineaddr; \n"
-"        Xp = para[paramid].Xp; \n"
-"      }\n"
-"   }\n";
+"  paramid = isRotParamB( uint(pos.x), uint(pos.y) ) ? 1 : 0; \n"
+"  ky = para[paramid].ky; \n"
+"  kx = para[paramid].kx; \n"
+"  lineaddr = para[paramid].lineaddr; \n"
+"  Xp = para[paramid].Xp; \n"
+"  if( para[paramid].coefenab != 0 ){ \n"
+"   if( GetKValue(paramid,pos,ky,kx,Xp,lineaddr ) == -1 ) { \n"
+"     if ( para[paramid].linecoefenab != 0) imageStore(lnclSurface,texel,Vdp2ColorRamGetColorOffset(lineaddr));\n"
+"     else imageStore(lnclSurface,texel,vec4(0.0));\n"
+"     imageStore(outSurface,texel,vec4(0.0)); return;\n"
+"   } \n"
+"  }\n";
 
 
 const char prg_rbg_xy[] =
@@ -2354,14 +2321,18 @@ DEBUGWIP("Init\n");
                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ssbo_cram_);
        }
 
+       /* W0 spans (512 lines) then W1 spans: the rotation parameter window
+          can use both windows (isRotParamB() in the shader). */
        if (ssbo_rotwin_ == 0) {
                glGenBuffers(1, &ssbo_rotwin_);
                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_rotwin_);
-               glBufferData(GL_SHADER_STORAGE_BUFFER, 0x800, NULL, GL_DYNAMIC_DRAW);
+               glBufferData(GL_SHADER_STORAGE_BUFFER, 0x1000, NULL, GL_DYNAMIC_DRAW);
        }
        if (rbg->ctrl.info.RotWin != NULL) {
                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_rotwin_);
                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 0x800, (void*)rbg->ctrl.info.RotWin);
+               if (_Ygl->win[1] != NULL)
+                 glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0x800, 0x800, (void*)_Ygl->win[1]);
                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, ssbo_rotwin_);
   				 }
 
