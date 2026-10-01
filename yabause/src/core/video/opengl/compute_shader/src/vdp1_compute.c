@@ -986,6 +986,11 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 			.x= MAX(cmd->CMDXA, MAX(cmd->CMDXB, MAX(cmd->CMDXC, cmd->CMDXD))),
 			.y= MAX(cmd->CMDYA, MAX(cmd->CMDYB, MAX(cmd->CMDYC, cmd->CMDYD)))
 		};
+		/* Inclusive system clip, decided on the unclamped extent (see
+		 * drawPolygonLine): a quad starting exactly on XC or YC is drawn. */
+		if ((A.x > Vdp1Regs->systemclipX2) || (A.y > Vdp1Regs->systemclipY2) ||
+		    (B.x < 0) || (B.y < 0))
+			return 0;
 		A.x = MIN(A.x, Vdp1Regs->systemclipX2);
 		A.y = MIN(A.y, Vdp1Regs->systemclipY2);
 		B.x = MIN(B.x, Vdp1Regs->systemclipX2);
@@ -1004,11 +1009,6 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 		 * (see above), and clipping preserves the ordering — so
 		 * tl == A and br == B. No MIN/MAX needed here. */
 		point tl = A;
-		if ((tl.x == Vdp1Regs->systemclipX2*tex_ratio) || (tl.y == Vdp1Regs->systemclipY2*tex_ratio))
-		{
-			//Top left point is at limit, so quad will not be displayed, do not compute
-			return 0;
-		}
 
 		point br = B;
 
@@ -1136,6 +1136,17 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbTotalLines, int nbLines, u3
 	}
 	glUniform1i(11, (type==DISTORTED)||(type==POLYGON));
 	// glUniform1i(11, greed);
+	/* System clipping is inclusive (VDP1 manual: drawing is done for
+	 * 0 <= X <= XC, 0 <= Y <= YC; the shader's clip() tests P > sysClip).
+	 * Decide "entirely outside" from the UNCLAMPED extent: the old test,
+	 * done after clamping, took a primitive whose leftmost / topmost point
+	 * lies exactly on XC / YC for one entirely outside and dropped it.
+	 * A vertical line at X = XC or a horizontal one at Y = YC was never
+	 * drawn (Mass Destruction: right and bottom sides of the frame drawn
+	 * at 319 / 223 with system clip (319,223) missing). */
+	if ((MIN(A.x, B.x) > Vdp1Regs->systemclipX2) || (MIN(A.y, B.y) > Vdp1Regs->systemclipY2) ||
+	    (MAX(A.x, B.x) < 0) || (MAX(A.y, B.y) < 0))
+		return;
 	A.x = MIN(A.x, Vdp1Regs->systemclipX2);
 	A.y = MIN(A.y, Vdp1Regs->systemclipY2);
 	B.x = MIN(B.x, Vdp1Regs->systemclipX2);
@@ -1151,11 +1162,6 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbTotalLines, int nbLines, u3
 		.x = MIN(A.x, B.x),
 		.y = MIN(A.y, B.y)
 	};
-	if ((Bound.x == Vdp1Regs->systemclipX2) || (Bound.y == Vdp1Regs->systemclipY2))
-	{
-		//Top left point is at limit, so quad will not be displayed, do not compute
-		return;
-	}
 	glUniform2i(14, Bound.x, Bound.y);
 	glUniform1i(12, nbTotalLines);
 	for (int i = 0; i<nbLines; i+=NB_LINE_MAX_PER_DRAW) {
