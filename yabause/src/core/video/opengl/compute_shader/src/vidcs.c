@@ -3653,6 +3653,9 @@ static void Vdp2SetResolution(u16 TVMD)
     break;
   }
 
+	/* VRESO: NTSC 224/240/224/240, PAL 224/240/256/256 (256 lines is PAL
+	 * only; Mednafen VTimings[pal][vres]) - same table as
+	 * Vdp2DisplayLineCount() in vdp2.c. */
 	switch ((TVMD >> 4) & 0x3)
 	{
 	case 0:
@@ -3662,10 +3665,10 @@ static void Vdp2SetResolution(u16 TVMD)
 		height = 240;
 		break;
 	case 2:
-	  height = 256;
+	  height = yabsys.IsPal ? 256 : 224;
 	  break;
 	case 3:
-	  height = yabsys.IsPal ? 256 : 224;
+	  height = yabsys.IsPal ? 256 : 240;
 	  break;
 	}
 

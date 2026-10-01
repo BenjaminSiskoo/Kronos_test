@@ -1214,13 +1214,21 @@ void Vdp2VBlankOUT_It(void) {
  * followed then clamped both to 256. That silently turned every 256-line PAL
  * title's V-blank one line early, and made the 480-line modes unrepresentable.
  * ------------------------------------------------------------------------- */
+/* VRESO = 10b (256 lines) exists in PAL only, and 11b is not a resolution
+ * of its own. Mednafen's VTimings[pal][vres] (ss/vdp2.c) gives the real
+ * raster counts: NTSC 224, 240, 224, 240 and PAL 224, 240, 256, 256. An NTSC
+ * game writing VRESO = 10b therefore gets 224 lines; Kronos displayed 256
+ * and showed the 32 VRAM lines below the picture (Baroque Report, NBG0
+ * bitmap 512x512 with VRESO = 10b in NTSC: blue stripes under the menu).
+ * 480-line output only comes from double-density interlace (LSMD = 11b),
+ * which the renderer handles, not from VRESO = 11b. */
 static int Vdp2DisplayLineCount(void)
 {
   switch ((Vdp2Regs->TVMD >> 4) & 0x3) {
     case 0:  return 224;
     case 1:  return 240;
-    case 2:  return 256;
-    default: return 480;
+    case 2:  return yabsys.IsPal ? 256 : 224;
+    default: return yabsys.IsPal ? 256 : 240;
   }
 }
 
