@@ -717,7 +717,50 @@ void Cs2DeInit(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* End of a play range (data).
+ *
+ * Kronos switched to PAUSE and raised PEND (and EFLS/EHST for Read File) at
+ * the very periodic step that stored the last sector. On the console the
+ * drive first reports BUSY and only reaches PAUSE, raising the play-end
+ * interrupts, two periodic reports later. Mednafen (ss/cdb.c, drive loop):
+ * when the end is met, "CurPosInfo.status = STATUS_BUSY; DrivePhase =
+ * DRIVEPHASE_PAUSE; PauseCounter = PlayEndIRQType ? 0 : 1;", then PauseCounter
+ * goes 0 -> 1 on the next periodic report and, at the following one,
+ * "CurPosInfo.status = STATUS_PAUSE" and TriggerIRQ(PlayEndIRQType).
+ *
+ * Hop Step Idol: the GFS server step that copies the last sector of a file
+ * declares the read finished only if the drive has already ended its play.
+ * With PAUSE reported in the same step, the one-sector MET file read
+ * finished in the step that copied it, the decompressor (0601ADF4, PR
+ * 0602E368) never saw a partial read size, skipped the header parse at
+ * 0601AE86, decompressed with garbage sizes and overwrote the vector table.
+ * In Mednafen the step returns "busy" with the 1779 bytes already read,
+ * the header is parsed, and the next step finishes.
+ *
+ * The delay is kept in two statics (not in the save state): a state saved
+ * inside the two-report window resumes as BUSY -> PAUSE without PEND. */
+static u8 Cs2PlayEndReports = 0;
+static u16 Cs2PlayEndIrqs = 0;
+
+static void Cs2BeginPlayEnd(u16 irqs)
+{
+   setStatus(CDB_STAT_BUSY);
+   Cs2Area->nextStatus = CDB_STAT_PAUSE;
+   Cs2Area->options = 0x8;
+   Cs2PlayEndReports = 2;
+   Cs2PlayEndIrqs = irqs;
+}
+
+static INLINE void Cs2CancelPlayEnd(void)
+{
+   Cs2PlayEndReports = 0;
+   Cs2PlayEndIrqs = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void Cs2Reset(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
   u32 i, i2;
 
 
@@ -989,16 +1032,11 @@ static void Cs2Exec_unit(u32 timing) {
                      if (Cs2Area->FAD >= Cs2Area->playendFAD) {
                         // Make sure we don't have to do a repeat
                         if (Cs2Area->repcnt >= Cs2Area->maxrepeat) {
-                           // we're done
-                           setStatus(CDB_STAT_PAUSE);
-						               Cs2Area->options = 0x8;
-                           // Cs2SetTiming(0);
-                           Cs2SetIRQ(CDB_HIRQ_PEND);
-
-                           if (Cs2Area->playtype == CDB_PLAYTYPE_FILE){
-                             Cs2SetIRQ(CDB_HIRQ_EFLS);
-                             Cs2SetIRQ(CDB_HIRQ_EHST); // Need for Assault Leynos 2
-                           }
+                           // we're done: BUSY, then PAUSE + PEND two
+                           // periodic reports later (see Cs2BeginPlayEnd)
+                           Cs2BeginPlayEnd((Cs2Area->playtype == CDB_PLAYTYPE_FILE) ?
+                                (CDB_HIRQ_PEND | CDB_HIRQ_EFLS | CDB_HIRQ_EHST) : // EHST: Assault Leynos 2
+                                CDB_HIRQ_PEND);
 
                            CDLOG("PLAY HAS ENDED\n");
                         }
@@ -1020,13 +1058,9 @@ static void Cs2Exec_unit(u32 timing) {
                      if (Cs2Area->FAD >= Cs2Area->playendFAD) {
                         // Make sure we don't have to do a repeat
                         if (Cs2Area->repcnt >= Cs2Area->maxrepeat) {
-                           // we're done
-                           setStatus(CDB_STAT_PAUSE);
-                           // Cs2SetTiming(0);
-                           Cs2SetIRQ(CDB_HIRQ_PEND);
-
-                           if (Cs2Area->playtype == CDB_PLAYTYPE_FILE)
-                             Cs2SetIRQ(CDB_HIRQ_EFLS);
+                           // we're done (see Cs2BeginPlayEnd)
+                           Cs2BeginPlayEnd((Cs2Area->playtype == CDB_PLAYTYPE_FILE) ?
+                                (CDB_HIRQ_PEND | CDB_HIRQ_EFLS) : CDB_HIRQ_PEND);
 
                            CDLOG("PLAY HAS ENDED\n");
                         }
@@ -1065,6 +1099,19 @@ static void Cs2Exec_unit(u32 timing) {
          case CDB_STAT_RETRY:
             break;
          case CDB_STAT_BUSY:
+            if (Cs2PlayEndReports > 0) {
+              /* end of a play range: see Cs2BeginPlayEnd */
+              if (--Cs2PlayEndReports > 0) {
+                Cs2SetTiming(1);   /* drive still turning at sector rate */
+                break;
+              }
+              setStatus(CDB_STAT_PAUSE);
+              Cs2Area->nextStatus = 0xFF;
+              Cs2Area->status &= ~CDB_STAT_PERI;
+              Cs2SetIRQ(Cs2PlayEndIrqs);
+              Cs2PlayEndIrqs = 0;
+              break;
+            }
             setStatus(Cs2Area->nextStatus);
             Cs2Area->nextStatus = 0xFF;
             Cs2Area->status &= ~CDB_STAT_PERI;
@@ -1540,6 +1587,7 @@ void Cs2GetSessionInfo(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2InitializeCDSystem(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
   u16 val = 0;
   u8 initflag = Cs2Area->reg.CR1 & 0xFF;
 
@@ -1728,6 +1776,7 @@ void Cs2EndDataTransfer(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2PlayDisc(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
   u32 pdspos;
   u32 pdepos;
   u32 pdpmode;
@@ -1858,6 +1907,7 @@ void Cs2PlayDisc(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2SeekDisc(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
 
 	// Stop
 	if ((Cs2Area->reg.CR1 & 0xFF) == 0x00 && Cs2Area->reg.CR2 == 0x0000){
@@ -3097,6 +3147,7 @@ void Cs2GetFileInfo(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2ReadFile(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
   u32 rfoffset, rffilternum, rffid, rfsize;
 
   // FIXED: rfoffset = CR2 seul (Sector Offset)
@@ -3138,6 +3189,7 @@ void Cs2ReadFile(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2AbortFile(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
     if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN &&
         (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
         setStatus(CDB_STAT_PAUSE);
