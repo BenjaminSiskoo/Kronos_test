@@ -711,6 +711,37 @@ static void processCommand(void) {
   }
 }
 
+/* Time the SMPC needs to read the control ports for an INTBACK, in
+ * microseconds (the unit of SmpcInternalVars->timing, see the SMPC column of
+ * cycles[] in yabause.c: about 64 per 64 us line).
+ *
+ * Mednafen (ss/smpc.c, CMD_INTBACK job routine), in SMPC clocks (4 MHz):
+ * JR_EAT(120) once, then per port JR_EAT(380) plus the ID read (TH/TR set
+ * twice, JR_EAT(50) each); a Saturn digital pad then reads 2 more nibbles
+ * (2 x 50), JR_EAT(30) and writes 8 nibbles (8 x 21); an empty port only
+ * writes its "no peripheral" nibbles. One pad + one empty port is about
+ * 1420 clocks, ~355 us, during which SF stays at 1. Other peripherals take
+ * longer; the pad figure is used for them, which is enough for SF.
+ *
+ * Kronos ended the command at the first SMPC step of the line after V-Blank
+ * OUT, ~60 us after it. Batman Forever: The Arcade Game (Saturn) issues the
+ * INTBACK at V-Blank IN, copies every SMPC report into a ring of 32-byte
+ * slots and resets the ring index in its V-Blank OUT handler (0602E670)
+ * only when SF = 0, i.e. when no report is still coming. The pad report
+ * must then land in slot 1, the one its parser (0602E1C8) reads; with SF
+ * already 0, the index was reset and the pad report went to slot 0: the
+ * parser kept reading a stale slot and no button ever registered. */
+static s32 SmpcPeripheralAcquireTime(void)
+{
+   const s32 port_base = 380 + 2 * 50;           /* port start + ID read */
+   const s32 pad_data = 2 * 50 + 30 + 8 * 21;    /* digital pad data */
+   const s32 empty_data = 2 * 21;                /* "no peripheral" */
+   s32 clocks = 120;
+   clocks += port_base + ((PORTDATA1.data[0] == 0xF0) ? empty_data : pad_data);
+   clocks += port_base + ((PORTDATA2.data[0] == 0xF0) ? empty_data : pad_data);
+   return (clocks + 3) / 4;                      /* 4 SMPC clocks per us */
+}
+
 void SmpcExec(s32 t) {
   /* Remise a zero du debut de CKCHG faite ici, hors de l'ecriture de COMREG
      par le SH-2 (on ne remet pas le SCU et les VDP a zero au milieu d'une
@@ -737,7 +768,10 @@ void SmpcExec(s32 t) {
       intback_wait_for_vblankout--;
       if (intback_wait_for_vblankout <= 0) {
         intback_wait_for_vblankout = 0;
-        SmpcInternalVars->timing = 1;
+        /* INTBACK: the peripheral data are read only now, after the
+           V-Blank, and reading the ports takes time: SF stays at 1 until
+           it is done (see SmpcPeripheralAcquireTime). CKCHG ends here. */
+        SmpcInternalVars->timing = (SmpcRegs->COMREG == 0x10) ? SmpcPeripheralAcquireTime() : 1;
         SMPCLOG("Intback after vblank out\n");
       }
     }
