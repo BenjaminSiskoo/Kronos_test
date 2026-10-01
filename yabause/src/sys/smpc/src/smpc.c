@@ -711,6 +711,37 @@ static void processCommand(void) {
   }
 }
 
+/* Time the SMPC needs to read the control ports for an INTBACK, in
+ * microseconds (the unit of SmpcInternalVars->timing, see the SMPC column of
+ * cycles[] in yabause.c: about 64 per 64 us line).
+ *
+ * Mednafen (ss/smpc.c, CMD_INTBACK job routine), in SMPC clocks (4 MHz):
+ * JR_EAT(120) once, then per port JR_EAT(380) plus the ID read (TH/TR set
+ * twice, JR_EAT(50) each); a Saturn digital pad then reads 2 more nibbles
+ * (2 x 50), JR_EAT(30) and writes 8 nibbles (8 x 21); an empty port only
+ * writes its "no peripheral" nibbles. One pad + one empty port is about
+ * 1420 clocks, ~355 us, during which SF stays at 1. Other peripherals take
+ * longer; the pad figure is used for them, which is enough for SF.
+ *
+ * Kronos ended the command at the first SMPC step of the line after V-Blank
+ * OUT, ~60 us after it. Batman Forever: The Arcade Game (Saturn) issues the
+ * INTBACK at V-Blank IN, copies every SMPC report into a ring of 32-byte
+ * slots and resets the ring index in its V-Blank OUT handler (0602E670)
+ * only when SF = 0, i.e. when no report is still coming. The pad report
+ * must then land in slot 1, the one its parser (0602E1C8) reads; with SF
+ * already 0, the index was reset and the pad report went to slot 0: the
+ * parser kept reading a stale slot and no button ever registered. */
+static s32 SmpcPeripheralAcquireTime(void)
+{
+   const s32 port_base = 380 + 2 * 50;           /* port start + ID read */
+   const s32 pad_data = 2 * 50 + 30 + 8 * 21;    /* digital pad data */
+   const s32 empty_data = 2 * 21;                /* "no peripheral" */
+   s32 clocks = 120;
+   clocks += port_base + ((PORTDATA1.data[0] == 0xF0) ? empty_data : pad_data);
+   clocks += port_base + ((PORTDATA2.data[0] == 0xF0) ? empty_data : pad_data);
+   return (clocks + 3) / 4;                      /* 4 SMPC clocks per us */
+}
+
 void SmpcExec(s32 t) {
   /* Remise a zero du debut de CKCHG faite ici, hors de l'ecriture de COMREG
      par le SH-2 (on ne remet pas le SCU et les VDP a zero au milieu d'une
@@ -737,7 +768,10 @@ void SmpcExec(s32 t) {
       intback_wait_for_vblankout--;
       if (intback_wait_for_vblankout <= 0) {
         intback_wait_for_vblankout = 0;
-        SmpcInternalVars->timing = 1;
+        /* INTBACK: the peripheral data are read only now, after the
+           V-Blank, and reading the ports takes time: SF stays at 1 until
+           it is done (see SmpcPeripheralAcquireTime). CKCHG ends here. */
+        SmpcInternalVars->timing = (SmpcRegs->COMREG == 0x10) ? SmpcPeripheralAcquireTime() : 1;
         SMPCLOG("Intback after vblank out\n");
       }
     }
@@ -996,6 +1030,34 @@ u8 do_th_mode(u8 val, PortData_struct* port)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Direct mode (PDR/DDR) read-back of a port with NOTHING plugged in.
+ *
+ * The port lines are pulled up, so every line the SMPC does not drive
+ * (DDR bit = 0) reads as 1; the lines it drives read back what was written.
+ * Mednafen (ss/smpc.c, UpdateIOBus + IODevice_base_UpdateBus): the bus of an
+ * empty port is (DataOut | ~DataDir) & 0x7F. PERCore marks an empty port with
+ * port status F0h (direct connection, no peripheral, PerPortReset()).
+ *
+ * The TH (DDR 40h) and TH/TR (DDR 60h) paths below answered for an empty
+ * port as if a pad were there: do_th_mode() returns the pad ID CFh for any
+ * port, and the TH/TR nibbles came from the port's data bytes, left at 0 -
+ * all buttons "pressed", pad data being active low.
+ *
+ * Heisei Tensai Bakabon (T-17001G) reads both pads in direct mode (06006A..,
+ * loop 060051F4) and soft-resets when a pad holds A+B+C and presses Start
+ * (06006C16-06006C38, jsr 06004000). With port 2 empty it saw 1FFFh, every
+ * button, and jumped back to its entry point every time: the disc access
+ * sequence restarted forever and the screen stayed black. */
+static INLINE int SmpcPortIsEmpty(PortData_struct *port)
+{
+   return port->data[0] == 0xF0;
+}
+static INLINE u8 SmpcEmptyPortRead(u8 val, u8 ddr)
+{
+   ddr &= 0x7F;
+   return (u8)((val & 0x80) | (val & ddr) | (~ddr & 0x7F));
+}
+
 void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    u8 oldVal;
    if(!(addr & 0x1)) return;
@@ -1086,6 +1148,10 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                SMPCLOG("smpc\t: PDR1 Peripheral Unknown Control Method not implemented 0x%x\n", SmpcRegs->DDR[0] & 0x7F);
                break;
          }
+         /* Nothing plugged in: pulled-up lines (see SmpcEmptyPortRead). The
+            3Fh method (ST-V EEPROM on port 1) is not a pad port. */
+         if (SmpcPortIsEmpty(&PORTDATA1) && (SmpcRegs->DDR[0] & 0x7F) != 0x3F)
+            SmpcRegs->PDR[0] = SmpcEmptyPortRead(val, SmpcRegs->DDR[0]);
 	break;
 	  case 0x77: // PDR2
 		  // FIX ME (should support other peripherals)
@@ -1134,6 +1200,10 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 			  SMPCLOG("smpc\t: PDR2 Peripheral Unknown Control Method not implemented 0x%x\n", SmpcRegs->DDR[1] & 0x7F);
 			  break;
 		  }
+		  /* Nothing plugged in: pulled-up lines (see SmpcEmptyPortRead). The
+		     18h method on port 2 drives the sound CPU reset, not a pad. */
+		  if (SmpcPortIsEmpty(&PORTDATA2) && (SmpcRegs->DDR[1] & 0x7F) != 0x18)
+		     SmpcRegs->PDR[1] = SmpcEmptyPortRead(val, SmpcRegs->DDR[1]);
 		  break;
 	  case 0x79: // DDR1
          switch (SmpcRegs->DDR[0] & 0x7F) { // Which Control Method do we use?
