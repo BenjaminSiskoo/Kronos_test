@@ -1551,12 +1551,19 @@ void Cs2GetToc(void) {
     Cs2Area->transfercount = 0;
     Cs2Area->infotranstype = 0;
 
-    Cs2Area->reg.CR1 = Cs2Area->status << 8;
+    /* Get TOC only prepares a data transfer: it does not touch the drive.
+       Mednafen (ss/cdb.c, COMMAND_GET_TOC) answers with the current status
+       plus DTREQ (TRNS, 40h) and leaves the drive phase alone. Kronos forced
+       BUSY -> PAUSE here, which stopped any seek or play in progress: Mass
+       Destruction reads the TOC every frame while it starts its in-game
+       music (Play track 7 index 0, repeat 15, Play command 10h with
+       CR1-CR4 = 1000 0700 0F00 0700), so the seek to FAD 021A2A was cut
+       to PAUSE each frame and the CD-DA never played. */
+    Cs2Area->reg.CR1 = (Cs2Area->status | CDB_STAT_TRNS) << 8;
     Cs2Area->reg.CR2 = 0xCC;
     Cs2Area->reg.CR3 = 0x0;
     Cs2Area->reg.CR4 = 0x0;
     Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
-    setBusyStatus(CDB_STAT_PAUSE);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1577,7 +1584,9 @@ void Cs2GetSessionInfo(void) {
             Cs2Area->reg.CR4 = 0xFFFF;
             break;
   }
-  setStatus(CDB_STAT_PAUSE);
+  /* Get Session Info does not touch the drive either (Mednafen,
+     COMMAND_GET_SESSINFO: current status, no phase change); forcing PAUSE
+     here stopped a play in progress the same way as Get TOC did. */
   Cs2Area->reg.CR1 = Cs2Area->status << 8;
   Cs2Area->reg.CR2 = 0;
 
