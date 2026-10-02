@@ -24,6 +24,7 @@
 */
 
 #include "sh2core.h"
+#include "scsp.h"
 #include "cs0.h"
 #include "debug.h"
 #include "error.h"
@@ -2180,13 +2181,21 @@ static void SH2tas(SH2_struct * sh, u32 n)
       SH2andm, Actua Golf). */
    if (SH2_RMW_READ_BLOCKED(sh)) return;
 
+   /* Sound RAM is shared with the 68000, which runs in its own thread: do
+      the test and the set as one atomic operation there (see
+      SoundRamTestAndSetByte in scsp.c, WWF In Your House). The read above
+      is kept for its bus timing and blocking. */
+   if ((tasaddr & 0x0FF00000) == 0x05A00000)
+      temp = (s32) SoundRamTestAndSetByte(sh, tasaddr);
+
    if (temp==0)
       sh->regs.SR.part.T=1;
    else
       sh->regs.SR.part.T=0;
 
    temp|=0x00000080;
-   SH2MappedMemoryWriteByte(sh, tasaddr, temp);
+   if ((tasaddr & 0x0FF00000) != 0x05A00000)   /* sound RAM: already written atomically */
+      SH2MappedMemoryWriteByte(sh, tasaddr, temp);
    sh->regs.PC+=2;
    sh->cycles += 4;
 }

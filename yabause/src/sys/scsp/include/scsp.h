@@ -88,6 +88,7 @@ u8 FASTCALL SoundRamReadByte(SH2_struct *context, u8* mem,u32 addr);
 u16 FASTCALL SoundRamReadWord(SH2_struct *context, u8* mem,u32 addr);
 u32 FASTCALL SoundRamReadLong(SH2_struct *context, u8* mem, u32 addr);
 void FASTCALL SoundRamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val);
+u8 FASTCALL SoundRamTestAndSetByte(SH2_struct *context, u32 addr);
 void FASTCALL SoundRamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val);
 void FASTCALL SoundRamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val);
 

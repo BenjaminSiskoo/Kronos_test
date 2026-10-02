@@ -105,8 +105,15 @@ static void M68KMusashiSetMSP(u32 val) {
 static void M68KMusashiSetFetch(u32 low_adr, u32 high_adr, pointer fetch_adr) {
 }
 
+/* The SCSP drives the 68000 IPL lines as a LEVEL (ST-077-R2: the interrupt
+   stays requested while a pending, enabled source exists; SCIRE clears it).
+   Level 0 must reach Musashi too: ignoring it left the last level asserted
+   forever, so after the handler acknowledged the source with SCIRE and
+   returned, the 68000 was interrupted again at once, and could never run
+   below that level again. Mednafen (ss/scsp.inc, RecalcSoundInt) sets the
+   68000 IRQ level to the highest pending+enabled level, 0 included. */
 static void FASTCALL M68KMusashiSetIRQ(s32 level) {
-   if (level > 0)
+   if (level >= 0)
       m68k_set_irq(level);
 }
 

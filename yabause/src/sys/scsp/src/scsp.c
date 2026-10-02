@@ -85,9 +85,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdarg.h>
 #include <math.h>
 #include <limits.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <stdbool.h>
 
 #include "cs2.h"
@@ -1901,6 +1905,8 @@ static u32 scsp_buf_pos;
 
 static scsp_t   scsp;                         // SCSP structure
 
+
+
 #define CDDA_NUM_BUFFERS	2*75
 
 static union {
@@ -1972,54 +1978,22 @@ void scsp_check_interrupt() {
   if (level != 0) {
     SCSPLOG("SCSP LV0=%08X, LV1=%08X, LV2=%08X, SCIPD = %08X, SCIEB = %08X\n",
       scsp.scilv0, scsp.scilv1, scsp.scilv2, scsp.scipd, scsp.scieb);
-    scsp.sintf(level);
   }
-
+  /* Always drive the line, 0 included: once SCIRE has cleared the last
+     pending source the 68000 IRQ must drop (see M68KMusashiSetIRQ). */
+  scsp.sintf(level);
 }
 
 static INLINE void
 scsp_trigger_sound_interrupt (u32 id)
 {
-   u32 level;
-   level = 0;
-   if (id > 0x80) id = 0x80;
-   if (scsp.scilv0 & id) level |= 1;
-   if (scsp.scilv1 & id) level |= 2;
-   if (scsp.scilv2 & id) level |= 4;
-#if 0
-   unsigned mask_test;
-   unsigned lvmasked[3];
-   unsigned level = 0;
-
-   scsp.scipd |= id;
-
-   mask_test = scsp.scipd & scsp.scieb;
-   if (mask_test &~0xFF)
-     mask_test = (mask_test & 0xFF) | 0x80;
-
-   lvmasked[0] = (scsp.scilv0 & mask_test) << 0;
-   lvmasked[1] = (scsp.scilv1 & mask_test) << 1;
-   lvmasked[2] = (scsp.scilv2 & mask_test) << 2;
-
-   for (unsigned i = 0; i < 8; i++)
-   {
-     unsigned l = (lvmasked[0] & 0x1) | (lvmasked[1] & 0x2) | (lvmasked[2] & 0x4);
-
-     if (l > level)
-       level = l;
-
-     lvmasked[0] >>= 1;
-     lvmasked[1] >>= 1;
-     lvmasked[2] >>= 1;
-   }
-#endif
-
-#ifdef SCSP_DEBUG
-   if (id == 0x8) SCSPLOG ("scsp sound interrupt accepted %.2X lev=%d\n", id, level);
-#endif
-
-   //if(level!=0)SCSPLOG("scsp sound interrupt accepted %.2X lev=%d\n", id, level);
-   scsp.sintf (level);
+   /* The IRQ level is the highest level among ALL pending and enabled
+      sources (Mednafen RecalcSoundInt), not the level of the source that
+      just fired: a timer A (level 3) firing while a level-5 source was
+      still pending used to lower the line to 3. scsp_check_interrupt()
+      computes that maximum and drives the line (0 included). */
+   (void)id;
+   scsp_check_interrupt();
 }
 
 
@@ -4923,11 +4897,37 @@ c68k_word_write (const u32 adr, u32 data)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* The 68000 runs in the sound thread. Musashi's m68k_set_irq() checks
+   interrupts at once and, when the new level is above the mask, takes the
+   interrupt right there: it pushes PC and SR on the 68000 stack, loads the
+   vector and changes SR. Called from another thread -- an SH-2 writing an
+   SCSP register, e.g. raising SCIPD bit 5 as a doorbell for the sound
+   driver -- that exception processing ran in the middle of an instruction
+   the sound thread was executing, on the same Musashi state. The 68000 came
+   back with a corrupted stack frame or PC: tasks resumed with a wrong SR,
+   execution jumped into data ("DEBUG" text at 0069C, line F exception), and
+   the sound driver stopped answering the SH-2 mailbox (WWF In Your House:
+   random in-game freeze, one voice looping).
+
+   So the IRQ line is only driven from the sound thread. A request from any
+   other thread just asks the sound thread to recompute the level from the
+   SCSP interrupt registers before it runs the 68000 again (MM68KExec),
+   which happens every few samples. */
+#if defined(_MSC_VER)
+#define SCSP_THREAD_LOCAL __declspec(thread)
+#else
+#define SCSP_THREAD_LOCAL __thread
+#endif
+static SCSP_THREAD_LOCAL int scsp_on_m68k_thread = 0;
+static volatile int scsp_irq_recalc = 0;
+
 static void
 c68k_interrupt_handler (u32 level)
 {
-  // send interrupt to 68k
-  M68K->SetIRQ ((s32)level);
+  if (scsp_on_m68k_thread)
+    M68K->SetIRQ ((s32)level);   // send interrupt to 68k
+  else
+    scsp_irq_recalc = 1;         // applied by the sound thread (MM68KExec)
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5002,6 +5002,47 @@ SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
   T2WriteByte (mem, addr, val);
   M68K->WriteNotify (addr, 1);
   SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* TAS.B from an SH-2 on sound RAM, done as one atomic read-modify-write.
+ *
+ * The 68000 runs in the sound thread, concurrently with the SH-2s. TAS.B
+ * was a read followed by a separate write of (value | 80h): a 68000 store
+ * landing between the two was overwritten. Sound drivers use exactly this
+ * pattern for their mailbox semaphore -- the SH-2 spins on TAS.B while the
+ * 68000 frees the byte -- so a release could be lost and both SH-2s then
+ * spun forever on a semaphore nobody held. WWF In Your House: master and
+ * slave both in the TAS.B loop at 0600850C on sound RAM 0007E, the 68000
+ * idle, music stopped, picture frozen after a random time in game.
+ *
+ * An atomic fetch-or on the host byte makes a concurrent 68000 store land
+ * either before (TAS sees 00 and takes the semaphore) or after (the store
+ * wins), never in between. Returns the value before the write. */
+u8 FASTCALL SoundRamTestAndSetByte(SH2_struct *context, u32 addr)
+{
+  u8 *p;
+  u8 old;
+
+  addr &= 0x7FFFF;
+  // If mem4b is set, mirror ram every 256k
+  if (scsp.mem4b == 0)
+    addr &= 0x1FFFF;
+
+#ifdef WORDS_BIGENDIAN
+  p = &SoundRam[addr];
+#else
+  p = &SoundRam[addr ^ 1];
+#endif
+#if defined(_MSC_VER)
+  old = (u8)_InterlockedOr8((volatile char *)p, (char)0x80);
+#else
+  old = __atomic_fetch_or(p, (u8)0x80, __ATOMIC_SEQ_CST);
+#endif
+  M68K->WriteNotify (addr, 1);
+  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
+  return old;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5312,6 +5353,10 @@ M68KStop (void)
       scsp.mem4b = mem4b;
       if (mem4b)
         *(u16 *)&scsp_ccr[0x00 ^ 2] |= 0x0200;   /* register 400h, MEM4MB */
+      /* the reset cleared every pending interrupt: drop the 68000 IRQ line
+         too (applied by the sound thread), so the next program does not
+         start with a stale level asserted */
+      scsp_check_interrupt();
     }
     IsM68KRunning = 0;
   }
@@ -5366,6 +5411,15 @@ static s32 FASTCALL M68KExecBP (s32 cycles);
 
 void MM68KExec(s32 cycles)
 {
+  /* This thread runs the 68000: it may drive the IRQ line directly, and it
+     applies here a level change requested from another thread (see
+     c68k_interrupt_handler). */
+  scsp_on_m68k_thread = 1;
+  if (scsp_irq_recalc)
+  {
+    scsp_irq_recalc = 0;
+    scsp_check_interrupt();
+  }
   if (LIKELY(IsM68KRunning))
     {
       savedcycles += cycles;
