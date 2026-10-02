@@ -1307,7 +1307,42 @@ static m68kdis_struct instruction[] = {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Full 68000 disassembly through Musashi's disassembler (m68kdasm.c, built
+ * with the Musashi core). The table-driven decoder below covered only part
+ * of the instruction set: many opcodes came out as "unknown" or as a bare
+ * mnemonic without operands ("ori", "movem", "link"...), and an unknown
+ * opcode desynchronised everything after it. It is kept as
+ * M68KDisasmLegacy(). Musashi reads the code through
+ * m68k_read_disassembler_16/32, implemented here on the 68000's view of
+ * memory (c68k_word_read: sound RAM, then SCSP registers). */
+#include "m68k.h"
+unsigned int m68k_read_disassembler_16(unsigned int address)
+{
+   return c68k_word_read(address & 0xFFFFFE) & 0xFFFF;
+}
+
+unsigned int m68k_read_disassembler_32(unsigned int address)
+{
+   return ((c68k_word_read(address & 0xFFFFFE) & 0xFFFF) << 16) |
+          (c68k_word_read((address + 2) & 0xFFFFFE) & 0xFFFF);
+}
+
 u32 M68KDisasm(u32 addr, char *outstring)
+{
+   char text[256];
+   unsigned int len;
+
+   text[0] = 0;
+   len = m68k_disassemble(text, addr, M68K_CPU_TYPE_68000);
+   sprintf(outstring, "%05X: %s", (unsigned int)addr, text);
+   if (len == 0)
+      len = 2;
+   return addr + len;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u32 M68KDisasmLegacy(u32 addr, char *outstring)
 {
    int i;
 

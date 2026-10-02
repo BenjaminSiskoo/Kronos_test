@@ -23,5 +23,6 @@
 #include "core.h"
 
 u32 M68KDisasm(u32 addr, char *outstring);
+u32 M68KDisasmLegacy(u32 addr, char *outstring);
 
 #endif

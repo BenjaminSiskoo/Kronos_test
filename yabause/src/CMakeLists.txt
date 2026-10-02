@@ -579,6 +579,7 @@ include_directories(
 set(kronos_SOURCES ${kronos_SOURCES}
   ${MUSASHI_GENERATED_SOURCES}
   core/m68k/musashi/m68kcpu.c
+  core/m68k/musashi/m68kdasm.c
   core/m68k/m68kmusashi.c
   )
 
