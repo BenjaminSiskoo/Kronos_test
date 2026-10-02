@@ -1027,8 +1027,17 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
 
     case 0x0C: // ENDR
       Vdp1Regs->ENDR = val;
-      /* On s'assure que le BIOS voit le VDP1 comme "prêt" immédiatement après un ENDR */
-      Vdp1Regs->EDSR &= ~0x0002; 
+      /* ENDR only stops a drawing in progress (VDP1 manual ST-013-R3, Draw
+       * Forced Termination Register). It does not touch EDSR: Mednafen
+       * (ss/vdp1.c, case 0x6) just ends DrawingActive, and EDSR only changes
+       * at the start of a drawing (CEF <- 0), at the draw end command
+       * (CEF <- 1) and at the frame buffer swap (BEF <- CEF, CEF <- 0).
+       * Clearing CEF here, which a comment presented as "so that the BIOS
+       * sees the VDP1 ready", made it look NOT finished: Thunderstrike 2
+       * writes ENDR in its V-Blank IN handler every frame (0600425C), so
+       * the CEF set by the end of its one-shot list (PTMR = 1) was wiped
+       * before its main loop polled it, and the loop at 060047A4-060047AE
+       * waited for CEF forever (black screen, VDP1 at 0 fps). */
       abortVdp1();
       break;
 

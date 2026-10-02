@@ -23,6 +23,7 @@
 */
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include "sh2core.h"
 #include "debug.h"
 #include "memory.h"
@@ -1084,15 +1085,39 @@ static int SH2HangWatchIsIdleSlave(SH2_struct *context)
    return (n > 0);
 }
 
+/* Bounded append for the hang report. On MSVC, core.h maps snprintf to
+   sprintf_s, which does not truncate: when the text does not fit it calls
+   the invalid parameter handler and the process is terminated. A report
+   listing many polled addresses overflowed the 2048-byte message buffer of
+   YabSetError() and closed Kronos. vsnprintf is not remapped and truncates
+   (C99, MSVC 2015+). */
+static void SH2HangWatchAppend(char *buf, int size, int *used, const char *fmt, ...)
+{
+   va_list ap;
+   int n;
+   if (*used >= size - 1)
+      return;
+   va_start(ap, fmt);
+   n = vsnprintf(buf + *used, (size_t)(size - *used), fmt, ap);
+   va_end(ap);
+   if (n < 0 || n >= size - *used)
+      *used = size - 1;
+   else
+      *used += n;
+}
+
 void SH2HangWatchFormat(SH2_struct *context, char *buf, int size)
 {
    char regs[512];
    int i;
-   int used;
+   int used = 0;
 
+   if (size <= 0)
+      return;
+   buf[0] = 0;
    SH2FormatRegs(context, regs, sizeof(regs));
 
-   used = snprintf(buf, size,
+   SH2HangWatchAppend(buf, size, &used,
                    "%s SH2 appears hung\n\n"
                    "Loop at %08lX took %lu of the last %lu backward branches,\n"
                    "for %lu consecutive frames.\n\n%s\nAddresses polled from the loop:\n",
@@ -1103,29 +1128,28 @@ void SH2HangWatchFormat(SH2_struct *context, char *buf, int size)
                    (unsigned long)context->hangWatch.frames,
                    regs);
 
-   for (i = 0; i < SH2_POLL_LOG && used < size - 1; i++)
+   for (i = 0; i < SH2_POLL_LOG; i++)
    {
       int slot = (context->hangWatch.pollIdx + i) % SH2_POLL_LOG;
+      u32 addr, val;
       if (context->hangWatch.pollAddr[slot] == 0)
          continue;
-      u32 addr = context->hangWatch.pollAddr[slot];
-      u32 val;
+      addr = context->hangWatch.pollAddr[slot];
 
       if (SH2HangWatchPeek(addr, &val))
-         used += snprintf(buf + used, size - used,
+         SH2HangWatchAppend(buf, size, &used,
                           "  %08lX = %08lX  %s  (read from PC %08lX)\n",
                           (unsigned long)addr, (unsigned long)val,
                           SH2HangWatchWhat(addr),
                           (unsigned long)context->hangWatch.pollPC[slot]);
       else
-         used += snprintf(buf + used, size - used,
+         SH2HangWatchAppend(buf, size, &used,
                           "  %08lX             %s  (read from PC %08lX)\n",
                           (unsigned long)addr, SH2HangWatchWhat(addr),
                           (unsigned long)context->hangWatch.pollPC[slot]);
    }
 
-   if (used < size - 1)
-      used += snprintf(buf + used, size - used,
+   SH2HangWatchAppend(buf, size, &used,
          "\nThe loop exits when one of those values changes. A Work RAM-H\n"
          "address is written by an interrupt handler or by the other SH2;\n"
          "anything else is a hardware status register.\n");
