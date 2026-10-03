@@ -740,19 +740,45 @@ void Cs2DeInit(void) {
  * The delay is kept in two statics (not in the save state): a state saved
  * inside the two-report window resumes as BUSY -> PAUSE without PEND. */
 static u8 Cs2PlayEndReports = 0;
+static u8 Cs2PlayEndPending = 0;
 static u16 Cs2PlayEndIrqs = 0;
 
+/* Called at the periodic report that stored the LAST sector of the range.
+ * That report still says PLAY: in Mednafen the end is only detected at the
+ * next periodic report (CheckEndMet() on the following sector), which goes
+ * BUSY; PAUSE and the play-end interrupts come two reports after that
+ * (PauseCounter 0 -> 1 -> PAUSE). So: PLAY (last sector), BUSY, BUSY, PAUSE.
+ *
+ * Going BUSY in the same report as the last sector broke the GFS "CD read"
+ * access (GFS_NwCdRead, a read into the CD block buffer with no transfer):
+ * GFS completes it when it sees every requested sector AND a drive state
+ * that is not BUSY/SEEK (0603DA1C/0603D784 in Zero Divide's GFS: BUSY maps
+ * to "still moving", PLAY or PAUSE to "stopped or reading"). Zero Divide
+ * pre-reads 162 sectors with it and stops serving that access as soon as
+ * all sectors are counted; with BUSY at that moment GFS never completed it,
+ * kept the drive "owned" by that handle ([work+A8]) and every later
+ * GFS_Fread waited for the owner and timed out (-22): the data of the
+ * fight were never loaded and the game froze in its AI code. */
 static void Cs2BeginPlayEnd(u16 irqs)
 {
+   Cs2PlayEndPending = 1;      /* this report stays PLAY */
+   Cs2PlayEndReports = 0;
+   Cs2PlayEndIrqs = irqs;
+}
+
+/* next periodic report after the last sector: the end is met */
+static void Cs2PlayEndMet(void)
+{
+   Cs2PlayEndPending = 0;
    setStatus(CDB_STAT_BUSY);
    Cs2Area->nextStatus = CDB_STAT_PAUSE;
    Cs2Area->options = 0x8;
    Cs2PlayEndReports = 2;
-   Cs2PlayEndIrqs = irqs;
 }
 
 static INLINE void Cs2CancelPlayEnd(void)
 {
+   Cs2PlayEndPending = 0;
    Cs2PlayEndReports = 0;
    Cs2PlayEndIrqs = 0;
 }
@@ -1000,6 +1026,12 @@ static void Cs2Exec_unit(u32 timing) {
          case CDB_STAT_PLAY:
          {
             partition_struct * playpartition;
+            if (Cs2PlayEndPending) {
+              /* the previous report stored the last sector (see Cs2BeginPlayEnd) */
+              Cs2PlayEndMet();
+              Cs2SetTiming(1);
+              break;
+            }
             CDLOG("Effective Read %x \n", Cs2Area->FAD);
             int ret = Cs2ReadFilteredSector(Cs2Area->FAD, &playpartition);
             switch (ret)
