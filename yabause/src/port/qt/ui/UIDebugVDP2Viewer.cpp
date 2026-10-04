@@ -382,7 +382,11 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
      * screen-over affiches comme des tailles de plan. RBPLSZ est en 13-12,
      * et RBG1 etant toujours dessine avec le parametre B (6.1), R0B et R1
      * valent tous deux RBPLSZ. */
-    static const char*ov[]={"repeat","transparent","charPat","512x512"};
+    /* Screen-over process (RxOVR): 00 repeat the plane, 01 repeat the
+       character given by OVPNRx, 10 transparent outside the plane, 11 force
+       a 512x512 area, transparent outside (Mednafen vdp2_render.c, same
+       order as Kronos' RBG renderer). The labels of 01 and 10 were swapped. */
+    static const char*ov[]={"repeat","OVPNR char","transparent","512x512"};
     d<<"  N0="<<ps[r.PLSZ&3]<<"  N1="<<ps[(r.PLSZ>>2)&3]<<"  N2="<<ps[(r.PLSZ>>4)&3]
       <<"  N3="<<ps[(r.PLSZ>>6)&3]<<"  R0A="<<ps[(r.PLSZ>>8)&3]
       <<"  R0B="<<ps[(r.PLSZ>>12)&3]<<"  R1="<<ps[(r.PLSZ>>12)&3]<<"\n";
@@ -480,7 +484,10 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // RBG rotation
     d<<"\n=== RBG Rotation ===\n";
-    {static const char*rpm[]={"Param A only","Param B only","Switch by window","Switch by sprite MSB"};
+    /* RPMD: 10 = switch on the MSB of parameter A's coefficient, 11 = switch
+       via the rotation parameter window (WCTLD bits 7-0). The two labels
+       were swapped, and "sprite MSB" is not involved at all. */
+    {static const char*rpm[]={"Param A only","Param B only","Switch by coefficient MSB","Switch by rotation parameter window"};
     d<<"  RPMD=0x"<<HEX4(r.RPMD)<<"  "<<rpm[r.RPMD&3]<<"\n";
     d<<"  RPRCTL=0x"<<HEX4(r.RPRCTL)<<"\n";
     auto rpr=[&](const char*n,int sh){int b=(r.RPRCTL>>sh)&0xF;d<<"    "<<n<<": ";
@@ -504,8 +511,13 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     kt("ParamA",0);kt("ParamB",8);
     d<<"  KTAOF=0x"<<HEX4(r.KTAOF)<<"  A-off="<<DEC(r.KTAOF&7)<<"  B-off="<<DEC((r.KTAOF>>8)&7)<<"\n";
     d<<"  OVPNRA=0x"<<HEX4(r.OVPNRA)<<"  OVPNRB=0x"<<HEX4(r.OVPNRB)<<"\n";
-    // ST-058-R2 §3.21 : RPTA addr = 0x05E00000 | (RPTAU[14:0] << 17) | (RPTAL & 0xFFFE)
-    u32 rp = 0x05E00000 | (((u32)(r.RPTA.part.U & 0x7FFF) << 17) | ((u32)(r.RPTA.part.L & 0xFFFE)));
+    /* RPTA holds the table address in words: RPTAU bits 2-0 and RPTAL
+       bits 15-1 are address bits 18-1 of a WORD address, so the byte
+       address is (RPTAU:RPTAL) << 1 -- the same computation as the
+       renderer (vidshared.c: addr = RPTA.all << 1). The old formula did not
+       double it: RPTA 0001:FF80 showed 05E2FF80 instead of 05E3FF00
+       (DecAthlete's rotation table, found at 0x3FF00 in VRAM). */
+    u32 rp = 0x05E00000 | (((((u32)(r.RPTA.part.U & 0x7) << 16) | (u32)(r.RPTA.part.L & 0xFFFE)) << 1) & 0x7FFFF);
     d<<"  RPTA=0x"<<std::hex<<std::uppercase<<HEX8(rp)<<std::dec<<"\n";}
 
     // Windows
@@ -525,7 +537,10 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     if(r.LWTA1.all&0x80000000)d<<"  [LINE 0x"<<std::hex<<std::uppercase<<(0x05E00000UL|((r.LWTA1.all&0x7FFFEUL)<<1))<<std::dec<<"]\n"; else d<<"\n";
     wc("NBG0",r.WCTLA);wc("NBG1",r.WCTLA>>8);wc("NBG2",r.WCTLB);wc("NBG3",r.WCTLB>>8);
     // ST-058-R2 §3.27 : WCTLC[7:0]=RBG0, WCTLC[15:8]=SPR, WCTLD[7:0]=RBG1, WCTLD[15:8]=CC
-    wc("RBG0",r.WCTLC);wc("SPR ",r.WCTLC>>8);wc("RBG1",r.WCTLD);wc("CC  ",r.WCTLD>>8);}
+    /* WCTLD bits 7-0 control the ROTATION PARAMETER window (RPMD = 11), not
+       RBG1 (RBG1 uses NBG0's control, WCTLA bits 7-0); bits 15-8 are the
+       color calculation window. */
+    wc("RBG0",r.WCTLC);wc("SPR ",r.WCTLC>>8);wc("RPW ",r.WCTLD);wc("CC  ",r.WCTLD>>8);}
 
     // SPCTL/SDCTL
     d<<"\n=== SPCTL=0x"<<HEX4(r.SPCTL)<<"  SDCTL=0x"<<HEX4(r.SDCTL)<<" ===\n";
