@@ -741,6 +741,11 @@ void Cs2DeInit(void) {
  * inside the two-report window resumes as BUSY -> PAUSE without PEND. */
 static u8 Cs2PlayEndReports = 0;
 static u8 Cs2PlayEndPending = 0;
+/* Seek finished, sectors are being read, but the status still says SEEK
+   until a report that follows the first processed sector (Mednafen:
+   CurPosInfo.status = PLAY only when PlaySectorProcessed). 1 = reading,
+   no sector processed yet; 2 = first sector processed at this report. */
+static u8 Cs2SeekReading = 0;
 static u16 Cs2PlayEndIrqs = 0;
 
 /* Called at the periodic report that stored the LAST sector of the range.
@@ -749,7 +754,28 @@ static u16 Cs2PlayEndIrqs = 0;
  * BUSY; PAUSE and the play-end interrupts come two reports after that
  * (PauseCounter 0 -> 1 -> PAUSE). So: PLAY (last sector), BUSY, BUSY, PAUSE.
  *
- * Going BUSY in the same report as the last sector broke the GFS "CD read"
+ * Timing of that next report: in Mednafen the drive tick that hands the
+ * last sector to the buffer (CSCT) also prefetches the following one --
+ * CurPosInfo.fad is then already the FAD after the range, so Get Status
+ * shows PLAY with the end FAD -- and schedules the periodic report 17712
+ * clocks of 44100*256 Hz later (~1.57 ms), which detects the end (BUSY).
+ * So there is a short "PLAY, end FAD, every sector buffered" window:
+ *  - Zero Divide's GFS CD read (GFS_NwCdRead of 162 sectors) completes
+ *    only inside it (0603D784: FAD >= end, HIRQ CSCT or PAUSE, drive not
+ *    BUSY); the game polls Get Sector Number right after the sector and
+ *    stops serving that access once all sectors are counted.
+ *  - Hop Step Idol's GFS step copies the last sector (51 52 53 61, CPU
+ *    copy, 06 62 51) and only then looks at the drive: it must see BUSY
+ *    there, or it finishes its read in the copying step and the
+ *    decompressor overwrites the vector table.
+ * Hop Step Idol's file is ONE sector: in Mednafen the status only becomes
+ * PLAY at a periodic report that follows a processed sector
+ * (PlaySectorProcessed); after a seek, the first sector is buffered while
+ * the drive still reports SEEK. With a one-sector range the end is met at
+ * the very next report, so PLAY never appears: SEEK (sector buffered),
+ * BUSY, BUSY, PAUSE -- and its GFS step sees SEEK ("moving") there. Kronos
+ * switched to PLAY as soon as the seek ended (see Cs2SeekReading).
+ * * Going BUSY in the same report as the last sector broke the GFS "CD read"
  * access (GFS_NwCdRead, a read into the CD block buffer with no transfer):
  * GFS completes it when it sees every requested sector AND a drive state
  * that is not BUSY/SEEK (0603DA1C/0603D784 in Zero Divide's GFS: BUSY maps
@@ -759,11 +785,13 @@ static u16 Cs2PlayEndIrqs = 0;
  * kept the drive "owned" by that handle ([work+A8]) and every later
  * GFS_Fread waited for the owner and timed out (-22): the data of the
  * fight were never loaded and the game froze in its AI code. */
+#define CS2_PLAYEND_REPORT_DELAY 4707   /* 17712 / (44100*256) s = 1.569 ms, in us * 3 */
 static void Cs2BeginPlayEnd(u16 irqs)
 {
    Cs2PlayEndPending = 1;      /* this report stays PLAY */
    Cs2PlayEndReports = 0;
    Cs2PlayEndIrqs = irqs;
+   Cs2Area->_periodictiming = CS2_PLAYEND_REPORT_DELAY;   /* the BUSY report comes ~1.57 ms later */
 }
 
 /* next periodic report after the last sector: the end is met */
@@ -778,6 +806,7 @@ static void Cs2PlayEndMet(void)
 
 static INLINE void Cs2CancelPlayEnd(void)
 {
+   Cs2SeekReading = 0;
    Cs2PlayEndPending = 0;
    Cs2PlayEndReports = 0;
    Cs2PlayEndIrqs = 0;
@@ -1018,7 +1047,8 @@ static void Cs2Exec_unit(u32 timing) {
       Cs2Area->_periodictiming = 0;
       Cs2Area->status |= CDB_STAT_PERI;
       // Get Drive's current status and compare with old status
-      switch (Cs2Area->status & 0xF) {
+      /* seek done, reading under a SEEK status: run the PLAY logic */
+      switch (((Cs2Area->status & 0xF) == CDB_STAT_SEEK && Cs2SeekReading) ? CDB_STAT_PLAY : (Cs2Area->status & 0xF)) {
          case CDB_STAT_PAUSE:
          {
              break;
@@ -1028,9 +1058,15 @@ static void Cs2Exec_unit(u32 timing) {
             partition_struct * playpartition;
             if (Cs2PlayEndPending) {
               /* the previous report stored the last sector (see Cs2BeginPlayEnd) */
+              Cs2SeekReading = 0;
               Cs2PlayEndMet();
               Cs2SetTiming(1);
               break;
+            }
+            if (Cs2SeekReading == 2) {
+              /* the previous report processed the first sector: PLAY now */
+              Cs2SeekReading = 0;
+              setStatus(CDB_STAT_PLAY);
             }
             CDLOG("Effective Read %x \n", Cs2Area->FAD);
             int ret = Cs2ReadFilteredSector(Cs2Area->FAD, &playpartition);
@@ -1042,6 +1078,8 @@ static void Cs2Exec_unit(u32 timing) {
                   Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
                   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
                   Cs2SetTiming(1); //As we read one disc sector, we need to wait a while to simulate disc speed
+                  if (Cs2SeekReading == 1)
+                     Cs2SeekReading = 2;   /* first sector processed, this report still SEEK */
 
                   if (playpartition != NULL)
                   {
@@ -1056,6 +1094,7 @@ static void Cs2Exec_unit(u32 timing) {
 
 					 if (Cs2Area->isbufferfull) {
 						 CDLOG("BUFFER IS FULL\n");
+						 Cs2SeekReading = 0;   /* a real SEEK (buffer full), not reading */
 						 setStatus(CDB_STAT_SEEK);
 						 Cs2Area->nextStatus = 0xFF;
 						 Cs2Area->options = 0x00;
@@ -1119,7 +1158,9 @@ static void Cs2Exec_unit(u32 timing) {
          }
 		 case CDB_STAT_SEEK:{
 			if (!Cs2Area->isbufferfull) {
-				setStatus(CDB_STAT_PLAY);
+				/* the status stays SEEK until a sector has been processed
+				   (see Cs2SeekReading); the next reports read sectors */
+				Cs2SeekReading = 1;
 				Cs2Area->_periodiccycles = 0;
 				Cs2SetTiming(1);          // ← AJOUT : timing lecture, pas seek
 				Cs2Area->options = 0x8;
@@ -1196,7 +1237,7 @@ void Cs2Exec(u32 timing) {
 /* Returns the number of (emulated) microseconds before the next sector
  * will have been completely read in */
 int Cs2GetTimeToNextSector(void) {
-   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY) {
+   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY && !Cs2SeekReading) {
       return 0;
    } else {
       // Round up, since the caller wants to know when it'll be safe to check
