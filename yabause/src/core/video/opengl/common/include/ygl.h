@@ -580,6 +580,12 @@ typedef struct {
    /* Same flag packed per blit-shader layer id, filled by the renderer
     * just before YglBlitTexture(). */
    int win_all_draw;
+   /* 1 when original_fbo (composition target) has just been (re)created
+    * by YglGenerateOriginalBuffer(): it holds no previous field. The next
+    * composition must then write both field rows (nbFrame = 2) instead of
+    * keeping the rows of the other field from an image that no longer
+    * exists. Reset by YglBlitTexture's uniform setup (ogl_shader.c). */
+   int original_fbo_fresh;
 
    YglMatrix rbgModelView;
 
@@ -716,6 +722,16 @@ typedef struct {
    * a non-NULL value says nothing about VRAM handoffs: access checks must
    * not look at it. Copied with the struct into the async cell queue. */
   const u8 *vram_compose;
+  /* Character pattern read impossible for the cell being drawn: no
+   * character pattern read command (VRAM cycle pattern) of this NBG in the
+   * bank holding the character data. ST-058-R2 sec.3.3 p.32: the access is
+   * not done. The VDP2 still outputs dots for the cell; they are decoded
+   * from all-zero character data (as Ymir does, vdp_renderer_sw.cpp
+   * VDP2FetchPixel), so they are transparent with xxTPON=0 and show the
+   * palette entry 0 of the cell with xxTPON=1 (sec.4.1 p.48). Set only around
+   * the Vdp2DrawPatternPos() call of such a cell in Vdp2DrawMapTest(),
+   * copied with the struct into the async cell queue. */
+  u8 chr_noaccess;
 } Vdp2Ctrl;
 
 typedef struct {
