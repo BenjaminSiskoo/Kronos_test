@@ -1,7133 +1,5053 @@
-/*
- * Copyright 2004 Stephane Dallongeville
- * Copyright 2004-2007 Theo Berkau
- * Copyright 2006 Guillaume Duhamel
- * Copyright 2012 Chris Lord
- *
- * This file is part of Yabause.
- *
- * Yabause is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * Yabause is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with Yabause; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
- */
+/*  Copyright 2003 Guillaume Duhamel
+    Copyright 2004-2006, 2013 Theo Berkau
 
-/*! \file scsp.c
-    \brief SCSP emulation functions.
+    This file is part of Yabause.
+
+    Yabause is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    Yabause is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Yabause; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-////////////////////////////////////////////////////////////////
-// Custom Sound Processor
+/*! \file cs2.c
+    \brief A-bus CS2 emulation functions. Mainly CD-Block code.
+*/
 
-// note: model2 scsp is mapped to 0x100000~0x100ee4 of the space, but seems to
-//       have additional hw ports ($40a~$410)
-// note: it seems that the user interrupt is used by the sound driver to reset
-//       the subsystem
-
-//--------------------------------------------------------------
-//
-// Common Control Register (CCR)
-//
-//      $+00      $+01
-// $400 ---- --12 3333 4444 1:MEM4MB memory size 2:DAC18B dac for digital output 3:VER version number 4:MVOL
-// $402 ---- ---1 1222 2222 1:RBL ring buffer length 2:RBP lead address
-// $404 ---1 2345 6666 6666 1:MOFULL out fifo full 2:MOEMP empty 3:MIOVF overflow 4:MIFULL in 5:MIEMP 6:MIBUF
-// $406 ---- ---- 1111 1111 1:MOBUF midi output data buffer
-// $408 1111 1222 2334 4444 1:MSLC monitor slot 2:CA call address 3:SGC Slot phase 4:EG Slot envelope
-// $40a ---- ---- ---- ----
-// $40c ---- ---- ---- ----
-// $40e ---- ---- ---- ----
-// $410 ---- ---- ---- ----
-// $412 1111 1111 1111 111- 1:DMEAL transfer start address (sound)
-// $414 1111 2222 2222 222- 1:DMEAH transfer start address hi 2:DRGA start register address (dsp)
-// $416 -123 4444 4444 444- 1:DGATE transfer gate 0 clear 2:DDIR direction 3:DEXE start 4:DTLG data count
-// $418 ---- -111 2222 2222 1:TACTL timer a prescalar control 2:TIMA timer a count data
-// $41a ---- -111 2222 2222 1:TBCTL timer b prescalar control 2:TIMB timer b count data
-// $41c ---- -111 2222 2222 2:TCCTL timer c prescalar control 2:TIMC timer c count data
-// $41e ---- -111 1111 1111 1:SCIEB allow sound cpu interrupt
-// $420 ---- -111 1111 1111 1:SCIPD request sound cpu interrupt
-// $422 ---- -111 1111 1111 1:SCIRE reset sound cpu interrupt
-// $424 ---- ---- 1111 1111 1:SCILV0 sound cpu interrupt level bit0
-// $426 ---- ---- 1111 1111 1:SCILV1 sound cpu interrupt level bit1
-// $428 ---- ---- 1111 1111 1:SCILV2 sound cpu interrupt level bit2
-// $42a ---- -111 1111 1111 1:MCIEB allow main cpu interrupt
-// $42c ---- -111 1111 1111 1:MCIPD request main cpu interrupt
-// $42e ---- -111 1111 1111 1:MCIRE reset main cpu interrupt
-//
-//--------------------------------------------------------------
-//
-// Individual Slot Register (ISR)
-//
-//     $+00      $+01
-// $00 ---1 2334 4556 7777 1:KYONEX 2:KYONB 3:SBCTL 4:SSCTL 5:LPCTL 6:PCM8B 7:SA start address
-// $02 1111 1111 1111 1111 1:SA start address
-// $04 1111 1111 1111 1111 1:LSA loop start address
-// $06 1111 1111 1111 1111 1:LEA loop end address
-// $08 1111 1222 2234 4444 1:D2R decay 2 rate 2:D1R decay 1 rate 3:EGHOLD eg hold mode 4:AR attack rate
-// $0a -122 2233 3334 4444 1:LPSLNK loop start link 2:KRS key rate scaling 3:DL decay level 4:RR release rate
-// $0c ---- --12 3333 3333 1:STWINH stack write inhibit 2:SDIR sound direct 3:TL total level
-// $0e 1111 2222 2233 3333 1:MDL modulation level 2:MDXSL modulation input x 3:MDYSL modulation input y
-// $10 -111 1-22 2222 2222 1:OCT octave 2:FNS frequency number switch
-// $12 1222 2233 4445 5666 1:LFORE 2:LFOF 3:PLFOWS 4:PLFOS 5:ALFOWS 6:ALFOS
-// $14 ---- ---- -111 1222 1:ISEL input select 2:OMXL input mix level
-// $16 1112 2222 3334 4444 1:DISDL 2:DIPAN 3:EFSDL 4:EFPAN
-//
-//--------------------------------------------------------------
-
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <stdarg.h>
+#include <ctype.h>
 #include <math.h>
-#include <limits.h>
-#if defined(_MSC_VER)
-#include <intrin.h>
-#endif
-#include <stdbool.h>
-
 #include "cs2.h"
 #include "debug.h"
 #include "error.h"
-#include "memory.h"
-#include "m68kcore.h"
-#include "scu.h"
-#include "yabause.h"
+#include "japmodem.h"
+#include "netlink.h"
 #include "scsp.h"
-#include "scspdsp.h"
-#include "threads.h"
-#include "vdp2.h"
+#include "scu.h"
+#include "smpc.h"
+#include "yui.h"
 
-#ifndef max
-#define max(a,b) (((a) > (b)) ? (a) : (b))
-#endif
+#define CDB_HIRQ_CMOK      0x0001
+#define CDB_HIRQ_DRDY      0x0002
+#define CDB_HIRQ_CSCT      0x0004
+#define CDB_HIRQ_BFUL      0x0008
+#define CDB_HIRQ_PEND      0x0010
+#define CDB_HIRQ_DCHG      0x0020
+#define CDB_HIRQ_ESEL      0x0040
+#define CDB_HIRQ_EHST      0x0080
+#define CDB_HIRQ_ECPY      0x0100
+#define CDB_HIRQ_EFLS      0x0200
+#define CDB_HIRQ_SCDQ      0x0400
+#define CDB_HIRQ_MPED      0x0800
+#define CDB_HIRQ_MPCM      0x1000
+#define CDB_HIRQ_MPST      0x2000
 
-#ifndef min
-#define min(a,b) (((a) < (b)) ? (a) : (b))
-#endif
+#define CDB_STAT_BUSY      0x00
+#define CDB_STAT_PAUSE     0x01
+#define CDB_STAT_STANDBY   0x02
+#define CDB_STAT_PLAY      0x03
+#define CDB_STAT_SEEK      0x04
+#define CDB_STAT_SCAN      0x05
+#define CDB_STAT_OPEN      0x06
+#define CDB_STAT_NODISC    0x07
+#define CDB_STAT_RETRY     0x08
+#define CDB_STAT_ERROR     0x09
+#define CDB_STAT_FATAL     0x0A
+#define CDB_STAT_PERI      0x20
+#define CDB_STAT_TRNS      0x40
+#define CDB_STAT_WAIT      0x80
+#define CDB_STAT_REJECT    0xFF
 
+#define CDB_PLAYTYPE_SECTOR     0x01
+#define CDB_PLAYTYPE_FILE       0x02
 
-#if 0
-#include "windows/aviout.h"
-#endif
+// #define CDLOG YuiMsg
 
-#ifdef PSP
-# include "psp/common.h"
+extern void resetSyncVideo(void);
 
-/* Macro to write a variable's value through the cache to main memory */
-# define WRITE_THROUGH(var)  (*(u32 *)((u32)&(var) | 0x40000000) = (var))
+//////////////////////////////////////////////////////////////////////////////
+// Modele de temps de recherche (seek) du bloc optique
+//
+// Formule de Mednafen (ss/cdb.c, DRIVEPHASE_SEEK_START3), dans son unite de
+// 44100*256 par seconde :
+//   12 secteurs a double vitesse (80 ms, reaccrochage)
+//   + 26 unites par secteur de distance vers l'avant, 28 vers l'arriere
+//   + 1 secteur si l'on recule ou si l'on saute 150 secteurs ou plus.
+// Soit environ 87 ms pour une recherche courte.
+//
+// Le modele precedent (b2facad, geometrie de la spirale, 20 ms a 100 ms)
+// cherchait environ quatre fois plus vite que Mednafen. Tant que les donnees
+// etaient lues en 1x (voir Cs2SetTiming()), la lenteur de la lecture le
+// masquait ; en 2x, la chronologie de 3D Mission Shooting se compressait
+// davantage que sur la console : le lecteur video demarrait avant que le
+// reste du jeu soit pret, prenait un chemin de reprise (060D7E90) et
+// appelait une routine absente (060ECE74), d'ou un plantage dans la boucle
+// d'arret du BIOS au lieu de la video.
+//
+// Un FAD invalide (0xFFFFFFFF apres un Stop) est traite comme le bord
+// exterieur, comme le faisait le modele precedent.
+//////////////////////////////////////////////////////////////////////////////
+#define CS2_SEEK_FAD_MAX        333000u   /* 74 min * 4500 FAD/min           */
 
-/* Macro to flush SCSP state so it can be read from the ME */
-# define FLUSH_SCSP()  sceKernelDcacheWritebackRange(&scsp, sizeof(scsp))
+/* _periodictiming est exprime en microsecondes * 3 (cf. Cs2Exec_unit) */
+#define CS2_US_TO_PERIODIC(us)  ((u32)(us) * 3u)
 
-#else  // !PSP
-# define WRITE_THROUGH(var)  /*nothing*/
-# define FLUSH_SCSP()  /*nothing*/
-#endif
-
-int new_scsp_outbuf_pos = 0;
-s32 new_scsp_outbuf_l[900] = { 0 };
-s32 new_scsp_outbuf_r[900] = { 0 };
-int new_scsp_cycles = 0;
-int g_scsp_lock = 0;
-
-static volatile int fps = 60;
-
-
-#include "sh2core.h"
-
-#if defined(__GNUC__)
-//#include <stdatomic.h>
-/*_Atomic*/ u32 m68kcycle = 0;
-#else
-u32 m68kcycle = 0;
-#endif
-
-YabSem * g_scsp_ready = NULL;
-YabSem * g_cpu_ready = NULL;
-YabMutex * g_scsp_set_cyc_mtx = NULL;
-YabMutex * g_scsp_set_cond_mtx = NULL;
-YabCond * g_scsp_set_cyc_cond = NULL;
-
-/* Samples in the current frame, set by the main thread at the start of each
-   frame (ScspSetFrameSamples): 882 in PAL, 735 or 736 in NTSC (59.94 Hz). */
-static volatile u32 scsp_frame_samples = 735;
-
-void ScspSetFrameSamples(u32 samples)
+// Duree du seek entre deux FAD, en unites de _periodictiming (us * 3).
+static u32 Cs2ComputeSeekTiming(u32 from_fad, u32 to_fad)
 {
-  if (samples == 0)
-    return;
-  if (g_scsp_set_cyc_mtx != NULL)
-    YabThreadLock(g_scsp_set_cyc_mtx);
-  scsp_frame_samples = samples;
-  if (g_scsp_set_cyc_mtx != NULL)
-    YabThreadUnLock(g_scsp_set_cyc_mtx);
-}
+   const double unit_us = 1000000.0 / (44100.0 * 256.0);
+   const double sector  = (44100.0 * 256.0) / 150.0;   /* 1 secteur a 2x */
+   double units;
+   long delta;
 
-#define CLOCK_SYNC_SHIFT (4)
+   if (from_fad > CS2_SEEK_FAD_MAX) from_fad = CS2_SEEK_FAD_MAX;
+   if (to_fad > CS2_SEEK_FAD_MAX)   to_fad   = CS2_SEEK_FAD_MAX;
 
-enum EnvelopeStates
-{
-   ATTACK = 1,
-   DECAY1,
-   DECAY2,
-   RELEASE
-};
+   delta = (long)from_fad - (long)to_fad;   /* Mednafen : CurPosInfo.fad - CurSector */
+   units  = 12.0 * sector;
+   units += (double)labs(delta) * ((delta < 0) ? 28.0 : 26.0);
+   units += (delta < 0 || delta >= 150) ? sector : 0.0;
 
-//0x30 to 0x3f only
-const u8 attack_rate_table[][4] =
-{
-   { 4,4,4,4 },//0x30
-   { 3,4,4,4 },
-   { 3,4,3,4 },
-   { 3,3,3,4 },
-
-   { 3,3,3,3 },
-   { 2,3,3,3 },
-   { 2,3,2,3 },
-   { 2,2,2,3 },
-
-   { 2,2,2,2 },
-   { 1,2,2,2 },
-   { 1,2,1,2 },
-   { 1,1,1,2 },
-
-   { 1,1,1,1 },//0x3c
-   { 1,1,1,1 },//0x3d
-   { 1,1,1,1 },//0x3e
-   { 1,1,1,1 },//0x3f
-};
-
-const u8 decay_rate_table[][4] =
-{
-   { 1,1,1,1 },//0x30
-   { 2,1,1,1 },
-   { 2,1,2,1 },
-   { 2,2,2,1 },
-
-   { 2,2,2,2 },
-   { 4,2,2,2 },
-   { 4,2,4,2 },
-   { 4,4,4,2 },
-
-   { 4,4,4,4 },
-   { 8,4,4,4 },
-   { 8,4,8,4 },
-   { 8,8,8,4 },
-
-   { 8,8,8,8 },//0x3c
-   { 8,8,8,8 },//0x3d
-   { 8,8,8,8 },//0x3e
-   { 8,8,8,8 },//0x3f
-};
-
-#define EFFECTIVE_RATE_END 0xffff
-
-//effective rate step table
-//settings 0x2 to 0x5, then repeats with bigger shifts
-//EFFECTIVE_RATE_END represents going back to the beginning of a row since
-//the number of steps is not the same for each setting
-#define MAKE_TABLE(SHIFT) \
-   { 8192 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, EFFECTIVE_RATE_END,EFFECTIVE_RATE_END,EFFECTIVE_RATE_END,EFFECTIVE_RATE_END, EFFECTIVE_RATE_END }, \
-   { 8192 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, EFFECTIVE_RATE_END }, \
-   { 4096 >> SHIFT, EFFECTIVE_RATE_END,EFFECTIVE_RATE_END,EFFECTIVE_RATE_END,EFFECTIVE_RATE_END, EFFECTIVE_RATE_END,EFFECTIVE_RATE_END , EFFECTIVE_RATE_END }, \
-   { 4096 >> SHIFT, 4096 >> SHIFT, 4096 >> SHIFT, 2048 >> SHIFT, 2048 >> SHIFT, EFFECTIVE_RATE_END, EFFECTIVE_RATE_END, EFFECTIVE_RATE_END },
-
-const u16 envelope_table[][8] =
-{
-   MAKE_TABLE(0)
-   MAKE_TABLE(1)
-   MAKE_TABLE(2)
-   MAKE_TABLE(3)
-   MAKE_TABLE(4)
-   MAKE_TABLE(5)
-   MAKE_TABLE(6)
-   MAKE_TABLE(7)
-   MAKE_TABLE(8)
-   MAKE_TABLE(9)
-   MAKE_TABLE(10)
-   MAKE_TABLE(11)
-   MAKE_TABLE(12)
-};
-
-//unknown stored bits are unknown1-5
-struct SlotRegs
-{
-   u8 kx;
-   u8 kb;
-   u8 sbctl;
-   u8 ssctl;
-   u8 lpctl;
-   u8 pcm8b;
-   u32 sa;
-   u16 lsa;
-   u16 lea;
-   u8 d2r;
-   u8 d1r;
-   u8 hold;
-   u8 ar;
-   u8 unknown1;
-   u8 ls;
-   u8 krs;
-   u8 dl;
-   u8 rr;
-   u8 unknown2;
-   u8 si;
-   u8 sd;
-   u16 tl;
-   u8 mdl;
-   u8 mdxsl;
-   u8 mdysl;
-   u8 unknown3;
-   u8 oct;
-   u8 unknown4;
-   u16 fns;
-   u8 re;
-   u8 lfof;
-   u8 plfows;
-   u8 plfos;
-   u8 alfows;
-   u8 alfos;
-   u8 unknown5;
-   u8 isel;
-   u8 imxl;
-   u8 disdl;
-   u8 dipan;
-   u8 efsdl;
-   u8 efpan;
-};
-
-struct SlotState
-{
-   u16 wave;
-   int backwards;
-   enum EnvelopeStates envelope;
-   s16 output;
-   u16 attenuation;
-   int step_count;
-   u32 sample_counter;
-   u32 envelope_steps_taken;
-   s32 waveform_phase_value;
-   s32 sample_offset;
-   u32 address_pointer;
-   u32 lfo_counter;
-   u32 lfo_pos;
-
-   int num;
-   int is_muted;
-   int keyed;   // internal KEY_ON state latched by KYONEX (ST-077-R2 Figure 4.8)
-};
-
-struct Slot
-{
-   //registers
-   struct SlotRegs regs;
-
-   //internal state
-   struct SlotState state;
-};
-
-struct Scsp
-{
-   u16 sound_stack[64];
-   struct Slot slots[32];
-
-   int debug_mode;
-}new_scsp = {0};
-
-//samples per step through a 256 entry lfo table
-const int lfo_step_table[0x20] = {
-   0x3fc,//0
-   0x37c,//1
-   0x2fc,//2
-   0x27c,//3
-   0x1fc,//4
-   0x1bc,//5
-   0x17c,//6
-   0x13c,//7
-   0x0fc,//8
-   0x0bc,//9
-   0x0dc,//0xa
-   0x08c,//0xb
-   0x07c,//0xc
-   0x06c,//0xd
-   0x05c,//0xe
-   0x04c,//0xf
-
-   0x03c,//0x10
-   0x034,//0x11
-   0x02c,//0x12
-   0x024,//0x13
-   0x01c,//0x14
-   0x018,//0x15
-   0x014,//0x16
-   0x010,//0x17
-   0x00c,//0x18
-   0x00a,//0x19
-   0x008,//0x1a
-   0x006,//0x1b
-   0x004,//0x1c
-   0x003,//0x1d
-   0x002,//0x1e
-   0x001,//0x1f
-};
-
-struct PlfoTables
-{
-   s8 saw_table[256];
-   s8 square_table[256];
-   s8 tri_table[256];
-   s8 noise_table[256];
-};
-
-struct PlfoTables plfo;
-
-struct AlfoTables
-{
-   u8 saw_table[256];
-   u8 square_table[256];
-   u8 tri_table[256];
-   u8 noise_table[256];
-};
-
-struct AlfoTables alfo;
-
-static YabSem *m68counterCond;
-
-void scsp_main_interrupt (u32 id);
-void scsp_sound_interrupt (u32 id);
-void* ScspAsynMainCpu( void * p );
-
-void fill_plfo_tables()
-{
-   int i;
-
-   //saw
-   for (i = 0; i < 256; i++)
-   {
-      if (i < 128)
-         plfo.saw_table[i] = i;
-      else
-         plfo.saw_table[i] = -256 + i;
-   }
-
-   //square
-   for (i = 0; i < 256; i++)
-   {
-      if (i < 128)
-         plfo.square_table[i] = 127;
-      else
-         plfo.square_table[i] = -128;
-   }
-
-   //triangular
-   for (i = 0; i < 256; i++)
-   {
-      if (i < 64)
-         plfo.tri_table[i] = i * 2;
-      else if (i < 192)
-         plfo.tri_table[i] = 255 - (i * 2);
-      else
-         plfo.tri_table[i] = (i * 2) - 512;
-   }
-
-   //noise
-   for (i = 0; i < 256; i++)
-   {
-      plfo.noise_table[i] = rand() & 0xff;
-   }
-}
-
-void fill_alfo_tables()
-{
-   int i;
-
-   //saw
-   for (i = 0; i < 256; i++)
-   {
-      alfo.saw_table[i] = i;
-   }
-
-   //square
-   for (i = 0; i < 256; i++)
-   {
-      if (i < 128)
-         alfo.square_table[i] = 0;
-      else
-         alfo.square_table[i] = 0xff;
-   }
-
-   //triangular
-   for (i = 0; i < 256; i++)
-   {
-      if (i < 128)
-         alfo.tri_table[i] = i * 2;
-      else
-         alfo.tri_table[i] = 255 - (i * 2);
-   }
-
-   //noise
-   for (i = 0; i < 256; i++)
-   {
-      alfo.noise_table[i] = rand() & 0xff;
-   }
-}
-
-void change_envelope_state(struct Slot * slot, enum EnvelopeStates new_state);
-
-// ST-077-R2 (LPCTL, "Loop Control Register"): loop processing and sound
-// memory access end only (1) after release, when the attenuation reaches its
-// maximum, or (2) when the loop is off and the read point reaches LEA.
-// A slot still keyed on keeps its address generator running even when its
-// envelope has decayed to silence (D1R/D2R), so CA ($408) keeps moving.
-// Case (2) is turned into a release at max attenuation in op2.
-static INLINE int slot_is_stopped(const struct Slot * slot)
-{
-   return (slot->state.envelope == RELEASE) && (slot->state.attenuation >= 0x3bf);
-}
-
-// A stopped slot no longer has a current address: its address generator is
-// back at the start of the waveform, so CA ($408) reads 0 for it.
-// TNN Motor Sports Hardcore 4x4 depends on this: it keys off its timing slot
-// (slot 1, loop over SA+0..LEA) and then polls CA until it reads 0 again
-// (loop at 0603BAAE-0603BAD8). The slot has no audible output once stopped,
-// and the next key-on restarts from offset 0 anyway, so only CA changes.
-static INLINE void slot_stop_address(struct Slot * slot)
-{
-   slot->state.sample_offset = 0;
-   slot->state.backwards = 0;
-}
-
-// Loop end as seen by the address generator.
-// ST-077-R2: LSA and LEA are 16-bit sample counts from SA, and the loop end is
-// detected by a coincidence comparator on the address counter (Figure 4.19).
-// That counter is 16 bits wide as well: CA ($408) reads back its bits 15-12,
-// "the LSB indicates 4K (4096) samples". LEA = 0000H therefore ends the loop
-// only when the counter wraps from FFFFH back to 0000H, i.e. after 65536
-// samples - the only way to describe a buffer of exactly 64K samples.
-// The SEGA sound driver sets up its PCM stream buffer that way: Defcon 5 streams
-// its FMV audio through a 128 KB 16-bit ring (SA = 06000H, LSA = LEA = 0000H,
-// LPCTL = 1). Comparing the offset against a literal 0 sent it back to LSA on
-// every sample, so the slot never left sample 0, CA stayed 0, the driver
-// reported a play position of 0 at 7A0H (ST-166 "PCM Play Address"), the game
-// believed its ring never drained and stopped decoding once it filled.
-static INLINE s32 slot_loop_end(const struct Slot * slot)
-{
-   return slot->regs.lea ? (s32)slot->regs.lea : 0x10000;
-}
-
-//pg, plfo
-void op1(struct Slot * slot)
-{
-   u32 oct = slot->regs.oct ^ 8;
-   u32 fns = 0x400 ^ slot->regs.fns;
-   u32 phase_increment = fns << oct;
-   int plfo_val = 0;
-   int plfo_shifted = 0;
-
-   if (slot_is_stopped(slot))
-      return;
-
-   if (slot->state.lfo_counter % lfo_step_table[slot->regs.lfof] == 0)
-   {
-      slot->state.lfo_counter = 0;
-      slot->state.lfo_pos++;
-
-      if (slot->state.lfo_pos > 0xff)
-         slot->state.lfo_pos = 0;
-   }
-
-   if (slot->regs.plfows == 0)
-      plfo_val = plfo.saw_table[slot->state.lfo_pos];
-   else if (slot->regs.plfows == 1)
-      plfo_val = plfo.square_table[slot->state.lfo_pos];
-   else if (slot->regs.plfows == 2)
-      plfo_val = plfo.tri_table[slot->state.lfo_pos];
-   else if (slot->regs.plfows == 3)
-      plfo_val = plfo.noise_table[slot->state.lfo_pos];
-
-   plfo_shifted = (plfo_val * (1<<slot->regs.plfos)) >> 2;
-
-   slot->state.waveform_phase_value &= (1 << 18) - 1;//18 fractional bits
-   slot->state.waveform_phase_value += (phase_increment + plfo_shifted);
-}
-
-int get_slot(struct Slot * slot, int mdsl)
-{
-   return (mdsl + slot->state.num) & 0x1f;
-}
-
-//address pointer calculation
-//modulation data read
-void op2(struct Slot * slot, struct Scsp * s)
-{
-   s32 md_out = 0;
-   s32 sample_delta = slot->state.waveform_phase_value >> 18;
-
-   if (slot_is_stopped(slot))
-      return;
-
-   if (slot->regs.mdl)
-   {
-      //averaging operation
-      u32 x_sel = get_slot(slot, slot->regs.mdxsl);
-      u32 y_sel = get_slot(slot, slot->regs.mdysl);
-      s16 xd = s->sound_stack[x_sel];
-      s16 yd = s->sound_stack[y_sel];
-
-      s32 zd = (xd + yd) / 2;
-
-      //modulation operation
-      u16 shift = 0xf - (slot->regs.mdl);
-      zd >>= shift;
-
-      md_out = zd;
-   }
-
-   //address pointer
-
-   if (slot->regs.lpctl == 0)//no loop
-   {
-      slot->state.sample_offset += sample_delta;
-      if (slot->state.sample_offset >= slot_loop_end(slot))
-      {
-         // ST-077-R2 end condition (2): the slot stops as if released.
-         slot->state.attenuation = 0x3ff;
-         change_envelope_state(slot, RELEASE);
-         slot_stop_address(slot);
-      }
-   }
-   else if (slot->regs.lpctl == 1)//normal loop
-   {
-      slot->state.sample_offset += sample_delta;
-
-      if (slot->state.sample_offset >= slot_loop_end(slot))
-         slot->state.sample_offset = slot->regs.lsa;
-   }
-   else if (slot->regs.lpctl == 2)//reverse
-   {
-      // ST-077-R2 LPCTL, figure 4.10 "Reversal Loop" : lecture en avant de
-      // SA jusqu'a LSA seulement, puis en arriere de LEA vers LSA, en
-      // repartant de LEA a chaque passage. Mednafen (scsp.inc) fait de meme :
-      // au passage de LoopStart l'adresse est renvoyee a LoopEnd et lue a
-      // l'envers. L'ancien code lisait d'abord en avant jusqu'a LEA (la
-      // boucle etait jouee une fois a l'endroit avant d'etre inversee).
-      if (!slot->state.backwards)
-      {
-         slot->state.sample_offset += sample_delta;
-         if (slot->state.sample_offset >= slot->regs.lsa)
-         {
-            slot->state.sample_offset = (s32)slot->regs.lea - (slot->state.sample_offset - (s32)slot->regs.lsa);
-            slot->state.backwards = 1;
-         }
-      }
-      else
-      {
-         //backwards
-         slot->state.sample_offset -= sample_delta;
-         if (slot->state.sample_offset <= slot->regs.lsa)
-            slot->state.sample_offset += (s32)slot->regs.lea - (s32)slot->regs.lsa;
-      }
-   }
-   else if (slot->regs.lpctl == 3)//ping pong
-   {
-      if(!slot->state.backwards)
-         slot->state.sample_offset += sample_delta;
-      else
-         slot->state.sample_offset -= sample_delta;
-
-      if (!slot->state.backwards)
-      {
-         if (slot->state.sample_offset >= slot->regs.lea)
-         {
-            slot->state.sample_offset = slot->regs.lea;
-            slot->state.backwards = 1;
-         }
-      }
-      else
-      {
-         if (slot->state.sample_offset <= slot->regs.lsa)
-         {
-            slot->state.sample_offset = slot->regs.lsa;
-            slot->state.backwards = 0;
-         }
-      }
-   }
-
-   if (!slot->regs.pcm8b)
-      slot->state.address_pointer = (s32)slot->regs.sa + (slot->state.sample_offset + md_out) * 2;
-   else
-      slot->state.address_pointer = (s32)slot->regs.sa + (slot->state.sample_offset + md_out);
+   return CS2_US_TO_PERIODIC((u32)(units * unit_us));
 }
 
 
-// Generateur de bruit interne (SSCTL = 1) : registre a decalage de 17 bits,
-// avance une fois par slot et par echantillon (Mednafen, ss/scsp.inc :
-// LFSR = (LFSR >> 1) | (((LFSR >> 5) ^ LFSR) & 1) << 16, valeur initiale 1).
-static u32 scsp_noise_lfsr = 1;
-
-//waveform dram read
-// SSCTL (source de l'echantillon, ST-077-R2) : 0 = RAM son, 1 = bruit
-// interne, 2 et 3 = donnee nulle. Le compteur d'adresse avance dans tous les
-// cas (op2), CA reste donc valable pour un slot muet.
-// Ce coeur lisait toujours la RAM son : I Love Mickey Mouse utilise le slot 31
-// comme horloge (SSCTL = 2, SA = 0, OCT = 5, DISDL = 7) et ses operateurs FM
-// sont aussi en SSCTL = 2 ; ils jouaient le tampon audio en 00000 a 32 fois
-// sa vitesse (fragment qui se repete par-dessus la musique) et saturaient le
-// son au lancement du jeu depuis le menu.
-void op3(struct Slot * slot)
+enum CDB_DATATRANSTYPE
 {
-   u32 addr = (slot->state.address_pointer);
-   u32 lfsr = scsp_noise_lfsr;
+   CDB_DATATRANSTYPE_INVALID=-1,
+   CDB_DATATRANSTYPE_GETSECTOR=0,
+   CDB_DATATRANSTYPE_GETDELSECTOR=2,
+   CDB_DATATRANSTYPE_PUTSECTOR=3
+};
 
-   scsp_noise_lfsr = (lfsr >> 1) | ((((lfsr >> 5) ^ lfsr) & 1) << 16);
+#define ToBCD(val) ((val % 10 ) + ((val / 10 ) << 4))
 
-   if (slot_is_stopped(slot))
-      return;
+Cs2 * Cs2Area = NULL;
+ip_struct *cdip = NULL;
 
-   switch (slot->regs.ssctl)
-   {
-   case 0:
-      if (!slot->regs.pcm8b)
-        slot->state.wave = SoundRamReadWord(NULL, SoundRam, addr); //SoundRamReadWord(addr);
-      else
-        slot->state.wave = SoundRamReadByte(NULL, SoundRam, addr) << 8; //SoundRamReadByte(addr) << 8;
-      break;
-   case 1:
-      slot->state.wave = (u16)(lfsr << 8);
-      break;
-   default:
-      slot->state.wave = 0;
-      break;
-   }
+extern CDInterface *CDCoreList[];
 
-   // SBCTL (ST-077-R2 tableau 4.11) : bit 0 inverse les bits autres que le
-   // bit de signe, bit 1 inverse le bit de signe de la donnee d'entree, quelle
-   // que soit sa source (Mednafen : SBXOR = 0000/7FFF/8000/FFFF). Ce coeur
-   // l'ignorait.
-   if (slot->regs.sbctl & 1)
-      slot->state.wave ^= 0x7FFF;
-   if (slot->regs.sbctl & 2)
-      slot->state.wave ^= 0x8000;
+//////////////////////////////////////////////////////////////////////////////
 
-   slot->state.output = slot->state.wave;
+static INLINE void setBusyStatus(u8 status) {
+  Cs2Area->status = CDB_STAT_BUSY;
+  Cs2Area->nextStatus = status;
+}
+static INLINE void setStatus(u8 status) {
+  Cs2Area->status = status;
 }
 
-void change_envelope_state(struct Slot * slot, enum EnvelopeStates new_state)
+static INLINE void doCDReport(u8 status)
 {
-  if (slot->state.envelope != new_state) {
-   slot->state.envelope = new_state;
-   slot->state.step_count = 0;
+   Cs2Area->reg.CR1 = (status << 8) | ((Cs2Area->options & 0xF) << 4) | (Cs2Area->repcnt & 0xF);
+   Cs2Area->reg.CR2 = (Cs2Area->ctrladdr << 8) | Cs2Area->track;
+   Cs2Area->reg.CR3 = (u16)((Cs2Area->index << 8) | ((Cs2Area->FAD >> 16) & 0xFF));
+   Cs2Area->reg.CR4 = (u16) Cs2Area->FAD;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static INLINE void doMPEGReport(u8 status)
+{
+   Cs2Area->reg.CR1 = (status << 8) | Cs2Area->actionstatus;
+   Cs2Area->reg.CR2 = Cs2Area->vcounter;
+   Cs2Area->reg.CR3 = (Cs2Area->pictureinfo << 8) | Cs2Area->mpegaudiostatus;
+   Cs2Area->reg.CR4 = Cs2Area->mpegvideostatus;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static INLINE void Cs2SetIRQ(u32 irq){
+  Cs2Area->reg.HIRQ |= irq;
+  if (Cs2Area->reg.HIRQ & Cs2Area->reg.HIRQMASK){
+    ScuSendExternalInterrupt00();
   }
 }
 
-int need_envelope_step(int effective_rate, u32 sample_counter, struct Slot* slot)
+//////////////////////////////////////////////////////////////////////////////
+
+u8 FASTCALL Cs2ReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
-   if (sample_counter == 0)
-      return 0;
+   return CartridgeArea->Cs2ReadByte(context, memory, addr);
+}
 
-   if (effective_rate == 0 || effective_rate == 1)
-   {
-      return 0;//never step
-   }
-   else if (effective_rate >= 0x30)
-   {
-      if ((sample_counter & 1) == 0)
-      {
-         slot->state.envelope_steps_taken++;
-         return 1;
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL Cs2WriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
+{
+   CartridgeArea->Cs2WriteByte(context, memory, addr, val);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
+  u16 val = 0;
+  addr &= 0x3F; // fix me(I should really have proper mapping)
+
+  switch(addr) {
+    case 0x08:
+    case 0x0A:
+                  val = Cs2Area->reg.HIRQ;
+
+                  //if (Cs2Area->isbufferfull)
+                  //  val |= CDB_HIRQ_BFUL;
+                  //else
+                  //  val &= ~CDB_HIRQ_BFUL;
+
+                  //if (Cs2Area->isdiskchanged)
+                  //  val |= CDB_HIRQ_DCHG;
+                  //else
+                  //  val &= ~CDB_HIRQ_DCHG;
+
+                  //if (Cs2Area->isonesectorstored)
+                  //  val |= CDB_HIRQ_CSCT;
+                  //else
+                  //  val &= ~CDB_HIRQ_CSCT;
+
+                  Cs2Area->reg.HIRQ = val;
+
+//                  CDLOG("cs2\t: Hirq read, Hirq mask = %x - ret: %x\n", Memory::getWord(0x9000C), val);
+                  return val;
+    case 0x0C:
+    case 0x0E: return Cs2Area->reg.HIRQMASK;
+    case 0x18:
+    case 0x1A: return Cs2Area->reg.CR1;
+    case 0x1C:
+    case 0x1E: return Cs2Area->reg.CR2;
+    case 0x20:
+    case 0x22: return Cs2Area->reg.CR3;
+    case 0x24:
+    case 0x26: Cs2Area->_command = 0;
+                  return Cs2Area->reg.CR4;
+    case 0x28:
+    case 0x2A: return Cs2Area->reg.MPEGRGB;
+    case 0x00:
+                  // transfer info
+                  switch (Cs2Area->infotranstype) {
+                     case 0:
+                             // Get Toc Data
+                             if (Cs2Area->transfercount % 4 == 0)
+                                val = (u16)((Cs2Area->TOC[Cs2Area->transfercount >> 2] & 0xFFFF0000) >> 16);
+                             else
+                                val = (u16)Cs2Area->TOC[Cs2Area->transfercount >> 2];
+
+                             Cs2Area->transfercount += 2;
+                             Cs2Area->cdwnum += 2;
+
+                             if (Cs2Area->transfercount >= (0xCC * 2)) // >= : TOC = 0xCC mots, evite OOB TOC[102]
+                             {
+                                Cs2Area->transfercount = 0;
+                                Cs2Area->infotranstype = -1;
+                             }
+                             break;
+                     case 1:
+                             // Get File Info(1 file info)
+                             val = (Cs2Area->transfileinfo[Cs2Area->transfercount] << 8) |
+                                    Cs2Area->transfileinfo[Cs2Area->transfercount + 1];
+                             Cs2Area->transfercount += 2;
+                             Cs2Area->cdwnum += 2;
+
+                             if (Cs2Area->transfercount >= (0x6 * 2)) // >= : 6 mots, evite OOB transfileinfo[12]
+                             {
+                                Cs2Area->transfercount = 0;
+                                Cs2Area->infotranstype = -1;
+                             }
+
+                             break;
+                     case 2:
+                             // Get File Info(254 file info)
+
+                             // Do we need to retrieve the next file info?
+                             if (Cs2Area->transfercount % (0x6 * 2) == 0) {
+                               // yes we do
+                               Cs2SetupFileInfoTransfer(2 + (Cs2Area->transfercount / (0x6 * 2)));
+                             }
+
+                             val = (Cs2Area->transfileinfo[Cs2Area->transfercount % (0x6 * 2)] << 8) |
+                                    Cs2Area->transfileinfo[Cs2Area->transfercount % (0x6 * 2) + 1];
+
+                             Cs2Area->transfercount += 2;
+                             Cs2Area->cdwnum += 2;
+
+                             if (Cs2Area->transfercount >= (254 * (0x6 * 2))) // >= : 254 fichiers, evite SetupFileInfoTransfer(256)/fileinfo[256] OOB
+                             {
+                                Cs2Area->transfercount = 0;
+                                Cs2Area->infotranstype = -1;
+                             }
+
+                             break;
+                     case 3:
+                             // Get Subcode Q
+                             val = (Cs2Area->transscodeq[Cs2Area->transfercount] << 8) |
+                                    Cs2Area->transscodeq[Cs2Area->transfercount + 1];
+
+                             Cs2Area->transfercount += 2;
+                             Cs2Area->cdwnum += 2;
+
+                             if (Cs2Area->transfercount >= (5 * 2)) // >= : 5 mots, evite OOB transscodeq[10]
+                             {
+                                Cs2Area->transfercount = 0;
+                                Cs2Area->infotranstype = -1;
+                             }
+                             break;
+                     case 4:
+                             // Get Subcode RW
+                             val = (Cs2Area->transscoderw[Cs2Area->transfercount] << 8) |
+                                    Cs2Area->transscoderw[Cs2Area->transfercount + 1];
+
+                             Cs2Area->transfercount += 2;
+                             Cs2Area->cdwnum += 2;
+
+                             if (Cs2Area->transfercount >= (12 * 2)) // >= : 12 mots, evite OOB transscoderw[24]
+                             {
+                                Cs2Area->transfercount = 0;
+                                Cs2Area->infotranstype = -1;
+                             }
+                             break;
+                     case 5:
+                              // Read sector data
+                              CDLOG("Read data\n");
+                              if (Cs2Area->datatranstype != CDB_DATATRANSTYPE_INVALID)
+                              {
+                                 // get sector
+                                 // Make sure we still have sectors to transfer
+                                 if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
+                                 {
+									block_struct *blk = Cs2Area->datatranspartition->block[
+										Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans];
+									if (blk == NULL)
+									{
+										CDLOG("cs2\t: block was NULL at datanumsecttrans=%d\n",
+											  Cs2Area->datanumsecttrans);
+										return 0;
+									}
+									u8 *ptr = &blk->data[Cs2Area->datatransoffset];
+									val = T1ReadWord(ptr, 0);
+                                    //LOG("[CS2] get addr = %d,val = %08X", Cs2Area->datatransoffset, val);
+
+                                    // increment datatransoffset/cdwnum
+                                    Cs2Area->cdwnum += 2;
+                                    Cs2Area->datatransoffset += 2;
+
+                                    // Make sure we're not beyond the sector size boundary
+                            if (Cs2Area->datatransoffset >= Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans]->size)
+                                    {
+                                       Cs2Area->datatransoffset = 0;
+                                       Cs2Area->datanumsecttrans++;
+                                    }
+                                 }
+                                 else
+                                 {
+                                    if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_GETDELSECTOR)
+                                    {
+                                       // Ok, so we don't have any more sectors to
+                                       // transfer, might as well delete them all.
+
+                                       Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+
+                                       // free blocks
+                                       for (int i = Cs2Area->datatranssectpos; i < (Cs2Area->datatranssectpos+Cs2Area->datasectstotrans); i++)
+                                       {
+                                          Cs2FreeBlock(Cs2Area->datatranspartition->block[i]);
+                                          Cs2Area->datatranspartition->block[i] = NULL;
+                                          Cs2Area->datatranspartition->blocknum[i] = 0xFF;
+                                       }
+
+                                       // sort remaining blocks
+                                       Cs2SortBlocks(Cs2Area->datatranspartition);
+
+                                       Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
+									   // ST-040-R4-051795, §5.4.1 « Buffer Partition Structure » :
+										// numblocks indique le nombre de blocs valides ; ne doit jamais dépasser ni être inférieur à 0.
+										if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+											Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+										else
+											Cs2Area->datatranspartition->numblocks = 0;
+
+                                       CDLOG("cs2\t: datatranspartition->size = %x\n", Cs2Area->datatranspartition->size);
+                                    }
+                                 }
+                              }
+                              break;
+                     default: break;
+                  }
+                  break;
+    default:
+             LOG("cs2\t: Undocumented register read %08X\n", addr);
+//             val = T3ReadWord(Cs2Area->mem, addr);
+             break;
+  }
+
+  return val;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL Cs2WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val) {
+
+  addr &= 0x3F; // fix me(I should really have proper mapping)
+
+  switch(addr) {
+    case 0x08:
+    case 0x0A:
+      Cs2Area->reg.HIRQ = Cs2Area->reg.HIRQ & val;
+				  //if (val != 0xFFFE){
+					//  CDLOG("write HIRQ %04X, %04X\n", Cs2Area->reg.HIRQ, val);
+				  //}
+      if (Cs2Area->reg.HIRQ & Cs2Area->reg.HIRQMASK){
+        ScuSendExternalInterrupt00();
       }
-      else
-         return 0;
-   }
-   else
+                  return;
+    case 0x0C:
+    case 0x0E: Cs2Area->reg.HIRQMASK = val;
+    if (Cs2Area->reg.HIRQ & Cs2Area->reg.HIRQMASK){
+      ScuSendExternalInterrupt00();
+    }
+                  return;
+    case 0x18:
+    case 0x1A: Cs2Area->status &= ~CDB_STAT_PERI;
+                  Cs2Area->_command = 1;
+                  Cs2Area->reg.CR1 = val;
+                  //CDLOG("Start command %04X\n", Cs2Area->reg.CR1);
+                  return;
+    case 0x1C:
+    case 0x1E: Cs2Area->reg.CR2 = val;
+                  return;
+    case 0x20:
+    case 0x22: Cs2Area->reg.CR3 = val;
+                  return;
+    case 0x24:
+    case 0x26: Cs2Area->reg.CR4 = val;
+                  Cs2SetCommandTiming(Cs2Area->reg.CR1 >> 8);
+                  return;
+    case 0x28:
+    case 0x2A: Cs2Area->reg.MPEGRGB = val;
+                  return;
+    default:
+             LOG("cs2\t:Undocumented register write %08X\n", addr);
+//                  T3WriteWord(Cs2Area->mem, addr, val);
+             break;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u32 FASTCALL Cs2ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr) {
+  s32 i;
+  u32 val = 0;
+  addr &= 0x3F; // fix me(I should really have proper mapping)
+
+  switch(addr) {
+    case 0x08:
+                  val = Cs2Area->reg.HIRQ;
+
+                  //if (Cs2Area->isbufferfull)
+                  //  val |= CDB_HIRQ_BFUL;
+                  //else
+                  //  val &= ~CDB_HIRQ_BFUL;
+
+                  //if (Cs2Area->isdiskchanged)
+                  //  val |= CDB_HIRQ_DCHG;
+                  //else
+                  //  val &= ~CDB_HIRQ_DCHG;
+
+                  //if (Cs2Area->isonesectorstored)
+                  //  val |= CDB_HIRQ_CSCT;
+                  //else
+                   // val &= ~CDB_HIRQ_CSCT;
+
+                  Cs2Area->reg.HIRQ = (u16)val;
+
+                  val |= (val << 16);
+                  return val;
+    case 0x0C: return ((Cs2Area->reg.HIRQMASK << 16) | Cs2Area->reg.HIRQMASK);
+    case 0x18: return ((Cs2Area->reg.CR1 << 16) | Cs2Area->reg.CR1);
+    case 0x1C: return ((Cs2Area->reg.CR2 << 16) | Cs2Area->reg.CR2);
+    case 0x20: return ((Cs2Area->reg.CR3 << 16) | Cs2Area->reg.CR3);
+    case 0x24: Cs2Area->_command = 0;
+                  return ((Cs2Area->reg.CR4 << 16) | Cs2Area->reg.CR4);
+    case 0x28: return ((Cs2Area->reg.MPEGRGB << 16) | Cs2Area->reg.MPEGRGB);
+    case 0x00:
+                  // transfer data
+                  if (Cs2Area->datatranstype != CDB_DATATRANSTYPE_INVALID)
+                  {
+                    // CDLOG("Get long data\n");
+                     // get sector
+
+                     // Make sure we still have sectors to transfer
+                     if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
+                     {
+						block_struct *blk = Cs2Area->datatranspartition->block[
+							Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans];
+						if (blk == NULL)
+						{
+							CDLOG("cs2\t: block was NULL at datanumsecttrans=%d\n",
+								  Cs2Area->datanumsecttrans);
+							return 0;
+						}
+						u8 *ptr = &blk->data[Cs2Area->datatransoffset];
+						val = T1ReadLong(ptr, 0);
+                        // CDLOG("[CS2] get addr = %d,val = %08X\n", Cs2Area->datatransoffset, val);
+
+                        // increment datatransoffset/cdwnum
+                        Cs2Area->cdwnum += 4;
+                        Cs2Area->datatransoffset += 4;
+
+                        // Make sure we're not beyond the sector size boundary
+						if (Cs2Area->datatransoffset >= Cs2Area->datatranspartition->block[Cs2Area->datatranssectpos + Cs2Area->datanumsecttrans]->size)
+                        {
+                           Cs2Area->datatransoffset = 0;
+                           Cs2Area->datanumsecttrans++;
+                        }
+                     }
+                     else
+                     {
+                        if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_GETDELSECTOR)
+                        {
+                           // Ok, so we don't have any more sectors to
+                           // transfer, might as well delete them all.
+
+                           Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+
+                           // free blocks
+                           for (i = Cs2Area->datatranssectpos; i < (Cs2Area->datatranssectpos+Cs2Area->datasectstotrans); i++)
+                           {
+                              Cs2FreeBlock(Cs2Area->datatranspartition->block[i]);
+                              Cs2Area->datatranspartition->block[i] = NULL;
+                              Cs2Area->datatranspartition->blocknum[i] = 0xFF;
+                           }
+
+                           // sort remaining blocks
+                           Cs2SortBlocks(Cs2Area->datatranspartition);
+
+                           Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
+                           // garde anti-underflow (idem chemin mot, lignes ~324) :
+                           // numblocks ne doit jamais passer sous 0
+                           if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+                              Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+                           else
+                              Cs2Area->datatranspartition->numblocks = 0;
+
+                           CDLOG("cs2\t: datatranspartition->size = %x\n", Cs2Area->datatranspartition->size);
+                        }
+                     }
+                  }
+                  break;
+    default:
+             LOG("cs2\t: Undocumented register read %08X\n", addr);
+//             val = T3ReadLong(Cs2Area->mem, addr);
+             break;
+  }
+
+  return val;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void FASTCALL Cs2WriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u32 val) {
+   addr &= 0x3F; // fix me(I should really have proper mapping)
+
+   switch (addr)
    {
-      int pos = effective_rate - 2;
+	case 0x00:
+	   if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_PUTSECTOR)
+	   {
+		  if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
+		  {
+			 // FIXED BUG 8: suppression du calcul d'offset négatif (size/offset inutilisés)
+			 // FIXED: suppression du double incrément cdwnum/datatransoffset
+			 // Ref: ST-040-R4-051795 §6.13 "Put Sector Data (command 0x64)"
 
-      int result = 0;
+			 if (Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans] == NULL)
+			 {
+				CDLOG("cs2\t: PutSector block NULL\n");
+				return;
+			 }
 
-      int value = envelope_table[pos][slot->state.step_count];
+			 u8 *ptr = &Cs2Area->datatranspartition->block[
+				Cs2Area->datanumsecttrans]->data[Cs2Area->datatransoffset];
+			 T1WriteLong(ptr, 0, val);
 
-      if (sample_counter % value == 0)
-      {
-         result = 1;
+			 Cs2Area->cdwnum          += 4;
+			 Cs2Area->datatransoffset += 4;
 
-         slot->state.envelope_steps_taken++;
-         slot->state.step_count++;
-
-         if (envelope_table[pos][slot->state.step_count] == EFFECTIVE_RATE_END)
-            slot->state.step_count = 0;//reached the end of the array
-      }
-
-      return result;
+			 if (Cs2Area->datatransoffset >=
+				Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans]->size)
+			 {
+				Cs2Area->datatransoffset = 0;
+				Cs2Area->datanumsecttrans++;
+				if (Cs2Area->datanumsecttrans >= Cs2Area->datasectstotrans)
+				   Cs2SetIRQ(CDB_HIRQ_EHST);
+			 }
+		  }
+	   }
+	   break;
+      default:
+		   LOG("cs2\t: Undocumented register write %08X\n", addr);
+//         T3WriteLong(Cs2Area->mem, addr, val);
+         break;
    }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+int Cs2Init(int coreid, const char *cdpath, const char *mpegpath) {
+   int ret;
+
+   if ((Cs2Area = (Cs2 *) malloc(sizeof(Cs2))) == NULL)
+      return -1;
+   memset(Cs2Area, 0, sizeof(*Cs2Area));
+
+   Cs2Area->nextStatus = 0xFF;
+   Cs2Area->mpegpath = mpegpath;
+   Cs2Area->cdi=NULL;
+
+   if ((ret = Cs2ChangeCDCore(coreid, cdpath)) != 0)
+      return ret;
+
+   Cs2Reset();
+
+   /* plus rien a precalculer pour le temps de seek (cf. modele en haut du
+      fichier) */
+
+#if 0
+   // This stuff need to go elsewhere
+   // If Modem is connected, set the registers
+   if(Cs2Area->carttype == CART_NETLINK)
+   {
+      if ((ret = NetlinkInit(modemip, modemport)) != 0)
+         return ret;
+   }
+   else if (Cs2Area->carttype == CART_JAPMODEM)
+   {
+      if ((ret = JapModemInit(modemip, modemport)) != 0)
+         return ret;
+   }
+#endif
+
+   if ((cdip = (ip_struct *) calloc(sizeof(ip_struct), 1)) == NULL)
+      return -1;
+
    return 0;
 }
 
-s32 get_rate(struct Slot * slot, int rate)
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2ChangeCDCore(int coreid, const char *cdpath)
 {
-   s32 result = 0;
+   int i;
 
-   if (slot->regs.krs == 0xf)
-      result = rate * 2;
-   else
+   // Make sure the old core is freed
+   if ((Cs2Area != NULL) && (Cs2Area->cdi != NULL))
+      Cs2Area->cdi->DeInit();
+   //else return -1;
+
+   // So which core do we want?
+   if (coreid == CDCORE_DEFAULT)
+      coreid = 0; // Assume we want the first one
+
+   // Go through core list and find the id
+   for (i = 0; CDCoreList[i] != NULL; i++)
    {
-      result = (slot->regs.krs * 2) + (rate * 2) + ((slot->regs.fns >> 9) & 1);
-      result = (8 ^ slot->regs.oct) + (result - 8);
-   }
-
-   if (result <= 0)
-      return 0;
-
-   if (result >= 0x3c)
-      return 0x3c;
-
-   return result;
-}
-
-void do_decay(struct Slot * slot, int rate_in)
-{
-   int rate = get_rate(slot, rate_in);
-   int sample_mod_4 = slot->state.envelope_steps_taken & 3;
-   int decay_rate;
-
-   if (rate <= 0x30)
-      decay_rate = decay_rate_table[0][sample_mod_4];
-   else
-      decay_rate = decay_rate_table[rate - 0x30][sample_mod_4];
-
-   if (need_envelope_step(rate, slot->state.sample_counter, slot))
-   {
-      if (slot->state.attenuation < 0x3bf) {
-         slot->state.attenuation += decay_rate;
-      }
-   }
-}
-
-//interpolation
-//eg
-void op4(struct Slot * slot)
-{
-   int sample_mod_4 = slot->state.envelope_steps_taken & 3;
-
-   if (slot_is_stopped(slot))
-      return;
-
-   if (slot->state.envelope == ATTACK)
-   {
-      int rate = get_rate(slot, slot->regs.ar);
-      int need_step = need_envelope_step(rate, slot->state.sample_counter, slot);
-
-      if (need_step)
+      if (CDCoreList[i]->id == coreid)
       {
-         int attack_rate = 0;
-
-         if (rate <= 0x30)
-            attack_rate = attack_rate_table[0][sample_mod_4];
-         else
-            attack_rate = attack_rate_table[rate - 0x30][sample_mod_4];
-         slot->state.attenuation -= ((slot->state.attenuation >> attack_rate)) + 1;
-
-         if (slot->state.attenuation == 0)
-            change_envelope_state(slot, DECAY1);
-      }
-   }
-   else if (slot->state.envelope == DECAY1)
-   {
-      do_decay(slot,slot->regs.d1r);
-      if ((slot->state.attenuation >> 5) >= slot->regs.dl){
-         change_envelope_state(slot, DECAY2);
-       }
-   }
-   else if (slot->state.envelope == DECAY2){
-      do_decay(slot, slot->regs.d2r);}
-   else if (slot->state.envelope == RELEASE){
-      do_decay(slot, slot->regs.rr);}
-
-   // ST-077-R2 end condition (1): release reached maximum attenuation.
-   if (slot_is_stopped(slot))
-      slot_stop_address(slot);
-}
-
-s16 apply_volume(u16 tl, u16 slot_att, const s16 s)
-{
-   s32 sample_att = 0;
-   s32 v = 0;
-
-   v += tl * 4;
-   v += slot_att;
-   if (v > 0x3ff)
-     v = 0x3ff;
-
-   sample_att = (s * ((v & 0x3F) ^ 0x7F)) >> ((v >> 6) + 7);
-
-   return sample_att;
-}
-
-//level 1
-void op5(struct Slot * slot)
-{
-   if (slot->state.attenuation >= 0x3bf)
-   {
-      slot->state.output = 0;
-      return;
-   }
-   else
-   {
-      int alfo_val = 0;
-      int lfo_add = 0;
-      s16 sample = 0;
-
-      if (slot->regs.alfows == 0)
-         alfo_val = alfo.saw_table[slot->state.lfo_pos];
-      else if (slot->regs.alfows == 1)
-         alfo_val = alfo.square_table[slot->state.lfo_pos];
-      else if (slot->regs.alfows == 2)
-         alfo_val = alfo.tri_table[slot->state.lfo_pos];
-      else if (slot->regs.alfows == 3)
-         alfo_val = alfo.noise_table[slot->state.lfo_pos];
-
-      // Direct Sound
-      if( slot->regs.sd ){
-        sample = slot->state.output;
-      }else{
-        lfo_add = (((alfo_val + 1)) >> (7 - slot->regs.alfos)) << 1;
-        sample = apply_volume(slot->regs.tl, slot->state.attenuation + lfo_add, slot->state.output);
-      }
-      slot->state.output = sample;
-   }
-}
-
-//level 2
-void op6(struct Slot * slot)
-{
-
-}
-
-//sound stack write
-void op7(struct Slot * slot, struct Scsp*s)
-{
-   u32 previous = s->sound_stack[slot->state.num + 32];
-   s->sound_stack[slot->state.num + 32] = slot->state.output;
-   s->sound_stack[slot->state.num] = previous;
-
-   slot->state.sample_counter++;
-   slot->state.lfo_counter++;
-}
-
-struct DebugInstrument
-{
-   u32 sa;
-   int is_muted;
-};
-
-#define NUM_DEBUG_INSTRUMENTS 24
-
-struct DebugInstrument debug_instruments[NUM_DEBUG_INSTRUMENTS] = { 0 };
-int debug_instrument_pos = 0;
-
-void scsp_debug_search_instruments(const u32 sa, int* found, int * offset)
-{
-   int i = 0;
-   *found = 0;
-   for (i = 0; i < NUM_DEBUG_INSTRUMENTS; i++)
-   {
-      if (debug_instruments[i].sa == sa)
-      {
-         *found = 1;
+         // Set to current core
+         Cs2Area->cdi = CDCoreList[i];
          break;
       }
    }
 
-   *offset = i;
-}
-
-void scsp_debug_add_instrument(u32 sa)
-{
-   int i = 0, found = 0, offset = 0;
-
-   if (debug_instrument_pos >= NUM_DEBUG_INSTRUMENTS)
-      return;
-
-   scsp_debug_search_instruments(sa, &found, &offset);
-
-   //new instrument discovered
-   if (!found)
-      debug_instruments[debug_instrument_pos++].sa = sa;
-}
-
-void scsp_debug_instrument_set_mute(u32 sa, int mute)
-{
-   int found = 0, offset = 0;
-   scsp_debug_search_instruments(sa, &found, &offset);
-
-   if (offset >= NUM_DEBUG_INSTRUMENTS)
-      return;
-
-   if (found)
-      debug_instruments[offset].is_muted = mute;
-}
-
-int scsp_debug_instrument_check_is_muted(u32 sa)
-{
-   int found = 0, offset = 0;
-   scsp_debug_search_instruments(sa, &found, &offset);
-
-   if (offset >= NUM_DEBUG_INSTRUMENTS)
-      return 0;
-
-   if (found && debug_instruments[offset].is_muted)
-      return 1;
-
-   return 0;
-}
-
-void scsp_debug_instrument_get_data(int i, u32 * sa, int * is_muted)
-{
-   if(i >= NUM_DEBUG_INSTRUMENTS)
-      return;
-
-   *sa = debug_instruments[i].sa;
-   *is_muted = debug_instruments[i].is_muted;
-}
-
-void scsp_debug_set_mode(int mode)
-{
-   new_scsp.debug_mode = mode;
-}
-
-void scsp_debug_instrument_clear()
-{
-   debug_instrument_pos = 0;
-   memset(debug_instruments, 0, sizeof(struct DebugInstrument) * NUM_DEBUG_INSTRUMENTS);
-}
-
-void scsp_debug_get_envelope(int chan, int * env, int * state)
-{
-   *env = new_scsp.slots[chan].state.attenuation;
-   *state = new_scsp.slots[chan].state.envelope;
-}
-
-
-
-// ST-077-R2 Figure 4.8 (KEY_ON and KEY_OFF Sequence): KYONEX latches each
-// slot's KYONB into an internal KEY_ON state. A KYONEX that finds KYONB = 1
-// on a slot already in the ON state is ignored ("Ignore"); only a slot that
-// went through KEY_OFF can be keyed on again.
-// That state is not the envelope: a one-shot that reaches LEA stops as if
-// released (end condition (2), op2) but stays keyed on until its KYONB is
-// cleared. Testing the envelope instead restarted every finished one-shot
-// whose KYONB was still 1 on the next KYONEX, i.e. whenever the sound driver
-// started any other sound. The SEGA driver leaves KYONB set on its one-shots:
-// Defcon 5's gunshot (slots 18/19, 8-bit, no loop) played again each time
-// another sound was keyed on, three or four times per shot.
-void keyon(struct Slot * slot)
-{
-   if (!slot->state.keyed)
+   if (Cs2Area->cdi == NULL)
    {
-      slot->state.keyed = 1;
-     change_envelope_state(slot, ATTACK);
-      slot->state.attenuation = 0x280;
-      slot->state.sample_counter = 0;
-      slot->state.sample_offset = 0;
-      slot->state.envelope_steps_taken = 0;
-
-      if ( !slot->regs.pcm8b && (slot->regs.sa&0x01) ) {
-        slot->regs.sa &= 0xFFFFFE ;
-      }
-
-#if 0
-      LOG("kx:%d kb:%d sbctl:%d ssctl:%d lpctl:%d pcm8b:%d"
-        " sa:%X lsa:%d, lea:%d d2r:%d d1r:%d hold:%d"
-        " ar:%d ls:%d krs:%d dl:%d rr:%d si:%d sd:%d tl:%X"
-        " mdl:%d mdxsl:%d mdysl:%d oct:%d fns:%d re:%d lfof:%d"
-        " plfows:%d plfos:%d alfows:%d alfos:%d isel:%d imxl:%d disdl:%d"
-        " dipan:%d efsdl:%d efpan:%d",
-        slot->regs.kx,
-        slot->regs.kb,
-        slot->regs.sbctl,
-        slot->regs.ssctl,
-        slot->regs.lpctl,
-        slot->regs.pcm8b,
-        slot->regs.sa,
-        slot->regs.lsa,
-        slot->regs.lea,
-        slot->regs.d2r,
-        slot->regs.d1r,
-        slot->regs.hold,
-        slot->regs.ar,
-        slot->regs.ls,
-        slot->regs.krs,
-        slot->regs.dl,
-        slot->regs.rr,
-        slot->regs.si,
-        slot->regs.sd,
-        slot->regs.tl,
-        slot->regs.mdl,
-        slot->regs.mdxsl,
-        slot->regs.mdysl,
-        slot->regs.oct,
-        slot->regs.fns,
-        slot->regs.re,
-        slot->regs.lfof,
-        slot->regs.plfows,
-        slot->regs.plfos,
-        slot->regs.alfows,
-        slot->regs.alfos,
-        slot->regs.isel,
-        slot->regs.imxl,
-        slot->regs.disdl,
-        slot->regs.dipan,
-        slot->regs.efsdl,
-        slot->regs.efpan);
-#endif
-
-      if (new_scsp.debug_mode)
-         scsp_debug_add_instrument(slot->regs.sa);
-   }
-   //otherwise ignore
-}
-
-void keyoff(struct Slot * slot)
-{
-   slot->state.keyed = 0;
-   change_envelope_state(slot, RELEASE);
-
-   // Key-off of a slot whose envelope had already decayed to silence:
-   // it stops right away (ST-077-R2 end condition (1)).
-   if (slot_is_stopped(slot))
-      slot_stop_address(slot);
-}
-
-void keyonex(struct Scsp *s)
-{
-   int channel;
-   for (channel = 0; channel < 32; channel++)
-   {
-     if (s->slots[channel].regs.kb) {
-
-       //if ( s->slots[channel].state.envelope == RELEASE) {
-       //LOG("keyon %d", channel);
-       //}
-       keyon(&s->slots[channel]);
-     }
-     else {
-       //if ( s->slots[channel].state.envelope != RELEASE) {
-       //  LOG("keyoff %d state %d", channel, s->slots[channel].state.envelope );
-       //}
-       keyoff(&s->slots[channel]);
-     }
-   }
-}
-
-void scsp_slot_write_byte(struct Scsp *s, u32 addr, u8 data)
-{
-   int slot_num = (addr >> 5) & 0x1f;
-   struct Slot * slot = &s->slots[slot_num];
-   u32 offset = (addr - (0x20 * slot_num));
-
-   //SCSPLOG("Slot Write %d:%d \n", slot_num, addr);
-
-   switch (offset)
-   {
-   case 0:
-      slot->regs.kb = (data >> 3) & 1;//has to be done first
-
-      if ((data >> 4) & 1) { //keyonex
-        keyonex(s);
-      }
-
-      slot->regs.sbctl = (data >> 1) & 3;
-      slot->regs.ssctl = (slot->regs.ssctl & 1) | ((data & 1) << 1);
-      break;
-   case 1:
-      slot->regs.ssctl = (slot->regs.ssctl & 2) | ((data >> 7) & 1);
-      slot->regs.lpctl = (data >> 5) & 3;
-      slot->regs.pcm8b = (data >> 4) & 1;
-      slot->regs.sa = (slot->regs.sa & 0xffff) | ((data & 0xf) << 16);
-      break;
-   case 2:
-      slot->regs.sa = (slot->regs.sa & 0xf00ff) | (data << 8);
-      break;
-   case 3:
-      slot->regs.sa = (slot->regs.sa & 0xfff00) | data;
-      break;
-   case 4:
-      slot->regs.lsa = (slot->regs.lsa & 0x00ff) | (data << 8);
-      break;
-   case 5:
-      slot->regs.lsa = (slot->regs.lsa & 0xff00) | data;
-      break;
-   case 6:
-      slot->regs.lea = (slot->regs.lea & 0x00ff) | (data << 8);
-      break;
-   case 7:
-      slot->regs.lea = (slot->regs.lea & 0xff00) | data;
-      break;
-   case 8:
-      slot->regs.d2r = (data >> 3) & 0x1f;
-      slot->regs.d1r = (slot->regs.d1r & 3) | ((data & 0x7) << 2);
-      break;
-   case 9:
-      slot->regs.d1r = (slot->regs.d1r & 0x1c) | ((data >> 6) & 3);
-      slot->regs.hold = (data >> 5) & 1;
-      slot->regs.ar = data & 0x1f;
-      if (slot->regs.ar < 0x010) slot->regs.ar = 0x10; // for Darius Gaiden
-      if (slot->regs.hold) slot->regs.ar = 0x1f; // SCSP Users manual 4.2
-      break;
-   case 10:
-      slot->regs.unknown1 = (data >> 7) & 1;
-      slot->regs.ls = (data >> 6) & 1;
-      slot->regs.krs = (data >> 2) & 0xf;
-      slot->regs.dl = (slot->regs.dl & 0x7) | ((data & 3) << 3);
-      break;
-   case 11:
-      slot->regs.dl = (slot->regs.dl & 0x18) | ((data >> 5) & 7);
-      slot->regs.rr = data & 0x1f;
-      break;
-   case 12:
-      slot->regs.unknown2 = (data >> 2) & 3;
-      slot->regs.si = (data >> 1) & 1;
-      slot->regs.sd = data & 1;
-      break;
-   case 13:
-      slot->regs.tl = data;
-      break;
-   case 14:
-      slot->regs.mdl = (data >> 4) & 0xf;
-      slot->regs.mdxsl = (slot->regs.mdxsl & 0x3) | ((data & 0xf) << 2);
-      break;
-   case 15:
-      slot->regs.mdxsl = (slot->regs.mdxsl & 0x3C) | ((data >> 6) & 3);
-      slot->regs.mdysl = data & 0x3f;
-      break;
-   case 16:
-      slot->regs.unknown3 = (data >> 7) & 1;
-      slot->regs.oct = (data >> 3) & 0xf;
-      slot->regs.unknown4 = (data >> 2) & 1;
-      slot->regs.fns = (slot->regs.fns & 0xff) | ((data & 0x7) << 8);
-      break;
-   case 17:
-      slot->regs.fns = (slot->regs.fns & 0x700) | data;
-      break;
-   case 18:
-      slot->regs.re = (data >> 7) & 1;
-      slot->regs.lfof = (data >> 2) & 0x1f;
-      slot->regs.plfows = data & 3;
-      break;
-   case 19:
-      slot->regs.plfos = (data >> 5) & 7;
-      slot->regs.alfows = (data >> 3) & 3;
-      slot->regs.alfos = data & 7;
-      break;
-   case 20:
-      //nothing here
-      break;
-   case 21:
-      slot->regs.unknown5 = (data >> 7) & 1;
-      slot->regs.isel = (data >> 3) & 0xf;
-      slot->regs.imxl = data & 7;
-      break;
-   case 22:
-      slot->regs.disdl = (data >> 5) & 7;
-      slot->regs.dipan = data & 0x1f;
-      break;
-   case 23:
-      slot->regs.efsdl = (data >> 5) & 7;
-      slot->regs.efpan = data & 0x1f;
-      break;
-   default:
-      break;
-   }
-}
-
-u8 scsp_slot_read_byte(struct Scsp *s, u32 addr)
-{
-   int slot_num = (addr >> 5) & 0x1f;
-   struct Slot * slot = &s->slots[slot_num];
-   u32 offset = (addr - (0x20 * slot_num));
-   u8 data = 0;
-
-   switch (offset)
-   {
-   case 0:
-      data |= slot->regs.kb << 3;
-      data |= slot->regs.sbctl << 1;
-      data |= (slot->regs.ssctl >> 1) & 1;
-      break;
-   case 1:
-      data |= (slot->regs.ssctl & 1) << 7;
-      data |= slot->regs.lpctl << 5;
-      data |= slot->regs.pcm8b << 4;
-      data |= (slot->regs.sa & 0xf0000) >> 16;
-      break;
-   case 2:
-      data |= (slot->regs.sa & 0xff00) >> 8;
-      break;
-   case 3:
-      data |= slot->regs.sa & 0xff;
-      break;
-   case 4:
-      data |= (slot->regs.lsa & 0xff00) >> 8;
-      break;
-   case 5:
-      data |= slot->regs.lsa & 0xff;
-      break;
-   case 6:
-      data |= (slot->regs.lea & 0xff00) >> 8;
-      break;
-   case 7:
-      data |= slot->regs.lea & 0xff;
-      break;
-   case 8:
-      data |= slot->regs.d2r << 3;
-      data |= slot->regs.d1r >> 2;
-      break;
-   case 9:
-      data |= slot->regs.d1r << 6;
-      data |= slot->regs.hold << 5;
-      data |= slot->regs.ar;
-      break;
-   case 10:
-      data |= slot->regs.unknown1 << 7;
-      data |= slot->regs.ls << 6;
-      data |= slot->regs.krs << 2;
-      data |= slot->regs.dl >> 3;
-      break;
-   case 11:
-      data |= slot->regs.dl << 5;
-      data |= slot->regs.rr;
-      break;
-   case 12:
-      data |= slot->regs.unknown2 << 2;
-      data |= slot->regs.si << 1;
-      data |= slot->regs.sd;
-      break;
-   case 13:
-      data |= slot->regs.tl;
-      break;
-   case 14:
-      data |= slot->regs.mdl << 4;
-      data |= slot->regs.mdxsl >> 2;
-      break;
-   case 15:
-      data |= slot->regs.mdxsl << 6;
-      data |= slot->regs.mdysl;
-      break;
-   case 16:
-      data |= slot->regs.unknown3 << 7;
-      data |= slot->regs.oct << 3;
-      data |= slot->regs.unknown4 << 2;
-      data |= slot->regs.fns >> 8;
-      break;
-   case 17:
-      data |= slot->regs.fns;
-      break;
-   case 18:
-      data |= slot->regs.re << 7;
-      data |= slot->regs.lfof << 2;
-      data |= slot->regs.plfows;
-      break;
-   case 19:
-      data |= slot->regs.plfos << 5;
-      data |= slot->regs.alfows << 3;
-      data |= slot->regs.alfos;
-      break;
-   case 20:
-      //nothing
-      break;
-   case 21:
-      data |= slot->regs.unknown5 << 7;
-      data |= slot->regs.isel << 3;
-      data |= slot->regs.imxl;
-      break;
-   case 22:
-      data |= slot->regs.disdl << 5;
-      data |= slot->regs.dipan;
-      break;
-   case 23:
-      data |= slot->regs.efsdl << 5;
-      data |= slot->regs.efpan;
-      break;
-   }
-
-   return data;
-}
-
-void scsp_slot_write_word(struct Scsp *s, u32 addr, u16 data)
-{
-   int slot_num = (addr >> 5) & 0x1f;
-   struct Slot * slot = &s->slots[slot_num];
-   u32 offset = (addr - (0x20 * slot_num));
-
-   //SCSPLOG("Slot Write %d:%d\n", slot_num, addr);
-
-   switch (offset >> 1)
-   {
-   case 0:
-      slot->regs.kb = (data >> 11) & 1;//has to be done before keyonex
-
-      if (data & (1 << 12)){
-        keyonex(s);
-      }
-
-      slot->regs.sbctl = (data >> 9) & 3;
-      slot->regs.ssctl = (data >> 7) & 3;
-      slot->regs.lpctl = (data >> 5) & 3;
-      slot->regs.pcm8b = (data >> 4) & 1;
-      slot->regs.sa = (slot->regs.sa & 0xffff) | ((data & 0xf) << 16);
-      break;
-   case 1:
-      slot->regs.sa = (slot->regs.sa & 0xf0000) | data;
-      break;
-   case 2:
-      slot->regs.lsa = data;
-      break;
-   case 3:
-      slot->regs.lea = data;
-      break;
-   case 4:
-      slot->regs.d2r = data >> 11;
-      slot->regs.d1r = (data >> 6) & 0x1f;
-      slot->regs.hold = (data >> 5) & 1;
-      slot->regs.ar = data & 0x1f;
-      if (slot->regs.ar < 0x010) slot->regs.ar = 0x10; // for Darius Gaiden
-      if (slot->regs.hold) slot->regs.ar = 0x1f; // SCSP Users manual 4.2
-      break;
-   case 5:
-      slot->regs.unknown1 = (data >> 15) & 1;
-      slot->regs.ls = (data >> 14) & 1;
-      slot->regs.krs = (data >> 10) & 0xf;
-      slot->regs.dl = (data >> 5) & 0x1f;
-      slot->regs.rr = data & 0x1f;
-      break;
-   case 6:
-      slot->regs.unknown2 = (data >> 10) & 3;
-      slot->regs.si = (data >> 9) & 1;
-      slot->regs.sd = (data >> 8) & 1;
-      slot->regs.tl = data & 0xff;
-      break;
-   case 7:
-      slot->regs.mdl = (data >> 12) & 0xf;
-      slot->regs.mdxsl = (data >> 6) & 0x3f;
-      slot->regs.mdysl = data & 0x3f;
-      break;
-   case 8:
-      slot->regs.unknown3 = (data >> 15) & 1;
-      slot->regs.unknown4 = (data >> 10) & 1;
-      slot->regs.oct = (data >> 11) & 0xf;
-      slot->regs.fns = data & 0x7ff;
-      break;
-   case 9:
-      slot->regs.re = (data >> 15) & 1;
-      slot->regs.lfof = (data >> 10) & 0x1f;
-      slot->regs.plfows = (data >> 8) & 3;
-      slot->regs.plfos = (data >> 5) & 7;
-      slot->regs.alfows = (data >> 3) & 3;
-      slot->regs.alfos = data & 7;
-      break;
-   case 10:
-      slot->regs.unknown5 = (data >> 7) & 1;
-      slot->regs.isel = (data >> 3) & 0xf;
-      slot->regs.imxl = data & 7;
-      break;
-   case 11:
-      slot->regs.disdl = (data >> 13) & 7;
-      slot->regs.dipan = (data >> 8) & 0x1f;
-      slot->regs.efsdl = (data >> 5) & 7;
-      slot->regs.efpan = data & 0x1f;
-      break;
-   default:
-      break;
-   }
-}
-
-u16 scsp_slot_read_word(struct Scsp *s, u32 addr)
-{
-   int slot_num = (addr >> 5) & 0x1f;
-   struct Slot * slot = &s->slots[slot_num];
-   u32 offset = (addr - (0x20 * slot_num));
-   u16 data = 0;
-
-   switch (offset >> 1)
-   {
-   case 0:
-      //keyonex not stored
-      data |= slot->regs.kb << 11;
-      data |= slot->regs.sbctl << 9;
-      data |= slot->regs.ssctl << 7;
-      data |= slot->regs.lpctl << 5;
-      data |= slot->regs.pcm8b << 4;
-      data |= (slot->regs.sa >> 16) & 0xf;
-      break;
-   case 1:
-      data = slot->regs.sa & 0xffff;
-      break;
-   case 2:
-      data = slot->regs.lsa;
-      break;
-   case 3:
-      data = slot->regs.lea;
-      break;
-   case 4:
-      data |= slot->regs.d2r << 11;
-      data |= slot->regs.d1r << 6;
-      data |= slot->regs.hold << 5;
-      data |= slot->regs.ar;
-      break;
-   case 5:
-      data |= slot->regs.unknown1 << 15;
-      data |= slot->regs.ls << 14;
-      data |= slot->regs.krs << 10;
-      data |= slot->regs.dl << 5;
-      data |= slot->regs.rr;
-      break;
-   case 6:
-      data |= slot->regs.unknown2 << 10;
-      data |= slot->regs.si << 9;
-      data |= slot->regs.sd << 8;
-      data |= slot->regs.tl;
-      break;
-   case 7:
-      data |= slot->regs.mdl << 12;
-      data |= slot->regs.mdxsl << 6;
-      data |= slot->regs.mdysl;
-      break;
-   case 8:
-      data |= slot->regs.unknown3 << 15;
-      data |= slot->regs.oct << 11;
-      data |= slot->regs.unknown4 << 10;
-      data |= slot->regs.fns;
-      break;
-   case 9:
-      data |= slot->regs.re << 15;
-      data |= slot->regs.lfof << 10;
-      data |= slot->regs.plfows << 8;
-      data |= slot->regs.plfos << 5;
-      data |= slot->regs.alfows << 3;
-      data |= slot->regs.alfos;
-      break;
-   case 10:
-      data |= slot->regs.unknown5 << 7;
-      data |= slot->regs.isel << 3;
-      data |= slot->regs.imxl;
-      break;
-   case 11:
-      data |= slot->regs.disdl << 13;
-      data |= slot->regs.dipan << 8;
-      data |= slot->regs.efsdl << 5;
-      data |= slot->regs.efpan;
-      break;
-   }
-   return data;
-}
-
-void get_panning(int pan, int * pan_val_l, int * pan_val_r)
-{
-   if (pan & 0x10)
-   {
-      //negative values
-      *pan_val_l = 0;
-      *pan_val_r = pan & 0xf;
-   }
-   else
-   {
-      *pan_val_l = pan & 0xf;
-      *pan_val_r = 0;
-   }
-}
-
-int get_sdl_shift(int sdl)
-{
-   if (sdl == 0)
-      return 16;//-infinity
-   else return (7 - sdl);
-}
-
-void generate_sample(struct Scsp * s, int rbp, int rbl, s16 * out_l, s16* out_r, int mvol, s16 cd_in_l, s16 cd_in_r)
-{
-   int step_num = 0;
-   int i = 0;
-   int mvol_shift = 0;
-   s32 outl32 = 0;
-   s32 outr32 = 0;
-
-   //run 32 steps to generate 1 full sample (512 clock cycles at 22579200hz)
-   //7 operations happen simultaneously on different channels due to pipelining
-   for (step_num = 0; step_num < 32; step_num++)
-   {
-      int last_step = (step_num - 6) & 0x1f;
-      int debug_muted = 0;
-
-      op1(&s->slots[step_num]);//phase, pitch lfo
-      op2(&s->slots[(step_num - 1) & 0x1f],s);//address pointer, modulation data read
-      op3(&s->slots[(step_num - 2) & 0x1f]);//waveform dram read
-      op4(&s->slots[(step_num - 3) & 0x1f]);//interpolation, eg, amplitude lfo
-      op5(&s->slots[(step_num - 4) & 0x1f]);//level calc 1
-      op6(&s->slots[(step_num - 5) & 0x1f]);//level calc 2
-      op7(&s->slots[(step_num - 6) & 0x1f],s);//sound stack write
-
-      if (s->debug_mode)
-      {
-         if (scsp_debug_instrument_check_is_muted(s->slots[last_step].regs.sa))
-            debug_muted = 1;
-      }
-
-      if (!debug_muted)
-      {
-         int disdl = get_sdl_shift(s->slots[last_step].regs.disdl);
-
-         s16 disdl_applied = (s->slots[last_step].state.output >> disdl);
-
-         s16 mixs_input = s->slots[last_step].state.output >>
-            get_sdl_shift(s->slots[last_step].regs.imxl);
-
-         int pan_val_l = 0, pan_val_r = 0;
-
-         get_panning(s->slots[last_step].regs.dipan, &pan_val_l, &pan_val_r);
-
-         outl32 = outl32 + ((disdl_applied >> pan_val_l));
-         outr32 = outr32 + ((disdl_applied >> pan_val_r));
-         scsp_dsp.mixs[s->slots[last_step].regs.isel] += (mixs_input * 16);
-      }
-   }
-
-   scsp_dsp.rbp = rbp;
-   scsp_dsp.rbl = rbl;
-
-   scsp_dsp.exts[0] = cd_in_l;
-   scsp_dsp.exts[1] = cd_in_r;
-
-   if (scsp_dsp.updated){
-
-	   for (i = 127; i >= 0; --i)
-	   {
-		   if( scsp_dsp.mpro[i] != 0 )
-			   break;
-	   }
-	   scsp_dsp.last_step = i + 1;
-	   scsp_dsp.updated = 0;
-   }
-
-   // BUG CORRIGE : ScspDspCheckBreakpoints() existe et est documentee dans
-   // scspdsp.h ("Called once per MPRO step ... from the scsp.c sample
-   // loop, right before ScspDspExec()") mais n'etait appelee nulle part
-   // dans tout le projet -- les breakpoints DSP SCSP ne pouvaient donc
-   // jamais se declencher, meme une fois l'UI (UIDebugSCSPDSP) cablee sur
-   // ScspDspAddCodeBreakpoint()/ScspDspSetBreakpointCallBack().
-   for (i = 0; i < scsp_dsp.last_step; i++) {
-      ScspDspCheckBreakpoints(i);
-      ScspDspExec(&scsp_dsp, i, SoundRam);
-   }
-
-   if (!scsp_dsp.mdec_ct){
-     scsp_dsp.mdec_ct = (0x2000 << rbl);
-   }
-   scsp_dsp.mdec_ct--;
-
-   for (i = 0; i < 16; i++)
-      scsp_dsp.mixs[i] = 0;
-
-   for (i = 0; i < 18; i++)//16,17 are exts0/1
-   {
-      int efsdl = get_sdl_shift(s->slots[i].regs.efsdl);
-      s16 efsdl_applied = 0;
-
-      int pan_val_l = 0, pan_val_r = 0;
-      s16 panned_l = 0, panned_r = 0;
-
-      if (i < 16)
-        efsdl_applied = (scsp_dsp.efreg[i] >> efsdl);
-      else if (i == 16)
-        efsdl_applied = scsp_dsp.exts[0] >>  efsdl;
-      else if (i == 17)
-        efsdl_applied = scsp_dsp.exts[1] >>  efsdl;
-
-      get_panning(s->slots[i].regs.efpan, &pan_val_l, &pan_val_r);
-
-      panned_l = (efsdl_applied >> pan_val_l);
-      panned_r = (efsdl_applied >> pan_val_r);
-
-      outl32 = outl32 + panned_l;
-      outr32 = outr32 + panned_r;
-   }
-   mvol_shift = 0xf - mvol;
-
-
-   outl32 = outl32 >> mvol_shift;
-   *out_l = min(SHRT_MAX, max(SHRT_MIN, outl32));
-   outr32 = outr32 >> mvol_shift;
-   *out_r = min(SHRT_MAX, max(SHRT_MIN, outr32));
-}
-
-void new_scsp_reset(struct Scsp* s)
-{
-   int slot_num;
-   memset(s, 0, sizeof(struct Scsp));
-
-   for (slot_num = 0; slot_num < 32; slot_num++)
-   {
-      s->slots[slot_num].state.attenuation = 0x3FF;
-      s->slots[slot_num].state.envelope = RELEASE;
-      s->slots[slot_num].state.num = slot_num;
-   }
-
-   fill_plfo_tables();
-   fill_alfo_tables();
-
-   memset(&scsp_dsp, 0, sizeof(ScspDsp));
-
-   new_scsp_outbuf_pos = 0;
-   new_scsp_cycles = 0;
-}
-
-////////////////////////////////////////////////////////////////
-
-#ifndef PI
-#define PI 3.14159265358979323846
-#endif
-
-#define SCSP_FREQ         44100                                     // SCSP frequency
-
-#define SCSP_RAM_SIZE     0x080000                                  // SCSP RAM size
-#define SCSP_RAM_MASK     (SCSP_RAM_SIZE - 1)
-
-#define SCSP_MIDI_IN_EMP  0x01                                      // MIDI flags
-#define SCSP_MIDI_IN_FUL  0x02
-#define SCSP_MIDI_IN_OVF  0x04
-#define SCSP_MIDI_OUT_EMP 0x08
-#define SCSP_MIDI_OUT_FUL 0x10
-
-#define SCSP_ENV_RELEASE  3                                         // Envelope phase
-#define SCSP_ENV_SUSTAIN  2
-#define SCSP_ENV_DECAY    1
-#define SCSP_ENV_ATTACK   0
-
-#define SCSP_FREQ_HB      19                                        // Freq counter int part
-#define SCSP_FREQ_LB      10                                        // Freq counter float part
-
-#define SCSP_ENV_HB       10                                        // Env counter int part
-#define SCSP_ENV_LB       10                                        // Env counter float part
-
-#define SCSP_LFO_HB       10                                        // LFO counter int part
-#define SCSP_LFO_LB       10                                        // LFO counter float part
-
-#define SCSP_ENV_LEN      (1 << SCSP_ENV_HB)                        // Env table len
-#define SCSP_ENV_MASK     (SCSP_ENV_LEN - 1)                        // Env table mask
-
-#define SCSP_FREQ_LEN     (1 << SCSP_FREQ_HB)                       // Freq table len
-#define SCSP_FREQ_MASK    (SCSP_FREQ_LEN - 1)                       // Freq table mask
-
-#define SCSP_LFO_LEN      (1 << SCSP_LFO_HB)                        // LFO table len
-#define SCSP_LFO_MASK     (SCSP_LFO_LEN - 1)                        // LFO table mask
-
-#define SCSP_ENV_AS       0                                         // Env Attack Start
-#define SCSP_ENV_DS       (SCSP_ENV_LEN << SCSP_ENV_LB)             // Env Decay Start
-#define SCSP_ENV_AE       (SCSP_ENV_DS - 1)                         // Env Attack End
-#define SCSP_ENV_DE       (((2 * SCSP_ENV_LEN) << SCSP_ENV_LB) - 1) // Env Decay End
-
-#define SCSP_ATTACK_R     (u32) (8 * 44100)
-#define SCSP_DECAY_R      (u32) (12 * SCSP_ATTACK_R)
-
-////////////////////////////////////////////////////////////////
-
-typedef struct slot_t
-{
-  u8 swe;      // stack write enable
-  u8 sdir;     // sound direct
-  u8 pcm8b;    // PCM sound format
-
-  u8 sbctl;    // source bit control
-  u8 ssctl;    // sound source control
-  u8 lpctl;    // loop control
-
-  u8 key;      // KEY_ state
-  u8 keyx;     // still playing regardless the KEY_ state (hold, decay)
-
-  s8 *buf8;    // sample buffer 8 bits
-  s16 *buf16;  // sample buffer 16 bits
-
-  u32 fcnt;    // phase counter
-  u32 finc;    // phase step adder
-  u32 finct;   // non adjusted phase step
-
-  s32 ecnt;    // envelope counter
-  s32 *einc;    // envelope current step adder
-  s32 einca;   // envelope step adder for attack
-  s32 eincd;   // envelope step adder for decay 1
-  s32 eincs;   // envelope step adder for decay 2
-  s32 eincr;   // envelope step adder for release
-  s32 ecmp;    // envelope compare to raise next phase
-  u32 ecurp;   // envelope current phase (attack / decay / release ...)
-  s32 env;     // envelope multiplier (at time of last update)
-
-  void (*enxt)(struct slot_t *);  // envelope function pointer for next phase event
-
-  u32 lfocnt;   // lfo counter
-  s32 lfoinc;   // lfo step adder
-
-  u32 sa;       // start address
-  u32 lsa;      // loop start address
-  u32 lea;      // loop end address
-
-  s32 tl;       // total level
-  s32 sl;       // sustain level
-
-  s32 ar;       // attack rate
-  s32 dr;       // decay rate
-  s32 sr;       // sustain rate
-  s32 rr;       // release rate
-
-  s32 *arp;     // attack rate table pointer
-  s32 *drp;     // decay rate table pointer
-  s32 *srp;     // sustain rate table pointer
-  s32 *rrp;     // release rate table pointer
-
-  u32 krs;      // key rate scale
-
-  s32 *lfofmw;  // lfo frequency modulation waveform pointer
-  s32 *lfoemw;  // lfo envelope modulation waveform pointer
-  u8 lfofms;    // lfo frequency modulation sensitivity
-  u8 lfoems;    // lfo envelope modulation sensitivity
-  u8 fsft;      // frequency shift (used for freq lfo)
-
-  u8 mdl;       // modulation level
-  u8 mdx;       // modulation source X
-  u8 mdy;       // modulation source Y
-
-  u8 imxl;      // input sound level
-  u8 disll;     // direct sound level left
-  u8 dislr;     // direct sound level right
-  u8 efsll;     // effect sound level left
-  u8 efslr;     // effect sound level right
-
-  u8 eghold;    // eg type envelope hold
-  u8 lslnk;     // loop start link (start D1R when start loop adr is reached)
-
-  // NOTE: Previously there were u8 pads here to maintain 4-byte alignment.
-  //       There are current 22 u8's in this struct and 1 u16. This makes 24
-  //       bytes, so there are no pads at the moment.
-  //
-  //       I'm not sure this is at all necessary either, but keeping this note
-  //       in case.
-} slot_t;
-
-typedef struct scsp_t
-{
-  u32 mem4b;            // 4mbit memory
-  u32 mvol;             // master volume
-
-  u32 rbl;              // ring buffer lenght
-  u32 rbp;              // ring buffer address (pointer)
-
-  u32 mslc;             // monitor slot
-  u32 ca;               // call address
-  u32 sgc;              // phase
-  u32 eg;               // envelope
-
-  u32 dmea;             // dma memory address start
-  u32 drga;             // dma register address start
-  u32 dmfl;             // dma flags (direction / gate 0 ...)
-  u32 dmlen;            // dma transfer len
-
-  u8 midinbuf[4];       // midi in buffer
-  u8 midoutbuf[4];      // midi out buffer
-  u8 midincnt;          // midi in buffer size
-  u8 midoutcnt;         // midi out buffer size
-  u8 midflag;           // midi flag (empty, full, overflow ...)
-  u8 midflag2;          // midi flag 2 (here only for alignement)
-
-  s32 timacnt;          // timer A counter
-  u32 timasd;           // timer A step diviser
-  s32 timbcnt;          // timer B counter
-  u32 timbsd;           // timer B step diviser
-  s32 timccnt;          // timer C counter
-  u32 timcsd;           // timer C step diviser
-
-  u32 scieb;            // allow sound cpu interrupt
-  u32 scipd;            // pending sound cpu interrupt
-
-  u32 scilv0;           // IL0 M68000 interrupt pin state
-  u32 scilv1;           // IL1 M68000 interrupt pin state
-  u32 scilv2;           // IL2 M68000 interrupt pin state
-
-  u32 mcieb;            // allow main cpu interrupt
-  u32 mcipd;            // pending main cpu interrupt
-
-  u8 *scsp_ram;         // scsp ram pointer
-  void (*mintf)(void);  // main cpu interupt function pointer
-  void (*sintf)(u32);   // sound cpu interrupt function pointer
-
-  s32 stack[32 * 2];    // two last generation slot output (SCSP STACK)
-  slot_t slot[32];      // 32 slots
-} scsp_t;
-
-////////////////////////////////////////////////////////////////
-
-static s32 scsp_env_table[SCSP_ENV_LEN * 2];  // envelope curve table (attack & decay)
-
-static s32 scsp_lfo_sawt_e[SCSP_LFO_LEN];     // lfo sawtooth waveform for envelope
-static s32 scsp_lfo_squa_e[SCSP_LFO_LEN];     // lfo square waveform for envelope
-static s32 scsp_lfo_tri_e[SCSP_LFO_LEN];      // lfo triangle waveform for envelope
-static s32 scsp_lfo_noi_e[SCSP_LFO_LEN];      // lfo noise waveform for envelope
-
-static s32 scsp_lfo_sawt_f[SCSP_LFO_LEN];     // lfo sawtooth waveform for frequency
-static s32 scsp_lfo_squa_f[SCSP_LFO_LEN];     // lfo square waveform for frequency
-static s32 scsp_lfo_tri_f[SCSP_LFO_LEN];      // lfo triangle waveform for frequency
-static s32 scsp_lfo_noi_f[SCSP_LFO_LEN];      // lfo noise waveform frequency
-
-static s32 scsp_attack_rate[0x40 + 0x20];     // envelope step for attack
-static s32 scsp_decay_rate[0x40 + 0x20];      // envelope step for decay
-static s32 scsp_null_rate[0x20];              // null envelope step
-
-static s32 scsp_lfo_step[32];                 // directly give the lfo counter step
-
-static s32 scsp_tl_table[256];                // table of values for total level attentuation
-
-static u8 scsp_reg[0x1000];
-
-static u8 *scsp_isr;
-static u8 *scsp_ccr;
-static u8 *scsp_dcr;
-
-static s32 *scsp_bufL;
-static s32 *scsp_bufR;
-static u32 scsp_buf_len;
-static u32 scsp_buf_pos;
-
-static scsp_t   scsp;                         // SCSP structure
-
-
-
-#define CDDA_NUM_BUFFERS	2*75
-
-static union {
-   u8 data[CDDA_NUM_BUFFERS*2352];
-} cddabuf;
-static unsigned int cdda_next_in=0;               // Next sector buffer offset to receive into
-static u32 cdda_out_left;                       // Bytes of CDDA left to output
-
-////////////////////////////////////////////////////////////////
-
-static void scsp_env_null_next(slot_t *slot);
-static void scsp_release_next(slot_t *slot);
-static void scsp_sustain_next(slot_t *slot);
-static void scsp_decay_next(slot_t *slot);
-static void scsp_attack_next(slot_t *slot);
-static void scsp_slot_update_keyon(slot_t *slot);
-
-//////////////////////////////////////////////////////////////////////////////
-
-static int scsp_mute_flags = 0;
-static int scsp_volume = 100;
-static bool thread_running = false;
-static int scsp_sample_count = 0;
-static int scsp_checktime = 0;
-////////////////////////////////////////////////////////////////
-// Misc
-
-static int
-scsp_round (double val)
-{
-  return (int)(val + 0.5);
-}
-
-
-////////////////////////////////////////////////////////////////
-// Interrupts
-
-static INLINE void
-scsp_trigger_main_interrupt (u32 id)
-{
-  SCSPLOG ("scsp main interrupt accepted %.4X\n", id);
-  scsp.mintf();
-}
-
-void scsp_check_interrupt() {
-  unsigned mask_test;
-  unsigned lvmasked[3];
-  unsigned level = 0;
-
-  mask_test = scsp.scipd & scsp.scieb;
-  if (mask_test &~0xFF)
-    mask_test = (mask_test & 0xFF) | 0x80;
-
-  lvmasked[0] = (scsp.scilv0 & mask_test) << 0;
-  lvmasked[1] = (scsp.scilv1 & mask_test) << 1;
-  lvmasked[2] = (scsp.scilv2 & mask_test) << 2;
-
-  for (unsigned i = 0; i < 8; i++)
-  {
-    unsigned l = (lvmasked[0] & 0x1) | (lvmasked[1] & 0x2) | (lvmasked[2] & 0x4);
-
-    if (l > level)
-      level = l;
-
-    lvmasked[0] >>= 1;
-    lvmasked[1] >>= 1;
-    lvmasked[2] >>= 1;
-  }
-  if (level != 0) {
-    SCSPLOG("SCSP LV0=%08X, LV1=%08X, LV2=%08X, SCIPD = %08X, SCIEB = %08X\n",
-      scsp.scilv0, scsp.scilv1, scsp.scilv2, scsp.scipd, scsp.scieb);
-  }
-  /* Always drive the line, 0 included: once SCIRE has cleared the last
-     pending source the 68000 IRQ must drop (see M68KMusashiSetIRQ). */
-  scsp.sintf(level);
-}
-
-static INLINE void
-scsp_trigger_sound_interrupt (u32 id)
-{
-   /* The IRQ level is the highest level among ALL pending and enabled
-      sources (Mednafen RecalcSoundInt), not the level of the source that
-      just fired: a timer A (level 3) firing while a level-5 source was
-      still pending used to lower the line to 3. scsp_check_interrupt()
-      computes that maximum and drives the line (0 included). */
-   (void)id;
-   scsp_check_interrupt();
-}
-
-
-void scsp_main_interrupt (u32 id)
-{
-//  if (scsp.mcipd & id) return;
-//  if (id != 0x400) SCSPLOG("scsp main interrupt %.4X\n", id);
-
-  scsp.mcipd |= id;
-  WRITE_THROUGH (scsp.mcipd);
-
-  if (scsp.mcieb & id)
-    scsp_trigger_main_interrupt (id);
-}
-
-void scsp_sound_interrupt (u32 id)
-{
-//  if (scsp.scipd & id) return;
-
-//  SCSPLOG ("scsp sound interrupt %.4X\n", id);
-
-  scsp.scipd |= id;
-  WRITE_THROUGH (scsp.scipd);
-
-  if (scsp.scieb & id)
-    scsp_trigger_sound_interrupt (id);
-}
-
-////////////////////////////////////////////////////////////////
-// Direct Memory Access
-// 100412h	DMEA[15:1] -
-// 100414h	DMEA[19:16]	DRGA[11:1] -
-// 100416h - GA	DI	EX	DTLG[11:1]
-static void
-scsp_dma (void)
-{
-  if (scsp.dmfl & 0x20)
-    {
-      // dsp -> scsp_ram
-      SCSPLOG ("scsp dma: scsp_ram(%08lx) <- reg(%08lx) * %08lx\n",
-               scsp.dmea, scsp.drga, scsp.dmlen);
-      u32 from = scsp.dmea;
-      u32 to = scsp.drga;
-      u32 cnt = scsp.dmlen>>1;
-      for (int i = 0; i < cnt; i++) {
-        u16 val = scsp_r_w(NULL, NULL, from);
-        //if (scsp.dmfl & 0x40) val = 0;
-        SoundRamWriteWord(NULL, SoundRam, to, val);
-        from += 2;
-        to += 2;
-      }
-
-    }
-  else
-    {
-      // scsp_ram -> dsp
-      SCSPLOG ("scsp dma: scsp_ram(%08lx) -> reg(%08lx) * %08lx\n",
-               scsp.dmea, scsp.drga, scsp.dmlen);
-      u32 from = scsp.dmea;
-      u32 to = scsp.drga;
-      u32 cnt = scsp.dmlen>>1;
-      for (int i = 0; i < cnt; i++) {
-        u16 val = SoundRamReadWord(NULL, SoundRam, from);
-        //if (scsp.dmfl & 0x40) val = 0;
-        scsp_w_w(NULL, NULL, to,val);
-        from += 2;
-        to += 2;
-      }
-    }
-  scsp.dmfl &= ~0x10;
-  scsp_ccr[0x16 ^ 3] &= 0xE0;
-
-  scsp_sound_interrupt (0x10);
-  scsp_main_interrupt (0x10);
-}
-
-////////////////////////////////////////////////////////////////
-// Key ON/OFF event handler
-
-static void
-scsp_slot_keyon (slot_t *slot)
-{
-  // key need to be released before being pressed ;)
-  if (slot->ecurp == SCSP_ENV_RELEASE)
-    {
-      SCSPLOG ("key on slot %d. 68K PC = %08X slot->sa = %08X slot->lsa = %08X "
-               "slot->lea = %08X\n", slot - &(scsp.slot[0]), M68K->GetPC(),
-               slot->sa, slot->lsa, slot->lea >> SCSP_FREQ_LB);
-
-      // set buffer, loop start/end address of the slot
-      if (slot->pcm8b)
-        {
-          slot->buf8 = (s8*) &(scsp.scsp_ram[slot->sa]);
-          if ((slot->sa + (slot->lea >> SCSP_FREQ_LB)) > SCSP_RAM_MASK)
-            slot->lea = (SCSP_RAM_MASK - slot->sa) << SCSP_FREQ_LB;
-        }
-      else
-        {
-          slot->buf16 = (s16*) &(scsp.scsp_ram[slot->sa & ~1]);
-          if ((slot->sa + (slot->lea >> (SCSP_FREQ_LB - 1))) > SCSP_RAM_MASK)
-            slot->lea = (SCSP_RAM_MASK - slot->sa) << (SCSP_FREQ_LB - 1);
-        }
-
-      slot->fcnt = 0;                 // reset frequency counter
-      slot->ecnt = SCSP_ENV_AS;       // reset envelope counter (probably wrong,
-                                      // should convert decay to attack?)
-      slot->env = 0;                  // reset envelope
-
-      slot->einc = &slot->einca;      // envelope counter step is attack step
-      slot->ecurp = SCSP_ENV_ATTACK;  // current envelope phase is attack
-      slot->ecmp = SCSP_ENV_AE;       // limit reach to next event (Attack End)
-      slot->enxt = scsp_attack_next;  // function pointer to next event
-    }
-}
-
-static void
-scsp_slot_keyoff (slot_t *slot)
-{
-  // key need to be pressed before being released ;)
-  if (slot->ecurp != SCSP_ENV_RELEASE)
-    {
-      SCSPLOG ("key off slot %d\n", slot - &(scsp.slot[0]));
-
-      // if we still are in attack phase at release time, convert attack to decay
-      if (slot->ecurp == SCSP_ENV_ATTACK)
-        slot->ecnt = SCSP_ENV_DE - slot->ecnt;
-      slot->einc = &slot->eincr;
-      slot->ecmp = SCSP_ENV_DE;
-      slot->ecurp = SCSP_ENV_RELEASE;
-      slot->enxt = scsp_release_next;
-    }
-}
-
-static void
-scsp_slot_keyonoff (void)
-{
-  slot_t *slot;
-
-  for(slot = &(scsp.slot[0]); slot < &(scsp.slot[32]); slot++)
-    {
-      if (slot->key)
-        scsp_slot_keyon (slot);
-      else
-        scsp_slot_keyoff (slot);
-    }
-}
-
-/*
-   Envelope Events Handler
-
-   Max EG level = 0x3FF      /|\
-                            / | \
-                           /  |  \_____
-   Min EG level = 0x000 __/   |  |    |\___
-                          A   D1 D2   R
-*/
-
-static void
-scsp_env_null_next (UNUSED slot_t *slot)
-{
-  // only to prevent null call pointer...
-}
-
-static void
-scsp_release_next (slot_t *slot)
-{
-  // end of release happened, update to process the next phase...
-
-  slot->ecnt = SCSP_ENV_DE;
-  slot->einc = NULL;
-  slot->ecmp = SCSP_ENV_DE + 1;
-  slot->enxt = scsp_env_null_next;
-}
-
-static void
-scsp_sustain_next (slot_t *slot)
-{
-  // end of sustain happened, update to process the next phase...
-
-  slot->ecnt = SCSP_ENV_DE;
-  slot->einc = NULL;
-  slot->ecmp = SCSP_ENV_DE + 1;
-  slot->enxt = scsp_env_null_next;
-}
-
-static void
-scsp_decay_next (slot_t *slot)
-{
-  // end of decay happened, update to process the next phase...
-
-  slot->ecnt = slot->sl;
-  slot->einc = &slot->eincs;
-  slot->ecmp = SCSP_ENV_DE;
-  slot->ecurp = SCSP_ENV_SUSTAIN;
-  slot->enxt = scsp_sustain_next;
-}
-
-static void
-scsp_attack_next (slot_t *slot)
-{
-  // end of attack happened, update to process the next phase...
-
-  slot->ecnt = SCSP_ENV_DS;
-  slot->einc = &slot->eincd;
-  slot->ecmp = slot->sl;
-  slot->ecurp = SCSP_ENV_DECAY;
-  slot->enxt = scsp_decay_next;
-}
-
-////////////////////////////////////////////////////////////////
-// Slot Access
-
-static void
-scsp_slot_refresh_einc (slot_t *slot, u32 adsr_bitmask)
-{
-  if (slot->arp && (adsr_bitmask & 0x1))
-    slot->einca = slot->arp[(14 - slot->fsft) >> slot->krs];
-  if (slot->drp && (adsr_bitmask & 0x2))
-    slot->eincd = slot->drp[(14 - slot->fsft) >> slot->krs];
-  if (slot->srp && (adsr_bitmask & 0x4))
-    slot->eincs = slot->srp[(14 - slot->fsft) >> slot->krs];
-  if (slot->rrp && (adsr_bitmask & 0x8))
-    slot->eincr = slot->rrp[(14 - slot->fsft) >> slot->krs];
-}
-
-static void
-scsp_slot_set_b (u32 s, u32 a, u8 d)
-{
-
-  slot_t *slot = &(scsp.slot[s]);
-
-  //SCSPLOG("slot %d : reg %.2X = %.2X\n", s, a & 0x1F, d);
-
-  scsp_isr[a ^ 3] = d;
-
-  switch (a & 0x1F)
-    {
-    case 0x00: // KX/KB/SBCTL/SSCTL(high bit)
-      slot->key = (d >> 3) & 1;
-      slot->sbctl = (d >> 1) & 3;
-      slot->ssctl = (slot->ssctl & 1) + ((d & 1) << 1);
-
-      if (d & 0x10){
-        SCSPLOG("slot %d : KeyOn", s);
-        scsp_slot_keyonoff();
-      }
-      return;
-
-    case 0x01: // SSCTL(low bit)/LPCTL/8B/SA(highest 4 bits)
-      slot->ssctl = (slot->ssctl & 2) + ((d >> 7) & 1);
-      slot->lpctl = (d >> 5) & 3;
-
-      slot->pcm8b = d & 0x10;
-      slot->sa = (slot->sa & 0x0FFFF) + ((d & 0xF) << 16);
-      slot->sa &= SCSP_RAM_MASK;
-
-      if (slot->ecnt < SCSP_ENV_DE) scsp_slot_update_keyon (slot);
-
-      return;
-
-    case 0x02: // SA(next highest byte)
-      slot->sa = (slot->sa & 0xF00FF) + (d << 8);
-      slot->sa &= SCSP_RAM_MASK;
-
-      if (slot->ecnt < SCSP_ENV_DE) scsp_slot_update_keyon (slot);
-      return;
-
-    case 0x03: // SA(low byte)
-      slot->sa = (slot->sa & 0xFFF00) + d;
-      slot->sa &= SCSP_RAM_MASK;
-
-      if (slot->ecnt < SCSP_ENV_DE) scsp_slot_update_keyon (slot);
-      return;
-
-    case 0x04: // LSA(high byte)
-      slot->lsa = (slot->lsa & (0x00FF << SCSP_FREQ_LB)) +
-                  (d << (8 + SCSP_FREQ_LB));
-      return;
-
-    case 0x05: // LSA(low byte)
-      slot->lsa = (slot->lsa & (0xFF00 << SCSP_FREQ_LB)) +
-                  (d << SCSP_FREQ_LB);
-      return;
-
-    case 0x06: // LEA(high byte)
-      slot->lea = (slot->lea & (0x00FF << SCSP_FREQ_LB)) +
-                  (d << (8 + SCSP_FREQ_LB));
-      return;
-
-    case 0x07: // LEA(low byte)
-      slot->lea = (slot->lea & (0xFF00 << SCSP_FREQ_LB)) +
-                  (d << SCSP_FREQ_LB);
-      return;
-
-    case 0x08: // D2R/D1R(highest 3 bits)
-      slot->sr = (d >> 3) & 0x1F;
-      slot->dr = (slot->dr & 0x03) + ((d & 7) << 2);
-
-      if (slot->sr)
-        slot->srp = &scsp_decay_rate[slot->sr << 1];
-      else
-        slot->srp = &scsp_null_rate[0];
-
-      if (slot->dr)
-        slot->drp = &scsp_decay_rate[slot->dr << 1];
-      else
-        slot->drp = &scsp_null_rate[0];
-
-      scsp_slot_refresh_einc (slot, 0x2 | 0x4);
-      return;
-
-    case 0x09: // D1R(lowest 2 bits)/EGHOLD/AR
-      slot->dr = (slot->dr & 0x1C) + ((d >> 6) & 3);
-      slot->eghold = d & 0x20;
-      slot->ar = d & 0x1F;
-
-      if (slot->dr)
-        slot->drp = &scsp_decay_rate[slot->dr << 1];
-      else
-        slot->drp = &scsp_null_rate[0];
-
-      if (slot->ar)
-        slot->arp = &scsp_attack_rate[slot->ar << 1];
-      else
-        slot->arp = &scsp_null_rate[0];
-
-      scsp_slot_refresh_einc (slot, 0x1 | 0x2);
-      return;
-
-    case 0x0A: // LPSLNK/KRS/DL(highest 2 bits)
-      slot->lslnk = d & 0x40;
-      slot->krs = (d >> 2) & 0xF;
-
-      if (slot->krs == 0xF)
-        slot->krs = 4;
-      else
-        slot->krs >>= 2;
-
-      slot->sl &= 0xE0 << SCSP_ENV_LB;
-      slot->sl += (d & 3) << (8 + SCSP_ENV_LB);
-      slot->sl += SCSP_ENV_DS; // adjusted for envelope compare (ecmp)
-
-      scsp_slot_refresh_einc (slot, 0xF);
-      return;
-
-    case 0x0B: // DL(lowest 3 bits)/RR
-      slot->sl &= 0x300 << SCSP_ENV_LB;
-      slot->sl += (d & 0xE0) << SCSP_ENV_LB;
-      slot->sl += SCSP_ENV_DS; // adjusted for envelope compare (ecmp)
-      slot->rr = d & 0x1F;
-
-      if (slot->rr)
-        slot->rrp = &scsp_decay_rate[slot->rr << 1];
-      else
-        slot->rrp = &scsp_null_rate[0];
-
-      scsp_slot_refresh_einc (slot, 0x8);
-      return;
-
-    case 0x0C: // STWINH/SDIR
-      slot->sdir = d & 2;
-      slot->swe = d & 1;
-      return;
-
-    case 0x0D: // TL
-      slot->tl = scsp_tl_table[(d & 0xFF)];
-      return;
-
-    case 0x0E: // MDL/MDXSL(highest 4 bits)
-      slot->mdl = (d >> 4) & 0xF; // need to adjust for correct shift
-      slot->mdx = (slot->mdx & 3) + ((d & 0xF) << 2);
-      return;
-
-    case 0x0F: // MDXSL(lowest 2 bits)/MDYSL
-      slot->mdx = (slot->mdx & 0x3C) + ((d >> 6) & 3);
-      slot->mdy = d & 0x3F;
-      return;
-
-    case 0x10: // OCT/FNS(highest 2 bits)
-      if (d & 0x40)
-        slot->fsft = 23 - ((d >> 3) & 0xF);
-      else
-        slot->fsft = ((d >> 3) & 7) ^ 7;
-
-      slot->finct = (slot->finct & 0x7F80) + ((d & 3) << (8 + 7));
-      slot->finc = (0x20000 + slot->finct) >> slot->fsft;
-
-      scsp_slot_refresh_einc (slot, 0xF);
-      return;
-
-    case 0x11: // FNS(low byte)
-      slot->finct = (slot->finct & 0x18000) + (d << 7);
-      slot->finc = (0x20000 + slot->finct) >> slot->fsft;
-      return;
-
-    case 0x12: // LFORE/LFOF/PLFOWS
-      if (d & 0x80)
-        {
-          slot->lfoinc = -1;
-          return;
-        }
-      else if (slot->lfoinc == -1)
-        {
-          slot->lfocnt = 0;
-        }
-
-      slot->lfoinc = scsp_lfo_step[(d >> 2) & 0x1F];
-
-      switch (d & 3)
-        {
-        case 0:
-          slot->lfofmw = scsp_lfo_sawt_f;
-          return;
-
-        case 1:
-          slot->lfofmw = scsp_lfo_squa_f;
-          return;
-
-        case 2:
-          slot->lfofmw = scsp_lfo_tri_f;
-          return;
-
-        case 3:
-          slot->lfofmw = scsp_lfo_noi_f;
-          return;
-        }
-
-    case 0x13: // PLFOS/ALFOWS/ALFOS
-      if ((d >> 5) & 7)
-        slot->lfofms = ((d >> 5) & 7) + 7;
-      else
-        slot->lfofms = 31;
-
-      if (d & 7)
-        slot->lfoems = ((d & 7) ^ 7) + 4;
-      else
-        slot->lfoems = 31;
-
-      switch ((d >> 3) & 3)
-        {
-        case 0:
-          slot->lfoemw = scsp_lfo_sawt_e;
-          return;
-
-        case 1:
-          slot->lfoemw = scsp_lfo_squa_e;
-          return;
-
-        case 2:
-          slot->lfoemw = scsp_lfo_tri_e;
-          return;
-
-        case 3:
-          slot->lfoemw = scsp_lfo_noi_e;
-        }
-      return;
-
-    case 0x15: // ISEL/OMXL
-      if (d & 7)
-        slot->imxl = ((d & 7) ^ 7) + SCSP_ENV_HB;
-      else
-        slot->imxl = 31;
-      return;
-
-    case 0x16: // DISDL/DIPAN
-      if (d & 0xE0)
-        {
-          // adjusted for envelope calculation
-          // some inaccuracy in panning though...
-          slot->dislr = slot->disll = (((d >> 5) & 7) ^ 7) + SCSP_ENV_HB;
-          if (d & 0x10)
-            {
-              // Panning Left
-              if ((d & 0xF) == 0xF)
-                slot->dislr = 31;
-              else
-                slot->dislr += (d >> 1) & 7;
-            }
-          else
-            {
-              // Panning Right
-              if ((d & 0xF) == 0xF)
-                slot->disll = 31;
-              else
-                slot->disll += (d >> 1) & 7;
-            }
-        }
-      else
-        {
-          slot->dislr = slot->disll = 31; // muted
-        }
-      return;
-
-    case 0x17: // EFSDL/EFPAN
-      if (d & 0xE0)
-        {
-          slot->efslr = slot->efsll = (((d >> 5) & 7) ^ 7) + SCSP_ENV_HB;
-          if (d & 0x10)
-            {
-              // Panning Left
-              if ((d & 0xF) == 0xF)
-                slot->efslr = 31;
-              else
-                slot->efslr += (d >> 1) & 7;
-            }
-          else
-            {
-              // Panning Right
-              if ((d & 0xF) == 0xF)
-                slot->efsll = 31;
-              else
-                slot->efsll += (d >> 1) & 7;
-            }
-        }
-      else
-        {
-          slot->efslr = slot->efsll = 31; // muted
-        }
-      return;
-    }
-}
-
-static void
-scsp_slot_set_w (u32 s, s32 a, u16 d)
-{
-  slot_t *slot = &(scsp.slot[s]);
-
-  SCSPLOG ("slot %d : reg %.2X = %.4X\n", s, a & 0x1E, d);
-
-  *(u16 *)&scsp_isr[a ^ 2] = d;
-
-  switch (a & 0x1E)
-    {
-    case 0x00: // KYONEX/KYONB/SBCTL/SSCTL/LPCTL/PCM8B/SA(highest 4 bits)
-      slot->key = (d >> 11) & 1;
-      slot->sbctl = (d >> 9) & 3;
-      slot->ssctl = (d >> 7) & 3;
-      slot->lpctl = (d >> 5) & 3;
-
-      slot->pcm8b = d & 0x10;
-      slot->sa = (slot->sa & 0x0FFFF) | ((d & 0xF) << 16);
-      slot->sa &= SCSP_RAM_MASK;
-
-      if (slot->ecnt < SCSP_ENV_DE)
-        scsp_slot_update_keyon(slot);
-
-      if (d & 0x1000)
-        scsp_slot_keyonoff();
-      return;
-
-    case 0x02: // SA(low word)
-      slot->sa = (slot->sa & 0xF0000) | d;
-      slot->sa &= SCSP_RAM_MASK;
-
-      if (slot->ecnt < SCSP_ENV_DE)
-        scsp_slot_update_keyon(slot);
-      return;
-
-    case 0x04: // LSA
-      slot->lsa = d << SCSP_FREQ_LB;
-      return;
-
-    case 0x06: // LEA
-      slot->lea = d << SCSP_FREQ_LB;
-      return;
-
-    case 0x08: // D2R/D1R/EGHOLD/AR
-      slot->sr = (d >> 11) & 0x1F;
-      slot->dr = (d >> 6) & 0x1F;
-      slot->eghold = d & 0x20;
-      slot->ar = d & 0x1F;
-
-      if (slot->sr)
-        slot->srp = &scsp_decay_rate[slot->sr << 1];
-      else
-        slot->srp = &scsp_null_rate[0];
-
-      if (slot->dr)
-        slot->drp = &scsp_decay_rate[slot->dr << 1];
-      else
-        slot->drp = &scsp_null_rate[0];
-
-      if (slot->ar)
-        slot->arp = &scsp_attack_rate[slot->ar << 1];
-      else
-        slot->arp = &scsp_null_rate[0];
-
-      scsp_slot_refresh_einc (slot, 0x1 | 0x2 | 0x4);
-      return;
-
-    case 0x0A: // LPSLNK/KRS/DL/RR
-      slot->lslnk = (d >> 8) & 0x40;
-      slot->krs = (d >> 10) & 0xF;
-
-      if (slot->krs == 0xF)
-        slot->krs = 4;
-      else
-        slot->krs >>= 2;
-
-      slot->sl = ((d & 0x3E0) << SCSP_ENV_LB) + SCSP_ENV_DS; // adjusted for envelope compare (ecmp)
-      slot->rr = d & 0x1F;
-
-      if (slot->rr)
-        slot->rrp = &scsp_decay_rate[slot->rr << 1];
-      else
-        slot->rrp = &scsp_null_rate[0];
-
-      scsp_slot_refresh_einc (slot, 0xF);
-      return;
-
-    case 0x0C: // STWINH/SDIR
-      slot->sdir = (d >> 8) & 2;
-      slot->swe = (d >> 8) & 1;
-      slot->tl = scsp_tl_table[(d & 0xFF)];
-      return;
-
-    case 0x0E: // MDL/MDXSL/MDYSL
-      slot->mdl = (d >> 12) & 0xF; // need to adjust for correct shift
-      slot->mdx = (d >> 6) & 0x3F;
-      slot->mdy = d & 0x3F;
-      return;
-
-    case 0x10: // OCT/FNS
-      if (d & 0x4000)
-        slot->fsft = 23 - ((d >> 11) & 0xF);
-      else
-        slot->fsft = (((d >> 11) & 7) ^ 7);
-
-      slot->finc = ((0x400 + (d & 0x3FF)) << 7) >> slot->fsft;
-
-      scsp_slot_refresh_einc (slot, 0xF);
-      return;
-
-    case 0x12: // LFORE/LFOF/PLFOWS/PLFOS/ALFOWS/ALFOS
-      if (d & 0x8000)
-        {
-          slot->lfoinc = -1;
-          return;
-        }
-      else if (slot->lfoinc == -1)
-        {
-          slot->lfocnt = 0;
-        }
-
-      slot->lfoinc = scsp_lfo_step[(d >> 10) & 0x1F];
-      if ((d >> 5) & 7)
-        slot->lfofms = ((d >> 5) & 7) + 7;
-      else
-        slot->lfofms = 31;
-
-      if (d & 7)
-        slot->lfoems = ((d & 7) ^ 7) + 4;
-      else
-        slot->lfoems = 31;
-
-      switch ((d >> 8) & 3)
-        {
-        case 0:
-          slot->lfofmw = scsp_lfo_sawt_f;
-          break;
-
-        case 1:
-          slot->lfofmw = scsp_lfo_squa_f;
-          break;
-
-        case 2:
-          slot->lfofmw = scsp_lfo_tri_f;
-          break;
-
-        case 3:
-          slot->lfofmw = scsp_lfo_noi_f;
-          break;
-        }
-
-      switch ((d >> 3) & 3)
-        {
-        case 0:
-          slot->lfoemw = scsp_lfo_sawt_e;
-          return;
-
-        case 1:
-          slot->lfoemw = scsp_lfo_squa_e;
-          return;
-
-        case 2:
-          slot->lfoemw = scsp_lfo_tri_e;
-          return;
-
-        case 3:
-          slot->lfoemw = scsp_lfo_noi_e;
-        }
-      return;
-
-    case 0x14: // ISEL/OMXL
-      if (d & 7)
-        slot->imxl = ((d & 7) ^ 7) + SCSP_ENV_HB;
-      else
-        slot->imxl = 31;
-      return;
-
-    case 0x16: // DISDL/DIPAN/EFSDL/EFPAN
-      if (d & 0xE000)
-        {
-          // adjusted fr enveloppe calculation
-          // some accuracy lose for panning here...
-          slot->dislr = slot->disll = (((d >> 13) & 7) ^ 7) + SCSP_ENV_HB;
-          if (d & 0x1000)
-            {
-              // Panning Left
-              if ((d & 0xF00) == 0xF00)
-                slot->dislr = 31;
-              else
-                slot->dislr += (d >> 9) & 7;
-            }
-          else
-            {
-              // Panning Right
-              if ((d & 0xF00) == 0xF00)
-                slot->disll = 31;
-              else
-                slot->disll += (d >> 9) & 7;
-            }
-        }
-      else
-        {
-          slot->dislr = slot->disll = 31; // muted
-        }
-
-      if (d & 0xE0)
-        {
-          slot->efslr = slot->efsll = (((d >> 5) & 7) ^ 7) + SCSP_ENV_HB;
-          if (d & 0x10)
-            {
-              // Panning Left
-              if ((d & 0xF) == 0xF)
-                slot->efslr = 31;
-              else
-                slot->efslr += (d >> 1) & 7;
-            }
-          else
-            {
-              // Panning Right
-              if ((d & 0xF) == 0xF)
-                slot->efsll = 31;
-              else
-                slot->efsll += (d >> 1) & 7;
-            }
-        }
-      else
-        {
-          slot->efslr = slot->efsll = 31; // muted
-        }
-      return;
-    }
-}
-
-static u8
-scsp_slot_get_b (u32 s, u32 a)
-{
-  u8 val = scsp_isr[a ^ 3];
-
-  // Mask out keyonx
-  if ((a & 0x1F) == 0x00) val &= 0xEF;
-
-  SCSPLOG ("r_b slot %d (%.2X) : reg %.2X = %.2X\n", s, a, a & 0x1F, val);
-
-  return val;
-}
-
-static u16 scsp_slot_get_w(u32 s, u32 a)
-{
-  u16 val = *(u16 *)&scsp_isr[a ^ 2];
-
-  if ((a & 0x1E) == 0x00) return val &= 0xEFFF;
-
-  SCSPLOG ("r_w slot %d (%.2X) : reg %.2X = %.4X\n", s, a, a & 0x1E, val);
-
-  return val;
-}
-
-////////////////////////////////////////////////////////////////
-// SCSP Access
-
-static void
-scsp_set_b (u32 a, u8 d)
-{
-  if ((a != 0x408) && (a != 0x41D))
-    {
-      //SCSPLOG("scsp : reg %.2X = %.2X\n", a & 0x3F, d);
-    }
-
-  scsp_ccr[a ^ 3] = d;
-
-  switch (a & 0x3F)
-    {
-    case 0x00: // MEM4MB/DAC18B
-      scsp.mem4b = (d >> 1) & 0x1;
-      if (scsp.mem4b)
-        {
-          M68K->SetFetch(0x000000, 0x080000, (pointer)SoundRam);
-        }
-      else
-        {
-          M68K->SetFetch(0x000000, 0x040000, (pointer)SoundRam);
-          M68K->SetFetch(0x040000, 0x080000, (pointer)SoundRam);
-          M68K->SetFetch(0x080000, 0x0C0000, (pointer)SoundRam);
-          M68K->SetFetch(0x0C0000, 0x100000, (pointer)SoundRam);
-        }
-      return;
-
-    case 0x01: // VER/MVOL
-      scsp.mvol = d & 0xF;
-      return;
-
-    case 0x02: // RBL(high bit)
-      scsp.rbl = (scsp.rbl & 1) | ((d & 1) << 1);
-      return;
-
-    case 0x03: // RBL(low bit)/RBP
-      scsp.rbl = (scsp.rbl & 2) | ((d >> 7) & 1);
-      scsp.rbp = (d & 0x7F);
-      return;
-
-    case 0x07: // MOBUF
-      scsp_midi_out_send(d);
-      return;
-
-    case 0x08: // MSLC
-      scsp.mslc = (d >> 3) & 0x1F;
-      scsp_update_monitor ();
-      return;
-
-    case 0x12: // DMEAL(high byte)
-      scsp.dmea = (scsp.dmea & 0x700FE) | (d << 8);
-      return;
-
-    case 0x13: // DMEAL(low byte)
-      scsp.dmea = (scsp.dmea & 0x7FF00) | (d & 0xFE);
-      return;
-
-    case 0x14: // DMEAH(high byte)
-      scsp.dmea = (scsp.dmea & 0xFFFE) | ((d & 0x70) << 12);
-      scsp.drga = (scsp.drga & 0xFE) | ((d & 0xF) << 8);
-      return;
-
-    case 0x15: // DMEAH(low byte)
-      scsp.drga = (scsp.drga & 0xF00) | (d & 0xFE);
-      return;
-
-    case 0x16: // DGATE/DDIR/DEXE/DTLG(upper 4 bits)
-      scsp.dmlen = (scsp.dmlen & 0xFE) | ((d & 0xF) << 8);
-      if ((scsp.dmfl = d & 0xF0) & 0x10) scsp_dma ();
-      return;
-
-    case 0x17: // DTLG(lower byte)
-      scsp.dmlen = (scsp.dmlen & 0xF00) | (d & 0xFE);
-      return;
-
-    case 0x18: // TACTL
-      scsp.timasd = d & 7;
-      return;
-
-    case 0x19: // TIMA
-      scsp.timacnt = d << 8;
-      return;
-
-    case 0x1A: // TBCTL
-      scsp.timbsd = d & 7;
-      return;
-
-    case 0x1B: // TIMB
-      scsp.timbcnt = d << 8;
-      return;
-
-    case 0x1C: // TCCTL
-      scsp.timcsd = d & 7;
-      return;
-
-    case 0x1D: // TIMC
-      scsp.timccnt = d << 8;
-      return;
-
-    case 0x1E: // SCIEB(high byte)
-    {
-      int i;
-      scsp.scieb = (scsp.scieb & 0xFF) | (d << 8);
-      scsp_check_interrupt();
-      return;
-    }
-    case 0x1F: // SCIEB(low byte)
-    {
-      int i;
-      scsp.scieb = (scsp.scieb & 0x700) | d;
-      scsp_check_interrupt();
-      return;
-    }
-    case 0x21: // SCIPD(low byte)
-      if (d & 0x20) scsp_sound_interrupt (0x20);
-      return;
-
-    case 0x22: // SCIRE(high byte)
-      scsp.scipd &= ~(d << 8);
-      scsp_check_interrupt();
-      return;
-
-    case 0x23: // SCIRE(low byte)
-      scsp.scipd &= ~(u32)d;
-      scsp_check_interrupt();
-      return;
-
-    case 0x25: // SCILV0
-      scsp.scilv0 = d;
-      scsp_check_interrupt();
-      return;
-
-    case 0x27: // SCILV1
-      scsp.scilv1 = d;
-      scsp_check_interrupt();
-      return;
-
-    case 0x29: // SCILV2
-      scsp.scilv2 = d;
-      scsp_check_interrupt();
-      return;
-
-    case 0x2A: // MCIEB(high byte)
-      scsp.mcieb = (scsp.mcieb & 0xFF) | (d << 8);
-      return;
-
-    case 0x2B: // MCIEB(low byte)
-      scsp.mcieb = (scsp.mcieb & 0x700) | d;
-      return;
-
-    case 0x2D: // MCIPD(low byte)
-      if (d & 0x20)
-        scsp_main_interrupt(0x20);
-      return;
-
-    case 0x2E: // MCIRE(high byte)
-      scsp.mcipd &= ~(d << 8);
-      return;
-
-    case 0x2F: // MCIRE(low byte)
-      scsp.mcipd &= ~(u32)d;
-      return;
-    }
-}
-
-static void
-scsp_set_w (u32 a, u16 d)
-{
-  if ((a != 0x418) && (a != 0x41A) && (a != 0x422))
-    {
-      //SCSPLOG("scsp : reg w %.2X = %.4X\n", a & 0x3E, d);
-    }
-
-  //SCSPLOG("SCSP REG WRITE WORD: addr=%08X, val = %04X\n",a,d);
-
-  *(u16 *)&scsp_ccr[a ^ 2] = d;
-
-  switch (a & 0x3E)
-    {
-    case 0x00: // MEM4MB/DAC18B/VER/MVOL
-      scsp.mem4b = (d >> 9) & 0x1;
-      scsp.mvol = d & 0xF;
-      if (scsp.mem4b)
-        {
-          M68K->SetFetch(0x000000, 0x080000, (pointer)SoundRam);
-        }
-      else
-        {
-          M68K->SetFetch(0x000000, 0x040000, (pointer)SoundRam);
-          M68K->SetFetch(0x040000, 0x080000, (pointer)SoundRam);
-          M68K->SetFetch(0x080000, 0x0C0000, (pointer)SoundRam);
-          M68K->SetFetch(0x0C0000, 0x100000, (pointer)SoundRam);
-        }
-      return;
-
-    case 0x02: // RBL/RBP
-      scsp.rbl = (d >> 7) & 3;
-      scsp.rbp = (d & 0x7F);
-
-      return;
-
-    case 0x06: // MOBUF
-      scsp_midi_out_send(d & 0xFF);
-      return;
-
-    case 0x08: // MSLC
-      scsp.mslc = (d >> 11) & 0x1F;
-      scsp_update_monitor();
-      return;
-
-    case 0x12: // DMEAL
-      scsp.dmea = (scsp.dmea & 0x70000) | (d & 0xFFFE);
-      return;
-
-    case 0x14: // DMEAH/DRGA
-      scsp.dmea = (scsp.dmea & 0xFFFE) | ((d & 0x7000) << 4);
-      scsp.drga = d & 0xFFE;
-      return;
-
-    case 0x16: // DGATE/DDIR/DEXE/DTLG
-      scsp.dmlen = d & 0xFFE;
-      if ((scsp.dmfl = ((d >> 8) & 0xF0)) & 0x10) scsp_dma ();
-      return;
-
-    case 0x18: // TACTL/TIMA
-      scsp.timasd = (d >> 8) & 7;
-      scsp.timacnt = (d & 0xFF) << 8;
-      return;
-
-    case 0x1A: // TBCTL/TIMB
-      scsp.timbsd = (d >> 8) & 7;
-      scsp.timbcnt = (d & 0xFF) << 8;
-      return;
-
-    case 0x1C: // TCCTL/TIMC
-      scsp.timcsd = (d >> 8) & 7;
-      scsp.timccnt = (d & 0xFF) << 8;
-      return;
-
-    case 0x1E: // SCIEB
-    {
-      scsp.scieb = d;
-      scsp_check_interrupt();
-      return;
-    }
-    case 0x20: // SCIPD
-      if (d & 0x20) scsp_sound_interrupt (0x20);
-      return;
-
-    case 0x22: // SCIRE
-      scsp.scipd &= ~d;
-      scsp_check_interrupt();
-      return;
-
-    case 0x24: // SCILV0
-      scsp.scilv0 = d;
-      return;
-
-    case 0x26: // SCILV1
-      scsp.scilv1 = d;
-      return;
-
-    case 0x28: // SCILV2
-      scsp.scilv2 = d;
-      return;
-
-    case 0x2A: // MCIEB
-    {
-      int i;
-      scsp.mcieb = d;
-      for (i = 0; i < 11; i++)
-        {
-          if (scsp.mcieb & (1 << i) && scsp.mcipd & (1 << i))
-            scsp_trigger_main_interrupt ((1 << i));
-        }
-      return;
-    }
-
-    case 0x2C: // MCIPD
-      if (d & 0x20) scsp_main_interrupt (0x20);
-      return;
-
-    case 0x2E: // MCIRE
-      scsp.mcipd &= ~d;
-      return;
-    }
-}
-
-static u8
-scsp_get_b (u32 a)
-{
-  a &= 0x3F;
-
-  if ((a != 0x09) && (a != 0x21))
-    {
-      SCSPLOG("r_b s %.2X\n", a);
-    }
-//  if (a == 0x09) SCSPLOG("r_b scsp 09 = %.2X\n", ((scsp.slot[scsp.mslc].fcnt >> (SCSP_FREQ_LB + 12)) & 0x1) << 7);
-
-  switch (a)
-    {
-    case 0x01: // VER/MVOL
-      scsp_ccr[a ^ 3] &= 0x0F;
-      break;
-
-    case 0x04: // Midi flags register
-      return scsp.midflag;
-
-    case 0x05: // MIBUF
-      return scsp_midi_in_read();
-
-    case 0x07: // MOBUF
-      return scsp_midi_out_read();
-
-    case 0x08: // CA(highest 3 bits) -- register bits 10-8
-      return (scsp.ca >> 8) & 0x07;
-
-    case 0x09: // CA(lowest bit)/SGC/EG -- register bits 7 / 6-5 / 4-0
-      return (scsp.ca & 0x80) | ((scsp.sgc & 3) << 5) | (scsp.eg & 0x1F);
-
-    case 0x1E: // SCIEB(high byte)
-      return (scsp.scieb >> 8);
-
-    case 0x1F: // SCIEB(low byte)
-      return scsp.scieb;
-
-    case 0x20: // SCIPD(high byte)
-      return (scsp.scipd >> 8);
-
-    case 0x21: // SCIPD(low byte)
-      return scsp.scipd;
-
-    case 0x2C: // MCIPD(high byte)
-      return (scsp.mcipd >> 8);
-
-    case 0x2D: // MCIPD(low byte)
-      return scsp.mcipd;
-    }
-
-  return scsp_ccr[a ^ 3];
-}
-
-static u16
-scsp_get_w (u32 a)
-{
-  a &= 0x3E;
-
-  if ((a != 0x20) && (a != 0x08))
-    {
-      SCSPLOG("r_w scsp : reg %.2X\n", a * 2);
-    }
-
-  switch (a)
-    {
-    case 0x00: // MEM4MB/DAC18B/VER/MVOL
-      *(u16 *)&scsp_ccr[a ^ 2] &= 0xFF0F;
-      break;
-
-    case 0x04: // Midi flags/MIBUF
-    {
-      u16 d = (scsp.midflag << 8); // this needs to be done to keep midfi status before midi in read
-      d |= scsp_midi_in_read();
-      return d;
-    }
-
-    case 0x06: // MOBUF
-      return scsp_midi_out_read();
-
-    case 0x08: // CA/SGC/EG -- bits 10-7 / 6-5 / 4-0
-      return (scsp.ca & 0x780) | ((scsp.sgc & 3) << 5) | (scsp.eg & 0x1F);
-
-    case 0x18: // TACTL
-      return (scsp.timasd << 8);
-
-    case 0x1A: // TBCTL
-      return (scsp.timbsd << 8);
-
-    case 0x1C: // TCCTL
-      return (scsp.timcsd << 8);
-
-    case 0x1E: // SCIEB
-      return scsp.scieb;
-
-    case 0x20: // SCIPD
-      return scsp.scipd;
-
-    case 0x22:
-      return scsp.scipd;
-
-    case 0x2C: // MCIPD
-      return scsp.mcipd;
-    default:
-      SCSPLOG("SCSP: unasined read %08X\n",a );
-    }
-
-  return *(u16 *)&scsp_ccr[a ^ 2];
-}
-
-////////////////////////////////////////////////////////////////
-// Synth Slot
-//
-//      SCSPLOG("outL=%.8X bufL=%.8X disll=%d\n", outL, scsp_bufL[scsp_buf_pos], slot->disll);
-
-////////////////////////////////////////////////////////////////
-
-#ifdef WORDS_BIGENDIAN
-#define SCSP_GET_OUT_8B \
-  out = (s32) slot->buf8[(slot->fcnt >> SCSP_FREQ_LB)];
-#else
-#define SCSP_GET_OUT_8B \
-  out = (s32) slot->buf8[(slot->fcnt >> SCSP_FREQ_LB) ^ 1];
-#endif
-
-#define SCSP_GET_OUT_16B \
-  out = (s32) slot->buf16[slot->fcnt >> SCSP_FREQ_LB];
-
-#define SCSP_GET_ENV \
-  slot->env = scsp_env_table[slot->ecnt >> SCSP_ENV_LB] * slot->tl / 1024;
-
-#define SCSP_GET_ENV_LFO \
-  slot->env = (scsp_env_table[slot->ecnt >> SCSP_ENV_LB] * slot->tl / 1024) - \
-              (slot->lfoemw[(slot->lfocnt >> SCSP_LFO_LB) & SCSP_LFO_MASK] >> \
-               slot->lfoems);
-
-#define SCSP_OUT_8B_L \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufL[scsp_buf_pos] += out >> (slot->disll - 8); \
-    }
-
-#define SCSP_OUT_8B_R \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufR[scsp_buf_pos] += out >> (slot->dislr - 8); \
-    }
-
-#define SCSP_OUT_8B_LR \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufL[scsp_buf_pos] += out >> (slot->disll - 8); \
-      scsp_bufR[scsp_buf_pos] += out >> (slot->dislr - 8); \
-    }
-
-#define SCSP_OUT_16B_L \
-  if ((out) && (slot->env > 0))                      \
-    {                                                \
-      out *= slot->env;                              \
-      scsp_bufL[scsp_buf_pos] += out >> slot->disll; \
-    }
-
-#define SCSP_OUT_16B_R \
-  if ((out) && (slot->env > 0))                      \
-    {                                                \
-      out *= slot->env;                              \
-      scsp_bufR[scsp_buf_pos] += out >> slot->dislr; \
-    }
-
-#define SCSP_OUT_16B_LR \
-  if ((out) && (slot->env > 0))                    \
-  {                                                \
-    out *= slot->env;                              \
-    scsp_bufL[scsp_buf_pos] += out >> slot->disll; \
-    scsp_bufR[scsp_buf_pos] += out >> slot->dislr; \
-  }
-
-#define SCSP_UPDATE_PHASE \
-  if ((slot->fcnt += slot->finc) > slot->lea) \
-  {                                           \
-    if (slot->lpctl)                          \
-      {                                       \
-        slot->fcnt = slot->lsa;               \
-      }                                       \
-    else                                      \
-      {                                       \
-        slot->ecnt = SCSP_ENV_DE;             \
-        return;                               \
-      }                                       \
-  }
-
-#define SCSP_UPDATE_PHASE_LFO \
-  slot->fcnt +=                                                      \
-    ((slot->lfofmw[(slot->lfocnt >> SCSP_LFO_LB) & SCSP_LFO_MASK] << \
-      (slot->lfofms-7)) >> (slot->fsft+1));                          \
-  if ((slot->fcnt += slot->finc) > slot->lea)                        \
-    {                                                                \
-      if (slot->lpctl)                                               \
-        {                                                            \
-          slot->fcnt = slot->lsa;                                    \
-        }                                                            \
-      else                                                           \
-        {                                                            \
-          slot->ecnt = SCSP_ENV_DE;                                  \
-          return;                                                    \
-        }                                                            \
-    }
-
-#define SCSP_UPDATE_ENV \
-  if (slot->einc) slot->ecnt += *slot->einc; \
-  if (slot->ecnt >= slot->ecmp)              \
-    {                                        \
-      slot->enxt(slot);                      \
-      if (slot->ecnt >= SCSP_ENV_DE) return; \
-    }
-
-#define SCSP_UPDATE_LFO \
-  slot->lfocnt += slot->lfoinc;
-
-////////////////////////////////////////////////////////////////
-
-static void
-scsp_slot_update_keyon (slot_t *slot)
-{
-  // set buffer, loop start/end address of the slot
-  if (slot->pcm8b)
-    {
-      slot->buf8 = (s8*)&(scsp.scsp_ram[slot->sa]);
-
-      if ((slot->sa + (slot->lea >> SCSP_FREQ_LB)) > SCSP_RAM_MASK)
-        slot->lea = (SCSP_RAM_MASK - slot->sa) << SCSP_FREQ_LB;
-    }
-  else
-    {
-      slot->buf16 = (s16*)&(scsp.scsp_ram[slot->sa & ~1]);
-
-      if ((slot->sa + (slot->lea >> (SCSP_FREQ_LB - 1))) > SCSP_RAM_MASK)
-        slot->lea = (SCSP_RAM_MASK - slot->sa) << (SCSP_FREQ_LB - 1);
-    }
-
-  SCSP_UPDATE_PHASE
-}
-
-////////////////////////////////////////////////////////////////
-
-static void
-scsp_slot_update_null (slot_t *slot)
-{
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_ENV
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Normal 8 bits
-
-static void
-scsp_slot_update_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      // env = [0..0x3FF] - slot->tl
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      // don't waste time if no sound...
-      SCSP_OUT_8B_L
-
-      // calculate new frequency (phase) counter and enveloppe counter
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_8B_LR(slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope LFO modulation 8 bits
-
-static void
-scsp_slot_update_E_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_8B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Frequency LFO modulation 8 bits
-
-static void
-scsp_slot_update_F_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_8B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Enveloppe & Frequency LFO modulation 8 bits
-
-static void
-scsp_slot_update_F_E_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void scsp_slot_update_F_E_8B_LR(slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Normal 16 bits
-
-static void
-scsp_slot_update_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope LFO modulation 16 bits
-
-static void
-scsp_slot_update_E_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Frequency LFO modulation 16 bits
-
-static void
-scsp_slot_update_F_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope & Frequency LFO modulation 16 bits
-
-static void
-scsp_slot_update_F_E_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Update functions
-
-static void (*scsp_slot_update_p[2][2][2][2][2])(slot_t *slot) =
-{
-  // NO FMS
-  {  // NO EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_8B_L,
-          // RIGHT
-          scsp_slot_update_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_16B_L,
-          // RIGHT
-          scsp_slot_update_16B_LR
-        },
-      }
-    },
-    // EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_E_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_E_8B_L,
-          // RIGHT
-          scsp_slot_update_E_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_E_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_E_16B_L,
-          // RIGHT
-          scsp_slot_update_E_16B_LR
-        },
-      }
-    }
-  },
-  // FMS
-  {  // NO EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_8B_L,
-          // RIGHT
-          scsp_slot_update_F_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_16B_L,
-          // RIGHT
-          scsp_slot_update_F_16B_LR
-        },
-      }
-    },
-    // EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_E_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_E_8B_L,
-          // RIGHT
-          scsp_slot_update_F_E_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_E_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_E_16B_L,
-          // RIGHT
-          scsp_slot_update_F_E_16B_LR
-        },
-      }
-    }
-  }
-};
-
-void
-scsp_update (s32 *bufL, s32 *bufR, u32 len)
-{
-   slot_t *slot;
-
-   scsp_bufL = bufL;
-   scsp_bufR = bufR;
-
-   for (slot = &(scsp.slot[0]); slot < &(scsp.slot[32]); slot++)
-   {
-      if (slot->ecnt >= SCSP_ENV_DE) continue; // enveloppe null...
-
-      if (slot->ssctl)
-      {
-         // Still not correct, but at least this fixes games
-         // that rely on Call Address information
-         scsp_buf_len = len;
-         scsp_buf_pos = 0;
-
-         for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-         {
-            if ((slot->fcnt += slot->finc) > slot->lea)
-            {
-               if (slot->lpctl) slot->fcnt = slot->lsa;
-               else
-               {
-                  slot->ecnt = SCSP_ENV_DE;
-                  break;
-               }
-            }
-         }
-
-         continue; // not yet supported!
-      }
-
-      scsp_buf_len = len;
-      scsp_buf_pos = 0;
-
-      // take effect sound volume if no direct sound volume...
-      if ((slot->disll == 31) && (slot->dislr == 31))
-      {
-         slot->disll = slot->efsll;
-         slot->dislr = slot->efslr;
-      }
-
-      // SCSPLOG("update : VL=%d  VR=%d CNT=%.8X STEP=%.8X\n", slot->disll, slot->dislr, slot->fcnt, slot->finc);
-
-      scsp_slot_update_p[(slot->lfofms == 31) ? 0 : 1]
-         [(slot->lfoems == 31) ? 0 : 1]
-      [(slot->pcm8b == 0) ? 1 : 0]
-      [(slot->disll == 31) ? 0 : 1]
-      [(slot->dislr == 31) ? 0 : 1](slot);
-   }
-
-   if (cdda_out_left > 0)
-   {
-      if (len > cdda_out_left / 4)
-         scsp_buf_len = cdda_out_left / 4;
-      else
-         scsp_buf_len = len;
-
-      scsp_buf_pos = 0;
-
-      /* May need to wrap around the buffer, so use nested loops */
-      while (scsp_buf_pos < scsp_buf_len)
-      {
-         s32 temp = cdda_next_in - cdda_out_left;
-         s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
-         u8 *buf = &cddabuf.data[outpos];
-
-         u32 scsp_buf_target;
-         u32 this_len = scsp_buf_len - scsp_buf_pos;
-         if (this_len > (sizeof(cddabuf.data) - outpos) / 4)
-            this_len = (sizeof(cddabuf.data) - outpos) / 4;
-         scsp_buf_target = scsp_buf_pos + this_len;
-
-         for (; scsp_buf_pos < scsp_buf_target; scsp_buf_pos++, buf += 4)
-         {
-            s32 out;
-
-            out = (s32)(s16)((buf[1] << 8) | buf[0]);
-
-            if (out)
-               scsp_bufL[scsp_buf_pos] += out;
-
-            out = (s32)(s16)((buf[3] << 8) | buf[2]);
-
-            if (out)
-               scsp_bufR[scsp_buf_pos] += out;
-         }
-
-         cdda_out_left -= this_len * 4;
-      }
-   }
-   else if (Cs2Area->isaudio)
-   {
-      SCSPLOG("WARNING: CDDA buffer underrun\n");
-   }
-}
-
-void
-scsp_update_monitor(void)
-{
-   struct Slot *mon = &new_scsp.slots[scsp.mslc & 0x1F];
-
-   // CA = bits 15-12 of the sample offset from SA (ST-077-R2), kept here as
-   // offset >> 5 so that bits 10-7 of scsp.ca already sit where register
-   // $408 wants them. A stopped slot reads back CA = 0 (slot_stop_address).
-   if (slot_is_stopped(mon))
-      scsp.ca = 0;
-   else
-      scsp.ca = mon->state.sample_offset >> 5;
-
-   // SGC is 0 attack, 1 decay 1, 2 decay 2, 3 release. EnvelopeStates starts
-   // at ATTACK = 1, so the raw enum was one too high: RELEASE (4) landed in
-   // bit 7 (the CA LSB) and SGC read back as "attack".
-   scsp.sgc = ((u32)mon->state.envelope - 1) & 3;
-
-   // EG = top 5 bits of the envelope attenuation, 0x1F when fully decayed.
-   // This generator parks a finished envelope at 0x3BF instead of 0x3FF,
-   // which would read back as 0x1D forever: report it as 0x1F.
-   if (mon->state.attenuation >= 0x3bf)
-      scsp.eg = 0x1F;
-   else
-      scsp.eg = (mon->state.attenuation >> 5) & 0x1F;
-#ifdef PSP
-   WRITE_THROUGH(scsp.ca);
-   WRITE_THROUGH(scsp.sgc);
-   WRITE_THROUGH(scsp.eg);
-#endif
-}
-
-void
-scsp_update_timer (u32 len)
-{
-   scsp_sample_count += len;
-   scsp.timacnt += len << (8 - scsp.timasd);
-
-   if (scsp.timacnt >= 0xFF00)
-   {
-      scsp_sound_interrupt(0x40);
-      scsp_main_interrupt(0x40);
-      scsp.timacnt -= 0xFF00;
-   }
-
-   scsp.timbcnt += len << (8 - scsp.timbsd);
-
-   if (scsp.timbcnt >= 0xFF00)
-   {
-      scsp_sound_interrupt(0x80);
-      scsp_main_interrupt(0x80);
-      scsp.timbcnt -= 0xFF00;
-   }
-
-   scsp.timccnt += len << (8 - scsp.timcsd);
-
-   if (scsp.timccnt >= 0xFF00)
-   {
-      scsp_sound_interrupt(0x100);
-      scsp_main_interrupt(0x100);
-      scsp.timccnt -= 0xFF00;
-   }
-
-   // 1F interrupt can't be accurate here...
-   if (len)
-   {
-      scsp_sound_interrupt(0x400);
-      scsp_main_interrupt(0x400);
-   }
-}
-
-////////////////////////////////////////////////////////////////
-// MIDI
-
-void
-scsp_midi_in_send (u8 data)
-{
-  if (scsp.midflag & SCSP_MIDI_IN_EMP)
-    {
-      scsp_sound_interrupt(0x8);
-      scsp_main_interrupt(0x8);
-    }
-
-  scsp.midflag &= ~SCSP_MIDI_IN_EMP;
-
-  if (scsp.midincnt > 3)
-    {
-      scsp.midflag |= SCSP_MIDI_IN_OVF;
-      return;
-    }
-
-  scsp.midinbuf[scsp.midincnt++] = data;
-
-  if (scsp.midincnt > 3) scsp.midflag |= SCSP_MIDI_IN_FUL;
-}
-
-void
-scsp_midi_out_send (u8 data)
-{
-  scsp.midflag &= ~SCSP_MIDI_OUT_EMP;
-
-  if (scsp.midoutcnt > 3) return;
-
-  scsp.midoutbuf[scsp.midoutcnt++] = data;
-
-  if (scsp.midoutcnt > 3) scsp.midflag |= SCSP_MIDI_OUT_FUL;
-}
-
-u8
-scsp_midi_in_read (void)
-{
-  u8 data;
-
-  scsp.midflag &= ~(SCSP_MIDI_IN_OVF | SCSP_MIDI_IN_FUL);
-
-  if (scsp.midincnt > 0)
-    {
-      if (scsp.midincnt > 1)
-        {
-          scsp_sound_interrupt(0x8);
-          scsp_main_interrupt(0x8);
-        }
-      else
-        {
-          scsp.midflag |= SCSP_MIDI_IN_EMP;
-        }
-
-      data = scsp.midinbuf[0];
-
-      switch ((--scsp.midincnt) & 3)
-        {
-        case 1:
-          scsp.midinbuf[0] = scsp.midinbuf[1];
-          break;
-
-        case 2:
-          scsp.midinbuf[0] = scsp.midinbuf[1];
-          scsp.midinbuf[1] = scsp.midinbuf[2];
-          break;
-
-        case 3:
-          scsp.midinbuf[0] = scsp.midinbuf[1];
-          scsp.midinbuf[1] = scsp.midinbuf[2];
-          scsp.midinbuf[2] = scsp.midinbuf[3];
-          break;
-        }
-
-      return data;
-    }
-
-  return 0xFF;
-}
-
-u8
-scsp_midi_out_read (void)
-{
-  u8 data;
-
-  scsp.midflag &= ~SCSP_MIDI_OUT_FUL;
-
-  if (scsp.midoutcnt > 0)
-    {
-      if (scsp.midoutcnt == 1)
-        {
-          scsp.midflag |= SCSP_MIDI_OUT_EMP;
-          scsp_sound_interrupt(0x200);
-          scsp_main_interrupt(0x200);
-        }
-
-      data = scsp.midoutbuf[0];
-
-      switch (--scsp.midoutcnt & 3)
-        {
-        case 1:
-          scsp.midoutbuf[0] = scsp.midoutbuf[1];
-          break;
-
-        case 2:
-          scsp.midoutbuf[0] = scsp.midoutbuf[1];
-          scsp.midoutbuf[1] = scsp.midoutbuf[2];
-          break;
-
-        case 3:
-          scsp.midoutbuf[0] = scsp.midoutbuf[1];
-          scsp.midoutbuf[1] = scsp.midoutbuf[2];
-          scsp.midoutbuf[2] = scsp.midoutbuf[3];
-          break;
-        }
-
-      return data;
-    }
-
-  return 0xFF;
-}
-
-////////////////////////////////////////////////////////////////
-// Access
-
-void FASTCALL
-scsp_w_b (SH2_struct *context, UNUSED u8* m, u32 a, u8 d)
-{
-  a &= 0xFFF;
-
-  if (a < 0x400)
-    {
-      scsp_isr[a ^ 3] = d;
-      scsp_slot_write_byte(&new_scsp, a, d);
-      FLUSH_SCSP ();
-      return;
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440)
-        {
-          scsp_set_b (a, d);
-          FLUSH_SCSP ();
-          return;
-        }
-    }
-  else if (a < 0x700)
-    {
-
-    }
-  else if (a >= 0x700 && a < 0x780)
-  {
-    u32 address = (a - 0x700)>>1;
-    u16 current_val = (scsp_dsp.coef[address]<<3);
-    if((a & 0x1) == 0){
-      scsp_dsp.coef[address] = ((current_val & 0x00FF) | (u16)d<<8)>>3;
-    }
-    else{
-      scsp_dsp.coef[address] = ((current_val & 0xFF00) | (u16)d)>>3;
-    }
-    return;
-  }
-  else if (a >= 0x780 && a < 0x7C0)
-    {
-    u32 address = (a - 0x780)>>1;
-    u16 current_val = scsp_dsp.madrs[address];
-    if ((a & 0x1) == 0){
-      scsp_dsp.madrs[address] = (current_val & 0x00FF) | (u16)d << 8;
-    }
-    else{
-      scsp_dsp.madrs[address] = (current_val & 0xFF00) | (u16)d;
-    }
-    return;
-  }
-  else if (a >= 0x800 && a < 0xC00){
-    u32 address = (a - 0x800) / 8;
-    u64 current_val = scsp_dsp.mpro[address];
-
-    switch (a & 0xf)
-    {
-    case 0:
-    case 8:
-      scsp_dsp.mpro[address] = (current_val & 0x00ffffffffffffff) | (u64)d << (u64)56;
-      break;
-    case 1:
-    case 9:
-      scsp_dsp.mpro[address] = (current_val & 0xff00ffffffffffff) | (u64)d << (u64)48;
-      break;
-    case 2:
-    case 10:
-      scsp_dsp.mpro[address] = (current_val & 0xffff00ffffffffff) | (u64)d << (u64)40;
-      break;
-    case 3:
-    case 11:
-      scsp_dsp.mpro[address] = (current_val & 0xffffff00ffffffff) | (u64)d << (u64)32;
-      break;
-    case 4:
-    case 12:
-      scsp_dsp.mpro[address] = (current_val & 0xffffffff00ffffff) | (u64)d << (u64)24;
-      break;
-    case 5:
-    case 13:
-      scsp_dsp.mpro[address] = (current_val & 0xffffffffff00ffff) | (u64)d << (u64)16;
-      break;
-    case 6:
-    case 14:
-      scsp_dsp.mpro[address] = (current_val & 0xffffffffffff00ff) | (u64)d << (u64)8;
-      break;
-    case 7:
-    case 15:
-      scsp_dsp.mpro[address] = (current_val & 0xffffffffffffff00) | (u64)d;
-      break;
-    default:
-      break;
-    }
-    scsp_dsp.updated = 1;
-    return;
-  }
-  else if (a >= 0xEC0 && a <= 0xEDF)
-  {
-    u32 address = (a >> 1) & 0x1F;
-    u16 current_val = scsp_dsp.efreg[address];
-    if ((a & 0x1) == 0){
-      scsp_dsp.efreg[address] = (current_val & 0x00FF) | ((u16)d << 8);
-    }
-    else{
-      scsp_dsp.efreg[address] = (current_val & 0xFF00) | (u16)d;
-    }
-    return;
-  }
-  else if (a >= 0xC00 && a < 0xee4)
-    {
-      SCSPLOG("WARNING: scsp dsp internal w_b to %08lx w/ %02x\n", a, d);
-      a &= 0x3ff;
-      scsp_dcr[a ^ 3] = d;
-      return;
-    }
-
-  SCSPLOG("WARNING: scsp w_b to %08lx w/ %02x\n", a, d);
-}
-
-////////////////////////////////////////////////////////////////
-
-void FASTCALL
-scsp_w_w (SH2_struct *context, UNUSED u8* m, u32 a, u16 d)
-{
-  if (a & 1)
-    {
-      SCSPLOG ("ERROR: scsp w_w misaligned : %.8X\n", a);
-    }
-
-  a &= 0xFFE;
-
-  if (a < 0x400)
-    {
-      *(u16 *)&scsp_isr[a ^ 2] = d;
-      scsp_slot_write_word(&new_scsp, a, d);
-      FLUSH_SCSP ();
-      return;
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440)
-        {
-          scsp_set_w (a, d);
-          FLUSH_SCSP ();
-          return;
-        }
-    }
-  else if (a >= 0x700 && a < 0x780)
-  {
-     u32 address = (a - 0x700) / 2;
-     scsp_dsp.coef[address] = d >> 3;//lower 3 bits seem to be discarded
-     return;
-  }
-  else if (a >= 0x780 && a < 0x7C0)
-  {
-     u32 address = (a - 0x780) / 2;
-     scsp_dsp.madrs[address] = d;
-     return;
-  }else if (a >= 0x800 && a < 0xC00)
-  {
-     u32 address = (a - 0x800) / 8;
-     u64 current_val = scsp_dsp.mpro[address];
-
-     switch (a & 0xf)
-     {
-     case 0:
-     case 8:
-       scsp_dsp.mpro[address] = (current_val & 0x0000ffffffffffff) | (u64)d << (u64)48;
-       break;
-     case 2:
-     case 0xa:
-        scsp_dsp.mpro[address] = (current_val & 0xffff0000ffffffff) | (u64)d << (u64)32;
-        break;
-     case 4:
-     case 0xc:
-        scsp_dsp.mpro[address] = (current_val  & 0xffffffff0000ffff) | (u64)d << (u64)16;
-        break;
-     case 6:
-     case 0xe:
-        scsp_dsp.mpro[address] = (current_val & 0xffffffffffff0000) | d;
-        break;
-     default:
-        break;
-     }
-     scsp_dsp.updated = 1;
-     return;
-  }
-  else if (a >= 0xEC0 && a <= 0xEDF)
-  {
-     scsp_dsp.efreg[(a >> 1) & 0x1F] = d;
-     return;
-  }
-  else if (a < 0xee4)
-    {
-      SCSPLOG("WARNING: scsp dsp internal w_w to %08lx w/ %04x\n", a, d);
-      a &= 0x3ff;
-      *(u16 *)&scsp_dcr[a ^ 2] = d;
-      return;
-    }
-
-  SCSPLOG ("WARNING: scsp w_w to %08lx w/ %04x\n", a, d);
-}
-
-////////////////////////////////////////////////////////////////
-
-void FASTCALL
-scsp_w_d (SH2_struct *context, UNUSED u8* m, u32 a, u32 d)
-{
-  if (a & 3)
-    {
-      SCSPLOG ("ERROR: scsp w_d misaligned : %.8X\n", a);
-    }
-
-  a &= 0xFFC;
-
-  if (a < 0x400)
-    {
-      *(u16 *)&scsp_isr[a ^ 2] = d >> 16;
-      scsp_slot_write_word(&new_scsp, a + 0, d >> 16);
-      *(u16 *)&scsp_isr[(a + 2) ^ 2] = d & 0xffff;
-      scsp_slot_write_word(&new_scsp, a + 2, d & 0xffff);
-      FLUSH_SCSP ();
-      return;
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440)
-        {
-          scsp_set_w (a + 0, d >> 16);
-          scsp_set_w (a + 2, d & 0xFFFF);
-          FLUSH_SCSP ();
-          return;
-        }
-    }
-  else if (a < 0xee4)
-    {
-      /* Sound stack + whole DSP register area (COEF/MADRS/MPRO/TEMP/MEMS/
-         MIXS/EFREG/EXTS). The SCSP is a 16-bit device: on real hardware a
-         long access is split into two 16-bit bus cycles, so do the same
-         instead of dropping the access into scsp_dcr. */
-      scsp_w_w (context, m, a + 0, (u16)(d >> 16));
-      scsp_w_w (context, m, a + 2, (u16)(d & 0xFFFF));
-      return;
-    }
-
-  SCSPLOG ("WARNING: scsp w_d to %08lx w/ %08lx\n", a, d);
-}
-
-////////////////////////////////////////////////////////////////
-
-u8 FASTCALL
-scsp_r_b (SH2_struct *context, UNUSED u8* m, u32 a)
-{
-  a &= 0xFFF;
-
-  if (a < 0x400)
-    {
-      return scsp_slot_read_byte(&new_scsp, a);
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440) return scsp_get_b(a);
-    }
-    else if (a < 0xee4)
-    {
-      /* Byte access to the DSP area: extract from the 16-bit register. */
-      u16 val = scsp_r_w (context, m, a & ~1);
-      return ((a & 1) == 0) ? (u8)(val >> 8) : (u8)(val & 0xFF);
-    }
-
-  SCSPLOG("WARNING: scsp r_b to %08lx\n", a);
-
-  return 0;
-}
-
-////////////////////////////////////////////////////////////////
-
-u16 FASTCALL
-scsp_r_w (SH2_struct *context, UNUSED u8* m, u32 a)
-{
-  if (a & 1)
-    {
-      SCSPLOG ("ERROR: scsp r_w misaligned : %.8X\n", a);
-    }
-
-  a &= 0xFFE;
-
-  if (a < 0x400)
-    {
-      return scsp_slot_read_word(&new_scsp, a);
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440) return scsp_get_w (a);
-    }
-  else if (a < 0x700)
-    {
-      u32 addr = a - 0x600;
-      return new_scsp.sound_stack[(addr / 2) & 0x3f];
-    }
-  else if (a >= 0x700 && a < 0x780)
-  {
-     u32 address = (a - 0x700) / 2;
-     return scsp_dsp.coef[address] << 3;
-  }
-  else if (a >= 0x780 && a < 0x7C0)
-  {
-     u32 address = (a - 0x780) / 2;
-     return scsp_dsp.madrs[address];
-  }
-  else if (a >= 0x800 && a < 0xC00)
-  {
-    u32 address = (a - 0x800) / 8;
-
-    switch (a & 0xf)
-    {
-    case 0:
-    case 8:
-      return (scsp_dsp.mpro[address] >> (u64)48) & 0xffff;
-      break;
-    case 2:
-    case 0xa:
-      return (scsp_dsp.mpro[address] >> (u64)32) & 0xffff;
-      break;
-    case 4:
-    case 0xc:
-      return (scsp_dsp.mpro[address] >> (u64)16) & 0xffff;
-      break;
-    case 6:
-    case 0xe:
-      return scsp_dsp.mpro[address] & 0xffff;
-      break;
-    default:
-      break;
-    }
-  } else if (a >= 0xE80 && a <= 0xEBF){
-    if (!(a & 0x2)){
-      return scsp_dsp.mixs[((a & 0x3F) >> 2)]&0x00000F;
-    }
-    else{
-      return (scsp_dsp.mixs[((a & 0x3F) >> 2)]>>4)&0xFFFF;
-    }
-  }else if (a >= 0xEC0 && a <= 0xEDF){
-    return scsp_dsp.efreg[ (a>>1) & 0x1F];
-  }else if (a == 0xee0) {
-    return scsp_dsp.exts[0];
-  }else if (a == 0xee2) {
-    return scsp_dsp.exts[1];
-  }
-
-  SCSPLOG ("WARNING: scsp r_w to %08lx\n", a);
-
-  return 0;
-}
-
-////////////////////////////////////////////////////////////////
-
-u32 FASTCALL
-scsp_r_d (SH2_struct *context, UNUSED u8* m, u32 a)
-{
-  if (a & 3)
-    {
-      SCSPLOG ("ERROR: scsp r_d misaligned : %.8X\n", a);
-    }
-
-  a &= 0xFFC;
-
-  if (a < 0x400)
-    {
-      return (scsp_slot_read_word(&new_scsp, a + 0) << 16) | scsp_slot_read_word(&new_scsp, a + 2);
-    }
-  else if (a < 0x600)
-    {
-      if (a < 0x440) return (scsp_get_w (a + 0) << 16) | scsp_get_w (a + 2);
-    }
-  else if (a < 0xee4)
-    {
-      /* Mirror of scsp_w_d: rebuild the long from two 16-bit reads so that
-         read-back verification of the DSP program works. */
-      return ((u32)scsp_r_w (context, m, a + 0) << 16)
-           |  (u32)scsp_r_w (context, m, a + 2);
-    }
-
-  SCSPLOG("WARNING: scsp r_d to %08lx\n", a);
-
-  return 0;
-}
-
-////////////////////////////////////////////////////////////////
-// Interface
-
-void
-scsp_shutdown (void)
-{
-
-}
-
-void
-scsp_reset (void)
-{
-  slot_t *slot;
-
-  memset(scsp_reg, 0, 0x1000);
-
-  scsp.mem4b     = 0;
-  scsp.mvol      = 0;
-  scsp.rbl       = 0;
-  scsp.rbp       = 0;
-  scsp.mslc      = 0;
-  scsp.ca        = 0;
-
-  scsp.dmea      = 0;
-  scsp.drga      = 0;
-  scsp.dmfl      = 0;
-  scsp.dmlen     = 0;
-
-  scsp.midincnt  = 0;
-  scsp.midoutcnt = 0;
-  scsp.midflag   = SCSP_MIDI_IN_EMP | SCSP_MIDI_OUT_EMP;
-  scsp.midflag2  = 0;
-
-  scsp.timacnt   = 0xFF00;
-  scsp.timbcnt   = 0xFF00;
-  scsp.timccnt   = 0xFF00;
-  scsp.timasd    = 0;
-  scsp.timbsd    = 0;
-  scsp.timcsd    = 0;
-
-  scsp.mcieb     = 0;
-  scsp.mcipd     = 0;
-  scsp.scieb     = 0;
-  scsp.scipd     = 0;
-  scsp.scilv0    = 0;
-  scsp.scilv1    = 0;
-  scsp.scilv2    = 0;
-
-  for(slot = &(scsp.slot[0]); slot < &(scsp.slot[32]); slot++)
-    {
-      memset(slot, 0, sizeof(slot_t));
-      slot->ecnt = SCSP_ENV_DE;       // slot off
-      slot->ecurp = SCSP_ENV_RELEASE;
-      slot->dislr = slot->disll = 31; // direct level sound off
-      slot->efslr = slot->efsll = 31; // effect level sound off
-
-		// Make sure lfofmw/lfoemw have sane values
-		slot->lfofmw = scsp_lfo_sawt_f;
-		slot->lfoemw = scsp_lfo_sawt_e;
-    }
-
-    new_scsp_reset(&new_scsp);
-}
-
-void
-scsp_init (u8 *scsp_ram, void (*sint_hand)(u32), void (*mint_hand)(void))
-{
-  u32 i, j;
-  double x;
-
-  scsp_shutdown ();
-
-  scsp_isr = &scsp_reg[0x0000];
-  scsp_ccr = &scsp_reg[0x0400];
-  scsp_dcr = &scsp_reg[0x0700];
-
-  scsp.scsp_ram = scsp_ram;
-  scsp.sintf = sint_hand;
-  scsp.mintf = mint_hand;
-
-  for (i = 0; i < SCSP_ENV_LEN; i++)
-    {
-      // Attack Curve (x^7 ?)
-      x = pow (((double)(SCSP_ENV_MASK - i) / (double)SCSP_ENV_LEN), 7);
-      x *= (double)SCSP_ENV_LEN;
-      scsp_env_table[i] = SCSP_ENV_MASK - (s32)x;
-
-      // Decay curve (x = linear)
-      x = pow (((double)i / (double)SCSP_ENV_LEN), 1);
-      x *= (double)SCSP_ENV_LEN;
-      scsp_env_table[i + SCSP_ENV_LEN] = SCSP_ENV_MASK - (s32)x;
-    }
-
-  for (i = 0, j = 0; i < 32; i++)
-    {
-      j += 1 << (i >> 2);
-
-      // lfo freq
-      x = (SCSP_FREQ / 256.0) / (double)j;
-
-      // converting lfo freq in lfo step
-      scsp_lfo_step[31 - i] = scsp_round(x * ((double)SCSP_LFO_LEN /
-                                              (double)SCSP_FREQ) *
-                                         (double)(1 << SCSP_LFO_LB));
-    }
-
-  // Calculate LFO (modulation) values
-  for (i = 0; i < SCSP_LFO_LEN; i++)
-    {
-      // Envelope modulation
-      scsp_lfo_sawt_e[i] = SCSP_LFO_MASK - i;
-
-      if (i < (SCSP_LFO_LEN / 2))
-        scsp_lfo_squa_e[i] = SCSP_LFO_MASK;
-      else
-        scsp_lfo_squa_e[i] = 0;
-
-      if (i < (SCSP_LFO_LEN / 2))
-        scsp_lfo_tri_e[i] = SCSP_LFO_MASK - (i * 2);
-      else
-        scsp_lfo_tri_e[i] = (i - (SCSP_LFO_LEN / 2)) * 2;
-
-      scsp_lfo_noi_e[i] = rand() & SCSP_LFO_MASK;
-
-      // Frequency modulation
-      scsp_lfo_sawt_f[(i + 512) & SCSP_LFO_MASK] = i - (SCSP_LFO_LEN / 2);
-
-      if (i < (SCSP_LFO_LEN / 2))
-        scsp_lfo_squa_f[i] = SCSP_LFO_MASK - (SCSP_LFO_LEN / 2) - 128;
-      else
-        scsp_lfo_squa_f[i] = 0 - (SCSP_LFO_LEN / 2) + 128;
-
-      if (i < (SCSP_LFO_LEN / 2))
-        scsp_lfo_tri_f[(i + 768) & SCSP_LFO_MASK] = (i * 2) -
-                                                    (SCSP_LFO_LEN / 2);
-      else
-        scsp_lfo_tri_f[(i + 768) & SCSP_LFO_MASK] =
-          (SCSP_LFO_MASK - ((i - (SCSP_LFO_LEN / 2)) * 2)) -
-          (SCSP_LFO_LEN / 2) + 1;
-
-      scsp_lfo_noi_f[i] = scsp_lfo_noi_e[i] - (SCSP_LFO_LEN / 2);
-    }
-
-  for(i = 0; i < 4; i++)
-    {
-      scsp_attack_rate[i] = 0;
-      scsp_decay_rate[i] = 0;
-    }
-
-  for(i = 0; i < 60; i++)
-    {
-      x = 1.0 + ((i & 3) * 0.25);                  // bits 0-1 : x1.00, x1.25, x1.50, x1.75
-      x *= (double)(1 << ((i >> 2)));              // bits 2-5 : shift bits (x2^0 - x2^15)
-      x *= (double)(SCSP_ENV_LEN << SCSP_ENV_LB);  // adjust for table scsp_env_table
-
-      scsp_attack_rate[i + 4] = scsp_round(x / (double)SCSP_ATTACK_R);
-      scsp_decay_rate[i + 4] = scsp_round(x / (double)SCSP_DECAY_R);
-
-      if (scsp_attack_rate[i + 4] == 0) scsp_attack_rate[i + 4] = 1;
-      if (scsp_decay_rate[i + 4] == 0) scsp_decay_rate[i + 4] = 1;
-    }
-
-  scsp_attack_rate[63] = SCSP_ENV_AE;
-  scsp_decay_rate[61] = scsp_decay_rate[60];
-  scsp_decay_rate[62] = scsp_decay_rate[60];
-  scsp_decay_rate[63] = scsp_decay_rate[60];
-
-  for(i = 64; i < 96; i++)
-    {
-      scsp_attack_rate[i] = scsp_attack_rate[63];
-      scsp_decay_rate[i] = scsp_decay_rate[63];
-      scsp_null_rate[i - 64] = 0;
-    }
-#if 0
-  for(i = 0; i < 96; i++)
-    {
-      SCSPLOG ("attack rate[%d] = %.8X -> %.8X\n", i, scsp_attack_rate[i],
-               scsp_attack_rate[i] >> SCSP_ENV_LB);
-      SCSPLOG ("decay rate[%d] = %.8X -> %.8X\n", i, scsp_decay_rate[i],
-               scsp_decay_rate[i] >> SCSP_ENV_LB);
-    }
-#endif
-  for(i = 0; i < 256; i++)
-    scsp_tl_table[i] = scsp_round(pow(10, ((double)i * -0.3762) / 20) * 1024.0);
-
-  scsp_reset();
-  g_scsp_ready = YabThreadCreateSem(0);
-  g_cpu_ready = YabThreadCreateSem(0);
-  g_scsp_set_cyc_mtx = YabThreadCreateMutex();
-  g_scsp_set_cond_mtx = YabThreadCreateMutex();
-  g_scsp_set_cyc_cond  = YabThreadCreateCond();
-
-  thread_running = true;
-  YabThreadStart(YAB_THREAD_SCSP, ScspAsynMainCpu, NULL);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// Yabause specific
-//////////////////////////////////////////////////////////////////////////////
-
-u8 *SoundRam = NULL;
-ScspInternal *ScspInternalVars;
-static SoundInterface_struct *SNDCore = NULL;
-extern SoundInterface_struct *SNDCoreList[];
-
-struct sounddata
-{
-  u32 *data32;
-} scspchannel[2];
-
-static u32 scspsoundlen;        // Samples to output per frame
-static u32 scsplines;           // Lines per frame
-static u32 scspsoundbufs;       // Number of "scspsoundlen"-sample buffers
-static u32 scspsoundbufsize;    // scspsoundlen * scspsoundbufs
-static u32 scspsoundgenpos;     // Offset of next byte to generate
-static u32 scspsoundoutleft;    // Samples not yet sent to host driver
-
-static int
-scsp_alloc_bufs (void)
-{
-  if (scspchannel[0].data32)
-    free(scspchannel[0].data32);
-  scspchannel[0].data32 = NULL;
-  if (scspchannel[1].data32)
-    free(scspchannel[1].data32);
-  scspchannel[1].data32 = NULL;
-
-  scspchannel[0].data32 = (u32 *)calloc(scspsoundbufsize, sizeof(u32));
-  if (scspchannel[0].data32 == NULL)
-    return -1;
-  scspchannel[1].data32 = (u32 *)calloc(scspsoundbufsize, sizeof(u32));
-  if (scspchannel[1].data32 == NULL)
-    return -1;
-
-  return 0;
-}
-
-static u8 IsM68KRunning;
-static s32 FASTCALL (*m68kexecptr)(s32 cycles);  // M68K->Exec or M68KExecBP
-static s32 savedcycles;  // Cycles left over from the last M68KExec() call
-
-//////////////////////////////////////////////////////////////////////////////
-
-static u32 FASTCALL
-c68k_byte_read (const u32 adr)
-{
-  u32 rtn = 0;
-  if (adr < 0x100000) {
-    if (adr < 0x80000) {
-      rtn = SoundRamReadByte(NULL, SoundRam, adr);
-    }
-  }
-  else
-    rtn = scsp_r_b(NULL, NULL, adr);
-  return rtn;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static void FASTCALL
-c68k_byte_write (const u32 adr, u32 data)
-{
-  if (adr < 0x100000){
-	 if (adr < 0x80000) {
-	    SoundRamWriteByte(NULL, SoundRam, adr, data);
-	}
-  }
-  else{
-    scsp_w_b(NULL, NULL, adr, data);
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-/* exported to m68kd.c */
-u32 FASTCALL
-c68k_word_read (const u32 adr)
-{
-  u32 rtn = 0;
-  if (adr < 0x100000) {
-	if (adr < 0x80000) {
-	    rtn = SoundRamReadWord(NULL, SoundRam, adr);
-	}
-  }
-  else
-    rtn = scsp_r_w(NULL, NULL, adr);
-  return rtn;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static void FASTCALL
-c68k_word_write (const u32 adr, u32 data)
-{
-  if (adr < 0x100000){
-	if (adr < 0x80000) {
-	    SoundRamWriteWord(NULL, SoundRam, adr, data);
-	}
-  }
-  else{
-    scsp_w_w(NULL, NULL, adr, data);
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-/* The 68000 runs in the sound thread. Musashi's m68k_set_irq() checks
-   interrupts at once and, when the new level is above the mask, takes the
-   interrupt right there: it pushes PC and SR on the 68000 stack, loads the
-   vector and changes SR. Called from another thread -- an SH-2 writing an
-   SCSP register, e.g. raising SCIPD bit 5 as a doorbell for the sound
-   driver -- that exception processing ran in the middle of an instruction
-   the sound thread was executing, on the same Musashi state. The 68000 came
-   back with a corrupted stack frame or PC: tasks resumed with a wrong SR,
-   execution jumped into data ("DEBUG" text at 0069C, line F exception), and
-   the sound driver stopped answering the SH-2 mailbox (WWF In Your House:
-   random in-game freeze, one voice looping).
-
-   So the IRQ line is only driven from the sound thread. A request from any
-   other thread just asks the sound thread to recompute the level from the
-   SCSP interrupt registers before it runs the 68000 again (MM68KExec),
-   which happens every few samples. */
-#if defined(_MSC_VER)
-#define SCSP_THREAD_LOCAL __declspec(thread)
-#else
-#define SCSP_THREAD_LOCAL __thread
-#endif
-static SCSP_THREAD_LOCAL int scsp_on_m68k_thread = 0;
-static volatile int scsp_irq_recalc = 0;
-
-static void
-c68k_interrupt_handler (u32 level)
-{
-  if (scsp_on_m68k_thread)
-    M68K->SetIRQ ((s32)level);   // send interrupt to 68k
-  else
-    scsp_irq_recalc = 1;         // applied by the sound thread (MM68KExec)
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static void
-scu_interrupt_handler (void)
-{
-  // send interrupt to scu
-  ScuSendSoundRequest ();
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-u8 FASTCALL
-SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
-{
-  addr &= 0x7FFFF;
-  u8 val = 0;
-
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-
-  val = T2ReadByte(mem, addr);
-  return val;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-/* Cost of an SH-2 write to sound RAM over the SCU B-bus.
- *
- * Reads already pay for the bus (SyncSh2And68k adds 50 cycles), but writes
- * were free: an SH-2 filling sound RAM ran at Work RAM speed. On hardware the
- * SCSP is on the B-bus and every 16-bit access holds it for a long time.
- * Mednafen (ss/scu.inc, BBusRW_DB_*_W1_*, SCSP branch) books 2 + 17 bus cycles
- * for a 16-bit (or 8-bit) SH-2 write, and 2 + 17 then 13 for the two halves of
- * a 32-bit one; the writes are posted, so a CPU that writes again right away
- * waits for the previous one to finish. A copy or clear loop therefore runs
- * at about one write per bus access time, which is what is charged here.
- *
- * Ginga Eiyuu Densetsu Plus depends on it. After its clock change the master
- * wakes the slave with a "build tables" command (0x08), rewrites the 68000
- * vector area of sound RAM (256 long writes at 25A00000, 06025EA4), then
- * queues the next commands for the slave. The slave's table (060F51D8, three
- * 1 KB planes) overlaps the command queue at 060F55D8. On hardware the sound
- * RAM loop keeps the master busy for several lines, the slave has written its
- * table first and the queued commands survive. With free writes the master
- * queued its commands first, the slave's table overwrote them, the "display
- * list" command never ran, the frame-ready flag (060FFCA8) stayed 0 and both
- * CPUs waited for each other forever (black screen after the video with the
- * debug core, stuck on the TrueMotion screen with the performance core).
- *
- * DMA and 68000 accesses pass context == NULL and are not charged here. */
-#define SCSP_SH2_WRITE16_CYCLES 19   /* 2 + 17 */
-#define SCSP_SH2_WRITE32_CYCLES 32   /* 2 + 17 + 13 */
-
-static INLINE void SoundRamSh2WriteCost(SH2_struct *context, u32 cycles)
-{
-  if (context != NULL)
-    SH2Core->AddCycle(context, cycles);
-}
-
-void FASTCALL
-SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
-{
-  addr &= 0x7FFFF;
-
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-
-  T2WriteByte (mem, addr, val);
-  M68K->WriteNotify (addr, 1);
-  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-/* TAS.B from an SH-2 on sound RAM, done as one atomic read-modify-write.
- *
- * The 68000 runs in the sound thread, concurrently with the SH-2s. TAS.B
- * was a read followed by a separate write of (value | 80h): a 68000 store
- * landing between the two was overwritten. Sound drivers use exactly this
- * pattern for their mailbox semaphore -- the SH-2 spins on TAS.B while the
- * 68000 frees the byte -- so a release could be lost and both SH-2s then
- * spun forever on a semaphore nobody held. WWF In Your House: master and
- * slave both in the TAS.B loop at 0600850C on sound RAM 0007E, the 68000
- * idle, music stopped, picture frozen after a random time in game.
- *
- * An atomic fetch-or on the host byte makes a concurrent 68000 store land
- * either before (TAS sees 00 and takes the semaphore) or after (the store
- * wins), never in between. Returns the value before the write. */
-u8 FASTCALL SoundRamTestAndSetByte(SH2_struct *context, u32 addr)
-{
-  u8 *p;
-  u8 old;
-
-  addr &= 0x7FFFF;
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-
-#ifdef WORDS_BIGENDIAN
-  p = &SoundRam[addr];
-#else
-  p = &SoundRam[addr ^ 1];
-#endif
-#if defined(_MSC_VER)
-  old = (u8)_InterlockedOr8((volatile char *)p, (char)0x80);
-#else
-  old = __atomic_fetch_or(p, (u8)0x80, __ATOMIC_SEQ_CST);
-#endif
-  M68K->WriteNotify (addr, 1);
-  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
-  return old;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-// From CPU
-static int mem_access_counter = 0;
-void SyncSh2And68k(SH2_struct *context){
-  if (IsM68KRunning) {
-    // Memory Access cycle = 128 times per 44.1Khz
-    // 28437500 / 4410 / 128 = 50
-    SH2Core->AddCycle(context, 50);
-
-    if (mem_access_counter++ >= 128) {
-      YabThreadYield();
-      mem_access_counter = 0;
-    }
-  }
-}
-
-u16 FASTCALL
-SoundRamReadWord (SH2_struct *context, u8* mem, u32 addr)
-{
-  addr &= 0xFFFFF;
-  u16 val = 0;
-
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-  else if (addr > 0x7FFFF)
-    return 0xFFFF;
-
-  //SCSPLOG("SoundRamReadLong %08X:%08X time=%d", addr, val, MSH2->cycles);
-  if (context != NULL) SyncSh2And68k(context);
-
-  val = T2ReadWord (mem, addr);
-
-  return val;
-
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void FASTCALL
-SoundRamWriteWord (SH2_struct *context, u8* mem, u32 addr, u16 val)
-{
-  addr &= 0xFFFFF;
-
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-  else if (addr > 0x7FFFF)
-    return;
-
-  //SCSPLOG("SoundRamWriteWord %08X:%04X", addr, val);
-  T2WriteWord (mem, addr, val);
-  M68K->WriteNotify (addr, 2);
-  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE16_CYCLES);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-u32 FASTCALL
-SoundRamReadLong (SH2_struct *context, u8* mem, u32 addr)
-{
-  addr &= 0xFFFFF;
-  u32 val;
-  u32 pre_cycle = m68kcycle;
-
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-  else if (addr > 0x7FFFF) {
-     val = 0xFFFFFFFF;
-     if (context != NULL) SyncSh2And68k(context);
-     return val;
-  }
-
-  //SCSPLOG("SoundRamReadLong %08X:%08X time=%d PC=%08X", addr, val, MSH2->cycles, MSH2->regs.PC);
-  if (context != NULL) SyncSh2And68k(context);
-
-  val = T2ReadLong(mem, addr);
-
-  return val;
-
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void FASTCALL
-SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
-{
-  addr &= 0xFFFFF;
-  //u32 pre_cycle = m68kcycle;
-
-  // If mem4b is set, mirror ram every 256k
-  if (scsp.mem4b == 0)
-    addr &= 0x1FFFF;
-  else if (addr > 0x7FFFF)
-    return;
-
-  //SCSPLOG("SoundRamWriteLong %08X:%08X", addr, val);
-  T2WriteLong (mem, addr, val);
-  M68K->WriteNotify (addr, 4);
-  SoundRamSh2WriteCost(context, SCSP_SH2_WRITE32_CYCLES);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-ScspInit (int coreid)
-{
-  int i;
-
-  if ((SoundRam = T2MemoryInit (0x80000)) == NULL)
-    return -1;
-
-  if ((ScspInternalVars = (ScspInternal *)calloc(1, sizeof(ScspInternal))) == NULL)
-    return -1;
-
-  if (M68K->Init () != 0)
-    return -1;
-
-  M68K->SetReadB (c68k_byte_read);
-  M68K->SetReadW (c68k_word_read);
-  M68K->SetWriteB (c68k_byte_write);
-  M68K->SetWriteW (c68k_word_write);
-
-  M68K->SetFetch (0x000000, 0x040000, (pointer)SoundRam);
-  M68K->SetFetch (0x040000, 0x080000, (pointer)SoundRam);
-  M68K->SetFetch (0x080000, 0x0C0000, (pointer)SoundRam);
-  M68K->SetFetch (0x0C0000, 0x100000, (pointer)SoundRam);
-
-  IsM68KRunning = 0;
-
-  scsp_init (SoundRam, &c68k_interrupt_handler, &scu_interrupt_handler);
-  ScspInternalVars->scsptiming1 = 0;
-  ScspInternalVars->scsptiming2 = 0;
-
-  for (i = 0; i < MAX_BREAKPOINTS; i++)
-    ScspInternalVars->codebreakpoint[i].addr = 0xFFFFFFFF;
-  ScspInternalVars->numcodebreakpoints = 0;
-  ScspInternalVars->BreakpointCallBack = NULL;
-  ScspInternalVars->inbreakpoint = 0;
-
-  m68kexecptr = M68K->Exec;
-
-  // Allocate enough memory for each channel buffer(may have to change)
-  scspsoundlen = (fps == 50) ? 882 : 736; /* nominal, rounded up (59.94 Hz) */
-  scsplines = 263;
-  scspsoundbufs = 10; // should be enough to prevent skipping
-  scspsoundbufsize = scspsoundlen * scspsoundbufs;
-  if (scsp_alloc_bufs () < 0)
-    return -1;
-
-  // Reset output pointers
-  scspsoundgenpos = 0;
-  scspsoundoutleft = 0;
-
-  g_scsp_lock = 0;
-
-  return ScspChangeSoundCore (coreid);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-ScspChangeSoundCore (int coreid)
-{
-  int i;
-
-  // Make sure the old core is freed
-  if (SNDCore)
-    SNDCore->DeInit();
-
-  // So which core do we want?
-  if (coreid == SNDCORE_DEFAULT)
-    coreid = 0; // Assume we want the first one
-
-  // Go through core list and find the id
-  for (i = 0; SNDCoreList[i] != NULL; i++)
-    {
-      if (SNDCoreList[i]->id == coreid)
-        {
-          // Set to current core
-          SNDCore = SNDCoreList[i];
-          break;
-        }
-    }
-
-  if (SNDCore == NULL)
-    {
-      SNDCore = &SNDDummy;
+      Cs2Area->cdi = &DummyCD;
       return -1;
-    }
+   }
 
-  if (SNDCore->Init () == -1)
-    {
+   if (Cs2Area->cdi->Init(cdpath) != 0)
+   {
+      // This might be helpful.
+      YabSetError(YAB_ERR_CANNOTINIT, (void *)Cs2Area->cdi->Name);
+
       // Since it failed, instead of it being fatal, we'll just use the dummy
       // core instead
+      Cs2Area->cdi = &DummyCD;
+   }
 
-      // This might be helpful though.
-      YabSetError (YAB_ERR_CANNOTINIT, (void *)SNDCore->Name);
+   Cs2Area->isdiskchanged = 1;
+   setStatus(CDB_STAT_PAUSE);
+   SmpcRecheckRegion();
 
-      SNDCore = &SNDDummy;
-    }
+   if (Cs2GetRegionID() >= 0xA) YabauseSetVideoFormat(VIDEOFORMATTYPE_PAL);
+   else YabauseSetVideoFormat(VIDEOFORMATTYPE_NTSC);
 
-  if (SNDCore)
-    {
-      if (scsp_mute_flags) SNDCore->MuteAudio();
-      else SNDCore->UnMuteAudio();
-      SNDCore->SetVolume(scsp_volume);
-    }
-
-  return 0;
+   return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-void
-ScspDeInit (void)
-{
-  ScspUnMuteAudio(1);
-  scsp_mute_flags = 0;
-  thread_running = false;
-  YabThreadCondSignal(g_scsp_set_cyc_cond);
-  YabSemPost(g_cpu_ready);
-  YabSemPost(g_scsp_ready);
-  // YabThreadWake(YAB_THREAD_SCSP);
-  YabThreadWait(YAB_THREAD_SCSP);
+void Cs2DeInit(void) {
+   if(Cs2Area != NULL) {
+      if (Cs2Area->cdi != NULL) {
+         Cs2Area->cdi->DeInit();
+      }
 
-  if (scspchannel[0].data32)
-    free(scspchannel[0].data32);
-  scspchannel[0].data32 = NULL;
-
-  if (scspchannel[1].data32)
-    free(scspchannel[1].data32);
-  scspchannel[1].data32 = NULL;
-
-  if (SNDCore)
-    SNDCore->DeInit();
-  SNDCore = NULL;
-
-  scsp_shutdown();
-
-  if (SoundRam)
-    T2MemoryDeInit (SoundRam);
-  SoundRam = NULL;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KStart (void)
-{
-  if (IsM68KRunning == 0) {
-    M68K->Reset ();
-    //ScspReset();
-    savedcycles = 0;
-    IsM68KRunning = 1;
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KStop (void)
-{
-  if (IsM68KRunning == 1) {
-    M68K->Reset();
-    /* SNDOFF resets the SCSP along with the sound CPU (TECH#51: "If the Sound
-       CPU and the SCSP must be reset, always have the SMPC issue the reset
-       command", i.e. SNDON/SNDOFF). The documented start-up sequence relies
-       on it: ST-166 "Starting the Sound Driver" issues SOUND OFF and then
-       writes 02h to 25B00400 again, because MEM4MB is back to 1 Mbit.
-       Only the registers are reset: sound RAM is kept across SNDOFF (SMPC
-       manual, SNDOFF remarks).
-
-       Independence Day depends on it. Its own 68000 program opens with
-       move #$2000,SR and points every autovector at an error handler
-       (writes an error code to $C88 and parks at $8C). The BIOS sound driver
-       had left Timer B enabled (SCIEB=080h, SCILV1=080h) with the interrupt
-       pending, so the game's program took a level 2 interrupt on its first
-       instruction and never ran: MVOL stayed at the 0 the BIOS had faded to,
-       no DSP program was loaded, and the game had no sound at all.
-
-       Saturn only: on ST-V the 68000 is driven through PDR2 and this path is
-       not the SMPC sound reset.
-
-       MEM4MB (register 400h bit 9) is kept across SNDOFF. Kronos applies it
-       to sound RAM accesses: with MEM4MB = 0 the RAM is folded every 128 KB
-       (SoundRamReadXxx / SoundRamWriteXxx). Grand Slam (Virgin, USA) stops the sound CPU,
-       then clears the whole 512 KB and builds its own sound RAM heap at
-       25A0B000-25A7FFFF from the SH-2 before its new 68000 program sets
-       MEM4MB again. With MEM4MB cleared by SNDOFF, the clear of 25A2B000
-       folded onto 25A0B000 and wiped the heap header: every allocation in
-       sound RAM failed, a NULL node went into a linked list and the master
-       SH-2 walked into address errors on the loading screen. The game works
-       on hardware, so MEM4MB cannot have dropped back to 1 Mbit there.
-       Mednafen (ss/smpc.c TurnSoundCPUOff -> SOUND_Reset68K) and Ymir
-       (SMPC::SNDOFF -> SCSP::SetCPUEnabled(false)) only reset the 68000 and
-       leave every SCSP register, MEM4MB included, untouched. ST-166 and
-       ST-241 ("Activating the sound driver") write 02h to 25B00400 after
-       SOUND OFF as part of the power-on sequence, when sound memory and the
-       SCSP are in an unknown state. Only the registers Independence Day needs
-       cleared (timers, interrupts, slots) are reset here. */
-    if (!yabsys.isSTV) {
-      u32 mem4b = scsp.mem4b;
-      scsp_reset();
-      scsp.mem4b = mem4b;
-      if (mem4b)
-        *(u16 *)&scsp_ccr[0x00 ^ 2] |= 0x0200;   /* register 400h, MEM4MB */
-      /* the reset cleared every pending interrupt: drop the 68000 IRQ line
-         too (applied by the sound thread), so the next program does not
-         start with a stale level asserted */
-      scsp_check_interrupt();
-    }
-    IsM68KRunning = 0;
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static u64 m68k_counter = 0;
-static u64 m68k_counter_done = 0;
-
-
-void ScspHalt(void) {
-  ScspLockThread();
-}
-
-void
-ScspReset (void)
-{
-  scsp_reset();
-  ScspUnLockThread();
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-ScspChangeVideoFormat (int type)
-{
-  fps = type ? 50.0 : 60.0;
-  /* default until the main thread sets the real count of the frame */
-  scsp_frame_samples = type ? 882 : 735;
-  /* nominal samples per frame, rounded up (736 at 59.94 Hz) */
-  scspsoundlen = type ? 882 : 736;
-  scsplines = type ? 313 : 263;
-  scspsoundbufsize = scspsoundlen * scspsoundbufs;
-
-  if (scsp_alloc_bufs () < 0)
-    return -1;
-
-  SNDCore->ChangeVideoFormat (type ? 50 : 60);
-
-  return 0;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-/* Process breakpoints in a separate function to avoid unnecessary register
- * spillage on the fast path (and to avoid too much block nesting) */
-#ifdef __GNUC__
-__attribute__((noinline))
+#if 0
+      // This stuff need to go elsewhere
+      if(Cs2Area->carttype == CART_NETLINK)
+         NetlinkDeInit();
+      else if (Cs2Area->carttype == CART_JAPMODEM)
+         JapModemDeInit();
 #endif
-static s32 FASTCALL M68KExecBP (s32 cycles);
 
-void MM68KExec(s32 cycles)
+      free(Cs2Area);
+   }
+   Cs2Area = NULL;
+
+   if (cdip)
+      free(cdip);
+   cdip = NULL;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* End of a play range (data).
+ *
+ * Kronos switched to PAUSE and raised PEND (and EFLS/EHST for Read File) at
+ * the very periodic step that stored the last sector. On the console the
+ * drive first reports BUSY and only reaches PAUSE, raising the play-end
+ * interrupts, two periodic reports later. Mednafen (ss/cdb.c, drive loop):
+ * when the end is met, "CurPosInfo.status = STATUS_BUSY; DrivePhase =
+ * DRIVEPHASE_PAUSE; PauseCounter = PlayEndIRQType ? 0 : 1;", then PauseCounter
+ * goes 0 -> 1 on the next periodic report and, at the following one,
+ * "CurPosInfo.status = STATUS_PAUSE" and TriggerIRQ(PlayEndIRQType).
+ *
+ * Hop Step Idol: the GFS server step that copies the last sector of a file
+ * declares the read finished only if the drive has already ended its play.
+ * With PAUSE reported in the same step, the one-sector MET file read
+ * finished in the step that copied it, the decompressor (0601ADF4, PR
+ * 0602E368) never saw a partial read size, skipped the header parse at
+ * 0601AE86, decompressed with garbage sizes and overwrote the vector table.
+ * In Mednafen the step returns "busy" with the 1779 bytes already read,
+ * the header is parsed, and the next step finishes.
+ *
+ * The delay is kept in two statics (not in the save state): a state saved
+ * inside the two-report window resumes as BUSY -> PAUSE without PEND. */
+static u8 Cs2PlayEndReports = 0;
+static u8 Cs2PlayEndPending = 0;
+/* Seek finished, sectors are being read, but the status still says SEEK
+   until a report that follows the first processed sector (Mednafen:
+   CurPosInfo.status = PLAY only when PlaySectorProcessed). 1 = reading,
+   no sector processed yet; 2 = first sector processed at this report. */
+static u8 Cs2SeekReading = 0;
+static u16 Cs2PlayEndIrqs = 0;
+
+/* Called at the periodic report that stored the LAST sector of the range.
+ * That report still says PLAY: in Mednafen the end is only detected at the
+ * next periodic report (CheckEndMet() on the following sector), which goes
+ * BUSY; PAUSE and the play-end interrupts come two reports after that
+ * (PauseCounter 0 -> 1 -> PAUSE). So: PLAY (last sector), BUSY, BUSY, PAUSE.
+ *
+ * Timing of that next report: in Mednafen the drive tick that hands the
+ * last sector to the buffer (CSCT) also prefetches the following one --
+ * CurPosInfo.fad is then already the FAD after the range, so Get Status
+ * shows PLAY with the end FAD -- and schedules the periodic report 17712
+ * clocks of 44100*256 Hz later (~1.57 ms), which detects the end (BUSY).
+ * So there is a short "PLAY, end FAD, every sector buffered" window:
+ *  - Zero Divide's GFS CD read (GFS_NwCdRead of 162 sectors) completes
+ *    only inside it (0603D784: FAD >= end, HIRQ CSCT or PAUSE, drive not
+ *    BUSY); the game polls Get Sector Number right after the sector and
+ *    stops serving that access once all sectors are counted.
+ *  - Hop Step Idol's GFS step copies the last sector (51 52 53 61, CPU
+ *    copy, 06 62 51) and only then looks at the drive: it must see BUSY
+ *    there, or it finishes its read in the copying step and the
+ *    decompressor overwrites the vector table.
+ * Hop Step Idol's file is ONE sector: in Mednafen the status only becomes
+ * PLAY at a periodic report that follows a processed sector
+ * (PlaySectorProcessed); after a seek, the first sector is buffered while
+ * the drive still reports SEEK. With a one-sector range the end is met at
+ * the very next report, so PLAY never appears: SEEK (sector buffered),
+ * BUSY, BUSY, PAUSE -- and its GFS step sees SEEK ("moving") there. Kronos
+ * switched to PLAY as soon as the seek ended (see Cs2SeekReading).
+ * * Going BUSY in the same report as the last sector broke the GFS "CD read"
+ * access (GFS_NwCdRead, a read into the CD block buffer with no transfer):
+ * GFS completes it when it sees every requested sector AND a drive state
+ * that is not BUSY/SEEK (0603DA1C/0603D784 in Zero Divide's GFS: BUSY maps
+ * to "still moving", PLAY or PAUSE to "stopped or reading"). Zero Divide
+ * pre-reads 162 sectors with it and stops serving that access as soon as
+ * all sectors are counted; with BUSY at that moment GFS never completed it,
+ * kept the drive "owned" by that handle ([work+A8]) and every later
+ * GFS_Fread waited for the owner and timed out (-22): the data of the
+ * fight were never loaded and the game froze in its AI code. */
+#define CS2_PLAYEND_REPORT_DELAY 4707   /* 17712 / (44100*256) s = 1.569 ms, in us * 3 */
+static void Cs2BeginPlayEnd(u16 irqs)
 {
-  /* This thread runs the 68000: it may drive the IRQ line directly, and it
-     applies here a level change requested from another thread (see
-     c68k_interrupt_handler). */
-  scsp_on_m68k_thread = 1;
-  if (scsp_irq_recalc)
+   Cs2PlayEndPending = 1;      /* this report stays PLAY */
+   Cs2PlayEndReports = 0;
+   Cs2PlayEndIrqs = irqs;
+   Cs2Area->_periodictiming = CS2_PLAYEND_REPORT_DELAY;   /* the BUSY report comes ~1.57 ms later */
+}
+
+/* next periodic report after the last sector: the end is met */
+static void Cs2PlayEndMet(void)
+{
+   Cs2PlayEndPending = 0;
+   setStatus(CDB_STAT_BUSY);
+   Cs2Area->nextStatus = CDB_STAT_PAUSE;
+   Cs2Area->options = 0x8;
+   Cs2PlayEndReports = 2;
+}
+
+static INLINE void Cs2CancelPlayEnd(void)
+{
+   Cs2SeekReading = 0;
+   Cs2PlayEndPending = 0;
+   Cs2PlayEndReports = 0;
+   Cs2PlayEndIrqs = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2Reset(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+  u32 i, i2;
+
+
+  resetSyncVideo();
+  switch (Cs2Area->cdi->GetStatus())
   {
-    scsp_irq_recalc = 0;
-    scsp_check_interrupt();
+     case 0:
+     case 1:
+             setStatus(CDB_STAT_PAUSE);
+             Cs2Area->FAD = 150;
+             Cs2Area->options = 0;
+             Cs2Area->repcnt = 0;
+             Cs2Area->ctrladdr = 0x41;
+             Cs2Area->track = 1;
+             Cs2Area->index = 1;
+             break;
+     case 2:
+             setStatus(CDB_STAT_NODISC);
+
+             Cs2Area->FAD = 0xFFFFFFFF;
+             Cs2Area->options = 0xFF;
+             Cs2Area->repcnt = 0xFF;
+             Cs2Area->ctrladdr = 0xFF;
+             Cs2Area->track = 0xFF;
+             Cs2Area->index = 0xFF;
+             break;
+     case 3:
+             setStatus(CDB_STAT_OPEN);
+
+             Cs2Area->FAD = 0xFFFFFFFF;
+             Cs2Area->options = 0xFF;
+             Cs2Area->repcnt = 0xFF;
+             Cs2Area->ctrladdr = 0xFF;
+             Cs2Area->track = 0xFF;
+             Cs2Area->index = 0xFF;
+             break;
+     default: break;
   }
-  if (LIKELY(IsM68KRunning))
-    {
-      savedcycles += cycles;
-      if (LIKELY((savedcycles) > 0))
-        {
-          savedcycles = savedcycles - (*m68kexecptr)(savedcycles);
-        }
-    }
-}
 
-void new_scsp_run_sample()
-{
-   s32 temp = cdda_next_in - cdda_out_left;
-   s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
-   u8 *buf = &cddabuf.data[outpos];
+  Cs2Area->infotranstype = -1;
+  Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+  Cs2Area->transfercount = 0;
+  Cs2Area->cdwnum = 0;
+  Cs2Area->getsectsize = Cs2Area->putsectsize = 2048;
+  Cs2Area->isdiskchanged = 1;
+  Cs2Area->isbufferfull = 0;
+  Cs2Area->isonesectorstored = 0;
+  Cs2Area->isaudio = 0;
 
-   s16 out_l = 0;
-   s16 out_r = 0;
+  Cs2Area->reg.CR1 = ( 0 <<8) | 'C';
+  Cs2Area->reg.CR2 = ('D'<<8) | 'B';
+  Cs2Area->reg.CR3 = ('L'<<8) | 'O';
+  Cs2Area->reg.CR4 = ('C'<<8) | 'K';
+  Cs2Area->reg.HIRQ = 0xFFFF;
+  Cs2Area->reg.HIRQMASK = 0x0000;
 
-   s16 cd_in_l = 0;
-   s16 cd_in_r = 0;
+  Cs2Area->playFAD = 0xFFFFFFFF;
+  Cs2Area->playendFAD = 0xFFFFFFFF;
+  Cs2Area->playtype = 0;
+  Cs2Area->maxrepeat = 0;
 
-   if ((s32)cdda_out_left > 0)
-   {
-      cd_in_l = (s16)((buf[1] << 8) | buf[0]);
-      cd_in_r = (s16)((buf[3] << 8) | buf[2]);
+  // set authentication variables to 0(not authenticated)
+  Cs2Area->satauth = 0;
+  Cs2Area->mpgauth = 0;
 
-      cdda_out_left -= 4;
-   }
-
-   scsp_update_timer(1);
-   generate_sample(&new_scsp, scsp.rbp, scsp.rbl, &out_l, &out_r, scsp.mvol, cd_in_l, cd_in_r);
-
-   if (new_scsp_outbuf_pos < 900)
-   {
-      new_scsp_outbuf_l[new_scsp_outbuf_pos] = out_l;
-      new_scsp_outbuf_r[new_scsp_outbuf_pos] = out_r;
-   }
-   else
-   {
-      //buffer overrun
-   }
-
-   scsp_update_monitor();
-   new_scsp_outbuf_pos++;
-}
-
-void new_scsp_exec(s32 cycles)
-{
-   s32 cycles_temp = new_scsp_cycles - cycles;
-   if (cycles_temp < 0)
-   {
-      new_scsp_run_sample();
-      cycles_temp += 512;
-   }
-   new_scsp_cycles = cycles_temp;
-}
-
-//----------------------------------------------------------------------------
-
-static s32 FASTCALL
-M68KExecBP (s32 cycles)
-{
-  s32 cyclestoexec=cycles;
-  s32 cyclesexecuted=0;
-  int i;
-
-  while (cyclesexecuted < cyclestoexec)
-    {
-      // Make sure it isn't one of our breakpoints
-      for (i = 0; i < ScspInternalVars->numcodebreakpoints; i++)
-        {
-          if ((M68K->GetPC () == ScspInternalVars->codebreakpoint[i].addr) &&
-              ScspInternalVars->inbreakpoint == 0)
-            {
-              ScspInternalVars->inbreakpoint = 1;
-              if (ScspInternalVars->BreakpointCallBack)
-                ScspInternalVars->BreakpointCallBack (ScspInternalVars->codebreakpoint[i].addr);
-              ScspInternalVars->inbreakpoint = 0;
-            }
-        }
-
-      // execute instructions individually
-      cyclesexecuted += M68K->Exec(1);
-
-    }
-  return cyclesexecuted;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspConvert32uto16s (s32 *srcL, s32 *srcR, s16 *dst, u32 len)
-{
-  u32 i;
-
-  for (i = 0; i < len; i++)
-    {
-      // Left Channel
-      if (*srcL > 0x7FFF)
-        *dst = 0x7FFF;
-      else if (*srcL < -0x8000)
-        *dst = -0x8000;
-      else
-        *dst = *srcL;
-
-      srcL++;
-      dst++;
-
-      // Right Channel
-      if (*srcR > 0x7FFF)
-        *dst = 0x7FFF;
-      else if (*srcR < -0x8000)
-        *dst = -0x8000;
-      else
-        *dst = *srcR;
-
-      srcR++;
-      dst++;
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspReceiveCDDA (const u8 *sector)
-{
-   // If buffer is half empty or less, boost timing for a bit until we've buffered a few sectors
-   if (cdda_out_left < (sizeof(cddabuf.data) / 2))
-   {
-      Cs2Area->isaudio = 0;
-      Cs2SetTiming(1);
-		Cs2Area->isaudio = 1;
-   }
-	else if (cdda_out_left > (sizeof(cddabuf.data) * 3 / 4 ))
-		Cs2SetTiming(0);
-   else
-   {
-      Cs2Area->isaudio = 1;
-      Cs2SetTiming(1);
-   }
-
-  memcpy(cddabuf.data+cdda_next_in, sector, 2352);
-  if (sizeof(cddabuf.data)-cdda_next_in <= 2352)
-     cdda_next_in = 0;
-  else
-     cdda_next_in += 2352;
-
-  cdda_out_left += 2352;
-
-  if (cdda_out_left > sizeof(cddabuf.data))
-    {
-      SCSPLOG ("WARNING: CDDA buffer overrun\n");
-      cdda_out_left = sizeof(cddabuf.data);
-    }
-}
-
-
-void new_scsp_update_samples(s32 *bufL, s32 *bufR, int scspsoundlen)
-{
-   int i;
-   for (i = 0; i < new_scsp_outbuf_pos; i++)
-   {
-      if (i >= scspsoundlen)
-         break;
-
-      bufL[i] = new_scsp_outbuf_l[i];
-      bufR[i] = new_scsp_outbuf_r[i];
-   }
-
-   new_scsp_outbuf_pos = 0;
-}
-
-void ScspLockThread() {
-  g_scsp_lock = 1;
-}
-
-void ScspUnLockThread() {
-  g_scsp_lock = 0;
-}
-
-
-//////////////////////////////////////////////////////////////////////////////
-
-u64 newCycles = 0;
-
-/* Line-level synchronisation between the main thread (SH2) and the sound
-   thread (68000 + SCSP).
-
-   The main thread used to hand the sound thread a whole frame of cycles at
-   the start of each frame. The sound thread then ran that frame as fast as
-   the host allowed and waited for the next one, so within a frame the 68000
-   was anywhere between one frame ahead of the SH2 and idle. A command the
-   SH2 posted to the sound CPU after that point was only seen at the next
-   frame, up to 16.7 ms late.
-
-   Independence Day depends on the 68000 answering within about 1.7 ms: on
-   the intro FMV the SH2 posts "play sound 0Ah on slot 0" to its 68000
-   program (sound RAM 400h), then 27 lines later programs slot 0 itself for
-   the movie's audio stream (16-bit, looped, LEA = 52B0h, 22 kHz). On the
-   hardware the 68000 has set up sound 0Ah by then and the SH2's settings
-   win. In Kronos the 68000 ran the command on the next frame and overwrote
-   slot 0 with sound 0Ah's 8-bit one-shot, which then played the 16-bit
-   stream as noise for 0.72 s and stopped: no FMV audio, only crackles.
-
-   The cycles are now fed line by line (YabauseEmulate), and every few lines
-   the main thread waits until the sound thread has run what it was given
-   (ScspSyncToLine). The 68000 thus stays within a few lines of the SH2. */
-static volatile u64 scsp_pending_inc = 0;   /* cycles taken but not yet run */
-static volatile int scsp_frame_wait = 0;    /* sound thread parked at frame end */
-
-void* ScspAsynMainCpu( void * p ){
-
-  const int samplecnt = 256; // 11289600/44100
-  int frame = 0;
-  u64 cycleRequest = 0;
-  u64 m68k_inc = 0; //how much remaining samples should be played
-
-  while (thread_running)
+  // clear filter conditions
+  for (i = 0; i < MAX_SELECTORS; i++)
   {
-    /* End of the frame in 68000 cycles. Read under g_scsp_set_cyc_mtx each
-       time cycles are taken: the main thread sets the sample count of the
-       frame before it hands out its first cycles. */
-    int framecnt = (int)(scsp_frame_samples * samplecnt);
-    while (g_scsp_lock)
+     Cs2Area->filter[i].FAD = 0;
+     Cs2Area->filter[i].range = 0xFFFFFFFF;
+     Cs2Area->filter[i].mode = 0;
+     Cs2Area->filter[i].chan = 0;
+     Cs2Area->filter[i].smmask = 0;
+     Cs2Area->filter[i].cimask = 0;
+     Cs2Area->filter[i].fid = 0;
+     Cs2Area->filter[i].smval = 0;
+     Cs2Area->filter[i].cival = 0;
+     Cs2Area->filter[i].condtrue = i;
+     Cs2Area->filter[i].condfalse = 0xFF;
+  }
+
+  // clear partitions
+  for (i = 0; i < MAX_SELECTORS; i++)
+  {
+     Cs2Area->partition[i].size = -1;
+     Cs2Area->partition[i].numblocks = 0;
+
+     for (i2 = 0; i2 < MAX_BLOCKS; i2++)
+     {
+        Cs2Area->partition[i].block[i2] = NULL;
+        Cs2Area->partition[i].blocknum[i2] = 0xFF;
+     }
+  }
+
+  // clear blocks
+  for (i = 0; i < MAX_BLOCKS; i++)
+  {
+     Cs2Area->block[i].size = -1;
+     memset(Cs2Area->block[i].data, 0, 2352);
+  }
+	//ST-040-R4-051795, §5.3 « Reset Selector (command 0x48) », tableau des flags :
+	//bit 2 = 1 → reset buffer data, all blocks freed, freespace = MAX
+  Cs2Area->blockfreespace = MAX_BLOCKS;
+
+  // initialize TOC
+ // memset(Cs2Area->TOC, 0xFF, sizeof(Cs2Area->TOC));
+
+  // clear filesystem stuff
+  Cs2Area->curdirsect = 0;
+  Cs2Area->curdirsize = 0;
+  Cs2Area->curdirfidoffset = 0;
+  memset(&Cs2Area->fileinfo, 0, sizeof(Cs2Area->fileinfo));
+  Cs2Area->numfiles = 0;
+
+  Cs2Area->lastbuffer = 0xFF;
+
+  Cs2Area->_command = 0;
+  Cs2Area->_statuscycles = 0;
+  Cs2Area->_statustiming = 1000000;
+  Cs2Area->_periodiccycles = 0;
+  Cs2Area->_periodictiming = 0;
+  Cs2Area->_seekToStop = 0;
+  Cs2Area->_commandtiming = 0;
+  Cs2Area->nextStatus = 0xFF;
+  Cs2SetTiming(0);
+
+  // MPEG specific stuff
+  Cs2Area->mpegcon[0].audcon = Cs2Area->mpegcon[0].vidcon = 0x00;
+  Cs2Area->mpegcon[0].audlay = Cs2Area->mpegcon[0].vidlay = 0x00;
+  Cs2Area->mpegcon[0].audbufnum = Cs2Area->mpegcon[0].vidbufnum = 0xFF;
+  Cs2Area->mpegcon[1].audcon = Cs2Area->mpegcon[1].vidcon = 0x00;
+  Cs2Area->mpegcon[1].audlay = Cs2Area->mpegcon[1].vidlay = 0x00;
+  Cs2Area->mpegcon[1].audbufnum = Cs2Area->mpegcon[1].vidbufnum = 0xFF;
+
+  // should verify the following
+  Cs2Area->mpegstm[0].audstm = Cs2Area->mpegstm[0].vidstm = 0x00;
+  Cs2Area->mpegstm[0].audstmid = Cs2Area->mpegstm[0].vidstmid = 0x00;
+  Cs2Area->mpegstm[0].audchannum = Cs2Area->mpegstm[0].vidchannum = 0x00;
+  Cs2Area->mpegstm[1].audstm = Cs2Area->mpegstm[1].vidstm = 0x00;
+  Cs2Area->mpegstm[1].audstmid = Cs2Area->mpegstm[1].vidstmid = 0x00;
+  Cs2Area->mpegstm[1].audchannum = Cs2Area->mpegstm[1].vidchannum = 0x00;
+
+}
+
+
+void Cs2ForceOpenTray(){
+	if (Cs2Area && Cs2Area->cdi){
+		Cs2Area->cdi->SetStatus(CDCORE_OPEN);
+		Cs2Reset();
+	}
+};
+
+int Cs2ForceCloseTray( int coreid, const char * cdpath ){
+  int ret = 0;
+   if (Cs2Area == NULL) {
+     return -1;
+   }
+   if ((ret = Cs2ChangeCDCore(coreid, cdpath)) != 0) {
+     return ret;
+   }
+  Cs2Reset();
+
+  if (yabsys.emulatebios)
+  {
+	  if (YabauseQuickLoadGame() != 0)
+	  {
+		  YabSetError(YAB_ERR_CANNOTINIT, _("Game"));
+		  return -2;
+	  }
+  }
+  Cs2Area->cdi->SetStatus(CDCORE_NORMAL);
+  Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+  return 0;
+};
+
+
+//////////////////////////////////////////////////////////////////////////////
+static int Cs2Exec_CMD_unit(u32 timing) {
+  if (Cs2Area->_commandtiming > 0)
+  {
+    if (Cs2Area->_commandtiming <= timing)
     {
-	    YabThreadUSleep(1000);
+      Cs2Execute();
+      Cs2Area->_commandtiming = 0;
+      return 1;
     }
+    else
+      Cs2Area->_commandtiming -= timing;
+  }
+  return 0;
+}
 
-    YabThreadLock(g_scsp_set_cyc_mtx);
-    cycleRequest = newCycles;
-    newCycles = 0;
-    m68k_inc += cycleRequest;
-    scsp_pending_inc = m68k_inc;
-    framecnt = (int)(scsp_frame_samples * samplecnt);
-    YabThreadUnLock(g_scsp_set_cyc_mtx);
-    if (cycleRequest == 0){
-      YabThreadCondWait(g_scsp_set_cyc_cond, g_scsp_set_cond_mtx);
-      YabThreadLock(g_scsp_set_cyc_mtx);
-      cycleRequest = newCycles;
-      newCycles = 0;
-      m68k_inc += cycleRequest;
-      scsp_pending_inc = m68k_inc;
-      framecnt = (int)(scsp_frame_samples * samplecnt);
-      YabThreadUnLock(g_scsp_set_cyc_mtx);
-    }
+/* 1 if FAD lies in an audio track (TOC control nibble without the data bit,
+ * 0x40 of the control/ADR byte). CD-DA sectors go to the audio output, not to
+ * the CD buffer (Cs2ReadFilteredSector), so a full buffer must not hold them. */
+static int Cs2FADIsAudio(u32 fad) {
+  const u8 t = Cs2FADToTrack(fad);
+  if (t == 0 || t == 0xFF || t > 99) return 0;
+  return ((Cs2Area->TOC[t - 1] >> 24) & 0x40) == 0;
+}
 
-    // Sync 44100KHz
-    while (m68k_inc >= samplecnt)
-    {
-      m68k_inc = m68k_inc - samplecnt;
-      MM68KExec(samplecnt);
-      new_scsp_exec((samplecnt << 1));
-      scsp_pending_inc = m68k_inc;
+extern void SthNote(const char *fmt, ...);
+static void Cs2Exec_unit(u32 timing) {
+  {
+    /* INSTRUMENTATION Steam Hearts v3 : changements de statut du lecteur */
+    static u8 last_st = 0xFF;
+    if ((Cs2Area->status & 0x0F) != (last_st & 0x0F))
+      SthNote("  f%05u l%3d STATUT %02X -> %02X FAD=%06X play=%06X-%06X libre=%u plein=%d isaudio=%d audio(FAD)=%d\n",
+              (unsigned)yabsys.frame_count, (int)yabsys.LineCount, last_st, Cs2Area->status, Cs2Area->FAD,
+              Cs2Area->playFAD, Cs2Area->playendFAD, (unsigned)Cs2Area->blockfreespace,
+              Cs2Area->isbufferfull, Cs2Area->isaudio, Cs2FADIsAudio(Cs2Area->FAD));
+    last_st = Cs2Area->status;
+  }
+   Cs2Area->_statuscycles += timing * 3;
+   Cs2Area->_periodiccycles += timing * 3;
 
-      frame += samplecnt;
-      if (frame >= framecnt)
+   if (Cs2Area->_statuscycles >= Cs2Area->_statustiming)
+   {
+      Cs2Area->_statuscycles -= Cs2Area->_statustiming;
+      switch(Cs2Area->cdi->GetStatus())
       {
-        frame = frame - framecnt;
-        ScspInternalVars->scsptiming2 = 0;
-        ScspInternalVars->scsptiming1 = scsplines;
-        ScspExecAsync();
-        scsp_frame_wait = 1;
-        YabSemPost(g_scsp_ready);
-        // YabThreadYield();
-        YabSemWait(g_cpu_ready);
-        m68k_inc = 0;
-        scsp_pending_inc = 0;
-        scsp_frame_wait = 0;
-        break;
+         case 0:
+         case 1:
+            if ((Cs2Area->status & 0xF) == CDB_STAT_NODISC ||
+                (Cs2Area->status & 0xF) == CDB_STAT_OPEN)
+            {
+               setStatus(CDB_STAT_PAUSE);
+               Cs2Area->isdiskchanged = 1;
+            }
+            break;
+         case 2:
+            // may need to change this
+            if ((Cs2Area->status & 0xF) != CDB_STAT_NODISC)
+               setStatus(CDB_STAT_NODISC);
+            break;
+         case 3:
+            // may need to change this
+            if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN)
+               setStatus(CDB_STAT_OPEN);
+            break;
+         default: break;
+      }
+   }
+
+   if (Cs2Area->_periodiccycles >= Cs2Area->_periodictiming)
+   {
+      Cs2Area->_periodiccycles -= Cs2Area->_periodictiming;
+
+      Cs2Area->_periodictiming = 0;
+      Cs2Area->status |= CDB_STAT_PERI;
+      // Get Drive's current status and compare with old status
+      /* seek done, reading under a SEEK status: run the PLAY logic */
+      switch (((Cs2Area->status & 0xF) == CDB_STAT_SEEK && Cs2SeekReading) ? CDB_STAT_PLAY : (Cs2Area->status & 0xF)) {
+         case CDB_STAT_PAUSE:
+         {
+             break;
+         }
+         case CDB_STAT_PLAY:
+         {
+            partition_struct * playpartition;
+            if (Cs2PlayEndPending) {
+              /* the previous report stored the last sector (see Cs2BeginPlayEnd) */
+              Cs2SeekReading = 0;
+              Cs2PlayEndMet();
+              Cs2SetTiming(1);
+              break;
+            }
+            if (Cs2SeekReading == 2) {
+              /* the previous report processed the first sector: PLAY now */
+              Cs2SeekReading = 0;
+              setStatus(CDB_STAT_PLAY);
+            }
+            CDLOG("Effective Read %x \n", Cs2Area->FAD);
+            int ret = Cs2ReadFilteredSector(Cs2Area->FAD, &playpartition);
+            switch (ret)
+            {
+               case 0:
+                  // Sector Read OK
+                  Cs2Area->FAD++;
+                  Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+                  Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
+                  Cs2SetTiming(1); //As we read one disc sector, we need to wait a while to simulate disc speed
+                  if (Cs2SeekReading == 1)
+                     Cs2SeekReading = 2;   /* first sector processed, this report still SEEK */
+
+                  if (playpartition != NULL)
+                  {
+                     // We can use this sector
+                     CDLOG("partition number = %d blocks = %d blockfreespace = %d fad = %x playpartition->size = %x isbufferfull = %x IRQMAsk %x\n",
+                       (playpartition - Cs2Area->partition),
+                       playpartition->numblocks,
+                       Cs2Area->blockfreespace, Cs2Area->FAD, playpartition->size, Cs2Area->isbufferfull, Cs2Area->reg.HIRQMASK);
+
+                     Cs2SetIRQ(CDB_HIRQ_CSCT);
+                     Cs2Area->isonesectorstored = 1;
+
+					 if (Cs2Area->isbufferfull) {
+						 CDLOG("BUFFER IS FULL\n");
+						 Cs2SeekReading = 0;   /* a real SEEK (buffer full), not reading */
+						 setStatus(CDB_STAT_SEEK);
+						 Cs2Area->nextStatus = 0xFF;
+						 Cs2Area->options = 0x00;
+					 }
+
+                     if (Cs2Area->FAD >= Cs2Area->playendFAD) {
+                        // Make sure we don't have to do a repeat
+                        if (Cs2Area->repcnt >= Cs2Area->maxrepeat) {
+                           // we're done: BUSY, then PAUSE + PEND two
+                           // periodic reports later (see Cs2BeginPlayEnd)
+                           Cs2BeginPlayEnd((Cs2Area->playtype == CDB_PLAYTYPE_FILE) ?
+                                (CDB_HIRQ_PEND | CDB_HIRQ_EFLS | CDB_HIRQ_EHST) : // EHST: Assault Leynos 2
+                                CDB_HIRQ_PEND);
+
+                           CDLOG("PLAY HAS ENDED\n");
+                        }
+                        else {
+
+                           Cs2Area->FAD = Cs2Area->playFAD;
+                           if (Cs2Area->repcnt < 0xE)
+                              Cs2Area->repcnt++;
+                           Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+
+                           CDLOG("PLAY HAS REPEATED\n");
+                        }
+                     }
+
+                  }
+                  else
+                  {
+                     CDLOG("Sector filtered out\n");
+                     if (Cs2Area->FAD >= Cs2Area->playendFAD) {
+                        // Make sure we don't have to do a repeat
+                        if (Cs2Area->repcnt >= Cs2Area->maxrepeat) {
+                           // we're done (see Cs2BeginPlayEnd)
+                           Cs2BeginPlayEnd((Cs2Area->playtype == CDB_PLAYTYPE_FILE) ?
+                                (CDB_HIRQ_PEND | CDB_HIRQ_EFLS) : CDB_HIRQ_PEND);
+
+                           CDLOG("PLAY HAS ENDED\n");
+                        }
+                        else {
+                           Cs2Area->FAD = Cs2Area->playFAD;
+                           if (Cs2Area->repcnt < 0xE)
+                              Cs2Area->repcnt++;
+                           Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+
+                           CDLOG("PLAY HAS REPEATED\n");
+                        }
+                     }
+                  }
+                  break;
+               case -1:
+                  // Things weren't setup correctly
+                  break;
+               case -2:
+                  // Do a read retry
+                  break;
+            }
+
+            break;
+         }
+		 case CDB_STAT_SEEK:{
+			/* A full buffer only stops sectors that would be stored in it.
+			   CD-DA is played to the audio output: ST-162 / STTECH08 describe the
+			   buffer-full PAUSE for CD reads. Steam-Heart's switches its music
+			   from a data stream to CD-DA track 4 while the buffer is still full
+			   of stream sectors it no longer reads: the drive stayed in SEEK and
+			   the CD-DA never started (no in-game music). */
+			if (!Cs2Area->isbufferfull || Cs2FADIsAudio(Cs2Area->FAD)) {
+				/* the status stays SEEK until a sector has been processed
+				   (see Cs2SeekReading); the next reports read sectors */
+				Cs2SeekReading = 1;
+				Cs2Area->_periodiccycles = 0;
+				Cs2SetTiming(1);          // ← AJOUT : timing lecture, pas seek
+				Cs2Area->options = 0x8;
+			}
+			break;
+    		 }
+         case CDB_STAT_SCAN:
+            break;
+         case CDB_STAT_RETRY:
+            break;
+         case CDB_STAT_BUSY:
+            if (Cs2PlayEndReports > 0) {
+              /* end of a play range: see Cs2BeginPlayEnd */
+              if (--Cs2PlayEndReports > 0) {
+                Cs2SetTiming(1);   /* drive still turning at sector rate */
+                break;
+              }
+              setStatus(CDB_STAT_PAUSE);
+              Cs2Area->nextStatus = 0xFF;
+              Cs2Area->status &= ~CDB_STAT_PERI;
+              Cs2SetIRQ(Cs2PlayEndIrqs);
+              Cs2PlayEndIrqs = 0;
+              break;
+            }
+            setStatus(Cs2Area->nextStatus);
+            Cs2Area->nextStatus = 0xFF;
+            Cs2Area->status &= ~CDB_STAT_PERI;
+            // doCDReport(Cs2Area->status);
+            break;
+         default: break;
+      }
+
+      // Si l'etat courant n'a pas redefini la cadence (PAUSE/SCAN/RETRY/BUSY/...),
+      // _periodictiming reste a 0 et le periodique se re-declencherait a CHAQUE
+      // appel de Cs2Exec (flood de doCDReport + SCDQ, ~par scanline au lieu de
+      // ~13.3 ms). Cela arrive notamment apres une lecture CD-DA qui se termine
+      // en PAUSE. On retombe sur la cadence "non-playing" standard (cf. Cs2SetTiming(0)).
+      if (Cs2Area->_periodictiming == 0)
+         Cs2Area->_periodictiming = 50000; // 16666.6.. us * 3
+
+      if (Cs2Area->_command) {
+        Cs2Area->status &= ~CDB_STAT_PERI;
+        return;
+      }
+
+      // adjust registers appropriately here(fix me)
+      doCDReport(Cs2Area->status);
+      Cs2SetIRQ(CDB_HIRQ_SCDQ);
+   }
+
+#if 0
+   // This stuff need to go elsewhere
+   if(Cs2Area->carttype == CART_NETLINK)
+      NetlinkExec(timing);
+   else if (Cs2Area->carttype == CART_JAPMODEM)
+      JapModemExec(timing);
+#endif
+}
+
+void Cs2Exec(u32 timing) {
+  int cycles = 0;
+  for (int i = 0; i<timing; i++) {
+    cycles++;
+    if (Cs2Exec_CMD_unit(1) == 1) {
+      Cs2Exec_unit(cycles);
+      cycles = 0;
+    }
+  }
+  Cs2Exec_unit(cycles);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Returns the number of (emulated) microseconds before the next sector
+ * will have been completely read in */
+int Cs2GetTimeToNextSector(void) {
+   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY && !Cs2SeekReading) {
+      return 0;
+   } else {
+      // Round up, since the caller wants to know when it'll be safe to check
+      int time = (Cs2Area->_periodictiming - Cs2Area->_periodiccycles + 2) / 3;
+      return time<0 ? 0 : time;
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Cadence de lecture : CD-DA en vitesse standard (1x), donnees CD-ROM en
+ * double vitesse (2x).
+ *
+ * Le bit 4 du drapeau d'Initialize CD System (vitesse standard, memorise dans
+ * speed1x) n'est plus applique, comme dans Mednafen (ss/cdb.c, COMMAND_INIT :
+ * "CD read speed (unused?)") et Ymir (cdblock.cpp, CmdInitializeCDSystem :
+ * selection 1x laissee en commentaire, bit 7 = keepSettings). ST-162 (1.7)
+ * donne au bit 7 le sens "1 : aucun changement" ; 3D Mission Shooting envoie
+ * 90 puis attend un flux a 2x. Kronos lisait ses videos en 1x, 80 secteurs
+ * par seconde au lieu de 150 : videos lentes et hachees.
+ * ST-162 1.7 (d) : le CD-DA est toujours lu en vitesse standard. */
+void Cs2SetTiming(int playing) {
+  if (playing) {
+     if (Cs2Area->isaudio) {
+       Cs2Area->_periodictiming = 40000;  // 13333.333... * 3
+     }
+     else {
+       Cs2Area->_periodictiming = 20000;  // 6666.666... * 3
+     }
+  }
+  else {
+     Cs2Area->_periodictiming = 50000;  // 16666.666... * 3
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetCommandTiming(u8 cmd) {
+   switch(cmd) {
+      default:
+               Cs2Area->_commandtiming = 1;
+               break;
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* ============ INSTRUMENTATION Steam Hearts v3 (temporaire) ============
+ * Chaque commande du bloc CD sauf GetStatus (00), registres entree/sortie,
+ * statut, FAD, plage, repetition, tampon. */
+#include <string.h>
+extern void SthNote(const char *fmt, ...);
+static void Cs2Execute_body(void);
+void Cs2Execute(void) {
+  const u16 i1 = Cs2Area->reg.CR1, i2 = Cs2Area->reg.CR2, i3 = Cs2Area->reg.CR3, i4 = Cs2Area->reg.CR4;
+  Cs2Execute_body();
+  {
+    /* commandes identiques consecutives (entree et sortie) : comptees, pas
+     * reecrites (GetSectorNumber en boucle remplissait la trace) */
+    static u16 p[8]; static u32 rep = 0;
+    u16 c[8] = { i1, i2, i3, i4, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4 };
+    if ((i1 >> 8) == 0x00) goto sth_skip;
+    if (memcmp(p, c, sizeof(c)) == 0) { rep++; goto sth_skip; }
+    if (rep) SthNote("  ... commande precedente repetee %u fois\n", (unsigned)rep);
+    rep = 0;
+    memcpy(p, c, sizeof(c));
+  }
+  if ((i1 >> 8) != 0x00)
+    SthNote("  f%05u l%3d CMD %02X in=%04X %04X %04X %04X out=%04X %04X %04X %04X HIRQ=%04X st=%02X FAD=%06X play=%06X-%06X rep=%X/%X libre=%u plein=%d\n",
+            (unsigned)yabsys.frame_count, (int)yabsys.LineCount, i1 >> 8, i1, i2, i3, i4,
+            Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4, Cs2Area->reg.HIRQ,
+            Cs2Area->status, Cs2Area->FAD, Cs2Area->playFAD, Cs2Area->playendFAD,
+            Cs2Area->repcnt, Cs2Area->maxrepeat, (unsigned)Cs2Area->blockfreespace, Cs2Area->isbufferfull);
+sth_skip: ;
+}
+static void Cs2Execute_body(void) {
+  u16 instruction = Cs2Area->reg.CR1 >> 8;
+
+  //Cs2Area->reg.HIRQ &= ~CDB_HIRQ_CMOK;
+
+  switch (instruction) {
+    case 0x00:
+      //CDLOG("cs2\t: Command: getStatus\n");
+      Cs2GetStatus();
+      //CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x01:
+      CDLOG("cs2\t: Command: getHardwareInfo\n");
+      Cs2GetHardwareInfo();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x02:
+      CDLOG("cs2\t: Command: getToc\n");
+      Cs2GetToc();
+      break;
+    case 0x03:
+      CDLOG("cs2\t: Command: getSessionInfo\n");
+      Cs2GetSessionInfo();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x04:
+      CDLOG("cs2\t: Command: initializeCDSystem %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2InitializeCDSystem();
+      break;
+    case 0x05:
+       CDLOG("cs2\t: Command: Open Tray %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+       Cs2OpenTray();
+       break;
+    case 0x06:
+      CDLOG("cs2\t: Command: endDataTransfer %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2EndDataTransfer();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x10:
+      CDLOG("cs2\t: Command: playDisc %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2PlayDisc();
+      break;
+    case 0x11:
+      CDLOG("cs2\t: Command: seekDisc %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SeekDisc();
+      break;
+    case 0x12:
+      CDLOG("cs2\t: Command: Scan Disc %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ScanDisc();
+      break;
+    case 0x20:
+      CDLOG("cs2\t: Command: getSubcodeQRW %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetSubcodeQRW();
+      break;
+    case 0x30:
+      CDLOG("cs2\t: Command: setCDDeviceConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetCDDeviceConnection();
+      break;
+	case 0x31:
+    CDLOG("cs2\t: Command: Get CD Device Connection\n");
+    Cs2GetCDDeviceConnection();   // était: Cs2SetCDDeviceConnection()
+    CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n",
+          Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2,
+          Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+    break;
+    case 0x32:
+      CDLOG("cs2\t: Command: getLastBufferDestination %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetLastBufferDestination();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x40:
+      CDLOG("cs2\t: Command: setFilterRange %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetFilterRange();
+      break;
+    case 0x41:
+      CDLOG("cs2\t: Command: Get Filter Range\n");
+      Cs2GetFilterRange();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x42:
+      CDLOG("cs2\t: Command: setFilterSubheaderConditions %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetFilterSubheaderConditions();
+      break;
+    case 0x43:
+      CDLOG("cs2\t: Command: getFilterSubheaderConditions\n");
+      Cs2GetFilterSubheaderConditions();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x44:
+      CDLOG("cs2\t: Command: setFilterMode %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetFilterMode();
+      break;
+    case 0x45:
+      CDLOG("cs2\t: Command: getFilterMode\n");
+      Cs2GetFilterMode();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x46:
+      CDLOG("cs2\t: Command: setFilterConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetFilterConnection();
+      break;
+    case 0x47:
+       CDLOG("cs2\t: Command: getFilterConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+       Cs2GetFilterConnection();
+       CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+       break;
+    case 0x48:
+      CDLOG("cs2\t: Command: resetSelector %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ResetSelector();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x50:
+      CDLOG("cs2\t: Command: getBufferSize\n");
+      Cs2GetBufferSize();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x51:
+      CDLOG("cs2\t: Command: getSectorNumber %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetSectorNumber();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x52:
+      CDLOG("cs2\t: Command: calculateActualSize %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2CalculateActualSize();
+      break;
+    case 0x53:
+      CDLOG("cs2\t: Command: getActualSize\n");
+      Cs2GetActualSize();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x54:
+      CDLOG("cs2\t: Command: getSectorInfo %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetSectorInfo();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x55:
+      CDLOG("cs2\t: Command: Exec FAD Search %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ExecFadSearch();
+      break;
+    case 0x56:
+      CDLOG("cs2\t: Command: Get FAD Search Results %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetFadSearchResults();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x60:
+      CDLOG("cs2\t: Command: setSectorLength %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2SetSectorLength();
+      break;
+    case 0x61:
+      CDLOG("cs2\t: Command: getSectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetSectorData();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x62:
+      CDLOG("cs2\t: Command: deleteSectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2DeleteSectorData();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x63:
+      CDLOG("cs2\t: Command: getThenDeleteSectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetThenDeleteSectorData();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x64:
+      CDLOG("cs2\t: Command: putSectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2PutSectorData();
+      break;
+    case 0x65:
+      CDLOG("cs2\t: Command: copySectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2CopySectorData();
+      break;
+    case 0x66:
+      CDLOG("cs2\t: Command: moveSectorData %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MoveSectorData();
+      break;
+    case 0x67:
+      CDLOG("cs2\t: Command: getCopyError\n");
+      Cs2GetCopyError();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x70:
+      CDLOG("cs2\t: Command: changeDirectory %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ChangeDirectory();
+      break;
+    case 0x71:
+      CDLOG("cs2\t: Command: readDirectory %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ReadDirectory();
+      break;
+    case 0x72:
+      CDLOG("cs2\t: Command: getFileSystemScope\n");
+      Cs2GetFileSystemScope();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x73:
+      CDLOG("cs2\t: Command: getFileInfo %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetFileInfo();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x74:
+      CDLOG("cs2\t: Command: readFile %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2ReadFile();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x75:
+      CDLOG("cs2\t: Command: abortFile\n");
+      Cs2AbortFile();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x90:
+      CDLOG("cs2\t: Command: mpegGetStatus\n");
+      Cs2MpegGetStatus();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x91:
+      CDLOG("cs2\t: Command: mpegGetInterrupt\n");
+      Cs2MpegGetInterrupt();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x92:
+      CDLOG("cs2\t: Command: mpegSetInterruptMask %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2);
+      Cs2MpegSetInterruptMask();
+      break;
+    case 0x93:
+      CDLOG("cs2\t: Command: mpegInit %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2);
+      Cs2MpegInit();
+      break;
+    case 0x94:
+      CDLOG("cs2\t: Command: mpegSetMode %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3);
+      Cs2MpegSetMode();
+      break;
+    case 0x95:
+      CDLOG("cs2\t: Command: mpegPlay %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR4);
+      Cs2MpegPlay();
+      break;
+    case 0x96:
+      CDLOG("cs2\t: Command: mpegSetDecodingMethod %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR4);
+      Cs2MpegSetDecodingMethod();
+      break;
+    case 0x9A:
+      CDLOG("cs2\t: Command: mpegSetConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetConnection();
+      break;
+    case 0x9B:
+      CDLOG("cs2\t: Command: mpegGetConnection\n");
+      Cs2MpegGetConnection();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x9D:
+      CDLOG("cs2\t: Command: mpegSetStream %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetStream();
+      break;
+    case 0x9E:
+      CDLOG("cs2\t: Command: mpegGetStream\n");
+      Cs2MpegGetStream();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0xA0:
+      CDLOG("cs2\t: Command: mpegDisplay %04x %04x %04x \n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2);
+      Cs2MpegDisplay();
+      break;
+    case 0xA1:
+      CDLOG("cs2\t: Command: mpegSetWindow %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetWindow();
+      break;
+    case 0xA2:
+      CDLOG("cs2\t: Command: mpegSetBorderColor %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2);
+      Cs2MpegSetBorderColor();
+      break;
+    case 0xA3:
+      CDLOG("cs2\t: Command: mpegSetFade %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2);
+      Cs2MpegSetFade();
+      break;
+    case 0xA4:
+      CDLOG("cs2\t: Command: mpegSetVideoEffects %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetVideoEffects();
+      break;
+    case 0xAF:
+      CDLOG("cs2\t: Command: mpegSetLSI %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetLSI();
+      break;
+    case 0xE0:
+      CDLOG("cs2\t: Command: authenticateDevice %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2AuthenticateDevice();
+      break;
+    case 0xE1:
+      CDLOG("cs2\t: Command: isDeviceAuthenticated %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2IsDeviceAuthenticated();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0xE2:
+      CDLOG("cs2\t: Command: getMPEGRom %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2GetMPEGRom();
+      break;
+    default:
+      CDLOG("cs2\t: Command %02x not implemented\n", instruction);
+      break;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetStatus(void) {
+  doCDReport(Cs2Area->status);
+  Cs2Area->reg.HIRQ |= CDB_HIRQ_CMOK;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetHardwareInfo(void) {
+  if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN && (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
+     Cs2Area->isdiskchanged = 0;
+
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  // hardware flags/CD Version
+  //Cs2Area->reg.CR2 = 0x0201; // mpeg card exists
+  Cs2Area->reg.CR2 = 0x0001; // No mpeg card exists
+  // mpeg version, it actually is required(at least by the bios)
+
+  if (Cs2Area->mpgauth)
+     Cs2Area->reg.CR3 = 0x1;
+  else
+     Cs2Area->reg.CR3 = 0;
+
+  // drive info/revision
+  Cs2Area->reg.CR4 = 0x0400;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetToc(void) {
+    Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+	// ST-040-R4-051795, §6.4 « Get TOC (command 0x02) » :
+	// À l'issue de la commande, le flag Disc Changed doit être effacé si la lecture TOC réussit.
+    Cs2Area->isdiskchanged = 0;
+
+    Cs2Area->transfercount = 0;
+    Cs2Area->infotranstype = 0;
+
+    /* Get TOC only prepares a data transfer: it does not touch the drive.
+       Mednafen (ss/cdb.c, COMMAND_GET_TOC) answers with the current status
+       plus DTREQ (TRNS, 40h) and leaves the drive phase alone. Kronos forced
+       BUSY -> PAUSE here, which stopped any seek or play in progress: Mass
+       Destruction reads the TOC every frame while it starts its in-game
+       music (Play track 7 index 0, repeat 15, Play command 10h with
+       CR1-CR4 = 1000 0700 0F00 0700), so the seek to FAD 021A2A was cut
+       to PAUSE each frame and the CD-DA never played. */
+    Cs2Area->reg.CR1 = (Cs2Area->status | CDB_STAT_TRNS) << 8;
+    Cs2Area->reg.CR2 = 0xCC;
+    Cs2Area->reg.CR3 = 0x0;
+    Cs2Area->reg.CR4 = 0x0;
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetSessionInfo(void) {
+
+  switch (Cs2Area->reg.CR1 & 0xFF) {
+    case 0:
+            Cs2Area->reg.CR3 = (u16)(0x0100 | ((Cs2Area->TOC[101] & 0xFF0000) >> 16));
+            Cs2Area->reg.CR4 = (u16)Cs2Area->TOC[101];
+            break;
+    case 1:
+            Cs2Area->reg.CR3 = 0x0100; // return Session number(high byte)/and first byte of Session lba
+            Cs2Area->reg.CR4 = 0; // lower word of Session lba
+            break;
+    default:
+            Cs2Area->reg.CR3 = 0xFFFF;
+            Cs2Area->reg.CR4 = 0xFFFF;
+            break;
+  }
+  /* Get Session Info does not touch the drive either (Mednafen,
+     COMMAND_GET_SESSINFO: current status, no phase change); forcing PAUSE
+     here stopped a play in progress the same way as Get TOC did. */
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  Cs2Area->reg.CR2 = 0;
+
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2InitializeCDSystem(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+  u16 val = 0;
+  u8 initflag = Cs2Area->reg.CR1 & 0xFF;
+
+  Cs2Area->nextStatus = 0xFF;
+
+  if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN && (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
+  {
+     setStatus(CDB_STAT_PAUSE);
+     Cs2Area->FAD = 150;
+  }
+
+  if (initflag & 0x1)
+  {
+    int i, i2;
+    Cs2Area->playFAD = 0xFFFFFFFF;
+    Cs2Area->playendFAD = 0xFFFFFFFF;
+    Cs2Area->playtype = 0;
+    Cs2Area->maxrepeat = 0;
+
+    // set authentication variables to 0(not authenticated)
+    Cs2Area->satauth = 0;
+    Cs2Area->mpgauth = 0;
+
+    // clear filter conditions
+    for (i = 0; i < MAX_SELECTORS; i++)
+    {
+      Cs2Area->filter[i].FAD = 0;
+      Cs2Area->filter[i].range = 0xFFFFFFFF;
+      Cs2Area->filter[i].mode = 0;
+      Cs2Area->filter[i].chan = 0;
+      Cs2Area->filter[i].smmask = 0;
+      Cs2Area->filter[i].cimask = 0;
+      Cs2Area->filter[i].fid = 0;
+      Cs2Area->filter[i].smval = 0;
+      Cs2Area->filter[i].cival = 0;
+      Cs2Area->filter[i].condtrue = i;
+      Cs2Area->filter[i].condfalse = 0xFF;
+    }
+
+    // clear partitions
+    for (i = 0; i < MAX_SELECTORS; i++)
+    {
+      Cs2Area->partition[i].size = -1;
+      Cs2Area->partition[i].numblocks = 0;
+
+      for (i2 = 0; i2 < MAX_BLOCKS; i2++)
+      {
+        Cs2Area->partition[i].block[i2] = NULL;
+        Cs2Area->partition[i].blocknum[i2] = 0xFF;
       }
     }
+
+    // clear blocks
+    for (i = 0; i < MAX_BLOCKS; i++)
+    {
+      Cs2Area->block[i].size = -1;
+      memset(Cs2Area->block[i].data, 0, 2352);
+    }
+
+    Cs2Area->blockfreespace = MAX_BLOCKS;
+
+    // initialize TOC
+   // memset(Cs2Area->TOC, 0xFF, sizeof(Cs2Area->TOC));
+
+    // clear filesystem stuff
+    Cs2Area->curdirsect = 0;
+    Cs2Area->curdirsize = 0;
+    Cs2Area->curdirfidoffset = 0;
+    memset(&Cs2Area->fileinfo, 0, sizeof(Cs2Area->fileinfo));
+    Cs2Area->numfiles = 0;
+
+    Cs2Area->lastbuffer = 0xFF;
+
   }
-  // YabThreadWake(YAB_THREAD_SCSP);
+
+  if (initflag & 0x2)
+  {
+     // Decode RW subcode
+  }
+
+  if (initflag & 0x4)
+  {
+     // Don't confirm Mode 2 subheader
+  }
+
+  if (initflag & 0x8)
+  {
+     // Retry reading Form 2 sectors
+  }
+
+  if (initflag & 0x10)
+     Cs2Area->speed1x = 1;
+  else
+     Cs2Area->speed1x = 0;
+
+  val = Cs2Area->reg.HIRQ & 0xFFE5;
+  Cs2Area->isbufferfull = 0;
+
+  if (Cs2Area->isdiskchanged)
+     val |= CDB_HIRQ_DCHG;
+  else
+     val &= ~CDB_HIRQ_DCHG;
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(val | CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2OpenTray(void)
+{
+   u16 val = 0;
+
+   setStatus(CDB_STAT_OPEN);
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(val | CDB_HIRQ_CMOK | CDB_HIRQ_DCHG);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2EndDataTransfer(void) {
+  s32 i;
+  if (Cs2Area->cdwnum)
+  {
+     Cs2Area->reg.CR1 = (u16)((Cs2Area->status << 8) | ((Cs2Area->cdwnum >> 17) & 0xFF));
+     Cs2Area->reg.CR2 = (u16)(Cs2Area->cdwnum >> 1);
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
+  else
+  {
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8) | 0xFF; // FIXME
+     Cs2Area->reg.CR2 = 0xFFFF;
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
+
+  // stop any transfers that may be going(this is still probably wrong), and
+  // set/clear the appropriate flags
+
+  switch (Cs2Area->datatranstype)
+  {
+     case 0:
+        // Get Sector Data
+        break;
+     case 2:
+     {
+        // Get Then Delete Sector
+
+        // Make sure we actually have to free something
+        if (Cs2Area->datatranspartition->size <= 0) break;
+
+        Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+
+        // free blocks
+        for (i = Cs2Area->datatranssectpos; i < (Cs2Area->datatranssectpos + Cs2Area->datasectstotrans); i++)
+        {
+           Cs2FreeBlock(Cs2Area->datatranspartition->block[i]);
+           Cs2Area->datatranspartition->block[i] = NULL;
+           Cs2Area->datatranspartition->blocknum[i] = 0xFF;
+        }
+
+        // sort remaining blocks
+        Cs2SortBlocks(Cs2Area->datatranspartition);
+
+        Cs2Area->datatranspartition->size -= Cs2Area->cdwnum;
+        // Meme garde anti-underflow que dans Cs2ReadWord/Cs2ReadLong (cf. lignes
+        // ~324/~488) : numblocks ne doit jamais passer sous 0.
+        if (Cs2Area->datasectstotrans <= Cs2Area->datatranspartition->numblocks)
+           Cs2Area->datatranspartition->numblocks -= Cs2Area->datasectstotrans;
+        else
+           Cs2Area->datatranspartition->numblocks = 0;
+
+        if (Cs2Area->blockfreespace == MAX_BLOCKS) Cs2Area->isonesectorstored = 0;
+
+        break;
+     }
+     default: break;
+  }
+
+  Cs2Area->cdwnum = 0;
+
+  Cs2SetIRQ(CDB_HIRQ_EHST | CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2PlayDisc(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+  u32 pdspos;
+  u32 pdepos;
+  u32 pdpmode;
+
+  // Get all the arguments
+  pdspos = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+  pdepos = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
+  pdpmode = Cs2Area->reg.CR3 >> 8;
+  /* Play mode bit 7: do not move the pickup to the start position
+   * (CDC_PM_PIC_NOMOV, ST-162 "CD Play Parameters"). 0xFF means no change. */
+  const int pick_nomove = (pdpmode != 0xFF) && (pdpmode & 0x80);
+  const int start_given = (pdspos != 0xFFFFFF) && (pdpmode != 0xFF);
+
+  CDLOG("[CDB] Command: Play; Start = 0x%06x, End = 0x%06x, Mode = 0x%02x\n", pdspos, pdepos, pdpmode);
+  u32 current_fad = Cs2Area->FAD;
+  CDLOG("Current FAD is %x\n", current_fad);
+
+  // Convert Start Position to playFAD
+  if (pdspos == 0xFFFFFF || pdpmode == 0xFF) // This still isn't right
+  {
+     // No Change
+	 CDLOG("[CDB] pos = current\n");
+  }
+  else if (pdspos & 0x800000)
+  {
+     // FAD Mode
+     Cs2Area->playFAD = (pdspos & 0xFFFFF);
+
+	 CDLOG("[CDB] pos = FAD:%02X\n", Cs2Area->playFAD);
+
+     Cs2SetupDefaultPlayStats(Cs2FADToTrack(Cs2Area->playFAD), 0);
+
+     if (!(pdpmode & 0x80))
+        // Move pickup to start position
+        Cs2Area->FAD = Cs2Area->playFAD;
+  }
+  else
+  {
+     // Track Mode
+
+     // If track == 0, set it to the first available track, or something like that
+     if (pdspos == 0)
+        pdspos = 0x0100;
+
+     if (!(pdpmode & 0x80))
+     {
+        Cs2SetupDefaultPlayStats((u8)(pdspos >> 8), 1);
+        Cs2Area->playFAD = Cs2Area->FAD;
+        Cs2Area->track = (u8)(pdspos >> 8);
+        Cs2Area->index = (u8)pdspos;
+
+		CDLOG("[CDB] pos = TRACK:%02X FAD:%02X upd\n", (u8)(pdspos >> 8), Cs2Area->FAD );
+     }
+     else
+     {
+        // Preserve Pickup Position
+        Cs2SetupDefaultPlayStats((u8)(pdspos >> 8), 0);
+        /* The play range still starts at the new track: only the pickup
+         * stays where it is. playFAD was left at the previous range, so a
+         * repeat or a move to the start went back to the old position
+         * (Steam-Heart's: PlayDisc track 4, mode 8Fh, kept reading the data
+         * stream at 89E1h instead of the CD-DA). */
+        {
+          const u8 trk = (u8)(pdspos >> 8);
+          if (trk != 0 && trk != 0xFF && trk <= 99)
+            Cs2Area->playFAD = Cs2Area->TOC[trk - 1] & 0x00FFFFFF;
+        }
+
+		CDLOG("[CDB] pos = TRACK:%02X FAD:%02X noupd\n", (u8)(pdspos >> 8), Cs2Area->FAD );
+     }
+  }
+
+  pdpmode &= 0x7F;
+
+  // Only update max repeat if bits 0-6 aren't all set
+  if (pdpmode != 0x7F)
+     Cs2Area->maxrepeat = pdpmode;
+
+  // Convert End Position to playendFAD
+  if (pdepos == 0xFFFFFF)
+  {
+     // No Change
+  }
+  else if (pdepos & 0x800000)
+  {
+     // FAD Mode -ST-040-R4-051795, §6.2 « Play Disc (command 0x20) », champ EP : EP [23:0] 
+	 // End FAD or Track/Index. Bit 23 = 1 → EP[22:0] = relative FAD offset
+     Cs2Area->playendFAD = Cs2Area->playFAD+(pdepos & 0x7FFFFF); // était: (pdepos & 0xFFFFF) — masquait à tort les bits 20-22
+  }
+  else if (pdepos != 0)
+  {
+	 Cs2Area->playendFAD = Cs2TrackToFAD((u16)(pdepos | 0x0063));
+  }
+  else
+  {
+     // Default Mode
+     Cs2Area->playendFAD = Cs2TrackToFAD(0xFFFF);
+  }
+
+  /* Pickup not moved and current position outside the new play range:
+   * STTECH08 table 4.5 "Operation outside the play range", row "CD play
+   * (play range modification, pause release)": without repeat, <PAUSE> at
+   * the current position; with repeat, repeat operation (seek to the start
+   * position, then <PLAY>). ST-162 CDC_PM_PIC_NOMOV: "<PAUSE> status when
+   * current position is outside play range". */
+  if (pick_nomove && start_given &&
+      (Cs2Area->FAD < Cs2Area->playFAD || Cs2Area->FAD > Cs2Area->playendFAD))
+  {
+     if (Cs2Area->maxrepeat != 0)
+     {
+        Cs2Area->FAD = Cs2Area->playFAD;
+        Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+     }
+     else
+     {
+        Cs2Area->_periodiccycles = 0;
+        Cs2Area->_periodictiming = 0;
+        setStatus(CDB_STAT_PAUSE);
+        Cs2Area->nextStatus = 0xFF;
+        Cs2Area->options = 0;
+        Cs2Area->playtype = CDB_PLAYTYPE_SECTOR;
+        doCDReport(Cs2Area->status);
+        Cs2SetIRQ(CDB_HIRQ_CMOK);
+        return;
+     }
+  }
+
+  // setup play mode here
+#ifdef CDDEBUG
+  if (pdpmode != 0)
+     CDLOG("cs2\t: playDisc: Unsupported play mode = %02X\n", pdpmode);
+#endif
+
+  // Cs2SetTiming(1);
+
+  Cs2Area->_periodiccycles = 0;
+  Cs2Area->_periodictiming = 0;
+  if (Cs2Area->_seekToStop == 1) {
+    // The seek command as previously generated a stop.
+    // Simulate a wait time - need for batman forever texture loading
+    Cs2SetTiming(0); //Need a big delay to restart
+    Cs2Area->_seekToStop = 0;
+  } else {
+    // Calcul du temps de seek.
+    //
+    // Le deplacement reel du bloc optique va de la position PHYSIQUE de la
+    // tete a la nouvelle position de lecture. Apres un secteur lu, FAD
+    // designe deja le secteur *suivant* : la tete est donc sur FAD-1, d'ou
+    // le decalage (repris de 8328b5e). playendFAD n'intervient pas : la fin
+    // de la zone a lire ne dit rien de la distance parcourue par la tete.
+    u32 head_fad = current_fad;
+    if (head_fad != 0 && head_fad != 0xFFFFFFFF)
+      head_fad--;
+
+    Cs2Area->_periodictiming = Cs2ComputeSeekTiming(head_fad, Cs2Area->FAD);
+
+    CDLOG("cs2\t: seek %x -> %x : %d us\n",
+          head_fad, Cs2Area->FAD, Cs2Area->_periodictiming / 3);
+  }
+  setStatus(CDB_STAT_SEEK);      // need to be seek
+  Cs2Area->nextStatus = 0xFF;
+  Cs2Area->options = 0;
+  Cs2Area->playtype = CDB_PLAYTYPE_SECTOR;
+  Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SeekDisc(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+
+	// Stop
+	if ((Cs2Area->reg.CR1 & 0xFF) == 0x00 && Cs2Area->reg.CR2 == 0x0000){
+
+		setStatus(CDB_STAT_STANDBY);
+		Cs2Area->options = 0xFF;
+		Cs2Area->repcnt = 0xFF;
+		Cs2Area->ctrladdr = 0xFF;
+		Cs2Area->track = 0xFF;
+		Cs2Area->index = 0xFF;
+		Cs2Area->FAD = 0xFFFFFFFF;
+
+		CDLOG("[CDB] Seek pos = CDB_STAT_STANDBY" );
+	}
+	// Pause
+	else if ((Cs2Area->reg.CR1 & 0xFF) == 0xFF && Cs2Area->reg.CR2 == 0xFFFF){
+    Cs2Area->_seekToStop = 1; //The seek command is generating a stop.
+		setBusyStatus(CDB_STAT_PAUSE);
+	}
+  else if (Cs2Area->reg.CR1 & 0x80)
+  {
+     // Seek by FAD
+     u32 sdFAD;
+    int i;
+
+     sdFAD = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+	//ST-040-R4-051795, §6.3 « Seek Disc (command 0x11) » :
+	// SP[23:0]. Bit 23 = 1 → SP[22:0] = FAD
+     sdFAD = (sdFAD & 0x7FFFFF);   // était: 0xFFFFF (20 bits)
+    setStatus(CDB_STAT_PAUSE);
+    for (i = 0; i < 99; i++){
+       u32 tfad = Cs2Area->TOC[i] & 0x00FFFFFF;
+       if (tfad >= sdFAD){
+          Cs2SetupDefaultPlayStats(i, 1);
+          Cs2Area->FAD = sdFAD;
+          break;
+       }
+    }
+	CDLOG("[CDB] Seek pos = FAD:%02X", Cs2Area->FAD );
+  }
+  else
+  {
+     // Were we given a valid track number?
+     if (Cs2Area->reg.CR2 >> 8)
+     {
+        // Seek by index
+        setStatus(CDB_STAT_PAUSE);
+        Cs2SetupDefaultPlayStats((Cs2Area->reg.CR2 >> 8), 1);
+        Cs2Area->index = Cs2Area->reg.CR2 & 0xFF;
+
+		CDLOG("[CDB] Seek pos = TRACK:%02X FAD:%02X", Cs2Area->track, Cs2Area->FAD );
+	 }
+     else
+     {
+        // Error
+        setStatus(CDB_STAT_STANDBY);
+        Cs2Area->options = 0xFF;
+        Cs2Area->repcnt = 0xFF;
+        Cs2Area->ctrladdr = 0xFF;
+        Cs2Area->track = 0xFF;
+        Cs2Area->index = 0xFF;
+        Cs2Area->FAD = 0xFFFFFFFF;
+
+		CDLOG("[CDB] Seek pos = CDB_STAT_STANDBY" );
+     }
+  }
+
+  // Cs2SetTiming(0);
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ScanDisc(void) {
+   setStatus(CDB_STAT_SCAN);
+
+   // finish me
+   Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetSubcodeQRW(void) {
+   u32 rel_fad;
+   u8 rel_m, rel_s, rel_f, m, s, f;
+
+  // According to Tyranid's doc, the subcode type is stored in the low byte
+  // of CR2. However, Sega's CDC library writes the type to the low byte
+  // of CR1. Somehow I'd sooner believe Sega is right.
+  switch(Cs2Area->reg.CR1 & 0xFF) {
+     case 0:
+             // Get Q Channel
+             Cs2Area->reg.CR1 = (Cs2Area->status << 8) | 0;
+             Cs2Area->reg.CR2 = 5;
+             Cs2Area->reg.CR3 = 0;
+             Cs2Area->reg.CR4 = 0;
+
+             // Cs2Area->track is a u8 and can legitimately hold the reset/
+             // "no track" sentinel 0xFF, or 0 when Cs2FADToTrack() can't
+             // place the current FAD in any track (e.g. lead-in). Either
+             // makes 'track-1' wrap to 254 or -1, indexing well past
+             // TOC[102] (tracks only occupy TOC[0..98]). Guard it instead
+             // of trusting track to always be a valid 1-99 track number.
+             if (Cs2Area->track >= 1 && Cs2Area->track <= 99)
+                rel_fad = Cs2Area->FAD-(Cs2Area->TOC[Cs2Area->track-1] & 0xFFFFFF);
+             else
+                rel_fad = Cs2Area->FAD;
+             Cs2FADToMSF(rel_fad, &rel_m, &rel_s, &rel_f);
+             Cs2FADToMSF(Cs2Area->FAD, &m, &s, &f);
+
+             Cs2Area->transscodeq[0] = Cs2Area->ctrladdr; // ctl/adr
+             Cs2Area->transscodeq[1] = ToBCD(Cs2Area->track); // track number
+             Cs2Area->transscodeq[2] = ToBCD(Cs2Area->index); // index
+             Cs2Area->transscodeq[3] = ToBCD(rel_m); // relative M
+             Cs2Area->transscodeq[4] = ToBCD(rel_s); // relative S
+             Cs2Area->transscodeq[5] = ToBCD(rel_f); // relative F
+             Cs2Area->transscodeq[6] = 0;
+             Cs2Area->transscodeq[7] = ToBCD(m); // M
+             Cs2Area->transscodeq[8] = ToBCD(s); // S
+             Cs2Area->transscodeq[9] = ToBCD(f); // F
+
+             Cs2Area->transfercount = 0;
+             Cs2Area->infotranstype = 3;
+             break;
+     case 1:
+     {
+             // Get RW Channel
+             static int lastfad=0;
+             static u16 group=0;
+             int i;
+
+             Cs2Area->reg.CR1 = (Cs2Area->status << 8) | 0;
+             Cs2Area->reg.CR2 = 12;
+             Cs2Area->reg.CR3 = 0;
+             if (Cs2Area->FAD != lastfad)
+             {
+                lastfad = Cs2Area->FAD;
+                group = 0;
+             }
+             else
+                group++;
+             if (group > 3) group = 3; // R-W = 4 packs de 24 octets max -> evite lecture OOB de workblock.data
+             Cs2Area->reg.CR4 = group; // Subcode flag
+
+             for (i = 0; i < 24; i++)
+                Cs2Area->transscoderw[i] = Cs2Area->workblock.data[2352+i+(24*group)] & 0x3F;
+
+             Cs2Area->transfercount = 0;
+             Cs2Area->infotranstype = 4;
+             break;
+     }
+     default: break;
+  }
+
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetCDDeviceConnection(void) {
+  u32 scdcfilternum;
+
+  scdcfilternum = (Cs2Area->reg.CR3 >> 8);
+
+  if (scdcfilternum == 0xFF)
+     Cs2Area->outconcddev = NULL;
+  else if (scdcfilternum < MAX_SELECTORS)
+     Cs2Area->outconcddev = Cs2Area->filter + scdcfilternum;
+
+  Cs2Area->outconcddevnum = (u8)scdcfilternum;
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetCDDeviceConnection(void)
+{
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+   Cs2Area->reg.CR2 = 0;
+   Cs2Area->reg.CR3 = Cs2Area->outconcddevnum << 8;
+   Cs2Area->reg.CR4 = 0;
+   Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetLastBufferDestination(void) {
+  Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+  Cs2Area->reg.CR2 = 0;
+  Cs2Area->reg.CR3 = Cs2Area->lastbuffer << 8;
+  Cs2Area->reg.CR4 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetFilterRange(void) {
+  u8 sfrfilternum;
+
+  sfrfilternum = Cs2Area->reg.CR3 >> 8;
+
+  // Guard against an out-of-range selector number: filter[] only has
+  // MAX_SELECTORS (24) valid entries, but sfrfilternum comes straight
+  // from an 8-bit command register field (0-255).
+  if (sfrfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->filter[sfrfilternum].FAD = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+     Cs2Area->filter[sfrfilternum].range = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
+  }
+
+  // return default cd stats
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFilterRange(void) {
+   u8 sfrfilternum;
+
+   sfrfilternum = Cs2Area->reg.CR3 >> 8;
+
+   if (sfrfilternum < MAX_SELECTORS)
+   {
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | ((Cs2Area->filter[sfrfilternum].FAD & 0xFF0000) >> 16);
+      Cs2Area->reg.CR2 = Cs2Area->filter[sfrfilternum].FAD & 0xFFFF;
+      Cs2Area->reg.CR3 = ((Cs2Area->filter[sfrfilternum].range & 0xFF0000) >> 16);
+      Cs2Area->reg.CR4 = Cs2Area->filter[sfrfilternum].range & 0xFFFF;
+   }
+   else
+   {
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+      Cs2Area->reg.CR2 = 0;
+      Cs2Area->reg.CR3 = 0;
+      Cs2Area->reg.CR4 = 0;
+   }
+   Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetFilterSubheaderConditions(void) {
+  u8 sfscfilternum;
+
+  sfscfilternum = Cs2Area->reg.CR3 >> 8;
+
+  if (sfscfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->filter[sfscfilternum].chan = Cs2Area->reg.CR1 & 0xFF;
+     Cs2Area->filter[sfscfilternum].smmask = Cs2Area->reg.CR2 >> 8;
+     Cs2Area->filter[sfscfilternum].cimask = Cs2Area->reg.CR2 & 0xFF;
+     Cs2Area->filter[sfscfilternum].fid = Cs2Area->reg.CR3 & 0xFF;;
+     Cs2Area->filter[sfscfilternum].smval = Cs2Area->reg.CR4 >> 8;
+     Cs2Area->filter[sfscfilternum].cival = Cs2Area->reg.CR4 & 0xFF;
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFilterSubheaderConditions(void) {
+  u8 gfscfilternum;
+
+  gfscfilternum = Cs2Area->reg.CR3 >> 8;
+
+  if (gfscfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->filter[gfscfilternum].chan;
+     Cs2Area->reg.CR2 = (Cs2Area->filter[gfscfilternum].smmask << 8) | Cs2Area->filter[gfscfilternum].cimask;
+     Cs2Area->reg.CR3 = Cs2Area->filter[gfscfilternum].fid;
+     Cs2Area->reg.CR4 = (Cs2Area->filter[gfscfilternum].smval << 8) | Cs2Area->filter[gfscfilternum].cival;
+  }
+  else
+  {
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+     Cs2Area->reg.CR2 = 0;
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetFilterMode(void) {
+  u8 sfmfilternum;
+
+  sfmfilternum = Cs2Area->reg.CR3 >> 8;
+
+  if (sfmfilternum < MAX_SELECTORS)
+  {
+     Cs2Area->filter[sfmfilternum].mode = Cs2Area->reg.CR1 & 0xFF;
+
+     if (Cs2Area->filter[sfmfilternum].mode & 0x80)
+     {
+        // Initialize filter conditions
+        Cs2Area->filter[sfmfilternum].mode = 0;
+        Cs2Area->filter[sfmfilternum].FAD = 0;
+	//ST-040-R4-051795, §5.5.3 « Set Filter Mode (command 0x44) » :
+	//When bit 7 = 1 : initialize filter. Default range = 0xFFFFFFFF (no restriction)
+	//§5.5.2 « Reset Selector (command 0x48) » confirme la même valeur par défaut.
+        Cs2Area->filter[sfmfilternum].range = 0xFFFFFFFF;  // était: 0
+        Cs2Area->filter[sfmfilternum].chan = 0;
+        Cs2Area->filter[sfmfilternum].smmask = 0;
+        Cs2Area->filter[sfmfilternum].cimask = 0;
+        Cs2Area->filter[sfmfilternum].smval = 0;
+        Cs2Area->filter[sfmfilternum].cival = 0;
+     }
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFilterMode(void) {
+  u8 gfmfilternum;
+
+  gfmfilternum = Cs2Area->reg.CR3 >> 8;
+
+  Cs2Area->reg.CR1 = (Cs2Area->status << 8) | (gfmfilternum < MAX_SELECTORS ? Cs2Area->filter[gfmfilternum].mode : 0);
+  Cs2Area->reg.CR2 = 0;
+  Cs2Area->reg.CR3 = 0;
+  Cs2Area->reg.CR4 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetFilterConnection(void) {
+  u8 sfcfilternum;
+
+  sfcfilternum = Cs2Area->reg.CR3 >> 8;
+
+  if (sfcfilternum < MAX_SELECTORS)
+  {
+     if (Cs2Area->reg.CR1 & 0x1)
+     {
+        // Set connection for true condition
+        Cs2Area->filter[sfcfilternum].condtrue = Cs2Area->reg.CR2 >> 8;
+     }
+
+     if (Cs2Area->reg.CR1 & 0x2)
+     {
+        // Set connection for false condition
+        Cs2Area->filter[sfcfilternum].condfalse = Cs2Area->reg.CR2 & 0xFF;
+     }
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFilterConnection(void) {
+   u8 sfcfilternum;
+
+   sfcfilternum = Cs2Area->reg.CR3 >> 8;
+
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+   if (sfcfilternum < MAX_SELECTORS)
+      Cs2Area->reg.CR2 = (Cs2Area->filter[sfcfilternum].condtrue << 8) | Cs2Area->filter[sfcfilternum].condfalse;
+   else
+      Cs2Area->reg.CR2 = 0;
+   Cs2Area->reg.CR3 = 0;
+   Cs2Area->reg.CR4 = 0;
+
+   Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ResetSelector(void) {
+  // still needs a bit of work
+  u32 i, i2;
+
+  if ((Cs2Area->reg.CR1 & 0xFF) == 0)
+  {
+     // Reset specified partition buffer only
+     u32 rsbufno = Cs2Area->reg.CR3 >> 8;
+
+     // sort remaining blocks
+     if (rsbufno < MAX_SELECTORS)
+     {
+        // clear partition
+        for (i = 0; i < Cs2Area->partition[rsbufno].numblocks; i++)
+        {
+           Cs2FreeBlock(Cs2Area->partition[rsbufno].block[i]);
+           Cs2Area->partition[rsbufno].block[i] = NULL;
+           Cs2Area->partition[rsbufno].blocknum[i] = 0xFF;
+        }
+
+        Cs2Area->partition[rsbufno].size = -1;
+        Cs2Area->partition[rsbufno].numblocks = 0;
+     }
+
+     if (Cs2Area->blockfreespace > 0) Cs2Area->isbufferfull = 0;
+     if (Cs2Area->blockfreespace == MAX_BLOCKS)
+     {
+        Cs2Area->isonesectorstored = 0;
+        Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+     }
+     else if (Cs2Area->datatranspartitionnum == rsbufno)
+        Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+
+     doCDReport(Cs2Area->status);
+     Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+     return;
+  }
+
+  // parse flags and reset the specified area(fix me)
+  if (Cs2Area->reg.CR1 & 0x80)
+  {
+     // reset false filter output connections
+     for (i = 0; i < MAX_SELECTORS; i++)
+        Cs2Area->filter[i].condfalse = 0xFF;
+  }
+
+  if (Cs2Area->reg.CR1 & 0x40)
+  {
+     // reset true filter output connections
+     for (i = 0; i < MAX_SELECTORS; i++)
+        Cs2Area->filter[i].condtrue = (u8)i;
+  }
+
+  if (Cs2Area->reg.CR1 & 0x10)
+  {
+     // reset filter conditions
+     for (i = 0; i < MAX_SELECTORS; i++)
+     {
+        Cs2Area->filter[i].FAD = 0;
+        Cs2Area->filter[i].range = 0xFFFFFFFF;
+        Cs2Area->filter[i].mode = 0;
+        Cs2Area->filter[i].chan = 0;
+        Cs2Area->filter[i].smmask = 0;
+        Cs2Area->filter[i].cimask = 0;
+        Cs2Area->filter[i].fid = 0;
+        Cs2Area->filter[i].smval = 0;
+        Cs2Area->filter[i].cival = 0;
+     }
+  }
+
+  if (Cs2Area->reg.CR1 & 0x8)
+  {
+     // reset partition output connectors
+  }
+
+  if (Cs2Area->reg.CR1 & 0x4)
+  {
+     // reset partitions buffer data
+     Cs2Area->isbufferfull = 0;
+
+     // clear partitions
+     for (i = 0; i < MAX_SELECTORS; i++)
+     {
+        Cs2Area->partition[i].size = -1;
+        Cs2Area->partition[i].numblocks = 0;
+
+        for (i2 = 0; i2 < MAX_BLOCKS; i2++)
+        {
+           Cs2Area->partition[i].block[i2] = NULL;
+           Cs2Area->partition[i].blocknum[i2] = 0xFF;
+        }
+     }
+
+     // clear blocks
+     for (i = 0; i < MAX_BLOCKS; i++)
+     {
+        Cs2Area->block[i].size = -1;
+        memset(Cs2Area->block[i].data, 0, 2352);
+     }
+
+     Cs2Area->blockfreespace = MAX_BLOCKS;  // était: 200
+     Cs2Area->isbufferfull = 0;
+     Cs2Area->isonesectorstored = 0;
+     Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetBufferSize(void) {
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  Cs2Area->reg.CR2 = (u16)Cs2Area->blockfreespace;
+  Cs2Area->reg.CR3 = MAX_SELECTORS << 8;
+  Cs2Area->reg.CR4 = MAX_BLOCKS;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetSectorNumber(void) {
+  u32 gsnbufno;
+
+  gsnbufno = Cs2Area->reg.CR3 >> 8;
+
+  // partition[] only has MAX_SELECTORS entries; every sibling command
+  // (Cs2GetSectorInfo, Cs2GetBufferSize, Cs2GetSectorData, etc.) bound-
+  // checks this same partition-number field before indexing -- this one
+  // didn't.
+  if (gsnbufno >= MAX_SELECTORS || Cs2Area->partition[gsnbufno].size == -1)
+     Cs2Area->reg.CR4 = 0;
+  else
+     Cs2Area->reg.CR4 = Cs2Area->partition[gsnbufno].numblocks;
+
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  Cs2Area->reg.CR2 = 0;
+  Cs2Area->reg.CR3 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+#define CDC_ACTSIZ_ERR  0xffffff
+
+static INLINE void CalcSectorOffsetNumber(u32 bufno, u32 *sectoffset, u32 *sectnum);
+
+void Cs2CalculateActualSize(void) {
+  u32 i;
+  u32 casbufno;
+  u32 cassectoffset;
+  u32 casnumsect;
+
+#if 0
+  if (Cs2Area->status == CDB_STAT_SEEK){
+	  Cs2Area->calcsize = CDC_ACTSIZ_ERR;
+	  doCDReport(Cs2Area->status);
+	  Cs2Area->reg.HIRQ |= CDB_HIRQ_CMOK;
+	  return;
+  }
+#endif
+
+  cassectoffset = Cs2Area->reg.CR2;
+  casbufno = Cs2Area->reg.CR3 >> 8;
+  casnumsect = Cs2Area->reg.CR4;
+
+  if (casbufno >= MAX_SELECTORS)
+  {
+     Cs2Area->calcsize = 0;
+     doCDReport(CDB_STAT_REJECT);
+     Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+     return;
+  }
+
+  /* CDC_CalActSiz takes CDC_SPOS_END and CDC_SNUM_END (both FFFFH) for
+   * "the partition's last sector" and "from spos to the end of the
+   * partition" (ST-162 sec. 6.3). Without resolving them, idx ran from
+   * 65535 and no block was ever counted, so calcsize stayed 0 -- and
+   * CDC_GetActSiz returns exactly that, its initial value being 0
+   * (ST-162 sec. 6.4). A game taking that 0 as a word count then arms a
+   * zero-length SH2 DMA, which the SH7604 reads as the maximum count of
+   * 16,777,216 (manual sec. 9.2.3). Same failure as the zero-sector
+   * request already handled in Cs2GetSectorData, reached another way. */
+  CalcSectorOffsetNumber(casbufno, &cassectoffset, &casnumsect);
+
+  if (Cs2Area->partition[casbufno].size != 0)
+  {
+     Cs2Area->calcsize = 0;
+
+     // FIXED BUG 12: cassectoffset était constant dans la boucle
+     // → on additionnait casnumsect fois la taille du même bloc
+     // FIXED: utiliser idx = cassectoffset + i pour parcourir les bons blocs
+     // Ref: ST-040-R4-051795 §6.11 "Calculate Actual Size (command 0x52)"
+     // CR2 = sector offset, CR4 = number of sectors, retour en mots (taille / 2)
+     for (i = 0; i < casnumsect; i++)
+     {
+        u32 idx = cassectoffset + i;
+        if (idx >= (u32)Cs2Area->partition[casbufno].numblocks || idx >= MAX_BLOCKS)
+           break;
+        if (Cs2Area->partition[casbufno].block[idx])
+           Cs2Area->calcsize += (Cs2Area->partition[casbufno].block[idx]->size / 2);
+     }
+  }
+  else
+     Cs2Area->calcsize = 0;
+
+  CDLOG("Cs2Area->calcsize = %d", Cs2Area->calcsize);
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetActualSize(void) {
+  Cs2Area->reg.CR1 = (u16)((Cs2Area->status << 8) | ((Cs2Area->calcsize >> 16) & 0xFF));
+  Cs2Area->reg.CR2 = (u16)Cs2Area->calcsize;
+  Cs2Area->reg.CR3 = 0;
+  Cs2Area->reg.CR4 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetSectorInfo(void) {
+  u32 gsisctnum;
+  u32 gsibufno;
+	// ST-040-R4-051795, §6.12 « Get Sector Info (command 0x54) » :
+	// CR2[15:0] = Sector Number in partition
+  gsisctnum = Cs2Area->reg.CR2;   // word entier, était: & 0xFF
+  gsibufno = Cs2Area->reg.CR3 >> 8;
+  if (gsibufno < MAX_SELECTORS) {
+     if (gsisctnum < Cs2Area->partition[gsibufno].numblocks) {
+        Cs2Area->reg.CR1 = (u16)((Cs2Area->status << 8) | ((Cs2Area->partition[gsibufno].block[gsisctnum]->FAD >> 16) & 0xFF));
+        Cs2Area->reg.CR2 = (u16)Cs2Area->partition[gsibufno].block[gsisctnum]->FAD;
+        Cs2Area->reg.CR3 = (Cs2Area->partition[gsibufno].block[gsisctnum]->fn << 8) | Cs2Area->partition[gsibufno].block[gsisctnum]->cn;
+        Cs2Area->reg.CR4 = (Cs2Area->partition[gsibufno].block[gsisctnum]->sm << 8) | Cs2Area->partition[gsibufno].block[gsisctnum]->ci;
+        Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+        return;
+     }
+     else
+     {
+        CDLOG("cs2\t: getSectorInfo: Unsupported Partition Number\n");
+     }
+  }
+
+  Cs2Area->reg.CR1 = (CDB_STAT_REJECT << 8) | (Cs2Area->reg.CR1 & 0xFF);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ExecFadSearch(void) {
+   // finish me
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFadSearchResults(void) {
+   // finish me
+   Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetSectorLength(void) {
+  switch (Cs2Area->reg.CR1 & 0xFF) {
+    case 0:
+            Cs2Area->getsectsize = 2048;
+            break;
+    case 1:
+            Cs2Area->getsectsize = 2336;
+            break;
+    case 2:
+            Cs2Area->getsectsize = 2340;
+            break;
+    case 3:
+            Cs2Area->getsectsize = 2352;
+            break;
+    default: break;
+  }
+
+  switch (Cs2Area->reg.CR2 >> 8) {
+    case 0:
+            Cs2Area->putsectsize = 2048;
+            break;
+    case 1:
+            Cs2Area->putsectsize = 2336;
+            break;
+    case 2:
+            Cs2Area->putsectsize = 2340;
+            break;
+    case 3:
+            Cs2Area->putsectsize = 2352;
+            break;
+    default: break;
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ESEL);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+static INLINE void CalcSectorOffsetNumber(u32 bufno, u32 *sectoffset, u32 *sectnum)
+{
+   if (*sectoffset == 0xFFFF)
+   {
+      // Last sector
+      *sectoffset = Cs2Area->partition[bufno].numblocks - 1;
+   }
+   // BUG corrige : c'etait un "else if". Si sectoffset ET sectnum valent 0xFFFF
+   // (ex: "dernier secteur, jusqu'a la fin"), le else laissait sectnum=0xFFFF ->
+   // datasectstotrans=65535 -> sur-lecture massive (GetSectorData) ou boucle de
+   // liberation hors-borne -> NULL deref / crash (DeleteSectorData). En "if"
+   // independant : sectoffset=numblocks-1 puis sectnum=numblocks-(numblocks-1)=1,
+   // soit exactement le dernier secteur. Les autres cas sont inchanges.
+   if (*sectnum == 0xFFFF)
+   {
+      // From sectoffset to last sector in partition
+      *sectnum = Cs2Area->partition[bufno].numblocks - *sectoffset;
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetSectorData(void)
+{
+   u32 gsdsectoffset;
+   u32 gsdbufno;
+   u32 gsdsectnum;
+
+   gsdsectoffset = Cs2Area->reg.CR2;
+   gsdbufno = Cs2Area->reg.CR3 >> 8;
+   gsdsectnum = Cs2Area->reg.CR4;
+
+   //LOG("[CS2] COMMAND_GET_SECDATA, pnum=%d, offs = %d, numsec = %d", gsdbufno, gsdsectoffset, gsdsectnum);
+
+   if (gsdbufno >= MAX_SELECTORS)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   /* A request for zero sectors cannot be satisfied and must be rejected
+    * like any other unsatisfiable one. Independence Day polls with
+    * getSectorNumber and feeds the result straight back as the sector
+    * count, so it asks for zero on every iteration while it waits. We only
+    * rejected that while the partition was still empty; the moment a sector
+    * landed, a zero-sector request was accepted and DRDY was raised, so the
+    * game took its zero count to be valid and armed a zero-length SH2 DMA -
+    * which the SH7604 reads as the maximum count of 16,777,216 (manual sec.
+    * 9.2.3). The channel then walked 64 MB from the CD data register through
+    * VDP2 VRAM, CRAM, the VDP2 and SCU registers and all of work RAM high,
+    * leaving the display disabled and both CPUs executing zeroes. */
+   if (Cs2Area->reg.CR4 == 0 || Cs2Area->partition[gsdbufno].numblocks == 0)
+   {
+      CDLOG("No sectors available\n");
+
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   CalcSectorOffsetNumber(gsdbufno, &gsdsectoffset, &gsdsectnum);
+   /* Le bloc CD ne sert une plage de secteurs que si elle est entierement
+    * presente dans la partition ; sinon la commande est REJETEE et l hote
+    * la reemet plus tard (code de retour CDC_ERR_REJECT, manuel de
+    * l interface de communication CD ST-38 / ST-162).
+    *
+    * Kronos acceptait des que la partition n etait pas vide et transferait
+    * simplement moins de secteurs que demande. Un jeu qui fait confiance au
+    * compte demande - Sol Divide demande 40 secteurs par tour - avance alors
+    * son pointeur de 40 secteurs apres n en avoir recu qu un ou deux : le
+    * reste de sa zone de chargement garde son ancien contenu, et il finit par
+    * sauter dedans (issue #1222 : le CPU execute des donnees a 0x06010000 et
+    * leve un opcode invalide). */
+   if ((gsdsectoffset + gsdsectnum) > (u32)Cs2Area->partition[gsdbufno].numblocks)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+
+   // Setup Data Transfer
+   Cs2Area->cdwnum = 0;
+   Cs2Area->datatranstype = CDB_DATATRANSTYPE_GETSECTOR;
+   Cs2Area->datatranspartition = Cs2Area->partition + gsdbufno;
+   Cs2Area->datatranspartitionnum = (u8)gsdbufno;
+   Cs2Area->datatransoffset = 0;
+   Cs2Area->datanumsecttrans = 0;
+   Cs2Area->datatranssectpos = (u16)gsdsectoffset;
+   Cs2Area->datasectstotrans = (u16)gsdsectnum;
+
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY | CDB_HIRQ_EHST);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2DeleteSectorData(void)
+{
+   u32 dsdsectoffset;
+   u32 dsdbufno;
+   u32 dsdsectnum;
+   u32 i;
+
+   dsdsectoffset = Cs2Area->reg.CR2;
+   dsdbufno = Cs2Area->reg.CR3 >> 8;
+   dsdsectnum = Cs2Area->reg.CR4;
+
+   if (dsdbufno >= MAX_SELECTORS)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   if (Cs2Area->partition[dsdbufno].numblocks == 0)
+   {
+      CDLOG("No sectors available\n");
+
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   CalcSectorOffsetNumber(dsdbufno, &dsdsectoffset, &dsdsectnum);
+
+   for (i = dsdsectoffset; i < (dsdsectoffset+dsdsectnum); i++)
+   {
+      Cs2Area->partition[dsdbufno].size -= Cs2Area->partition[dsdbufno].block[i]->size;
+      Cs2FreeBlock(Cs2Area->partition[dsdbufno].block[i]);
+      Cs2Area->partition[dsdbufno].block[i] = NULL;
+      Cs2Area->partition[dsdbufno].blocknum[i] = 0xFF;
+   }
+
+   // sort remaining blocks
+   Cs2SortBlocks(&Cs2Area->partition[dsdbufno]);
+
+   Cs2Area->partition[dsdbufno].numblocks -= (u8)dsdsectnum;
+
+   if (Cs2Area->blockfreespace == MAX_BLOCKS)
+      Cs2Area->isonesectorstored = 0;
+
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetThenDeleteSectorData(void)
+{
+   u32 gtdsdsectoffset;
+   u32 gtdsdbufno;
+   u32 gtdsdsectnum;
+
+   gtdsdsectoffset = Cs2Area->reg.CR2;
+   gtdsdbufno = Cs2Area->reg.CR3 >> 8;
+   gtdsdsectnum = Cs2Area->reg.CR4;
+
+   if (gtdsdbufno >= MAX_SELECTORS)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   /* A request for zero sectors cannot be satisfied and must be rejected
+    * like any other unsatisfiable one. Independence Day polls with
+    * getSectorNumber and feeds the result straight back as the sector
+    * count, so it asks for zero on every iteration while it waits. We only
+    * rejected that while the partition was still empty; the moment a sector
+    * landed, a zero-sector request was accepted and DRDY was raised, so the
+    * game took its zero count to be valid and armed a zero-length SH2 DMA -
+    * which the SH7604 reads as the maximum count of 16,777,216 (manual sec.
+    * 9.2.3). The channel then walked 64 MB from the CD data register through
+    * VDP2 VRAM, CRAM, the VDP2 and SCU registers and all of work RAM high,
+    * leaving the display disabled and both CPUs executing zeroes. */
+   if (Cs2Area->reg.CR4 == 0 || Cs2Area->partition[gtdsdbufno].numblocks == 0)
+   {
+      CDLOG("No sectors available\n");
+
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+   CalcSectorOffsetNumber(gtdsdbufno, &gtdsdsectoffset, &gtdsdsectnum);
+   /* Le bloc CD ne sert une plage de secteurs que si elle est entierement
+    * presente dans la partition ; sinon la commande est REJETEE et l hote
+    * la reemet plus tard (code de retour CDC_ERR_REJECT, manuel de
+    * l interface de communication CD ST-38 / ST-162).
+    *
+    * Kronos acceptait des que la partition n etait pas vide et transferait
+    * simplement moins de secteurs que demande. Un jeu qui fait confiance au
+    * compte demande - Sol Divide demande 40 secteurs par tour - avance alors
+    * son pointeur de 40 secteurs apres n en avoir recu qu un ou deux : le
+    * reste de sa zone de chargement garde son ancien contenu, et il finit par
+    * sauter dedans (issue #1222 : le CPU execute des donnees a 0x06010000 et
+    * leve un opcode invalide). */
+   if ((gtdsdsectoffset + gtdsdsectnum) > (u32)Cs2Area->partition[gtdsdbufno].numblocks)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      return;
+   }
+
+
+   // Setup Data Transfer
+   Cs2Area->cdwnum = 0;
+   Cs2Area->datatranstype = CDB_DATATRANSTYPE_GETDELSECTOR;
+   Cs2Area->datatranspartition = Cs2Area->partition + gtdsdbufno;
+   Cs2Area->datatranspartitionnum = (u8)gtdsdbufno; // manquait : ResetSelector teste cet index
+   Cs2Area->datatransoffset = 0;
+   Cs2Area->datanumsecttrans = 0;
+   Cs2Area->datatranssectpos = (u16)gtdsdsectoffset;
+   Cs2Area->datasectstotrans = (u16)gtdsdsectnum;
+
+   Cs2Area->infotranstype = 5;
+
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY | CDB_HIRQ_EHST);
+
+   return;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2PutSectorData(void) {
+   u32 psdbufno;
+   u32 psdsectnum;
+
+   psdbufno = Cs2Area->reg.CR3 >> 8;
+   psdsectnum = Cs2Area->reg.CR4;
+
+   if (psdbufno < MAX_SELECTORS)
+   {
+     // Make sure there's enough free space
+     if (psdsectnum > Cs2Area->blockfreespace)
+       Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+     else
+     {
+         // Allocate buffer
+         IOCheck_struct check = { 0, 0 };
+         partition_struct *putpartition = &Cs2Area->partition[psdbufno];
+         u32 i;
+
+         putpartition->size = 0;
+         int startpos = putpartition->numblocks;
+         // psdsectnum was only checked against the global free-block count
+         // (blockfreespace), never against this partition's own remaining
+         // capacity in its fixed-size block[]/blocknum[] arrays (MAX_BLOCKS
+         // entries) -- if this partition already held blocks from an
+         // earlier, not fully consumed PutSectorData call, that global
+         // check alone doesn't stop numblocks from running past MAX_BLOCKS.
+         // Also guard the allocation result before dereferencing it, same
+         // as every other Cs2AllocateBlock call site in this file.
+         for (i = 0; i < psdsectnum && putpartition->numblocks < MAX_BLOCKS; i++)
+         {
+            putpartition->block[putpartition->numblocks] = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], Cs2Area->putsectsize);
+            if (putpartition->block[putpartition->numblocks] == NULL)
+               break;
+            putpartition->block[putpartition->numblocks]->FAD = i;
+            putpartition->numblocks++;
+            putpartition->size += Cs2Area->putsectsize;
+         }
+
+         // Setup Data Transfer
+         Cs2Area->cdwnum = 0;
+         Cs2Area->datatranstype = CDB_DATATRANSTYPE_PUTSECTOR;
+         Cs2Area->datatranspartition = Cs2Area->partition + psdbufno;
+         Cs2Area->datatranspartitionnum = (u8)psdbufno;
+         Cs2Area->datatransoffset = 0;
+         Cs2Area->datanumsecttrans = startpos; // startpos;
+         Cs2Area->datatranssectpos = 0;
+         Cs2Area->datasectstotrans = startpos+(u16)psdsectnum;
+         Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+      }
+   }
+   else
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+// Teste un bloc deja stocke contre les conditions d'un filtre (sous-en-tete
+// Mode 2 + FAD range), comme la partie "conditions" de Cs2FilterData() mais sur
+// un block_struct (qui porte deja FAD/cn/fn/sm/ci) au lieu du workblock brut, et
+// sans allocation ni conversion. Renvoie 1 si le bloc satisfait le filtre.
+// Reference : Copy/Move Sector (0x65/0x66) filtrent chaque secteur via le filtre
+// du selector destination (writeup Pseudo Saturn / wiki.yabause.org/CDBlock).
+static int Cs2BlockPassesFilter(block_struct *blk, filter_struct *f, int isaudio)
+{
+   int cond = 1;
+
+   if (blk->data[0xF] == 0x02 && !isaudio)
+   {
+      if (f->mode & 0x01) { if (blk->fn != f->fid)  cond = 0; }                 // File Number
+      if (f->mode & 0x02) { if (blk->cn != f->chan) cond = 0; }                 // Channel Number
+      if (f->mode & 0x04) { if ((blk->sm & f->smmask) != f->smval) cond = 0; }  // Sub Mode
+      if (f->mode & 0x08) { if ((blk->ci & f->cimask) != f->cival) cond = 0; }  // Coding Info
+      if (f->mode & 0x10) cond ^= 1;                                            // Reverse
+   }
+
+   if (f->mode & 0x40)                                                          // FAD Range
+   {
+      if (blk->FAD < f->FAD || blk->FAD >= (f->FAD + f->range))
+         cond = 0;
+   }
+
+   return cond;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2CopySectorData(void) {
+ // Layout registres VALIDE sur materiel reel (writeup Pseudo Saturn / auth type-2,
+ // cf. wiki.yabause.org/CDBlock) : dest = CR1[7:0], source = CR3[15:8], count = CR4.
+ // Chaque secteur est FILTRE par le filtre du selector destination : seuls ceux
+ // qui satisfont ses conditions (FAD range / sous-en-tete) sont copies. Avec les
+ // filtres par defaut (mode=0), tout passe -> comportement "copier tout" inchange.
+ u32 source = Cs2Area->reg.CR3 >> 8;
+  u32 offset = Cs2Area->reg.CR2;
+  u32 dest = Cs2Area->reg.CR1 & 0xFF;
+  // Le nombre de secteurs (CR4) est un mot 16 bits ; 0xFFFF = "tous les
+  // secteurs restants". Le masque & 0xFF rendait le cas 0xFFFF impossible a
+  // detecter (devenait 0xFF=255) et tronquait tout compte > 255.
+  u32 count = Cs2Area->reg.CR4;       // etait: & 0xFF
+
+  if (source >= 0x18 || dest >= 0x18) {
+    setStatus(CDB_STAT_ERROR); // ToDo: check
+    doCDReport(Cs2Area->status);
+    Cs2SetIRQ(CDB_HIRQ_CMOK);
+    return;
+  }
+
+  partition_struct *putpartition = &Cs2Area->partition[dest];
+  partition_struct *srcpartition = &Cs2Area->partition[source];
+  filter_struct *dstfilter = &Cs2Area->filter[dest]; // filtre du selector destination
+  if (offset == 0xFFFF) {
+    offset = srcpartition->numblocks - 1;
+  }
+
+  if (count == 0xFFFF) {
+    count = srcpartition->numblocks - offset;
+  }
+
+  for (int i = 0; i < count; i++) {
+    // Borne sur les blocs source reellement presents (evite OOB / NULL)
+    if ((offset + i) >= srcpartition->numblocks ||
+        srcpartition->block[offset + i] == NULL)
+       break;
+    block_struct *sblk = srcpartition->block[offset + i];
+    // Filtrage materiel : un secteur qui ne passe pas le filtre destination est ignore
+    if (!Cs2BlockPassesFilter(sblk, dstfilter, 0))
+       continue;
+    block_struct *dblk = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], 2352);
+    if (dblk == NULL)        // buffer plein : ne pas dereferencer NULL
+       break;
+    putpartition->block[putpartition->numblocks] = dblk;
+    memcpy(dblk->data, sblk->data, sizeof(u8) * 2352);
+    // Conserver les metadonnees (sinon FAD/cn/fn/sm/ci du bloc copie restent indefinis,
+    // ce qui casserait un filtrage ulterieur sur la partition destination)
+    dblk->size = sblk->size;
+    dblk->FAD  = sblk->FAD;
+    dblk->cn   = sblk->cn;
+    dblk->fn   = sblk->fn;
+    dblk->sm   = sblk->sm;
+    dblk->ci   = sblk->ci;
+    putpartition->numblocks++;
+    putpartition->size += sblk->size;
+  }
+
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ECPY);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MoveSectorData(void) {
+  // Layout VALIDE materiel reel (writeup Pseudo Saturn) : dest=CR1[7:0], source=CR3[15:8], count=CR4.
+  // Chaque secteur est FILTRE par le filtre du selector destination ; un secteur qui ne
+  // passe pas reste dans la source. Filtres par defaut (mode=0) -> tout passe, "deplacer tout".
+  u32 source = Cs2Area->reg.CR3 >> 8;
+  u32 offset = Cs2Area->reg.CR2;
+  u32 dest = Cs2Area->reg.CR1 & 0xFF;
+  // Idem CopySectorData : CR4 est un mot 16 bits, 0xFFFF = "tous". Le masque
+  // & 0xFF cassait la semantique "deplacer tout" et tout compte > 255.
+  u32 count = Cs2Area->reg.CR4;       // etait: & 0xFF
+
+  if (source >= 0x18 || dest >= 0x18) {
+    setStatus(CDB_STAT_ERROR); // ToDo: check
+    doCDReport(Cs2Area->status);
+    Cs2SetIRQ(CDB_HIRQ_CMOK);
+    return;
+  }
+
+  partition_struct *putpartition = &Cs2Area->partition[dest];
+  partition_struct *srcpartition = &Cs2Area->partition[source];
+  filter_struct *dstfilter = &Cs2Area->filter[dest]; // filtre du selector destination
+  // Borne STABLE : numblocks decroit dans la boucle (on retire des blocs), il ne faut
+  // donc pas l'utiliser comme limite sous peine de couper la boucle a mi-chemin.
+  u32 src_orig = srcpartition->numblocks;
+  if (offset == 0xFFFF) {
+    offset = src_orig - 1;
+  }
+
+  if (count == 0xFFFF) {
+    count = src_orig - offset;
+  }
+
+  for (int i = 0; i < count; i++) {
+    // Borne sur les blocs source reellement presents (evite OOB / underflow numblocks)
+    if ((offset + i) >= src_orig ||
+        srcpartition->block[offset + i] == NULL)
+       break;
+    block_struct *sblk = srcpartition->block[offset + i];
+    // Filtrage materiel : un secteur qui ne passe pas le filtre destination reste dans la source
+    if (!Cs2BlockPassesFilter(sblk, dstfilter, 0))
+       continue;
+    putpartition->block[putpartition->numblocks] = sblk;
+    putpartition->blocknum[putpartition->numblocks] = srcpartition->blocknum[offset + i];
+    putpartition->numblocks++;
+    putpartition->size += sblk->size;
+    srcpartition->block[offset + i] = NULL;
+    srcpartition->blocknum[offset + i] = 0xFF;
+    srcpartition->numblocks--;
+    srcpartition->size -= sblk->size;
+  }
+
+  Cs2SortBlocks(&Cs2Area->partition[source]);
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_ECPY);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetCopyError(void) {
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  Cs2Area->reg.CR2 = 0;
+  Cs2Area->reg.CR3 = 0;
+  Cs2Area->reg.CR4 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ChangeDirectory(void) {
+  u32 cdfilternum;
+
+  cdfilternum = (Cs2Area->reg.CR3 >> 8);
+
+  if (cdfilternum == 0xFF)
+  {
+     doCDReport(CDB_STAT_REJECT);
+     Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+     return;
+  }
+  else if (cdfilternum < MAX_SELECTORS)
+  {
+     if (Cs2ReadFileSystem(Cs2Area->filter + cdfilternum, ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4, 0) != 0)
+     {
+        CDLOG("cs2\t: ReadFileSystem failed\n");
+        doCDReport(CDB_STAT_REJECT);
+        Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+        return;
+     }
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ReadDirectory(void) {
+  u32 rdfilternum;
+
+  rdfilternum = (Cs2Area->reg.CR3 >> 8);
+
+  if (rdfilternum == 0xFF)
+  {
+     doCDReport(CDB_STAT_REJECT);
+     Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+     return;
+  }
+  else if (rdfilternum < MAX_SELECTORS)
+  {
+		// ST-040-R4-051795, §6.9 « Read Directory (command 0x71) » :
+		// CR3[7:0] = FAD[23:16], CR4[15:0] = FAD[15:0]
+     if (Cs2ReadFileSystem(Cs2Area->filter + rdfilternum, ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4, 1) != 0) // était: << 8
+     {
+        CDLOG("cs2\t: ReadFileSystem failed\n");
+        doCDReport(CDB_STAT_REJECT);
+        Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+        return;
+     }
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFileSystemScope(void) {
+  // may need to fix this
+  Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  Cs2Area->reg.CR2 = (u16)(Cs2Area->numfiles - 2);
+  Cs2Area->reg.CR3 = 0x0100;
+  Cs2Area->reg.CR4 = 0x0002;
+
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetFileInfo(void) {
+  u32 gfifid;
+
+  gfifid = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
+
+  if (gfifid == 0xFFFFFF)
+  {
+     Cs2Area->transfercount = 0;
+     Cs2Area->infotranstype = 2;
+
+     Cs2Area->reg.CR1 = Cs2Area->status << 8;
+     Cs2Area->reg.CR2 = 0x05F4;
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
+  else
+  {
+     Cs2SetupFileInfoTransfer(gfifid);
+
+     Cs2Area->transfercount = 0;
+     Cs2Area->infotranstype = 1;
+
+     Cs2Area->reg.CR1 = Cs2Area->status << 8;
+     Cs2Area->reg.CR2 = 0x06;
+     Cs2Area->reg.CR3 = 0;
+     Cs2Area->reg.CR4 = 0;
+  }
+
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2ReadFile(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+  u32 rfoffset, rffilternum, rffid, rfsize;
+
+  // FIXED: rfoffset = CR2 seul (Sector Offset)
+  // CR1[7:0] est réservé pour cette commande, pas partie de l'offset
+  // Ref: ST-040-R4-051795 §6.14 "Read File (command 0x74)"
+  rfoffset    = Cs2Area->reg.CR2;                              // FIXED: était (CR1&0xFF)<<8 | CR2
+  rffilternum = Cs2Area->reg.CR3 >> 8;                        // correct, inchangé
+  rffid       = ((Cs2Area->reg.CR3 & 0xFF) << 8) | Cs2Area->reg.CR4;  // correct, inchangé
+
+  // rffid and rffilternum are game-supplied register values with no
+  // built-in bound; fileinfo[]/filter[] are only MAX_FILES/MAX_SELECTORS
+  // entries. Every equivalent index elsewhere in this file (rdfilternum,
+  // dsdbufno, casbufno, ...) is checked before use -- this one wasn't.
+  if (rffid >= MAX_FILES || rffilternum >= MAX_SELECTORS)
+  {
+     doCDReport(CDB_STAT_REJECT);
+     Cs2SetIRQ(CDB_HIRQ_CMOK);
+     return;
+  }
+
+  rfsize = ((Cs2Area->fileinfo[rffid].size + Cs2Area->getsectsize - 1) /
+           Cs2Area->getsectsize) - rfoffset;
+
+  Cs2SetupDefaultPlayStats(Cs2FADToTrack(Cs2Area->fileinfo[rffid].lba + rfoffset), 0);
+  Cs2Area->maxrepeat = 0;
+  Cs2Area->playFAD = Cs2Area->FAD = Cs2Area->fileinfo[rffid].lba + rfoffset;
+  Cs2Area->playendFAD = Cs2Area->playFAD + rfsize;
+  Cs2Area->options = 0x8;
+  Cs2SetTiming(1);                   // FIXED: décommenté
+  Cs2Area->outconcddev = Cs2Area->filter + rffilternum;
+  setStatus(CDB_STAT_PLAY);
+  Cs2Area->_periodiccycles = 0;
+  Cs2Area->playtype = CDB_PLAYTYPE_FILE;
+  Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2AbortFile(void) {
+  Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+    if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN &&
+        (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
+        setStatus(CDB_STAT_PAUSE);
+
+    Cs2Area->isonesectorstored = 0;
+    Cs2Area->datatranstype     = CDB_DATATRANSTYPE_INVALID;
+    Cs2Area->cdwnum            = 0;
+	// ST-040-R4-051795, §6.15 « Abort File (command 0x75) » :
+	// The drive returns to Pause state ; all pending sector transfers are cancelled.
+    Cs2Area->_periodiccycles   = 0;
+    Cs2Area->_periodictiming   = 0;
+
+    doCDReport(Cs2Area->status);
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EFLS);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegGetStatus(void) {
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegGetInterrupt(void) {
+   u32 mgiworkinterrupt;
+
+   // mpeg interrupt should be retrieved here
+   mgiworkinterrupt = 0;
+
+   // mask interupt
+   mgiworkinterrupt &= Cs2Area->mpegintmask;
+
+   Cs2Area->reg.CR1 = (u16)((Cs2Area->status << 8) | ((mgiworkinterrupt >> 16) & 0xFF));
+   Cs2Area->reg.CR2 = (u16) mgiworkinterrupt;
+   Cs2Area->reg.CR3 = 0;
+   Cs2Area->reg.CR4 = 0;
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetInterruptMask(void) {
+   Cs2Area->mpegintmask = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegInit(void) {
+
+  if (Cs2Area->mpgauth)
+     Cs2Area->reg.CR1 = Cs2Area->status << 8;
+  else
+     Cs2Area->reg.CR1 = 0xFF00;
+
+  // double-check this
+  if (Cs2Area->reg.CR2 == 0x0001) // software timer/reset?
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM | CDB_HIRQ_MPED | CDB_HIRQ_MPST );
+  else
+    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPED | CDB_HIRQ_MPST);
+
+  Cs2Area->reg.CR2 = 0;
+  Cs2Area->reg.CR3 = 0;
+  Cs2Area->reg.CR4 = 0;
+
+  // future mpeg-related variables should be initialized here
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetMode(void) {
+   u8 vidplaymode=Cs2Area->reg.CR1 & 0xFF;
+   u8 dectimingmode=Cs2Area->reg.CR2 >> 8;
+   u8 outmode=Cs2Area->reg.CR2 & 0xFF;
+   u8 slmode=Cs2Area->reg.CR3 >> 8;
+
+   if (vidplaymode != 0xFF)
+      Cs2Area->mpegmode.vidplaymode = vidplaymode;
+
+   if (dectimingmode != 0xFF)
+      Cs2Area->mpegmode.dectimingmode = dectimingmode;
+
+   if (outmode != 0xFF)
+      Cs2Area->mpegmode.outmode = outmode;
+
+   if (slmode != 0xFF)
+      Cs2Area->mpegmode.slmode = slmode;
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM );
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegPlay(void) {
+   // fix me
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetDecodingMethod(void) {
+   // fix me
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetConnection(void) {
+   int mscnext = (Cs2Area->reg.CR3 >> 8);
+
+   if (mscnext == 0)
+   {
+      // Current
+      Cs2Area->mpegcon[0].audcon = Cs2Area->reg.CR1 & 0xFF;
+      Cs2Area->mpegcon[0].audlay = Cs2Area->reg.CR2 >> 8;
+      Cs2Area->mpegcon[0].audbufnum = Cs2Area->reg.CR2 & 0xFF;
+      Cs2Area->mpegcon[0].vidcon = Cs2Area->reg.CR3 & 0xFF;
+      Cs2Area->mpegcon[0].vidlay = Cs2Area->reg.CR4 >> 8;
+      Cs2Area->mpegcon[0].vidbufnum = Cs2Area->reg.CR4 & 0xFF;
+   }
+   else
+   {
+      // Next
+      Cs2Area->mpegcon[1].audcon = Cs2Area->reg.CR1 & 0xFF;
+      Cs2Area->mpegcon[1].audlay = Cs2Area->reg.CR2 >> 8;
+      Cs2Area->mpegcon[1].audbufnum = Cs2Area->reg.CR2 & 0xFF;
+      Cs2Area->mpegcon[1].vidcon = Cs2Area->reg.CR3 & 0xFF;
+      Cs2Area->mpegcon[1].vidlay = Cs2Area->reg.CR4 >> 8;
+      Cs2Area->mpegcon[1].vidbufnum = Cs2Area->reg.CR4 & 0xFF;
+   }
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegGetConnection(void) {
+   int mgcnext = (Cs2Area->reg.CR3 >> 8);
+
+   if (mgcnext == 0)
+   {
+      // Current
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->mpegcon[0].audcon;
+      Cs2Area->reg.CR2 = (Cs2Area->mpegcon[0].audlay << 8) | Cs2Area->mpegcon[0].audbufnum;
+      Cs2Area->reg.CR3 = Cs2Area->mpegcon[0].vidcon;
+      Cs2Area->reg.CR4 = (Cs2Area->mpegcon[0].vidlay << 8) | Cs2Area->mpegcon[0].vidbufnum;
+   }
+   else
+   {
+      // Next
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->mpegcon[1].audcon;
+      Cs2Area->reg.CR2 = (Cs2Area->mpegcon[1].audlay << 8) | Cs2Area->mpegcon[1].audbufnum;
+      Cs2Area->reg.CR3 = Cs2Area->mpegcon[1].vidcon;
+      Cs2Area->reg.CR4 = (Cs2Area->mpegcon[1].vidlay << 8) | Cs2Area->mpegcon[1].vidbufnum;
+   }
+
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetStream(void) {
+   int mssnext = (Cs2Area->reg.CR3 >> 8);
+
+   if (mssnext == 0)
+   {
+      // Current
+      Cs2Area->mpegstm[0].audstm = Cs2Area->reg.CR1 & 0xFF;
+      Cs2Area->mpegstm[0].audstmid = Cs2Area->reg.CR2 >> 8;
+      Cs2Area->mpegstm[0].audchannum = Cs2Area->reg.CR2 & 0xFF;
+      Cs2Area->mpegstm[0].vidstm = Cs2Area->reg.CR3 & 0xFF;
+      Cs2Area->mpegstm[0].vidstmid = Cs2Area->reg.CR4 >> 8;
+      Cs2Area->mpegstm[0].vidchannum = Cs2Area->reg.CR4 & 0xFF;
+   }
+   else
+   {
+      // Next
+      Cs2Area->mpegstm[1].audstm = Cs2Area->reg.CR1 & 0xFF;
+      Cs2Area->mpegstm[1].audstmid = Cs2Area->reg.CR2 >> 8;
+      Cs2Area->mpegstm[1].audchannum = Cs2Area->reg.CR2 & 0xFF;
+      Cs2Area->mpegstm[1].vidstm = Cs2Area->reg.CR3 & 0xFF;
+      Cs2Area->mpegstm[1].vidstmid = Cs2Area->reg.CR4 >> 8;
+      Cs2Area->mpegstm[1].vidchannum = Cs2Area->reg.CR4 & 0xFF;
+   }
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegGetStream(void) {
+   int mgsnext = (Cs2Area->reg.CR3 >> 8);
+
+   if (mgsnext == 0)
+   {
+      // Current
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->mpegstm[0].audstm;
+      Cs2Area->reg.CR2 = (Cs2Area->mpegstm[0].audstmid << 8) | Cs2Area->mpegstm[0].audchannum;
+      Cs2Area->reg.CR3 = Cs2Area->mpegstm[0].vidstm;
+      Cs2Area->reg.CR4 = (Cs2Area->mpegstm[0].vidstmid << 8) | Cs2Area->mpegstm[0].vidchannum;
+   }
+   else
+   {
+      // Next
+      Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->mpegstm[1].audstm;
+      Cs2Area->reg.CR2 = (Cs2Area->mpegstm[1].audstmid << 8) | Cs2Area->mpegstm[1].audchannum;
+      Cs2Area->reg.CR3 = Cs2Area->mpegstm[1].vidstm;
+      Cs2Area->reg.CR4 = (Cs2Area->mpegstm[1].vidstmid << 8) | Cs2Area->mpegstm[1].vidchannum;
+   }
+
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegDisplay(void) {
+   // fix me(should be setting display setting)
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetWindow(void) {
+   // fix me(should be setting windows settings)
+
+   // return default mpeg stats
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetBorderColor(void) {
+   // fix me(should be setting border color)
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetFade(void) {
+   // fix me(should be setting fade setting)
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetVideoEffects(void) {
+   // fix me(should be setting video effects settings)
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegSetLSI(void) {
+   // fix me(should be setting the LSI, among other things)
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2AuthenticateDevice(void) {
+  int mpegauth;
+
+  mpegauth = Cs2Area->reg.CR2 & 0xFF;
+
+
+  if ((Cs2Area->status & 0xF) != CDB_STAT_NODISC &&
+      (Cs2Area->status & 0xF) != CDB_STAT_OPEN)
+  {
+     // Set registers all to invalid values(aside from status)
+
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8) | 0xFF;
+     Cs2Area->reg.CR2 = 0xFFFF;
+     Cs2Area->reg.CR3 = 0xFFFF;
+     Cs2Area->reg.CR4 = 0xFFFF;
+
+     if (mpegauth == 1)
+     {
+        Cs2SetIRQ(CDB_HIRQ_MPED);
+        Cs2Area->mpgauth = 2;
+     }
+     else
+     {
+        // if authentication passes(obviously it always does), CDB_HIRQ_CSCT is set
+        Cs2Area->isonesectorstored = 1;
+        Cs2SetIRQ(CDB_HIRQ_EFLS | CDB_HIRQ_CSCT);
+        Cs2Area->satauth = 4;
+     }
+
+     // Set registers all back to normal values
+     setStatus(CDB_STAT_PAUSE);
+  }
+  else
+  {
+     if (mpegauth == 1)
+     {
+        Cs2SetIRQ(CDB_HIRQ_MPED);
+        Cs2Area->mpgauth = 2;
+     }
+     else
+       Cs2SetIRQ(CDB_HIRQ_EFLS | CDB_HIRQ_CSCT);
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2IsDeviceAuthenticated(void) {
+  Cs2Area->reg.CR1 = (Cs2Area->status << 8);
+  if (Cs2Area->reg.CR2)
+     Cs2Area->reg.CR2 = Cs2Area->mpgauth;
+  else
+     Cs2Area->reg.CR2 = Cs2Area->satauth;
+  Cs2Area->reg.CR3 = 0;
+  Cs2Area->reg.CR4 = 0;
+  Cs2SetIRQ(CDB_HIRQ_CMOK);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2IsMpegCardPresent(void) {
+  // Pas de carte Video CD (MPEG Card) emulee dans cette branche :
+  // Cs2GetHardwareInfo() repond deja CR2 = 0x0001 ("No mpeg card exists",
+  // CD Communication Interface, commande 01h Get Hardware Info, bit MPEG
+  // de CR2). BiosCheckMPEGCard() doit donner la meme reponse.
+  // A remplacer par la vraie detection (MpegCardHasRom() / CART_MPEGCARD)
+  // lors de l'integration du lot Video CD.
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2GetMPEGRom(void) {
+  u16 i;
+  FILE * mpgfp;
+  partition_struct * mpgpartition;
+
+  // fix me
+  Cs2Area->mpgauth |= 0x300;
+
+  Cs2Area->outconmpegrom = Cs2Area->filter + 0;
+  Cs2Area->outconmpegromnum = 0;
+
+  if (Cs2Area->mpegpath && (mpgfp = fopen(Cs2Area->mpegpath, "rb")) != NULL)
+  {
+     u32 readoffset = ((Cs2Area->reg.CR1 & 0xFF) << 8) | Cs2Area->reg.CR2;
+     u16 readsize = Cs2Area->reg.CR4;
+
+     fseek(mpgfp, readoffset * Cs2Area->getsectsize, SEEK_SET);
+     if ((mpgpartition = Cs2GetPartition(Cs2Area->outconmpegrom)) != NULL && !Cs2Area->isbufferfull)
+     {
+        IOCheck_struct check = { 0, 0 };
+        mpgpartition->size = 0;
+
+        for (i = 0; i < readsize && mpgpartition->numblocks < MAX_BLOCKS; i++)
+        {
+           mpgpartition->block[mpgpartition->numblocks] = Cs2AllocateBlock(&mpgpartition->blocknum[mpgpartition->numblocks], Cs2Area->getsectsize);
+
+           if (mpgpartition->block[mpgpartition->numblocks] != NULL) {
+              // read data
+              yread(&check, (void *)mpgpartition->block[mpgpartition->numblocks]->data, 1, Cs2Area->getsectsize, mpgfp);
+
+              mpgpartition->numblocks++;
+              mpgpartition->size += Cs2Area->getsectsize;
+           }
+           else
+              break; // global block pool exhausted, matches Cs2CopySectorData's convention
+        }
+
+        Cs2Area->isonesectorstored = 1;
+        Cs2SetIRQ(CDB_HIRQ_CSCT);
+     }
+
+     fclose(mpgfp);
+  }
+
+  doCDReport(Cs2Area->status);
+  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPED);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u8 Cs2FADToTrack(u32 val) {
+  int i;
+  for (i = 0; i < 99; i++)
+  {
+     if (Cs2Area->TOC[i] == 0xFFFFFFFF) return 0xFF;
+
+     if (val >= (Cs2Area->TOC[i] & 0xFFFFFF) && val < (Cs2Area->TOC[i + 1] & 0xFFFFFF))
+        return (i + 1);
+  }
+
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u32 Cs2TrackToFAD(u16 trackandindex) {
+  if (trackandindex == 0xFFFF)
+     // leadout position
+     return (Cs2Area->TOC[101] & 0x00FFFFFF);
+  if (trackandindex != 0x0000)
+  {
+     // regular track
+     // (really, we should be fetching subcode q's here)
+     if ((trackandindex & 0xFF) == 0x01)
+        // Return Start of Track
+        // Cs2TrackToFAD isn't static, so callers outside this file
+        // aren't guaranteed to pre-mask the low byte the way
+        // Cs2PlayDisc does; guard track==0 the same way
+        // Cs2SetupDefaultPlayStats does, to avoid TOC[-1].
+        return (((trackandindex >> 8) == 0) ? 0 : (Cs2Area->TOC[(trackandindex >> 8) - 1] & 0x00FFFFFF));
+     else if ((trackandindex & 0xFF) == 0x63)
+        // Return End of Track
+        return ((Cs2Area->TOC[(trackandindex >> 8)] & 0x00FFFFFF) - 1);
+  }
+
+  // assume it's leadin
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2FADToMSF(u32 val, u8 *m, u8 *s, u8 *f)
+{
+   u32 temp;
+   m[0] = val / 4500;
+   temp = val % 4500;
+   s[0] = temp / 75;
+   f[0] = temp % 75;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetupDefaultPlayStats(u8 track_number, int writeFAD) {
+  // 0xFF is the documented "no track" sentinel, but track_number also
+  // reaches here as 0 (e.g. Cs2FADToTrack() returns 0 when a FAD isn't
+  // within any track, such as the lead-in area) and straight from a
+  // game-supplied register field (CR2>>8) with no prior validation.
+  // track_number - 1 must stay a valid TOC[] index (tracks occupy
+  // TOC[0..98]), so 0 needs rejecting the same as 0xFF -- as written,
+  // track_number==0 wrapped to TOC[-1], an out-of-bounds read just
+  // before the array.
+  if (track_number != 0xFF && track_number != 0)
+  {
+     Cs2Area->options = 8;
+     Cs2Area->repcnt = 0;
+     Cs2Area->ctrladdr = (u8)(Cs2Area->TOC[track_number - 1] >> 24);
+     Cs2Area->index = 1;
+     Cs2Area->track = track_number;
+     if (writeFAD)
+        Cs2Area->FAD = Cs2Area->TOC[track_number - 1] & 0x00FFFFFF;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+block_struct * Cs2AllocateBlock(u8 * blocknum, s32 sectsize) {
+  u32 i;
+  // find a free block
+  for(i = 0; i < MAX_BLOCKS; i++)
+  {
+     if (Cs2Area->block[i].size == -1)
+     {
+        Cs2Area->blockfreespace--;
+
+		if (Cs2Area->blockfreespace <= 0) {
+			Cs2Area->isbufferfull = 1;
+      Cs2SetIRQ(CDB_HIRQ_BFUL);
+		}
+
+        Cs2Area->block[i].size = sectsize;
+
+        *blocknum = (u8)i;
+        return (Cs2Area->block + i);
+     }
+  }
+
+  Cs2Area->isbufferfull = 1;
+  Cs2SetIRQ(CDB_HIRQ_BFUL);
   return NULL;
 }
 
-/* Called by the main thread every few lines: returns once the sound thread
-   has run the cycles it was given, give or take one 256-cycle chunk. */
-void ScspSyncToLine(void)
-{
-  u32 guard = 0;
+//////////////////////////////////////////////////////////////////////////////
 
-  if (!thread_running)
-    return;
-  while (!g_scsp_lock && !scsp_frame_wait)
-  {
-    u64 pending;
-    YabThreadLock(g_scsp_set_cyc_mtx);
-    pending = newCycles + scsp_pending_inc;
-    YabThreadUnLock(g_scsp_set_cyc_mtx);
-    if (pending < 256)
-      break;
-    /* safety net: never hang the main thread on the sound thread */
-    if (++guard > 2000000)
-      break;
-    /* the sound thread may have gone to sleep just before the last
-       ScspAddCycles() signal: wake it again rather than wait forever */
-    YabThreadCondSignal(g_scsp_set_cyc_cond);
-    YabThreadYield();
-  }
+void Cs2FreeBlock(block_struct * blk) {
+  if (blk == NULL) return;
+  blk->size = -1;
+  CDLOG("Free Block\n");
+  Cs2Area->blockfreespace++;
+  Cs2Area->isbufferfull = 0;
 }
 
-void ScspAddCycles(u64 cycles)
-{
-    YabThreadLock(g_scsp_set_cyc_mtx);
-    newCycles += cycles;
-    YabThreadUnLock(g_scsp_set_cyc_mtx);
-    YabThreadCondSignal(g_scsp_set_cyc_cond);
-}
+//////////////////////////////////////////////////////////////////////////////
 
-void ScspExecAsync() {
-  u32 audiosize;
+void Cs2SortBlocks(partition_struct * part) {
+  unsigned int from, to;
 
-
-  if (ScspInternalVars->scsptiming1 >= scsplines)
+  for (from = to = 0; from < MAX_BLOCKS; from++)
   {
-     /* Samples actually produced during this frame (one per 256 68000
-        cycles, see new_scsp_exec): 882 in PAL, 735 or 736 in NTSC. The
-        frame length is no longer a fixed scspsoundlen, so the samples are
-        copied into the ring buffer one by one, wrapping at its end, instead
-        of rewinding scspsoundgenpos to 0 (which would now leave a gap of
-        stale samples at the end of the buffer). */
-     u32 len = (new_scsp_outbuf_pos > 0) ? (u32)new_scsp_outbuf_pos : 0;
-     u32 i;
-
-     ScspInternalVars->scsptiming1 -= scsplines;
-     ScspInternalVars->scsptiming2 = 0;
-
-     if (len > 900)
-        len = 900;  /* size of new_scsp_outbuf_l/r */
-     if (len > scspsoundbufsize)
-        len = scspsoundbufsize;
-
-     if (scspsoundoutleft + len > scspsoundbufsize)
+     if (part->block[from] != NULL)
      {
-        u32 overrun = (scspsoundoutleft + len) - scspsoundbufsize;
-        SCSPLOG("WARNING: Sound buffer overrun, %lu samples\n",
-           (long)overrun);
-        scspsoundoutleft -= overrun;
+        if (to != from)
+        {
+           part->block[to] = part->block[from];
+        }
+        to++;
      }
-
-     for (i = 0; i < len; i++)
-     {
-        u32 pos = (scspsoundgenpos + i) % scspsoundbufsize;
-        scspchannel[0].data32[pos] = (u32)new_scsp_outbuf_l[i];
-        scspchannel[1].data32[pos] = (u32)new_scsp_outbuf_r[i];
-     }
-     new_scsp_outbuf_pos = 0;
-     scspsoundgenpos = (scspsoundgenpos + len) % scspsoundbufsize;
-     scspsoundoutleft += len;
   }
 
-  while (scspsoundoutleft > 0 &&
-     (audiosize = SNDCore->GetAudioSpace()) > 0)
-  {
-     s32 outstart = (s32)scspsoundgenpos - (s32)scspsoundoutleft;
-
-     if (outstart < 0)
-        outstart += scspsoundbufsize;
-     if (audiosize > scspsoundoutleft)
-        audiosize = scspsoundoutleft;
-     if (audiosize > scspsoundbufsize - outstart)
-        audiosize = scspsoundbufsize - outstart;
-
-    if (scsp_mute_flags == 0) {
-     SNDCore->UpdateAudio(&scspchannel[0].data32[outstart],
-        &scspchannel[1].data32[outstart], audiosize);
-    }
-     scspsoundoutleft -= audiosize;
-
-#if 0
-     ScspConvert32uto16s(&scspchannel[0].data32[outstart],
-        &scspchannel[1].data32[outstart],
-        (s16 *)stereodata16, audiosize);
-     DRV_AviSoundUpdate(stereodata16, audiosize);
-#endif
-}
-
-#ifdef USE_SCSPMIDI
-  // Process Midi ports
-  while (scsp.midincnt < 4)
-  {
-     u8 data;
-     int isdata;
-
-     data = SNDCore->MidiIn(&isdata);
-     if (!isdata)
-        break;
-     scsp_midi_in_send(data);
-  }
-
-
-  while (scsp.midoutcnt)
-  {
-     SNDCore->MidiOut(scsp_midi_out_read());
-  }
-#endif
-
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KWriteNotify (u32 address, u32 size)
-{
-  M68K->WriteNotify (address, size);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KGetRegisters (m68kregs_struct *regs)
-{
-  int i;
-
-  if (regs != NULL)
-    {
-      for (i = 0; i < 8; i++)
-        {
-          regs->D[i] = M68K->GetDReg (i);
-          regs->A[i] = M68K->GetAReg (i);
-        }
-
-      regs->SR = M68K->GetSR ();
-      regs->PC = M68K->GetPC ();
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KSetRegisters (m68kregs_struct *regs)
-{
-  int i;
-
-  if (regs != NULL)
-    {
-      for (i = 0; i < 8; i++)
-        {
-          M68K->SetDReg (i, regs->D[i]);
-          M68K->SetAReg (i, regs->A[i]);
-        }
-
-      M68K->SetSR (regs->SR);
-      M68K->SetPC (regs->PC);
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspMuteAudio (int flags)
-{
-  scsp_mute_flags |= flags;
-  if (SNDCore && scsp_mute_flags) {
-    SNDCore->MuteAudio ();
+  for (; to < MAX_BLOCKS; to++) {
+      part->block[to] = NULL;
   }
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-void
-ScspUnMuteAudio (int flags)
+partition_struct * Cs2GetPartition(filter_struct * curfilter)
 {
-  scsp_mute_flags &= ~flags;
-  if (SNDCore && (scsp_mute_flags == 0)) {
-    SNDCore->UnMuteAudio ();
-  }
+  // go through various filter conditions here(fix me)
+
+  // condtrue is an 8-bit value written verbatim from a command register
+  // (Cs2SetFilterConnection); guard against it pointing past the 24
+  // physical partitions before using it as an array index.
+  if (curfilter->condtrue >= MAX_SELECTORS)
+     return NULL;
+
+  return &Cs2Area->partition[curfilter->condtrue];
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-void
-ScspSetVolume (int volume)
+partition_struct * Cs2FilterData(filter_struct * curfilter, int isaudio)
 {
-  scsp_volume = volume;
-  if (SNDCore)
-    SNDCore->SetVolume (volume);
-}
+  int condresults;
+  partition_struct * fltpartition = NULL;
 
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KSetBreakpointCallBack (void (*func)(u32))
-{
-  ScspInternalVars->BreakpointCallBack = func;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-M68KAddCodeBreakpoint (u32 addr)
-{
-  int i;
-
-  if (ScspInternalVars->numcodebreakpoints < MAX_BREAKPOINTS)
-    {
-      // Make sure it isn't already on the list
-      for (i = 0; i < ScspInternalVars->numcodebreakpoints; i++)
-        {
-          if (addr == ScspInternalVars->codebreakpoint[i].addr)
-            return -1;
-        }
-
-      ScspInternalVars->codebreakpoint[i].addr = addr;
-      ScspInternalVars->numcodebreakpoints++;
-      m68kexecptr = M68KExecBP;
-
-      return 0;
-    }
-
-  return -1;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KSortCodeBreakpoints (void)
-{
-  int i, i2;
-  u32 tmp;
-
-  for (i = 0; i < (MAX_BREAKPOINTS - 1); i++)
-    {
-      for (i2 = i+1; i2 < MAX_BREAKPOINTS; i2++)
-        {
-          if (ScspInternalVars->codebreakpoint[i].addr == 0xFFFFFFFF &&
-              ScspInternalVars->codebreakpoint[i2].addr != 0xFFFFFFFF)
-            {
-              tmp = ScspInternalVars->codebreakpoint[i].addr;
-              ScspInternalVars->codebreakpoint[i].addr =
-                ScspInternalVars->codebreakpoint[i2].addr;
-              ScspInternalVars->codebreakpoint[i2].addr = tmp;
-            }
-        }
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-M68KDelCodeBreakpoint (u32 addr)
-{
-  int i;
-  if (ScspInternalVars->numcodebreakpoints > 0)
-    {
-      for (i = 0; i < ScspInternalVars->numcodebreakpoints; i++)
-        {
-          if (ScspInternalVars->codebreakpoint[i].addr == addr)
-            {
-              ScspInternalVars->codebreakpoint[i].addr = 0xFFFFFFFF;
-              M68KSortCodeBreakpoints ();
-              ScspInternalVars->numcodebreakpoints--;
-              if (ScspInternalVars->numcodebreakpoints == 0)
-                m68kexecptr = M68K->Exec;
-              return 0;
-            }
-        }
-    }
-
-  return -1;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-m68kcodebreakpoint_struct *
-M68KGetBreakpointList ()
-{
-  return ScspInternalVars->codebreakpoint;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-M68KClearCodeBreakpoints ()
-{
-  int i;
-  for (i = 0; i < MAX_BREAKPOINTS; i++)
-    ScspInternalVars->codebreakpoint[i].addr = 0xFFFFFFFF;
-
-  ScspInternalVars->numcodebreakpoints = 0;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int SoundSaveState(void ** stream)
-{
-  int i;
-#ifndef IMPROVED_SAVESTATES
-  u32 temp;
-#endif
-  int offset;
-  u8 nextphase;
-
-  offset = MemStateWriteHeader (stream, "SCSP", 4);
-
-  // Save 68k registers first
-  MemStateWrite((void *)&IsM68KRunning, 1, 1, stream);
-  MemStateWrite((void *)&savedcycles, sizeof(s32), 1, stream);
-
-#ifdef IMPROVED_SAVESTATES
-
-  M68K->SaveState(stream);
-#else
-  for (i = 0; i < 8; i++)
-    {
-      temp = M68K->GetDReg (i);
-      MemStateWrite((void *)&temp, 4, 1, stream);
-    }
-
-  for (i = 0; i < 8; i++)
-    {
-      temp = M68K->GetAReg (i);
-      MemStateWrite((void *)&temp, 4, 1, stream);
-    }
-
-  temp = M68K->GetSR ();
-  MemStateWrite((void *)&temp, 4, 1, stream);
-  temp = M68K->GetPC ();
-  MemStateWrite((void *)&temp, 4, 1, stream);
-#endif
-
-  MemStateWrite((void *)&new_scsp_outbuf_pos, sizeof(int), 1, stream);
-  MemStateWrite((void *)&new_scsp_outbuf_l, sizeof(s32), 900, stream);
-  MemStateWrite((void *)&new_scsp_outbuf_r, sizeof(s32), 900, stream);
-
-  MemStateWrite((void *)&new_scsp_cycles, sizeof(int), 1, stream);
-  MemStateWrite((void *)new_scsp.sound_stack, sizeof(u16), 64, stream);
-  for (i = 0; i < 32; i++) {
-    MemStateWrite((void *)&new_scsp.slots[i].regs.kx, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.kb, sizeof(u8),  1,stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.sbctl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.ssctl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.lpctl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.pcm8b, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.sa, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.lsa, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.lea, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.d2r, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.d1r, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.hold, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.ar, sizeof(u8),  1,stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.unknown1, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.ls, sizeof(u8),  1,stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.krs, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.dl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.rr, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.unknown2, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.si, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.sd, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.tl, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.mdl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.mdxsl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.mdysl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.unknown3, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.oct, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.unknown4, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.fns, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.re, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.lfof, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.plfows, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.plfos, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.alfows, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.alfos, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.unknown5, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.isel,  sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.imxl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.disdl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.dipan, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.efsdl, sizeof(u8), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].regs.efpan, sizeof(u8), 1, stream);
-
-    MemStateWrite((void *)&new_scsp.slots[i].state.wave, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.backwards, sizeof(int), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.envelope, sizeof(int), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.output, sizeof(s16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.attenuation, sizeof(u16), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.step_count, sizeof(int), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.sample_counter, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.envelope_steps_taken, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.waveform_phase_value, sizeof(s32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.sample_offset, sizeof(s32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.address_pointer, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.lfo_counter, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.lfo_pos, sizeof(u32), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.num, sizeof(int), 1, stream);
-    MemStateWrite((void *)&new_scsp.slots[i].state.is_muted, sizeof(int), 1, stream);
-
-  }
-
-
-  // Now for the SCSP registers
-  MemStateWrite((void *)scsp_reg, sizeof(u8), 0x1000, stream);
-
-  //Plfo
-  MemStateWrite((void *)plfo.saw_table, 256, 1, stream);
-  MemStateWrite((void *)plfo.square_table, 256, 1, stream);
-  MemStateWrite((void *)plfo.tri_table, 256, 1, stream);
-  MemStateWrite((void *)plfo.saw_table, 256, 1, stream);
-  //Alfo
-  MemStateWrite((void *)alfo.saw_table, 256, 1, stream);
-  MemStateWrite((void *)alfo.square_table, 256, 1, stream);
-  MemStateWrite((void *)alfo.tri_table, 256, 1, stream);
-  MemStateWrite((void *)alfo.saw_table, 256, 1, stream);
-
-  // Sound RAM is important
-  MemStateWrite((void *)SoundRam, 0x80000, 1, stream);
-
-  MemStateWrite((void *)cddabuf.data, CDDA_NUM_BUFFERS*2352, 1, stream);
-
-  // Write slot internal variables
-  for (i = 0; i < 32; i++)
-    {
-      s32 einc;
-
-#ifdef IMPROVED_SAVESTATES
-      MemStateWrite((void *)&scsp.slot[i].swe, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].sdir, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].pcm8b, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].sbctl, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].ssctl, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lpctl, sizeof(u8), 1, stream);
-#endif
-      MemStateWrite((void *)&scsp.slot[i].key, 1, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-      MemStateWrite((void *)&scsp.slot[i].keyx, sizeof(u8), 1, stream);
-#endif
-      //buf8,16 get regenerated on state load
-
-      MemStateWrite((void *)&scsp.slot[i].fcnt, 4, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-      MemStateWrite((void *)&scsp.slot[i].finc, sizeof(u32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].finct, sizeof(u32), 1, stream);
-#endif
-      MemStateWrite((void *)&scsp.slot[i].ecnt, 4, 1, stream);
-
-      if (scsp.slot[i].einc == &scsp.slot[i].einca)
-        einc = 0;
-      else if (scsp.slot[i].einc == &scsp.slot[i].eincd)
-        einc = 1;
-      else if (scsp.slot[i].einc == &scsp.slot[i].eincs)
-        einc = 2;
-      else if (scsp.slot[i].einc == &scsp.slot[i].eincr)
-        einc = 3;
-      else
-        einc = 4;
-
-      MemStateWrite((void *)&einc, 4, 1, stream);
-
-      //einca,eincd,eincs,eincr
-
-      MemStateWrite((void *)&scsp.slot[i].ecmp, 4, 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].ecurp, 4, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-      MemStateWrite((void *)&scsp.slot[i].env, sizeof(s32), 1, stream);
-#endif
-      if (scsp.slot[i].enxt == scsp_env_null_next)
-        nextphase = 0;
-      else if (scsp.slot[i].enxt == scsp_release_next)
-        nextphase = 1;
-      else if (scsp.slot[i].enxt == scsp_sustain_next)
-        nextphase = 2;
-      else if (scsp.slot[i].enxt == scsp_decay_next)
-        nextphase = 3;
-      else if (scsp.slot[i].enxt == scsp_attack_next)
-        nextphase = 4;
-      MemStateWrite((void *)&nextphase, 1, 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].lfocnt, 4, 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lfoinc, 4, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-      MemStateWrite((void *)&scsp.slot[i].sa, sizeof(u32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lsa, sizeof(u32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lea , sizeof(u32), 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].tl, sizeof(s32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].sl, sizeof(s32), 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].ar, sizeof(s32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].dr, sizeof(s32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].sr, sizeof(s32), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].rr, sizeof(s32), 1, stream);
-
-      //arp
-      //drp
-      //srp
-      //rrp
-
-      MemStateWrite((void *)&scsp.slot[i].krs, sizeof(u32), 1, stream);
-
-      //lfofmw
-      //lfoemw
-
-      MemStateWrite((void *)&scsp.slot[i].lfofms, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lfoems, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].fsft, sizeof(u8), 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].mdl, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].mdx, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].mdy, sizeof(u8), 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].imxl, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].disll, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].dislr, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].efsll, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].efslr, sizeof(u8), 1, stream);
-
-      MemStateWrite((void *)&scsp.slot[i].eghold, sizeof(u8), 1, stream);
-      MemStateWrite((void *)&scsp.slot[i].lslnk, sizeof(u8), 1, stream);
-#endif
-    }
-
-  // Write main internal variables
-  MemStateWrite((void *)&scsp.mem4b, 4, 1, stream);
-  MemStateWrite((void *)&scsp.mvol, 4, 1, stream);
-
-  MemStateWrite((void *)&scsp.rbl, 4, 1, stream);
-  MemStateWrite((void *)&scsp.rbp, 4, 1, stream);
-
-  MemStateWrite((void *)&scsp.mslc, 4, 1, stream);
-  MemStateWrite((void *)&scsp.dmea, 4, 1, stream);
-  MemStateWrite((void *)&scsp.drga, 4, 1, stream);
-  MemStateWrite((void *)&scsp.dmfl, 4, 1, stream);
-  MemStateWrite((void *)&scsp.dmlen, 4, 1, stream);
-
-  MemStateWrite((void *)scsp.midinbuf, 1, 4, stream);
-  MemStateWrite((void *)scsp.midoutbuf, 1, 4, stream);
-  MemStateWrite((void *)&scsp.midincnt, 1, 1, stream);
-  MemStateWrite((void *)&scsp.midoutcnt, 1, 1, stream);
-  MemStateWrite((void *)&scsp.midflag, 1, 1, stream);
-
-  MemStateWrite((void *)&scsp.timacnt, 4, 1, stream);
-  MemStateWrite((void *)&scsp.timasd, 4, 1, stream);
-  MemStateWrite((void *)&scsp.timbcnt, 4, 1, stream);
-  MemStateWrite((void *)&scsp.timbsd, 4, 1, stream);
-  MemStateWrite((void *)&scsp.timccnt, 4, 1, stream);
-  MemStateWrite((void *)&scsp.timcsd, 4, 1, stream);
-
-  MemStateWrite((void *)&scsp.scieb, 4, 1, stream);
-  MemStateWrite((void *)&scsp.scipd, 4, 1, stream);
-  MemStateWrite((void *)&scsp.scilv0, 4, 1, stream);
-  MemStateWrite((void *)&scsp.scilv1, 4, 1, stream);
-  MemStateWrite((void *)&scsp.scilv2, 4, 1, stream);
-  MemStateWrite((void *)&scsp.mcieb, 4, 1, stream);
-  MemStateWrite((void *)&scsp.mcipd, 4, 1, stream);
-
-  MemStateWrite((void *)scsp.stack, 4, 32 * 2, stream);
-
-  MemStateWrite((void *)scsp_dsp.coef, sizeof(u16), 64, stream);
-  MemStateWrite((void *)scsp_dsp.madrs, sizeof(u16), 32, stream);
-  MemStateWrite((void *)scsp_dsp.mpro, sizeof(u64), 128, stream);
-  MemStateWrite((void *)scsp_dsp.temp, sizeof(s32), 128, stream);
-  MemStateWrite((void *)scsp_dsp.mems, sizeof(s32), 32, stream);
-  MemStateWrite((void *)scsp_dsp.mixs, sizeof(s32), 16, stream);
-  MemStateWrite((void *)scsp_dsp.efreg, sizeof(s16), 16, stream);
-  MemStateWrite((void *)scsp_dsp.exts, sizeof(s16), 2, stream);
-  MemStateWrite((void *)&scsp_dsp.mdec_ct, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.inputs, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.b, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.x, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.y, sizeof(s16), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.acc, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.shifted, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.y_reg, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.frc_reg, sizeof(u16), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.adrs_reg, sizeof(u16), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.mul_out, sizeof(s32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.mrd_value, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.rbl, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.rbp, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.need_read, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.io_addr, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.need_write, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.write_data, sizeof(u16), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.updated, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.last_step, sizeof(int), 1, stream);
-
-  MemStateWrite((void *)&scsp_dsp.shift_reg, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.read_pending, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.read_value, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.write_pending, sizeof(int), 1, stream);
-  MemStateWrite((void *)&scsp_dsp.write_value, sizeof(u32), 1, stream);
-
-  MemStateWrite((void *)&ScspInternalVars->scsptiming1, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&ScspInternalVars->scsptiming2, sizeof(u32), 1, stream);
-
-  MemStateWrite((void *)&cdda_next_in, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&cdda_out_left, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsp_mute_flags, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scspsoundlen, sizeof(u32), 1, stream);
-  MemStateWrite((void *)&scsplines, sizeof(u32), 1, stream);
-
-
-  g_scsp_lock = 0;
-
-  return MemStateFinishHeader (stream, offset);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int SoundLoadState (const void * stream, int version, int size)
-{
-  int i, i2;
-  u32 temp;
-  u8 nextphase;
-  IOCheck_struct check = { 0, 0 };
-
-  u8 newM68state;
-  // Read 68k registers first
-  MemStateRead((void *)&newM68state, 1, 1, stream);
-  MemStateRead((void *)&savedcycles, sizeof(s32), 1, stream);
-if (IsM68KRunning != newM68state) {
-  if (newM68state) M68KStart();
-  else M68KStop();
-}
-#ifdef IMPROVED_SAVESTATES
-  if (version >= 4){
-    M68K->LoadState(stream);
-  }
-#else
-  for (i = 0; i < 8; i++)
-    {
-      MemStateRead((void *)&temp, 4, 1, stream);
-      M68K->SetDReg (i, temp);
-    }
-
-  for (i = 0; i < 8; i++)
-    {
-      MemStateRead((void *)&temp, 4, 1, stream);
-      M68K->SetAReg (i, temp);
-    }
-
-  MemStateRead((void *)&temp, 4, 1, stream);
-  M68K->SetSR (temp);
-  MemStateRead((void *)&temp, 4, 1, stream);
-  M68K->SetPC (temp);
-#endif
-  if (version >= 4){
-    MemStateRead((void *)&new_scsp_outbuf_pos, sizeof(int), 1, stream );
-    MemStateRead((void *)&new_scsp_outbuf_l, 900*sizeof(s32), 1, stream );
-    MemStateRead((void *)&new_scsp_outbuf_r, 900*sizeof(s32), 1, stream );
-  }
-
-  MemStateRead((void *)&new_scsp_cycles, 1, sizeof(u32), stream);
-  MemStateRead((void *)new_scsp.sound_stack, 64, sizeof(u16), stream);
-  for (i = 0; i < 32; i++) {
-    MemStateRead((void *)&new_scsp.slots[i].regs.kx, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.kb, sizeof(u8),  1,stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.sbctl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.ssctl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.lpctl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.pcm8b, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.sa, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.lsa, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.lea, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.d2r, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.d1r, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.hold, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.ar, sizeof(u8),  1,stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.unknown1, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.ls, sizeof(u8),  1,stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.krs, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.dl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.rr, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.unknown2, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.si, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.sd, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.tl, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.mdl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.mdxsl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.mdysl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.unknown3, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.oct, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.unknown4, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.fns, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.re, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.lfof, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.plfows, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.plfos, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.alfows, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.alfos, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.unknown5, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.isel,  sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.imxl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.disdl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.dipan, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.efsdl, sizeof(u8), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].regs.efpan, sizeof(u8), 1, stream);
-
-    MemStateRead((void *)&new_scsp.slots[i].state.wave, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.backwards, sizeof(int), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.envelope, sizeof(int), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.output, sizeof(s16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.attenuation, sizeof(u16), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.step_count, sizeof(int), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.sample_counter, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.envelope_steps_taken, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.waveform_phase_value, sizeof(s32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.sample_offset, sizeof(s32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.address_pointer, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.lfo_counter, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.lfo_pos, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.num, sizeof(u32), 1, stream);
-    MemStateRead((void *)&new_scsp.slots[i].state.is_muted, sizeof(u32), 1, stream);
-    // not in the save state: a slot that is still sounding is keyed on
-    new_scsp.slots[i].state.keyed = (new_scsp.slots[i].state.envelope != RELEASE);
-
-  }
-
-
-  // Now for the SCSP registers
-  MemStateRead((void *)scsp_reg, 0x1000, 1, stream);
-
-  if (version >= 4) {
-    //Plfo
-    MemStateRead((void *)plfo.saw_table, 256, 1, stream);
-    MemStateRead((void *)plfo.square_table, 256, 1, stream);
-    MemStateRead((void *)plfo.tri_table, 256, 1, stream);
-    MemStateRead((void *)plfo.saw_table, 256, 1, stream);
-    //Alfo
-    MemStateRead((void *)alfo.saw_table, 256, 1, stream);
-    MemStateRead((void *)alfo.square_table, 256, 1, stream);
-    MemStateRead((void *)alfo.tri_table, 256, 1, stream);
-    MemStateRead((void *)alfo.saw_table, 256, 1, stream);
-  }
-
-  // Lastly, sound ram
-  MemStateRead((void *)SoundRam, 0x80000, 1, stream);
-
-  MemStateRead((void *)cddabuf.data, CDDA_NUM_BUFFERS*2352, 1, stream);
-
-  if (version > 1)
-    {
-      // Internal variables need to be regenerated
-      for(i = 0; i < 32; i++)
-        {
-          for (i2 = 0; i2 < 0x20; i2 += 2){
-            //scsp_slot_set_w (i, 0x1E - i2, scsp_slot_get_w (i, 0x1E - i2));
-            u32 addr = (i << 5) + 0x1E - i2;
-            u16 val = *(u16 *)&scsp_isr[addr ^ 2];
-            scsp_w_w(NULL, NULL, addr, val);
-          }
-        }
-
-      scsp_set_w (0x402, scsp_get_w (0x402));
-
-      // Read slot internal variables
-      for (i = 0; i < 32; i++)
-        {
-          s32 einc;
-#ifdef IMPROVED_SAVESTATES
-          MemStateRead((void *)&scsp.slot[i].swe, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].sdir, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].pcm8b, sizeof(u8), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].sbctl, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].ssctl, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lpctl, sizeof(u8), 1, stream);
-#endif
-          MemStateRead((void *)&scsp.slot[i].key, 1, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-          MemStateRead((void *)&scsp.slot[i].keyx, sizeof(u8), 1, stream);
-#endif
-          //buf8,16 regenerated at end
-
-          MemStateRead((void *)&scsp.slot[i].fcnt, 4, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-          MemStateRead((void *)&scsp.slot[i].finc, sizeof(u32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].finct, sizeof(u32), 1, stream);
-#endif
-          MemStateRead((void *)&scsp.slot[i].ecnt, 4, 1, stream);
-
-          MemStateRead((void *)&einc, 4, 1, stream);
-          switch (einc)
-            {
-            case 0:
-              scsp.slot[i].einc = &scsp.slot[i].einca;
-              break;
-            case 1:
-              scsp.slot[i].einc = &scsp.slot[i].eincd;
-              break;
-            case 2:
-              scsp.slot[i].einc = &scsp.slot[i].eincs;
-              break;
-            case 3:
-              scsp.slot[i].einc = &scsp.slot[i].eincr;
-              break;
-            default:
-              scsp.slot[i].einc = NULL;
-              break;
-            }
-
-          //einca,eincd,eincs,eincr
-
-          MemStateRead((void *)&scsp.slot[i].ecmp, 4, 1, stream);
-          MemStateRead((void *)&scsp.slot[i].ecurp, 4, 1, stream);
-#ifdef IMPROVED_SAVESTATES
-          MemStateRead((void *)&scsp.slot[i].env, sizeof(s32), 1, stream);
-#endif
-          MemStateRead((void *)&nextphase, 1, 1, stream);
-          switch (nextphase)
-            {
-            case 0:
-              scsp.slot[i].enxt = scsp_env_null_next;
-              break;
-            case 1:
-              scsp.slot[i].enxt = scsp_release_next;
-              break;
-            case 2:
-              scsp.slot[i].enxt = scsp_sustain_next;
-              break;
-            case 3:
-              scsp.slot[i].enxt = scsp_decay_next;
-              break;
-            case 4:
-              scsp.slot[i].enxt = scsp_attack_next;
-              break;
-            default: break;
-            }
-
-          MemStateRead((void *)&scsp.slot[i].lfocnt, 4, 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lfoinc, 4, 1, stream);
-
-#ifdef IMPROVED_SAVESTATES
-          MemStateRead((void *)&scsp.slot[i].sa, sizeof(u32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lsa, sizeof(u32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lea, sizeof(u32), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].tl, sizeof(s32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].sl, sizeof(s32), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].ar, sizeof(s32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].dr, sizeof(s32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].sr, sizeof(s32), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].rr, sizeof(s32), 1, stream);
-
-          //arp
-          //drp
-          //srp
-          //rrp
-
-          MemStateRead((void *)&scsp.slot[i].krs, sizeof(u32), 1, stream);
-
-          //lfofmw
-          //lfoemw
-
-          MemStateRead((void *)&scsp.slot[i].lfofms, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lfoems, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].fsft, sizeof(u8), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].mdl, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].mdx, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].mdy, sizeof(u8), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].imxl, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].disll, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].dislr, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].efsll, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].efslr, sizeof(u8), 1, stream);
-
-          MemStateRead((void *)&scsp.slot[i].eghold, sizeof(u8), 1, stream);
-          MemStateRead((void *)&scsp.slot[i].lslnk, sizeof(u8), 1, stream);
-#endif
-
-          // depends on pcm8b, sa, lea being loaded first
-          // Rebuild the buf8/buf16 variables
-          if (scsp.slot[i].pcm8b)
-            {
-              scsp.slot[i].buf8 = (s8*)&(scsp.scsp_ram[scsp.slot[i].sa]);
-              if ((scsp.slot[i].sa + (scsp.slot[i].lea >> SCSP_FREQ_LB)) >
-                  SCSP_RAM_MASK)
-                scsp.slot[i].lea = (SCSP_RAM_MASK - scsp.slot[i].sa) <<
-                                   SCSP_FREQ_LB;
-            }
-          else
-            {
-              scsp.slot[i].buf16 = (s16*)&(scsp.scsp_ram[scsp.slot[i].sa & ~1]);
-              if ((scsp.slot[i].sa + (scsp.slot[i].lea >> (SCSP_FREQ_LB - 1))) >
-                  SCSP_RAM_MASK)
-                scsp.slot[i].lea = (SCSP_RAM_MASK - scsp.slot[i].sa) <<
-                                   (SCSP_FREQ_LB - 1);
-            }
-        }
-
-      // Read main internal variables
-      MemStateRead((void *)&scsp.mem4b, 4, 1, stream);
-      MemStateRead((void *)&scsp.mvol, 4, 1, stream);
-
-      MemStateRead((void *)&scsp.rbl, 4, 1, stream);
-      MemStateRead((void *)&scsp.rbp, 4, 1, stream);
-
-      MemStateRead((void *)&scsp.mslc, 4, 1, stream);
-
-      MemStateRead((void *)&scsp.dmea, 4, 1, stream);
-      MemStateRead((void *)&scsp.drga, 4, 1, stream);
-      MemStateRead((void *)&scsp.dmfl, 4, 1, stream);
-      MemStateRead((void *)&scsp.dmlen, 4, 1, stream);
-
-      MemStateRead((void *)scsp.midinbuf, 1, 4, stream);
-      MemStateRead((void *)scsp.midoutbuf, 1, 4, stream);
-      MemStateRead((void *)&scsp.midincnt, 1, 1, stream);
-      MemStateRead((void *)&scsp.midoutcnt, 1, 1, stream);
-      MemStateRead((void *)&scsp.midflag, 1, 1, stream);
-
-      MemStateRead((void *)&scsp.timacnt, 4, 1, stream);
-      MemStateRead((void *)&scsp.timasd, 4, 1, stream);
-      MemStateRead((void *)&scsp.timbcnt, 4, 1, stream);
-      MemStateRead((void *)&scsp.timbsd, 4, 1, stream);
-      MemStateRead((void *)&scsp.timccnt, 4, 1, stream);
-      MemStateRead((void *)&scsp.timcsd, 4, 1, stream);
-
-      MemStateRead((void *)&scsp.scieb, 4, 1, stream);
-      MemStateRead((void *)&scsp.scipd, 4, 1, stream);
-      MemStateRead((void *)&scsp.scilv0, 4, 1, stream);
-      MemStateRead((void *)&scsp.scilv1, 4, 1, stream);
-      MemStateRead((void *)&scsp.scilv2, 4, 1, stream);
-      MemStateRead((void *)&scsp.mcieb, 4, 1, stream);
-      MemStateRead((void *)&scsp.mcipd, 4, 1, stream);
-
-      MemStateRead((void *)scsp.stack, 4, 32 * 2, stream);
-
-    }
-
-    MemStateRead((void *)scsp_dsp.coef, sizeof(u16), 64, stream);
-    MemStateRead((void *)scsp_dsp.madrs, sizeof(u16), 32, stream);
-    MemStateRead((void *)scsp_dsp.mpro, sizeof(u64), 128, stream);
-    MemStateRead((void *)scsp_dsp.temp, sizeof(s32), 128, stream);
-    MemStateRead((void *)scsp_dsp.mems, sizeof(s32), 32, stream);
-    MemStateRead((void *)scsp_dsp.mixs, sizeof(s32), 16, stream);
-    MemStateRead((void *)scsp_dsp.efreg, sizeof(s16), 16, stream);
-    MemStateRead((void *)scsp_dsp.exts, sizeof(s16), 2, stream);
-    MemStateRead((void *)&scsp_dsp.mdec_ct, sizeof(u32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.inputs, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.b, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.x, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.y, sizeof(s16), 1, stream);
-    MemStateRead((void *)&scsp_dsp.acc, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.shifted, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.y_reg, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.frc_reg, sizeof(u16), 1, stream);
-    MemStateRead((void *)&scsp_dsp.adrs_reg, sizeof(u16), 1, stream);
-    MemStateRead((void *)&scsp_dsp.mul_out, sizeof(s32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.mrd_value, sizeof(u32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.rbl, sizeof(int), 1, stream);
-    MemStateRead((void *)&scsp_dsp.rbp, sizeof(int), 1, stream);
-    MemStateRead((void *)&scsp_dsp.need_read, sizeof(int), 1, stream);
-    MemStateRead((void *)&scsp_dsp.io_addr, sizeof(u32), 1, stream);
-    MemStateRead((void *)&scsp_dsp.need_write, sizeof(int), 1, stream);
-    MemStateRead((void *)&scsp_dsp.write_data, sizeof(u16), 1, stream);
-    MemStateRead((void *)&scsp_dsp.updated, sizeof(int), 1, stream);
-    MemStateRead((void *)&scsp_dsp.last_step, sizeof(int), 1, stream);
-
-    if (version >= 4) {
-      MemStateRead((void *)&scsp_dsp.shift_reg, sizeof(u32), 1, stream);
-      MemStateRead((void *)&scsp_dsp.read_pending, sizeof(int), 1, stream);
-      MemStateRead((void *)&scsp_dsp.read_value, sizeof(u32), 1, stream);
-      MemStateRead((void *)&scsp_dsp.write_pending, sizeof(int), 1, stream);
-      MemStateRead((void *)&scsp_dsp.write_value, sizeof(u32), 1, stream);
-    }
-
-    MemStateRead((void *)&ScspInternalVars->scsptiming1, sizeof(u32), 1, stream);
-    MemStateRead((void *)&ScspInternalVars->scsptiming2, sizeof(u32), 1, stream);
-
-    if (version >= 3) {
-      MemStateRead((void *)&cdda_next_in, sizeof(u32), 1, stream);
-      MemStateRead((void *)&cdda_out_left, sizeof(u32), 1, stream);
-      MemStateRead((void *)&scsp_mute_flags, sizeof(u32), 1, stream);
-      MemStateRead((void *)&scspsoundlen, sizeof(u32), 1, stream);
-      MemStateRead((void *)&scsplines, sizeof(u32), 1, stream);
-    }
-  return size;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static char *
-AddSoundLFO (char *outstring, const char *string, u16 level, u16 waveform)
-{
-  if (level > 0)
-    {
-      switch (waveform)
-        {
-        case 0:
-          AddString(outstring, "%s Sawtooth\r\n", string);
-          break;
-        case 1:
-          AddString(outstring, "%s Square\r\n", string);
-          break;
-        case 2:
-          AddString(outstring, "%s Triangle\r\n", string);
-          break;
-        case 3:
-          AddString(outstring, "%s Noise\r\n", string);
-          break;
-        }
-    }
-
-  return outstring;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static char *
-AddSoundPan (char *outstring, u16 pan)
-{
-  if (pan == 0x0F)
-    {
-      AddString(outstring, "Left = -MAX dB, Right = -0 dB\r\n");
-    }
-  else if (pan == 0x1F)
-    {
-      AddString(outstring, "Left = -0 dB, Right = -MAX dB\r\n");
-    }
-  else
-    {
-      AddString(outstring, "Left = -%d dB, Right = -%d dB\r\n", (pan & 0xF) * 3, (pan >> 4) * 3);
-    }
-
-  return outstring;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static char *
-AddSoundLevel (char *outstring, u16 level)
-{
-  if (level == 0)
-    {
-      AddString(outstring, "-MAX dB\r\n");
-    }
-  else
-    {
-      AddString(outstring, "-%d dB\r\n", (7-level) *  6);
-    }
-
-  return outstring;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspSlotDebugStats (u8 slotnum, char *outstring)
-{
-  u32 slotoffset = slotnum * 0x20;
-
-  AddString (outstring, "Sound Source = ");
-  switch (scsp.slot[slotnum].ssctl)
-    {
-    case 0:
-      AddString (outstring, "External DRAM data\r\n");
-      break;
-    case 1:
-      AddString (outstring, "Internal(Noise)\r\n");
-      break;
-    case 2:
-      AddString (outstring, "Internal(0's)\r\n");
-      break;
-    default:
-      AddString (outstring, "Invalid setting\r\n");
-      break;
-    }
-
-  AddString (outstring, "Source bit = ");
-  switch(scsp.slot[slotnum].sbctl)
-    {
-    case 0:
-      AddString (outstring, "No bit reversal\r\n");
-      break;
-    case 1:
-      AddString (outstring, "Reverse other bits\r\n");
-      break;
-    case 2:
-      AddString (outstring, "Reverse sign bit\r\n");
-      break;
-    case 3:
-      AddString (outstring, "Reverse sign and other bits\r\n");
-      break;
-    }
-
-  // Loop Control
-  AddString (outstring, "Loop Mode = ");
-  switch (scsp.slot[slotnum].lpctl)
-    {
-    case 0:
-      AddString (outstring, "Off\r\n");
-      break;
-    case 1:
-      AddString (outstring, "Normal\r\n");
-      break;
-    case 2:
-      AddString (outstring, "Reverse\r\n");
-      break;
-    case 3:
-      AddString (outstring, "Alternating\r\n");
-      break;
-    }
-
-  // PCM8B
-  // NOTE: Need curly braces here, as AddString is a macro.
-  if (scsp.slot[slotnum].pcm8b)
-    {
-      AddString (outstring, "8-bit samples\r\n");
-    }
-  else
-    {
-      AddString (outstring, "16-bit samples\r\n");
-    }
-
-  AddString (outstring, "Start Address = %05lX\r\n", (unsigned long)scsp.slot[slotnum].sa);
-  AddString (outstring, "Loop Start Address = %04lX\r\n", (unsigned long)scsp.slot[slotnum].lsa >> SCSP_FREQ_LB);
-  AddString (outstring, "Loop End Address = %04lX\r\n", (unsigned long)scsp.slot[slotnum].lea >> SCSP_FREQ_LB);
-  AddString (outstring, "Decay 1 Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].dr);
-  AddString (outstring, "Decay 2 Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].sr);
-  if (scsp.slot[slotnum].eghold)
-    AddString (outstring, "EG Hold Enabled\r\n");
-  AddString (outstring, "Attack Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].ar);
-
-  if (scsp.slot[slotnum].lslnk)
-    AddString (outstring, "Loop Start Link Enabled\r\n");
-
-  if (scsp.slot[slotnum].krs != 0)
-    AddString (outstring, "Key rate scaling = %ld\r\n", (unsigned long)scsp.slot[slotnum].krs);
-
-  AddString (outstring, "Decay Level = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0xA) >> 5) & 0x1F);
-  AddString (outstring, "Release Rate = %ld\r\n", (unsigned long)scsp.slot[slotnum].rr);
-
-  if (scsp.slot[slotnum].swe)
-    AddString (outstring, "Stack Write Inhibited\r\n");
-
-  if (scsp.slot[slotnum].sdir)
-    AddString (outstring, "Sound Direct Enabled\r\n");
-
-  AddString (outstring, "Total Level = %ld\r\n", (unsigned long)scsp.slot[slotnum].tl);
-
-  AddString (outstring, "Modulation Level = %d\r\n", scsp.slot[slotnum].mdl);
-  AddString (outstring, "Modulation Input X = %d\r\n", scsp.slot[slotnum].mdx);
-  AddString (outstring, "Modulation Input Y = %d\r\n", scsp.slot[slotnum].mdy);
-
-  AddString (outstring, "Octave = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0x10) >> 11) & 0xF);
-  AddString (outstring, "Frequency Number Switch = %d\r\n", scsp_r_w(NULL, NULL, slotoffset + 0x10) & 0x3FF);
-
-  AddString (outstring, "LFO Reset = %s\r\n", ((scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 15) & 0x1) ? "TRUE" : "FALSE");
-  AddString (outstring, "LFO Frequency = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 10) & 0x1F);
-  outstring = AddSoundLFO (outstring, "LFO Frequency modulation waveform = ",
-                           (scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 5) & 0x7,
-                           (scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 8) & 0x3);
-  AddString (outstring, "LFO Frequency modulation level = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 5) & 0x7);
-  outstring = AddSoundLFO (outstring, "LFO Amplitude modulation waveform = ",
-                           scsp_r_w(NULL, NULL, slotoffset + 0x12) & 0x7,
-                           (scsp_r_w(NULL, NULL, slotoffset + 0x12) >> 3) & 0x3);
-  AddString (outstring, "LFO Amplitude modulation level = %d\r\n", scsp_r_w(NULL, NULL, slotoffset + 0x12) & 0x7);
-
-  AddString (outstring, "Input mix level = ");
-  outstring = AddSoundLevel (outstring, scsp_r_w(NULL, NULL, slotoffset + 0x14) & 0x7);
-  AddString (outstring, "Input Select = %d\r\n", (scsp_r_w(NULL, NULL, slotoffset + 0x14) >> 3) & 0x1F);
-
-  AddString (outstring, "Direct data send level = ");
-  outstring = AddSoundLevel (outstring, (scsp_r_w(NULL, NULL, slotoffset + 0x16) >> 13) & 0x7);
-  AddString (outstring, "Direct data panpot = ");
-  outstring = AddSoundPan (outstring, (scsp_r_w(NULL, NULL, slotoffset + 0x16) >> 8) & 0x1F);
-
-  AddString (outstring, "Effect data send level = ");
-  outstring = AddSoundLevel (outstring, (scsp_r_w(NULL, NULL, slotoffset + 0x16) >> 5) & 0x7);
-  AddString (outstring, "Effect data panpot = ");
-  outstring = AddSoundPan (outstring, scsp_r_w(NULL, NULL, slotoffset + 0x16) & 0x1F);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspCommonControlRegisterDebugStats (char *outstring)
-{
-   AddString (outstring, "Memory: %s\r\n", scsp.mem4b ? "4 Mbit" : "2 Mbit");
-   AddString (outstring, "Master volume: %ld\r\n", (unsigned long)scsp.mvol);
-   AddString (outstring, "Ring buffer length: %ld\r\n", (unsigned long)scsp.rbl);
-   AddString (outstring, "Ring buffer address: %08lX\r\n", (unsigned long)scsp.rbp);
-   AddString (outstring, "\r\n");
-
-   AddString (outstring, "Slot Status Registers\r\n");
-   AddString (outstring, "-----------------\r\n");
-   AddString (outstring, "Monitor slot: %ld\r\n", (unsigned long)scsp.mslc);
-   AddString (outstring, "Call address: %ld\r\n", (unsigned long)scsp.ca);
-   AddString (outstring, "\r\n");
-
-   AddString (outstring, "DMA Registers\r\n");
-   AddString (outstring, "-----------------\r\n");
-   AddString (outstring, "DMA memory address start: %08lX\r\n", (unsigned long)scsp.dmea);
-   AddString (outstring, "DMA register address start: %08lX\r\n", (unsigned long)scsp.drga);
-   AddString (outstring, "DMA Flags: %lX\r\n", (unsigned long)scsp.dmlen);
-   AddString (outstring, "\r\n");
-
-   AddString (outstring, "Timer Registers\r\n");
-   AddString (outstring, "-----------------\r\n");
-   AddString (outstring, "Timer A counter: %02lX\r\n", (unsigned long)scsp.timacnt >> 8);
-   AddString (outstring, "Timer A increment: Every %d sample(s)\r\n", (int)pow(2, (double)scsp.timasd));
-   AddString (outstring, "Timer B counter: %02lX\r\n", (unsigned long)scsp.timbcnt >> 8);
-   AddString (outstring, "Timer B increment: Every %d sample(s)\r\n", (int)pow(2, (double)scsp.timbsd));
-   AddString (outstring, "Timer C counter: %02lX\r\n", (unsigned long)scsp.timccnt >> 8);
-   AddString (outstring, "Timer C increment: Every %d sample(s)\r\n", (int)pow(2, (double)scsp.timcsd));
-   AddString (outstring, "\r\n");
-
-   AddString (outstring, "Interrupt Registers\r\n");
-   AddString (outstring, "-----------------\r\n");
-   AddString (outstring, "Sound cpu interrupt pending: %04lX\r\n", (unsigned long)scsp.scipd);
-   AddString (outstring, "Sound cpu interrupt enable: %04lX\r\n", (unsigned long)scsp.scieb);
-   AddString (outstring, "Sound cpu interrupt level 0: %04lX\r\n", (unsigned long)scsp.scilv0);
-   AddString (outstring, "Sound cpu interrupt level 1: %04lX\r\n", (unsigned long)scsp.scilv1);
-   AddString (outstring, "Sound cpu interrupt level 2: %04lX\r\n", (unsigned long)scsp.scilv2);
-   AddString (outstring, "Main cpu interrupt pending: %04lX\r\n", (unsigned long)scsp.mcipd);
-   AddString (outstring, "Main cpu interrupt enable: %04lX\r\n", (unsigned long)scsp.mcieb);
-   AddString (outstring, "\r\n");
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-ScspSlotDebugSaveRegisters (u8 slotnum, const char *filename)
-{
-  FILE *fp;
-  int i;
-  IOCheck_struct check = { 0, 0 };
-
-  if ((fp = fopen (filename, "wb")) == NULL)
-    return -1;
-
-  for (i = (slotnum * 0x20); i < ((slotnum+1) * 0x20); i += 2)
-    {
-#ifdef WORDS_BIGENDIAN
-      ywrite (&check, (void *)&scsp_isr[i ^ 2], 1, 2, fp);
-#else
-      ywrite (&check, (void *)&scsp_isr[(i + 1) ^ 2], 1, 1, fp);
-      ywrite (&check, (void *)&scsp_isr[i ^ 2], 1, 1, fp);
-#endif
-    }
-
-  fclose (fp);
-  return 0;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static slot_t debugslot;
-
-u32
-ScspSlotDebugAudio (u32 *workbuf, s16 *buf, u32 len)
-{
-  u32 *bufL, *bufR;
-
-  bufL = workbuf;
-  bufR = workbuf+len;
-  scsp_bufL = (s32 *)bufL;
-  scsp_bufR = (s32 *)bufR;
-
-  if (debugslot.ecnt >= SCSP_ENV_DE)
-    {
-      // envelope null...
-      memset (buf, 0, sizeof(s16) * 2 * len);
-      return 0;
-    }
-
-  if (debugslot.ssctl)
-    {
-      memset (buf, 0, sizeof(s16) * 2 * len);
-      return 0; // not yet supported!
-    }
-
-  scsp_buf_len = len;
-  scsp_buf_pos = 0;
-
-  // take effect sound volume if no direct sound volume...
-  if ((debugslot.disll == 31) && (debugslot.dislr == 31))
-    {
-      debugslot.disll = debugslot.efsll;
-      debugslot.dislr = debugslot.efslr;
-    }
-
-  memset (bufL, 0, sizeof(u32) * len);
-  memset (bufR, 0, sizeof(u32) * len);
-  scsp_slot_update_p[(debugslot.lfofms == 31)?0:1]
-                    [(debugslot.lfoems == 31)?0:1]
-                    [(debugslot.pcm8b == 0)?1:0]
-                    [(debugslot.disll == 31)?0:1]
-                    [(debugslot.dislr == 31)?0:1](&debugslot);
-  ScspConvert32uto16s ((s32 *)bufL, (s32 *)bufR, (s16 *)buf, len);
-
-  return len;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-typedef struct
-{
-  char id[4];
-  u32 size;
-} chunk_struct;
-
-typedef struct
-{
-  chunk_struct riff;
-  char rifftype[4];
-} waveheader_struct;
-
-typedef struct
-{
-  chunk_struct chunk;
-  u16 compress;
-  u16 numchan;
-  u32 rate;
-  u32 bytespersec;
-  u16 blockalign;
-  u16 bitspersample;
-} fmt_struct;
-
-//////////////////////////////////////////////////////////////////////////////
-
-void
-ScspSlotResetDebug(u8 slotnum)
-{
-  memcpy (&debugslot, &scsp.slot[slotnum], sizeof(slot_t));
-
-  // Clear out the phase counter, etc.
-  debugslot.fcnt = 0;
-  debugslot.ecnt = SCSP_ENV_AS;
-  debugslot.einc = &debugslot.einca;
-  debugslot.ecmp = SCSP_ENV_AE;
-  debugslot.ecurp = SCSP_ENV_ATTACK;
-  debugslot.enxt = scsp_attack_next;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-int
-ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
-{
-  u32 workbuf[512*2*2];
-  s16 buf[512*2];
-  FILE *fp;
-  u32 counter = 0;
-  waveheader_struct waveheader;
-  fmt_struct fmt;
-  chunk_struct data;
-  long length;
-  IOCheck_struct check = { 0, 0 };
-
-  if (scsp.slot[slotnum].lea == 0)
-    return 0;
-
-  if ((fp = fopen (filename, "wb")) == NULL)
-    return -1;
-
-  // Do wave header
-  memcpy (waveheader.riff.id, "RIFF", 4);
-  waveheader.riff.size = 0; // we'll fix this after the file is closed
-  memcpy (waveheader.rifftype, "WAVE", 4);
-  ywrite (&check, (void *)&waveheader, 1, sizeof(waveheader_struct), fp);
-
-  // fmt chunk
-  memcpy (fmt.chunk.id, "fmt ", 4);
-  fmt.chunk.size = 16; // we'll fix this at the end
-  fmt.compress = 1; // PCM
-  fmt.numchan = 2; // Stereo
-  fmt.rate = 44100;
-  fmt.bitspersample = 16;
-  fmt.blockalign = fmt.bitspersample / 8 * fmt.numchan;
-  fmt.bytespersec = fmt.rate * fmt.blockalign;
-  ywrite (&check, (void *)&fmt, 1, sizeof(fmt_struct), fp);
-
-  // data chunk
-  memcpy (data.id, "data", 4);
-  data.size = 0; // we'll fix this at the end
-  ywrite (&check, (void *)&data, 1, sizeof(chunk_struct), fp);
-
-  ScspSlotResetDebug(slotnum);
-
-  // Mix the audio, and then write it to the file
   for (;;)
-    {
-      if (ScspSlotDebugAudio (workbuf, buf, 512) == 0)
+  {
+     // reset result
+     condresults = 1;
+     // detect which type of sector we're dealing with
+     // If it's not mode 2, ignore the subheader conditions
+     if (Cs2Area->workblock.data[0xF] == 0x02 && !isaudio)
+     {
+        // Mode 2
+        // go through various subheader filter conditions
+
+        if (curfilter->mode & 0x01)
+        {
+           // File Number Check
+           if (Cs2Area->workblock.fn != curfilter->fid)
+              condresults = 0;
+        }
+
+        if (curfilter->mode & 0x02)
+        {
+           // Channel Number Check
+           if (Cs2Area->workblock.cn != curfilter->chan)
+              condresults = 0;
+        }
+
+        if (curfilter->mode & 0x04)
+        {
+           // Sub Mode Check
+           if ((Cs2Area->workblock.sm & curfilter->smmask) != curfilter->smval)
+              condresults = 0;
+        }
+
+        if (curfilter->mode & 0x08)
+        {
+           // Coding Information Check
+           CDLOG("cs2\t: FilterData: Coding Information Check. Coding Information = %02X. Filter's Coding Information Mask = %02X, Coding Information Value = %02X\n", Cs2Area->workblock.ci, curfilter->cimask, curfilter->cival);
+           if ((Cs2Area->workblock.ci & curfilter->cimask) != curfilter->cival)
+              condresults = 0;
+        }
+
+        if (curfilter->mode & 0x10)
+        {
+           // Reverse Subheader Conditions
+           CDLOG("cs2\t: FilterData: Reverse Subheader Conditions\n");
+           condresults ^= 1;
+        }
+     }
+
+     if (curfilter->mode & 0x40)
+     {
+        // FAD Range Check
+        if (Cs2Area->workblock.FAD < curfilter->FAD ||
+            Cs2Area->workblock.FAD >= (curfilter->FAD+curfilter->range))
+            condresults = 0;
+     }
+
+     if (condresults == 1)
+     {
+        Cs2Area->lastbuffer = curfilter->condtrue;
+        // condtrue is written verbatim from a command register
+        // (Cs2SetFilterConnection); guard against an out-of-range value
+        // before indexing partition[] (24 entries).
+        if (curfilter->condtrue >= MAX_SELECTORS)
+           return NULL;
+        fltpartition = &Cs2Area->partition[curfilter->condtrue];
         break;
+     }
+     else
+     {
+        Cs2Area->lastbuffer = curfilter->condfalse;
 
-      counter += 512;
-      ywrite (&check, (void *)buf, 2, 512 * 2, fp);
-      if (debugslot.lpctl != 0 && counter >= (44100 * 2 * 5))
-        break;
-    }
+        // 0xFF means "not connected" (sector discarded); any other
+        // value >= MAX_SELECTORS is out of range for filter[] (24
+        // entries) and must be rejected the same way rather than
+        // indexed.
+        if (curfilter->condfalse >= MAX_SELECTORS)
+           return NULL;
+        // loop and try filter that was connected to the false connector
+        curfilter = &Cs2Area->filter[curfilter->condfalse];
+     }
+  }
 
-  length = ftell (fp);
+  // Allocate block
+  fltpartition->block[fltpartition->numblocks] = Cs2AllocateBlock(&fltpartition->blocknum[fltpartition->numblocks], Cs2Area->getsectsize);
 
-  // Let's fix the riff chunk size and the data chunk size
-  fseek (fp, sizeof(waveheader_struct)-0x8, SEEK_SET);
-  length -= 0x4;
-  ywrite (&check, (void *)&length, 1, 4, fp);
+  if (fltpartition->block[fltpartition->numblocks] == NULL)
+    return NULL;
 
-  fseek (fp, sizeof(waveheader_struct) + sizeof(fmt_struct) + 0x4, SEEK_SET);
-  length -= sizeof(waveheader_struct) + sizeof(fmt_struct);
-  ywrite (&check, (void *)&length, 1, 4, fp);
-  fclose (fp);
+  // Copy workblock settings to allocated block
+  fltpartition->block[fltpartition->numblocks]->size = Cs2Area->workblock.size;
+  fltpartition->block[fltpartition->numblocks]->FAD = Cs2Area->workblock.FAD;
+  fltpartition->block[fltpartition->numblocks]->cn = Cs2Area->workblock.cn;
+  fltpartition->block[fltpartition->numblocks]->fn = Cs2Area->workblock.fn;
+  fltpartition->block[fltpartition->numblocks]->sm = Cs2Area->workblock.sm;
+  fltpartition->block[fltpartition->numblocks]->ci = Cs2Area->workblock.ci;
+
+  // convert raw sector to type specified in getsectsize
+  switch(Cs2Area->workblock.size)
+  {
+	case 2048:
+		if (Cs2Area->workblock.data[0xF] == 0x02)
+		{
+			if (!(Cs2Area->workblock.data[0x12] & 0x20))
+			{
+				// Mode 2 Form 1 — 2048 bytes user data at offset +24
+				memcpy(fltpartition->block[fltpartition->numblocks]->data,
+					   Cs2Area->workblock.data + 24, 2048);
+			}
+			else
+			{
+				// Mode 2 Form 2 — truncate to 2048 bytes (pas 2324)
+				memcpy(fltpartition->block[fltpartition->numblocks]->data,
+					   Cs2Area->workblock.data + 24, 2048);
+			}
+		}
+		else
+		{
+			// Mode 1
+			memcpy(fltpartition->block[fltpartition->numblocks]->data,
+				   Cs2Area->workblock.data + 16, 2048);
+		}
+		break;
+     case 2324: // m2f2 user data only
+                memcpy(fltpartition->block[fltpartition->numblocks]->data,
+                       Cs2Area->workblock.data + 24, Cs2Area->workblock.size);
+                break;
+     case 2336: // m2f2 skip sync+header data
+                memcpy(fltpartition->block[fltpartition->numblocks]->data,
+                Cs2Area->workblock.data + 16, Cs2Area->workblock.size);
+                break;
+     case 2340: // m2f2 skip sync data
+                memcpy(fltpartition->block[fltpartition->numblocks]->data,
+                Cs2Area->workblock.data + 12, Cs2Area->workblock.size);
+                break;
+     case 2352: // Copy data as is
+                memcpy(fltpartition->block[fltpartition->numblocks]->data,
+                       Cs2Area->workblock.data, Cs2Area->workblock.size);
+                break;
+     default: break;
+  }
+
+  // Modify Partition values
+  if (fltpartition->size == -1) fltpartition->size = 0;
+  fltpartition->size += fltpartition->block[fltpartition->numblocks]->size;
+  fltpartition->numblocks++;
+
+  return fltpartition;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2CopyDirRecord(u8 * buffer, dirrec_struct * dirrec)
+{
+  u8 * temp_pointer;
+
+  temp_pointer = buffer;
+
+  memcpy(&dirrec->recordsize, buffer, sizeof(dirrec->recordsize));
+  buffer += sizeof(dirrec->recordsize);
+
+  memcpy(&dirrec->xarecordsize, buffer, sizeof(dirrec->xarecordsize));
+  buffer += sizeof(dirrec->xarecordsize);
+
+#ifdef WORDS_BIGENDIAN
+  buffer += sizeof(dirrec->lba);
+  memcpy(&dirrec->lba, buffer, sizeof(dirrec->lba));
+  buffer += sizeof(dirrec->lba);
+#else
+  memcpy(&dirrec->lba, buffer, sizeof(dirrec->lba));
+  buffer += (sizeof(dirrec->lba) * 2);
+#endif
+
+#ifdef WORDS_BIGENDIAN
+  buffer += sizeof(dirrec->size);
+  memcpy(&dirrec->size, buffer, sizeof(dirrec->size));
+  buffer += sizeof(dirrec->size);
+#else
+  memcpy(&dirrec->size, buffer, sizeof(dirrec->size));
+  buffer += (sizeof(dirrec->size) * 2);
+#endif
+
+  dirrec->dateyear = buffer[0];
+  dirrec->datemonth = buffer[1];
+  dirrec->dateday = buffer[2];
+  dirrec->datehour = buffer[3];
+  dirrec->dateminute = buffer[4];
+  dirrec->datesecond = buffer[5];
+  dirrec->gmtoffset = buffer[6];
+  buffer += 7;
+
+  dirrec->flags = buffer[0];
+  buffer += sizeof(dirrec->flags);
+
+  dirrec->fileunitsize = buffer[0];
+  buffer += sizeof(dirrec->fileunitsize);
+
+  dirrec->interleavegapsize = buffer[0];
+  buffer += sizeof(dirrec->interleavegapsize);
+
+#ifdef WORDS_BIGENDIAN
+  buffer += sizeof(dirrec->volumesequencenumber);
+  memcpy(&dirrec->volumesequencenumber, buffer, sizeof(dirrec->volumesequencenumber));
+  buffer += sizeof(dirrec->volumesequencenumber);
+#else
+  memcpy(&dirrec->volumesequencenumber, buffer, sizeof(dirrec->volumesequencenumber));
+  buffer += (sizeof(dirrec->volumesequencenumber) * 2);
+#endif
+
+  dirrec->namelength = buffer[0];
+  buffer += sizeof(dirrec->namelength);
+
+  memset(dirrec->name, 0, sizeof(dirrec->name));
+  memcpy(dirrec->name, buffer, dirrec->namelength);
+  buffer += dirrec->namelength;
+
+  // handle padding
+  // ECMA-119 / ISO 9660 sec 9.1.12 "Padding Field": present ONLY when the
+  // Length of File Identifier (LEN_FI) is EVEN, and then exactly 1 byte.
+  // The used part of the record is 33 + LEN_FI + padding, and must stay of
+  // even length -- hence (1 - LEN_FI % 2), not (LEN_FI % 2).
+  //
+  // Getting this wrong shifts the cursor by one byte and breaks the XA
+  // record detection just below: recordsize - (buffer - temp_pointer)
+  // then yields 13 or 15 instead of 14, so xarecord (groupid, userid,
+  // attributes, "XA" signature, filenumber) is never parsed and stays
+  // zeroed. Games lose the CD-XA file number used to filter Mode 2 Form 2
+  // streams -- i.e. no FMV (cf. Deep Fear with the real BIOS).
+  buffer += (1 - dirrec->namelength % 2);
+
+  memset(&dirrec->xarecord, 0, sizeof(dirrec->xarecord));
+
+  // sadily, this is the best way I can think of for detecting XA records
+
+  if ((dirrec->recordsize - (buffer - temp_pointer)) == 14)
+  {
+     memcpy(&dirrec->xarecord.groupid, buffer, sizeof(dirrec->xarecord.groupid));
+     buffer += sizeof(dirrec->xarecord.groupid);
+
+     memcpy(&dirrec->xarecord.userid, buffer, sizeof(dirrec->xarecord.userid));
+     buffer += sizeof(dirrec->xarecord.userid);
+
+     memcpy(&dirrec->xarecord.attributes, buffer, sizeof(dirrec->xarecord.attributes));
+     buffer += sizeof(dirrec->xarecord.attributes);
+
+#ifndef WORDS_BIGENDIAN
+     // byte swap it
+     dirrec->xarecord.attributes = ((dirrec->xarecord.attributes & 0xFF00) >> 8) +
+                                   ((dirrec->xarecord.attributes & 0x00FF) << 8);
+#endif
+
+     memcpy(&dirrec->xarecord.signature, buffer, sizeof(dirrec->xarecord.signature));
+     buffer += sizeof(dirrec->xarecord.signature);
+
+     memcpy(&dirrec->xarecord.filenumber, buffer, sizeof(dirrec->xarecord.filenumber));
+     buffer += sizeof(dirrec->xarecord.filenumber);
+
+     memcpy(dirrec->xarecord.reserved, buffer, sizeof(dirrec->xarecord.reserved));
+     buffer += sizeof(dirrec->xarecord.reserved);
+  }
 
   return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-void
-M68KStep (void)
+int Cs2ReadFileSystem(filter_struct * curfilter, u32 fid, int isoffset)
 {
-  M68K->Exec(1);
+   u8 * workbuffer;
+   u32 i;
+   dirrec_struct dirrec;
+   u8 numsectorsleft = 0;
+   u32 curdirlba = 0;
+   partition_struct * rfspartition;
+   u32 blocksectsize = Cs2Area->getsectsize;
+
+   Cs2Area->outconcddev = curfilter;
+
+   if (isoffset)
+   {
+      // readDirectory operation
+
+      // make sure we have a valid current directory
+      if (Cs2Area->curdirsect == 0)
+         return -1;
+
+      /* Le nombre d'enregistrements que la boucle de saut plus bas ignore
+       * reellement vaut max(0, fid - 2) : elle s'ecrit "for (i = 2; i < fid;
+       * i++)" et ne tourne donc pas quand fid vaut 0 ou 1. Memoriser fid - 2
+       * dans un u32 dans ce cas produit un debordement (0xFFFFFFFE pour
+       * fid = 0), et le Change Directory suivant indexe alors
+       * fileinfo[fid + 2] au lieu de fileinfo[fid].
+       *
+       * L'offset memorise doit valoir exactement le nombre d'enregistrements
+       * sautes, sans quoi la correspondance entre identificateur de fichier
+       * et entree de fileinfo[] est decalee.
+       * Ref : ST-040-R4-051795 §6.10 "Read Directory (command 0x71)". */
+      Cs2Area->curdirfidoffset = (fid > 2) ? (fid - 2) : 0;
+      curdirlba = Cs2Area->curdirsect;
+      numsectorsleft = (u8)Cs2Area->curdirsize;
+   }
+   else
+   {
+      // changeDirectory operation
+
+      if (fid == 0xFFFFFF)
+      {
+         // Figure out root directory's location
+
+         // Read sector 16
+         if ((rfspartition = Cs2ReadUnFilteredSector(166)) == NULL)
+            return -2;
+
+         blocksectsize = rfspartition->block[rfspartition->numblocks - 1]->size;
+
+         // Retrieve directory record's lba
+         Cs2CopyDirRecord(rfspartition->block[rfspartition->numblocks - 1]->data + 0x9C, &dirrec);
+
+         // Free Block
+         rfspartition->size -= rfspartition->block[rfspartition->numblocks - 1]->size;
+         Cs2FreeBlock(rfspartition->block[rfspartition->numblocks - 1]);
+         rfspartition->block[rfspartition->numblocks - 1] = NULL;
+         rfspartition->blocknum[rfspartition->numblocks - 1] = 0xFF;
+
+         // Sort remaining blocks
+         Cs2SortBlocks(rfspartition);
+         rfspartition->numblocks -= 1;
+
+         curdirlba = Cs2Area->curdirsect = dirrec.lba;
+         Cs2Area->curdirsize = (dirrec.size / blocksectsize) - 1;
+         numsectorsleft = (u8)Cs2Area->curdirsize;
+         Cs2Area->curdirfidoffset = 0;
+      }
+      else
+      {
+         // Read in new directory record of specified directory
+
+         // make sure we have a valid current directory
+         if (Cs2Area->curdirsect == 0)
+            return -1;
+
+         /* Index borne comme partout ailleurs dans ce fichier : fid vient
+          * directement d'un registre du bloc CD et fileinfo[] ne compte que
+          * MAX_FILES entrees. */
+         {
+            u32 cdfid = fid - Cs2Area->curdirfidoffset;
+
+            if (cdfid >= MAX_FILES)
+               return -1;
+
+            curdirlba = Cs2Area->curdirsect = Cs2Area->fileinfo[cdfid].lba - 150;
+            Cs2Area->curdirsize = (Cs2Area->fileinfo[cdfid].size / blocksectsize) - 1;
+         }
+         numsectorsleft = (u8)Cs2Area->curdirsize;
+         Cs2Area->curdirfidoffset = 0;
+      }
+   }
+
+   // Make sure any old records are cleared
+   memset(Cs2Area->fileinfo, 0, sizeof(dirrec_struct) * MAX_FILES);
+
+   // now read in first sector of directory record
+   if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba+150)) == NULL)
+      return -2;
+
+   curdirlba++;
+   workbuffer = rfspartition->block[rfspartition->numblocks - 1]->data;
+
+   // Fill in first two entries of fileinfo
+   for (i = 0; i < 2; i++)
+   {
+      Cs2CopyDirRecord(workbuffer, Cs2Area->fileinfo + i);
+      Cs2Area->fileinfo[i].lba += 150;
+      workbuffer += Cs2Area->fileinfo[i].recordsize;
+
+      if (workbuffer[0] == 0)
+      {
+         Cs2Area->numfiles = i;
+         break;
+      }
+   }
+
+   // If doing a ReadDirectory operation, parse sector entries until we've
+   // found the fid that matches fid
+   if (isoffset)
+   {
+      for (i = 2; i < fid; i++)
+      {
+         Cs2CopyDirRecord(workbuffer, Cs2Area->fileinfo + 2);
+         workbuffer += Cs2Area->fileinfo[2].recordsize;
+
+         if (workbuffer[0] == 0)
+         {
+            if (numsectorsleft > 0)
+            {
+               // Free previous read sector
+               rfspartition->size -= rfspartition->block[rfspartition->numblocks - 1]->size;
+               Cs2FreeBlock(rfspartition->block[rfspartition->numblocks - 1]);
+               rfspartition->block[rfspartition->numblocks - 1] = NULL;
+               rfspartition->blocknum[rfspartition->numblocks - 1] = 0xFF;
+
+               // Sort remaining blocks
+               Cs2SortBlocks(rfspartition);
+               rfspartition->numblocks -= 1;
+
+               // Read in next sector of directory record
+               if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba+150)) == NULL)
+                  return -2;
+
+               curdirlba++;
+
+               numsectorsleft--;
+               workbuffer = rfspartition->block[rfspartition->numblocks - 1]->data;
+            }
+            else
+            {
+               break;
+            }
+         }
+      }
+   }
+
+   // Now generate the last 254 entries(the first two should've already been
+   // generated earlier)
+   for (i = 2; i < MAX_FILES; i++)
+   {
+      Cs2CopyDirRecord(workbuffer, Cs2Area->fileinfo + i);
+      Cs2Area->fileinfo[i].lba += 150;
+      workbuffer += Cs2Area->fileinfo[i].recordsize;
+
+      if (workbuffer[0] == 0)
+      {
+         if (numsectorsleft > 0)
+         {
+            // Free previous read sector
+            rfspartition->size -= rfspartition->block[rfspartition->numblocks - 1]->size;
+            Cs2FreeBlock(rfspartition->block[rfspartition->numblocks - 1]);
+            rfspartition->block[rfspartition->numblocks - 1] = NULL;
+            rfspartition->blocknum[rfspartition->numblocks - 1] = 0xFF;
+
+            // Sort remaining blocks
+            Cs2SortBlocks(rfspartition);
+            rfspartition->numblocks -= 1;
+
+            // Read in next sector of directory record
+            if ((rfspartition = Cs2ReadUnFilteredSector(curdirlba+150)) == NULL)
+               return -2;
+
+            curdirlba++;
+            numsectorsleft--;
+            workbuffer = rfspartition->block[rfspartition->numblocks - 1]->data;
+         }
+         else
+         {
+            Cs2Area->numfiles = i;
+            break;
+         }
+      }
+   }
+
+   // Free the remaining sector
+   rfspartition->size -= rfspartition->block[rfspartition->numblocks - 1]->size;
+   Cs2FreeBlock(rfspartition->block[rfspartition->numblocks - 1]);
+   rfspartition->block[rfspartition->numblocks - 1] = NULL;
+   rfspartition->blocknum[rfspartition->numblocks - 1] = 0xFF;
+
+   // Sort remaining blocks
+   Cs2SortBlocks(rfspartition);
+   rfspartition->numblocks -= 1;
+
+//#if CDDEBUG
+//  for (i = 0; i < MAX_FILES; i++)
+//  {
+//     CDLOG("fileinfo[%d].name = %s\n", i, Cs2Area->fileinfo[i].name);
+//  }
+//#endif
+
+  return 0;
 }
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2SetupFileInfoTransfer(u32 fid) {
+  // fid is caller-supplied straight from a CD Block register (see
+  // Cs2GetFileInfo / Cs2ReadFile) with no upstream bound check, unlike
+  // every other selector/buffer index elsewhere in this file
+  // (rdfilternum, dsdbufno, casbufno, ... all checked against
+  // MAX_SELECTORS). fileinfo[] only has MAX_FILES entries, so an
+  // out-of-range fid was an out-of-bounds read.
+  if (fid >= MAX_FILES)
+     return;
+
+  Cs2Area->transfileinfo[0] = (u8)(Cs2Area->fileinfo[fid].lba >> 24);
+  Cs2Area->transfileinfo[1] = (u8)(Cs2Area->fileinfo[fid].lba >> 16);
+  Cs2Area->transfileinfo[2] = (u8)(Cs2Area->fileinfo[fid].lba >> 8);
+  Cs2Area->transfileinfo[3] = (u8)Cs2Area->fileinfo[fid].lba;
+
+  Cs2Area->transfileinfo[4] = (u8)(Cs2Area->fileinfo[fid].size >> 24);
+  Cs2Area->transfileinfo[5] = (u8)(Cs2Area->fileinfo[fid].size >> 16);
+  Cs2Area->transfileinfo[6] = (u8)(Cs2Area->fileinfo[fid].size >> 8);
+  Cs2Area->transfileinfo[7] = (u8)Cs2Area->fileinfo[fid].size;
+
+  Cs2Area->transfileinfo[8] = Cs2Area->fileinfo[fid].interleavegapsize;
+  Cs2Area->transfileinfo[9] = Cs2Area->fileinfo[fid].fileunitsize;
+  Cs2Area->transfileinfo[10] = (u8) fid;
+  Cs2Area->transfileinfo[11] = Cs2Area->fileinfo[fid].flags;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+partition_struct * Cs2ReadUnFilteredSector(u32 rufsFAD) {
+  partition_struct * rufspartition;
+  unsigned char syncheader[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                          0xFF, 0xFF, 0xFF, 0x00};
+
+  if ((rufspartition = Cs2GetPartition(Cs2Area->outconcddev)) != NULL && !Cs2Area->isbufferfull)
+  {
+     // Allocate Block
+     rufspartition->block[rufspartition->numblocks] = Cs2AllocateBlock(&rufspartition->blocknum[rufspartition->numblocks], Cs2Area->getsectsize);
+
+     if (rufspartition->block[rufspartition->numblocks] == NULL)
+        return NULL;
+
+     // read a sector using cd interface function
+     if (!Cs2Area->cdi->ReadSectorFAD(rufsFAD, Cs2Area->workblock.data))
+        return NULL;
+
+     // convert raw sector to type specified in getsectsize
+     switch(Cs2Area->getsectsize)
+     {
+        case 2048: // user data only
+                   if (Cs2Area->workblock.data[0xF] == 0x02)
+                   {
+                      // is it form1/form2 data?
+                      if (!(Cs2Area->workblock.data[0x12] & 0x20))
+                      {
+                         // form 1
+                         memcpy(rufspartition->block[rufspartition->numblocks]->data,
+                                Cs2Area->workblock.data + 24, 2048);
+                         Cs2Area->workblock.size = Cs2Area->getsectsize;
+                      }
+                      else
+                      {
+                         // form 2
+                         memcpy(rufspartition->block[rufspartition->numblocks]->data,
+                                Cs2Area->workblock.data + 24, 2324);
+                         Cs2Area->workblock.size = 2324;
+                      }
+                   }
+                   else
+                   {
+                      memcpy(rufspartition->block[rufspartition->numblocks]->data,
+                             Cs2Area->workblock.data + 16, 2048);
+                      Cs2Area->workblock.size = Cs2Area->getsectsize;
+                   }
+                   break;
+        case 2336: // skip sync+header data
+                   memcpy(rufspartition->block[rufspartition->numblocks]->data,
+                   Cs2Area->workblock.data + 16, 2336);
+                   Cs2Area->workblock.size = Cs2Area->getsectsize;
+                   break;
+        case 2340: // skip sync data
+                   memcpy(rufspartition->block[rufspartition->numblocks]->data,
+                   Cs2Area->workblock.data + 12, 2340);
+                   Cs2Area->workblock.size = Cs2Area->getsectsize;
+                   break;
+        case 2352: // no conversion needed
+                   Cs2Area->workblock.size = Cs2Area->getsectsize;
+                   break;
+        default: break;
+     }
+
+     // if mode 2 track, setup the subheader values
+     if (memcmp(syncheader, Cs2Area->workblock.data, 12) == 0 &&
+         Cs2Area->workblock.data[0xF] == 0x02)
+     {
+        rufspartition->block[rufspartition->numblocks]->fn = Cs2Area->workblock.data[0x10];
+        rufspartition->block[rufspartition->numblocks]->cn = Cs2Area->workblock.data[0x11];
+        rufspartition->block[rufspartition->numblocks]->sm = Cs2Area->workblock.data[0x12];
+        rufspartition->block[rufspartition->numblocks]->ci = Cs2Area->workblock.data[0x13];
+     }
+
+     Cs2Area->workblock.FAD = rufsFAD;
+
+     // Modify Partition values
+     if (rufspartition->size == -1) rufspartition->size = 0;
+     rufspartition->size += rufspartition->block[rufspartition->numblocks]->size;
+     rufspartition->numblocks++;
+
+     return rufspartition;
+  }
+
+  return NULL;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2ReadFilteredSector(u32 rfsFAD, partition_struct **partition) {
+  unsigned char syncheader[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                          0xFF, 0xFF, 0xFF, 0x00};
+  int isaudio = 0;
+  if (Cs2Area->outconcddev != NULL && !Cs2Area->isbufferfull)
+  {
+     // read a sector using cd interface function to workblock.data
+     if (!Cs2Area->cdi->ReadSectorFAD(rfsFAD, Cs2Area->workblock.data))
+     {
+        *partition = NULL;
+        return -2;
+     }
+
+     Cs2Area->workblock.size = Cs2Area->getsectsize;
+     Cs2Area->workblock.FAD = rfsFAD;
+
+     if (memcmp(syncheader, Cs2Area->workblock.data, 12) != 0) isaudio = 1;
+
+     // force 1x speed if reading from an audio track
+     Cs2Area->isaudio = isaudio;
+     // Cs2SetTiming(1);
+
+     // if mode 2 track, setup the subheader values
+     if (isaudio)
+     {
+        ScspReceiveCDDA(Cs2Area->workblock.data);
+        *partition = NULL;
+        return 0;
+     }
+     else if (Cs2Area->workblock.data[0xF] == 0x02)
+     {
+        // if it's form 2 data the sector size should be 2324
+        if (Cs2Area->workblock.data[0x12] & 0x20) Cs2Area->workblock.size = 2324;
+
+        Cs2Area->workblock.fn = Cs2Area->workblock.data[0x10];
+        Cs2Area->workblock.cn = Cs2Area->workblock.data[0x11];
+        Cs2Area->workblock.sm = Cs2Area->workblock.data[0x12];
+        Cs2Area->workblock.ci = Cs2Area->workblock.data[0x13];
+     }
+
+
+     // pass workblock to filter function(after it identifies partition,
+     // it should allocate the partition block, setup/change the partition
+     // values, and copy workblock to the allocated block)
+     *partition = Cs2FilterData(Cs2Area->outconcddev, isaudio);
+     return 0;
+  }
+  else{
+    // read a sector using cd interface function to workblock.data
+    if (!Cs2Area->cdi->ReadSectorFAD(rfsFAD, Cs2Area->workblock.data))
+    {
+      *partition = NULL;
+      return -2;
+    }
+
+    Cs2Area->workblock.size = Cs2Area->getsectsize;
+    Cs2Area->workblock.FAD = rfsFAD;
+
+    if (memcmp(syncheader, Cs2Area->workblock.data, 12) != 0) isaudio = 1;
+
+    // force 1x speed if reading from an audio track
+    Cs2Area->isaudio = isaudio;
+    // Cs2SetTiming(1);
+
+    // if mode 2 track, setup the subheader values
+    if (isaudio)
+    {
+      ScspReceiveCDDA(Cs2Area->workblock.data);
+      *partition = NULL;
+      return 0;
+    }
+  }
+
+  *partition = NULL;
+  return -1;
+}
+
+char * Cs2GetCurrentGmaecode(){
+	if(cdip==NULL) return NULL;
+	return cdip->itemnum;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+u8 Cs2GetIP(int autoregion) {
+   partition_struct * gripartition;
+   u8 ret = 0;
+
+   Cs2Area->outconcddev = Cs2Area->filter + 0;
+   Cs2Area->outconcddevnum = 0;
+
+   // read in lba 0/FAD 150
+   if ((gripartition = Cs2ReadUnFilteredSector(150)) != NULL)
+   {
+	   int i;
+      unsigned char *buf=(unsigned char*)gripartition->block[gripartition->numblocks - 1]->data;
+
+      // Make sure we're dealing with a saturn game
+      if (memcmp(buf, "SEGA SEGASATURN", 15) == 0)
+      {
+         memcpy(cdip->system, buf, 16);
+         cdip->system[16]='\0';
+         memcpy(cdip->company, buf+0x10, 16);
+         cdip->company[16]='\0';
+         char tmp[11];
+         memcpy(tmp, buf+0x20, 0x0A);
+         tmp[10]='\0';
+         sscanf(tmp, "%s", cdip->itemnum);
+
+		 // make gameid as u64
+		 cdip->gameid = 0;
+		 for (i = 0; i < 8; i++){
+			 cdip->gameid |= ((u64)cdip->itemnum[i]) << (i * 8);
+		 }
+         memcpy(cdip->version, buf+0x2A, 6);
+         cdip->version[6]='\0';
+         sprintf(cdip->date, "%c%c/%c%c/%c%c%c%c", buf[0x34], buf[0x35], buf[0x36], buf[0x37], buf[0x30], buf[0x31], buf[0x32], buf[0x33]);
+         sscanf((const char*)(buf+0x38), "%s", cdip->cdinfo);
+         sscanf((const char*)(buf+0x40), "%s", cdip->region);
+         sscanf((const char*)(buf+0x50), "%s", cdip->peripheral);
+         memcpy(cdip->gamename, buf+0x60, 112);
+         cdip->gamename[112]='\0';
+#ifdef WORDS_BIGENDIAN
+         memcpy(&cdip->ipsize, buf+0xE0, sizeof(u32));
+         memcpy(&cdip->msh2stack, buf+0xE8, sizeof(u32));
+         memcpy(&cdip->ssh2stack, buf+0xEC, sizeof(u32));
+         memcpy(&cdip->firstprogaddr, buf+0xF0, sizeof(u32));
+         memcpy(&cdip->firstprogsize, buf+0xF4, sizeof(u32));
+#else
+         cdip->ipsize = (buf[0xE0] << 24) | (buf[0xE1] << 16) |
+                        (buf[0xE2] << 8) | buf[0xE3];
+         cdip->msh2stack = (buf[0xE8] << 24) | (buf[0xE9] << 16) |
+                           (buf[0xEA] << 8) | buf[0xEB];
+         cdip->ssh2stack = (buf[0xEC] << 24) | (buf[0xED] << 16) |
+                           (buf[0xEE] << 8) | buf[0xEF];
+         cdip->firstprogaddr = (buf[0xF0] << 24) | (buf[0xF1] << 16) |
+                               (buf[0xF2] << 8) | buf[0xF3];
+         cdip->firstprogsize = (buf[0xF4] << 24) | (buf[0xF5] << 16) |
+                               (buf[0xF6] << 8) | buf[0xF7];
+//Real bios is copying data at the firstprogaddr which correspond to the entry point (MSH2->PC) of the game.
+// ST-040-R4-051795.pdf is describing a bit the mechanism, look at 1st READ ADDRESS
+         if (cdip->msh2stack == 0 )
+         {
+            /* STACK-M defaut (ST-040-R4-051795 / TECH#11) : "Default (0
+               specified) 6001000H ~ 6001FFFH becomes the stack area."
+
+               C'est la ZONE de pile, pas la valeur initiale de R15. Sur
+               SH-2 l'empilement se fait en pre-decrement (MOV.L Rn,@-R15),
+               donc R15 doit demarrer une case APRES le haut de la zone :
+               6001FFFH + 1 = 6002000H. Le premier push ecrit alors en
+              6001FFCH, a l'interieur de la zone.
+               Mettre R15 = 6001000H (le BAS de la zone) fait descendre le
+               premier push en 6000FFCH, c'est-a-dire hors de la zone du
+               maitre, dans celle de l'esclave, puis dans 6000900H-60009FFH
+               (table des handlers SCU du BIOS emule), 6000348H (masque
+               d'interruption memorise) et enfin la table de vecteurs
+               construite par BiosInit(). En BIOS emule le jeu detruit donc
+               le BIOS lui-meme des ses premiers appels de fonction.
+
+               Le diagramme de TECH#35 se lit de bas en haut :
+               6000000H-6000E00H vecteurs et routines residentes,
+               6000E00H-6001000H pile de l'esclave,
+               6001000H-6002000H pile du maitre.
+               Les etiquettes marquent les bornes BASSES des zones.
+
+               Coherent avec YabauseFullInit(), qui ecrit deja 0x06002000
+               dans le vecteur 1 (SP initial) de la ROM BIOS emulee. */
+            cdip->msh2stack = 0x6002000;
+         }
+
+         // for Panzer Dragoon Zwei. This operation is not written in the document.
+         if (cdip->msh2stack & 0x80000000)
+         {
+            cdip->msh2stack = 0x06000000 + (cdip->msh2stack & 0x0000FFFF );
+         }
+
+         if (cdip->ssh2stack == 0 )
+         {
+            /* STACK-S defaut : zone 6000D00H ~ 6000FFFH (ST-040-R4 /
+               TECH#11), donc R15 initial = 6001000H, meme raisonnement que
+               pour le maitre ci-dessus.
+
+               Et cette fois le document donne directement la valeur du
+               registre : SEGA Saturn Dual CPU User's Guide (ST-202-R1),
+               4.4 "Initialization (Vector, Stack) by the Boot ROM" :
+                 1. Vector VBR is set to address 6000400H.
+                 2. Stack SP is set to address 6001000H.
+               YabauseStartSlave() pose deja VBR = 0x06000400 ; SP doit
+               aller avec. 6000E00H ne laissait que 256 octets de pile et
+               ne correspond a aucune valeur de registre documentee. */
+            cdip->ssh2stack = 0x6001000;
+         }
+
+         if (cdip->ssh2stack & 0x80000000)
+         {
+            cdip->ssh2stack = 0x06000000 + (cdip->ssh2stack & 0x0000FFFF);
+         }
+#endif
+
+         if (autoregion)
+         {
+            // Read first available region, that'll be what we'll use
+            switch (cdip->region[0])
+            {
+               case 'J':
+                         ret = 1;
+                         break;
+               case 'T':
+                         ret = 2;
+                         break;
+               case 'U':
+                         ret = 4;
+                         break;
+               case 'B':
+                         ret = 5;
+                         break;
+               case 'K':
+                         ret = 6;
+                         break;
+               case 'A':
+                         ret = 0xA;
+                         break;
+               case 'E':
+                         ret = 0xC;
+                         break;
+               case 'L':
+                         ret = 0xD;
+                         break;
+               default: break;
+            }
+         }
+      }
+
+      // Free Block
+      gripartition->size -= gripartition->block[gripartition->numblocks - 1]->size;
+      Cs2FreeBlock(gripartition->block[gripartition->numblocks - 1]);
+      gripartition->block[gripartition->numblocks - 1] = NULL;
+      gripartition->blocknum[gripartition->numblocks - 1] = 0xFF;
+
+      // Sort remaining blocks
+      Cs2SortBlocks(gripartition);
+      gripartition->numblocks -= 1;
+   }
+
+   return ret;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+u8 Cs2GetRegionID(void)
+{
+   return Cs2GetIP(1);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2SaveState(void ** stream) {
+   int offset, i, i2;
+
+   // This is mostly kludge, but it will have to do until I have time to rewrite it all
+
+   offset = MemStateWriteHeader(stream, "CS2 ", 3);
+
+   // Write cart type
+   MemStateWrite((void *)&Cs2Area->carttype, 4, 1, stream);
+
+   // Write cd block registers
+   MemStateWrite((void *)&Cs2Area->reg, sizeof(blockregs_struct), 1, stream);
+
+   // Write current Status variables(needs a rewrite)
+   MemStateWrite((void *)&Cs2Area->FAD, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->status, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->options, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->repcnt, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->ctrladdr, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->track, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->index, 1, 1, stream);
+
+   // Write other cd block internal variables
+   MemStateWrite((void *)&Cs2Area->satauth, 2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->mpgauth, 2, 1, stream);
+
+   MemStateWrite((void *)&Cs2Area->transfercount, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->cdwnum, 4, 1, stream);
+   MemStateWrite((void *)Cs2Area->TOC, 4, 102, stream);
+   MemStateWrite((void *)&Cs2Area->playFAD, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->playendFAD, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->maxrepeat, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->getsectsize, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->putsectsize, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->calcsize, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->infotranstype, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datatranstype, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->isonesectorstored, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->isdiskchanged, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->isbufferfull, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->speed1x, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->isaudio, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->transfileinfo, 1, 12, stream);
+   MemStateWrite((void *)&Cs2Area->lastbuffer, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->transscodeq, 5*2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->transscoderw, 12*2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->_command, 1, 1, stream);
+   {
+      u32 temp = (Cs2Area->_periodictiming + 3) / 3;
+      MemStateWrite((void *)&temp, 4, 1, stream);
+   }
+   MemStateWrite((void *)&Cs2Area->_commandtiming, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->outconcddevnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->outconmpegfbnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->outconmpegbufnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->outconmpegromnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->outconhostnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datatranspartitionnum, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datatransoffset, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datanumsecttrans, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datatranssectpos, 2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->datasectstotrans, 2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->blockfreespace, 4, 1, stream);
+   MemStateWrite((void *)&Cs2Area->curdirsect, 4, 1, stream);
+
+   // Write CD buffer
+   MemStateWrite((void *)Cs2Area->block, sizeof(block_struct), MAX_BLOCKS, stream);
+
+   // Write partition data
+   for (i = 0; i < MAX_SELECTORS; i++)
+   {
+      MemStateWrite((void *)&Cs2Area->partition[i].size, 4, 1, stream);
+      MemStateWrite((void *)Cs2Area->partition[i].blocknum, 1, MAX_BLOCKS, stream);
+      MemStateWrite((void *)&Cs2Area->partition[i].numblocks, 1, 1, stream);
+
+      u32 index = 0;
+      for (i2 = 0; i2 < MAX_BLOCKS; i2++)
+      {
+        if (Cs2Area->partition[i].block[i2] == NULL)
+          index = 0xFFFFFFFF;
+        else
+          index = Cs2Area->partition[i].block[i2] - Cs2Area->block;
+        MemStateWrite(&index, 4, 1, stream);
+      }
+   }
+
+   // Write filter data
+   MemStateWrite((void *)Cs2Area->filter, sizeof(filter_struct), MAX_SELECTORS, stream);
+
+   // Write File Info Table
+   MemStateWrite((void *)Cs2Area->fileinfo, sizeof(dirrec_struct), MAX_FILES, stream);
+
+   // Write MPEG card registers here
+
+   // Write current MPEG card status variables
+   MemStateWrite((void *)&Cs2Area->actionstatus, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->pictureinfo, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->mpegaudiostatus, 1, 1, stream);
+   MemStateWrite((void *)&Cs2Area->mpegvideostatus, 2, 1, stream);
+   MemStateWrite((void *)&Cs2Area->vcounter, 2, 1, stream);
+
+   // Write other MPEG card internal variables
+   MemStateWrite((void *)&Cs2Area->mpegintmask, 4, 1, stream);
+   MemStateWrite((void *)Cs2Area->mpegcon, sizeof(mpegcon_struct), 2, stream);
+   MemStateWrite((void *)Cs2Area->mpegstm, sizeof(mpegstm_struct), 2, stream);
+
+   MemStateWrite((void *)&Cs2Area->playtype, 4, 1, stream);
+
+   MemStateWrite((void *)&Cs2Area->_seekToStop, 1, 1, stream);
+   return MemStateFinishHeader(stream, offset);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+int Cs2LoadState(const void * stream, int version, int size) {
+   int i, i2;
+
+   Cs2Reset();
+
+   // This is mostly kludge, but it will have to do until I have time to rewrite it all
+   CDLOG("************* Cs2LoadState *********************");
+
+   // Read cart type
+   MemStateRead((void *)&Cs2Area->carttype, 4, 1, stream);
+
+   // Read cd block registers
+   MemStateRead((void *)&Cs2Area->reg, sizeof(blockregs_struct), 1, stream);
+
+   // Read current Status variables(needs a reRead)
+   MemStateRead((void *)&Cs2Area->FAD, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->status, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->options, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->repcnt, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->ctrladdr, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->track, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->index, 1, 1, stream);
+
+   // Read other cd block internal variables
+   MemStateRead((void *)&Cs2Area->satauth, 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->mpgauth, 2, 1, stream);
+
+   MemStateRead((void *)&Cs2Area->transfercount, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->cdwnum, 4, 1, stream);
+   MemStateRead((void *)Cs2Area->TOC, 4, 102, stream);
+   MemStateRead((void *)&Cs2Area->playFAD, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->playendFAD, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->maxrepeat, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->getsectsize, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->putsectsize, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->calcsize, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->infotranstype, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->datatranstype, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->isonesectorstored, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->isdiskchanged, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->isbufferfull, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->speed1x, 1, 1, stream);
+   if (version > 1)
+      MemStateRead((void *)&Cs2Area->isaudio, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->transfileinfo, 1, 12, stream);
+   MemStateRead((void *)&Cs2Area->lastbuffer, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->transscodeq, 5 * 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->transscoderw, 12 * 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->_command, 1, 1, stream);
+   {
+      u32 temp;
+      MemStateRead((void *)&temp, 4, 1, stream);
+      // Derive the actual, accurate value (always a multiple of 10)
+      Cs2Area->_periodictiming = ((temp * 3) / 10) * 10;
+   }
+   MemStateRead((void *)&Cs2Area->_commandtiming, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->outconcddevnum, 1, 1, stream);
+   if (Cs2Area->outconcddevnum == 0xFF)
+      Cs2Area->outconcddev = NULL;
+   else
+      Cs2Area->outconcddev = Cs2Area->filter + Cs2Area->outconcddevnum;
+
+   MemStateRead((void *)&Cs2Area->outconmpegfbnum, 1, 1, stream);
+   if (Cs2Area->outconmpegfbnum == 0xFF)
+      Cs2Area->outconmpegfb = NULL;
+   else
+      Cs2Area->outconmpegfb = Cs2Area->filter + Cs2Area->outconmpegfbnum;
+
+   MemStateRead((void *)&Cs2Area->outconmpegbufnum, 1, 1, stream);
+   if (Cs2Area->outconmpegbufnum == 0xFF)
+      Cs2Area->outconmpegbuf = NULL;
+   else
+      Cs2Area->outconmpegbuf = Cs2Area->filter + Cs2Area->outconmpegbufnum;
+
+   MemStateRead((void *)&Cs2Area->outconmpegromnum, 1, 1, stream);
+   if (Cs2Area->outconmpegromnum == 0xFF)
+      Cs2Area->outconmpegrom = NULL;
+   else
+      Cs2Area->outconmpegrom = Cs2Area->filter + Cs2Area->outconmpegromnum;
+
+   MemStateRead((void *)&Cs2Area->outconhostnum, 1, 1, stream);
+   if (Cs2Area->outconhostnum == 0xFF)
+      Cs2Area->outconhost = NULL;
+   else
+      Cs2Area->outconhost = Cs2Area->filter + Cs2Area->outconhostnum;
+
+   MemStateRead((void *)&Cs2Area->datatranspartitionnum, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->datatransoffset, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->datanumsecttrans, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->datatranssectpos, 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->datasectstotrans, 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->blockfreespace, 4, 1, stream);
+   MemStateRead((void *)&Cs2Area->curdirsect, 4, 1, stream);
+
+   // Read CD buffer
+   MemStateRead((void *)Cs2Area->block, sizeof(block_struct), MAX_BLOCKS, stream);
+
+   // Read partition data
+   for (i = 0; i < MAX_SELECTORS; i++)
+   {
+      MemStateRead((void *)&Cs2Area->partition[i].size, 4, 1, stream);
+      MemStateRead((void *)Cs2Area->partition[i].blocknum, 1, MAX_BLOCKS, stream);
+      MemStateRead((void *)&Cs2Area->partition[i].numblocks, 1, 1, stream);
+
+      u32 index=0;
+      for (i2 = 0; i2 < MAX_BLOCKS; i2++)
+      {
+        MemStateRead((void *)&index, 4, 1, stream);
+        if (index == 0xFFFFFFFF){
+          Cs2Area->partition[i].block[i2] = NULL;
+        }
+        else{
+          Cs2Area->partition[i].block[i2] = Cs2Area->block + index;
+        }
+      }
+   }
+
+   // Read filter data
+   MemStateRead((void *)Cs2Area->filter, sizeof(filter_struct), MAX_SELECTORS, stream);
+
+   // Read File Info Table
+   MemStateRead((void *)Cs2Area->fileinfo, sizeof(dirrec_struct), MAX_FILES, stream);
+
+   // Read MPEG card registers here
+
+   // Read current MPEG card status variables
+   MemStateRead((void *)&Cs2Area->actionstatus, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->pictureinfo, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->mpegaudiostatus, 1, 1, stream);
+   MemStateRead((void *)&Cs2Area->mpegvideostatus, 2, 1, stream);
+   MemStateRead((void *)&Cs2Area->vcounter, 2, 1, stream);
+
+   // Read other MPEG card internal variables
+   MemStateRead((void *)&Cs2Area->mpegintmask, 4, 1, stream);
+   MemStateRead((void *)Cs2Area->mpegcon, sizeof(mpegcon_struct), 2, stream);
+   MemStateRead((void *)Cs2Area->mpegstm, sizeof(mpegstm_struct), 2, stream);
+
+   MemStateRead((void *)&Cs2Area->playtype, 4, 1, stream);
+
+   if (version > 2) {
+     MemStateRead((void *)&Cs2Area->_seekToStop, 1, 1, stream);
+   }
+   return size;
+}
+
+/* Valeurs de repli : memes SP que ci-dessus (ST-202-R1 4.4 pour
+   l'esclave), pas les bornes basses des zones de pile. */
+/* Un cdip alloue mais pas encore rempli (cf. le commentaire en tete de
+   YabauseQuickLoadGame()) vaut zero sans etre NULL. Tester le champ lui-meme,
+   et pas seulement le pointeur, evite de renvoyer PC = 0 et SP = 0 au maitre.
+   Replis : entree de l'AIP (6002000H + 100H SYSTEM ID + D00H code de securite
+   = 6002E00H) et sommets des zones de pile documentees. */
+u32 Cs2GetMasterStackAdress(){ if (cdip && cdip->msh2stack) return cdip->msh2stack; else return 0x6002000; }
+u32 Cs2GetSlaveStackAdress(){ if (cdip && cdip->ssh2stack) return cdip->ssh2stack; else return 0x6001000; }
+u32 Cs2GetMasterExecutionAdress(){ if (cdip && cdip->firstprogaddr) return cdip->firstprogaddr; else return 0x06002E00; }
+u64 Cs2GetGameId(){ if (cdip) return cdip->gameid; else return 0x00; }
 
 //////////////////////////////////////////////////////////////////////////////
