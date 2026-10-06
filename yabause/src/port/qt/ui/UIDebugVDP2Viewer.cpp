@@ -122,7 +122,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     R(0x25F80000,"TVMD",  r.TVMD);   R(0x25F80002,"EXTEN", r.EXTEN);
     R(0x25F80004,"TVSTAT",r.TVSTAT); R(0x25F80006,"VRSIZE",r.VRSIZE);
     R(0x25F80008,"HCNT",  r.HCNT);   R(0x25F8000A,"VCNT",  r.VCNT);
-    R(0x25F8000C,"EWDR",  r.EWDR);
+    R(0x25F8000C,"(rsvd)", r.EWDR);
     R(0x25F8000E,"RAMCTL",r.RAMCTL);
     R(0x25F80010,"CYCA0L",r.CYCA0L); R(0x25F80012,"CYCA0U",r.CYCA0U);
     R(0x25F80014,"CYCA1L",r.CYCA1L); R(0x25F80016,"CYCA1U",r.CYCA1U);
@@ -226,10 +226,9 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     d<<"  HCNT="<<DEC(r.HCNT)<<"  VCNT="<<DEC(r.VCNT)
       <<"  (valeurs latchees, "<<((r.EXTEN&0x200)?"EXLTEN=1: signal externe":"EXLTEN=0: derniere lecture de EXTEN")<<")\n";
 
-    // EWDR — External Write Data Register (ST-058-R2 §3.4 / addr 0x25F8000C)
-    // Contient la donnée écrite lors d'un accès externe au VDP2. 16 bits, écriture seule.
-    d<<"\n=== EWDR=0x"<<HEX4(r.EWDR)<<" (External Write Data) ===\n";
-    d<<"  raw=0x"<<HEX4(r.EWDR)<<"  (write-only — valeur indéterminée en lecture)\n";
+    // 0x25F8000C : adresse reservee sur le VDP2 (ST-058-R2, table des
+    // registres). EWDR est un registre du VDP1 (ST-013-R3), sans rapport.
+    d<<"\n=== 0x25F8000C (reserve) = 0x"<<HEX4(r.EWDR)<<" ===\n";
 
     // VRSIZE/RAMCTL
     d<<"\n=== VRAM/RAMCTL ===\n";
