@@ -1053,6 +1053,9 @@ static int YglGenerateOriginalBuffer(){
 
   YGLDEBUG("YglGenerateOriginalBuffer: %d,%d\n", _Ygl->width, _Ygl->height);
 
+  /* New textures: no previous field to keep (see ygl.h). */
+  _Ygl->original_fbo_fresh = 1;
+
   glGenTextures(NB_RENDER_LAYER, &_Ygl->original_fbotex[0]);
   for (int i=0; i<NB_RENDER_LAYER; i++) {
     glBindTexture(GL_TEXTURE_2D, _Ygl->original_fbotex[i]);
