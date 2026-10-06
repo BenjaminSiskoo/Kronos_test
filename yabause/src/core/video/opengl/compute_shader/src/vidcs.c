@@ -108,6 +108,7 @@ static void Vdp2SetupVramBanks(Vdp2Ctrl *ctrl, int startLine)
   memset(ctrl->bmp_remap,   0, sizeof(ctrl->bmp_remap));
   ctrl->bmp_group_bytes = 0;
   ctrl->bmp_remap_any   = 0;
+  ctrl->chr_noaccess    = 0;
   /* VRAM figee au V-blank IN (vdp2.h, Vdp2CaptureComposeVram) : les
    * cellules decodees par le thread asynchrone ne doivent pas voir les
    * ecritures que le SH-2 fait pendant le V-blank. */
@@ -282,6 +283,7 @@ static void Vdp2DrawRBG1(void);
 
 static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha);
 static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int y);
+static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr);
 static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int lines);
 static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int mask);
 static INLINE u16 Vdp2ColorRamGetColorRaw(u32 colorindex);
@@ -542,7 +544,13 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
 {
   u64 cacheaddr = (ctrl->info.paladdr << 20) | ctrl->info.charaddr | ctrl->info.transparencyenable |
     ((ctrl->info.patternpixelwh >> 4) << 1) | (((u64)(ctrl->info.coloroffset >> 8) & 0x07) << 32) | (((u64)(ctrl->info.idScreen) & 0x07) << 39)
-    | ((u32)(ctrl->info.alpha_per_line[y] >> 3) << 27);
+    /* y is a source-space row (-patternpixelwh .. drawh, ~1000 in double
+     * density) while alpha_per_line[] has VDP2_LINE_SNAPSHOT_MAX entries:
+     * clamp the index instead of reading outside the array. */
+    | ((u32)(ctrl->info.alpha_per_line[(y < 0) ? 0 : ((y >= VDP2_LINE_SNAPSHOT_MAX) ? (VDP2_LINE_SNAPSHOT_MAX - 1) : y)] >> 3) << 27)
+    /* a cell decoded from zero data (no character read access) must not
+     * share its atlas entry with the same character really read */
+    | ((u64)(ctrl->chr_noaccess & 0x1) << 45);
   int priority = ctrl->info.priority;
   YglCache c;
   vdp2draw_struct tile = ctrl->info;
@@ -569,7 +577,7 @@ static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int
   tile.vertices[1] = y;
   tile.vertices[2] = (x + tile.cellw);
   tile.vertices[3] = y;
-  tile.vertices[4] = (x + tile.cellh);
+  tile.vertices[4] = (x + tile.cellw);
   tile.vertices[5] = (y + lines /*(float)ctrl->info.lineinc*/);
   tile.vertices[6] = x;
   tile.vertices[7] = (y + lines/*(float)ctrl->info.lineinc*/ );
@@ -647,13 +655,25 @@ static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int
       x)*ctrl->info.patterndatasize * 2;
 
   int ptnAddrBk = Vdp2VramBankIndex(ctrl->regs, addr);
-  if (ctrl->info.pname_bank[ptnAddrBk] == 0) return 0;
+  /* No pattern name read access in the bank holding this pattern name:
+   * ST-058-R2 sec.3.3 p.32, the access is not done. The cell is still
+   * displayed; its pattern name is taken as all zero (character 0,
+   * palette 0, no flip), as Ymir does (vdp_renderer_sw.cpp,
+   * VDP2FetchOneWordCharacter/VDP2FetchTwoWordCharacter return an empty
+   * Character). Returning 0 here dropped the cell: transparent in
+   * Vdp2DrawMapTest and, in Vdp2DrawMapPerLine, no pixel at all. Sonic Jam,
+   * first image of the white transition: NBG0 (N0TPON=1, line scroll) has
+   * its maps in VRAM-A and its only PN read in VRAM-B; the whole layer was
+   * missing and the back screen (violet) showed for one frame. */
+  const int pnOk = (ctrl->info.pname_bank[ptnAddrBk] != 0);
 
   switch (ctrl->info.patterndatasize)
   {
   case 1:
   {
-    u16 tmp = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+    /* Pattern name read from the same VRAM image as the character data
+     * (Kronos#520 snapshots), not from the live VRAM. */
+    u16 tmp = pnOk ? Vdp2CtrlRamReadWord(ctrl, addr) : 0;
 
     ctrl->info.specialfunction = (ctrl->info.supplementdata >> 9) & 0x1;
     ctrl->info.specialcolorfunction = (ctrl->info.supplementdata >> 8) & 0x1;
@@ -701,8 +721,8 @@ static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int
     break;
   }
   case 2: {
-    u16 tmp1 = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
-    u16 tmp2 = Vdp2RamReadWord(NULL, Vdp2Ram, addr + 2);
+    u16 tmp1 = pnOk ? Vdp2CtrlRamReadWord(ctrl, addr) : 0;
+    u16 tmp2 = pnOk ? Vdp2CtrlRamReadWord(ctrl, addr + 2) : 0;
     ctrl->info.charaddr = tmp2 & 0x7FFF;
     ctrl->info.flipfunction = (tmp1 & 0xC000) >> 14;
     switch (ctrl->info.colornumber) {
@@ -2204,11 +2224,11 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
     ctrl.info.char_bank[i] = 0;
     ctrl.info.pname_bank[i] = 0;
     for (int j=0; j < 8; j++) {
-      if (Vdp2External.AC_VRAM[i][j] == 0x05) {
+      if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x05) {
         ctrl.info.char_bank[i] = 1;
         char_access |= 1<<j;
       }
-      if (Vdp2External.AC_VRAM[i][j] == 0x01) {
+      if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x01) {
         ctrl.info.pname_bank[i] = 1;
         ptn_access |= (1 << j);
       }
@@ -2675,11 +2695,11 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
       ctrl.info.char_bank[i] = 0;
       ctrl.info.pname_bank[i] = 0;
       for (int j = 0; j < 8; j++) {
-        if (Vdp2External.AC_VRAM[i][j] == 0x06) {
+        if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x06) {
           ctrl.info.char_bank[i] = 1;
           char_access |= (1 << j);
         }
-        if (Vdp2External.AC_VRAM[i][j] == 0x02) {
+        if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x02) {
           ctrl.info.pname_bank[i] = 1;
           ptn_access |= (1 << j);
         }
@@ -2925,11 +2945,11 @@ static void Vdp2DrawNBG3(Vdp2* varVdp2Regs, int startLine, int endLine)
       ctrl.info.char_bank[i] = 0;
       ctrl.info.pname_bank[i] = 0;
       for (int j = 0; j < 8; j++) {
-        if (Vdp2External.AC_VRAM[i][j] == 0x07) {
+        if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x07) {
           ctrl.info.char_bank[i] = 1;
           char_access |= (1 << j);
         }
-        if (Vdp2External.AC_VRAM[i][j] == 0x03) {
+        if (Vdp2ZoneAccessCommand(ctrl.regs, i, j) == 0x03) {
           ctrl.info.pname_bank[i] = 1;
           ptn_access |= (1 << j);
         }
@@ -4555,6 +4575,7 @@ static INLINE u32 Vdp2BitmapFetchAddr(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  if (ctrl->chr_noaccess) return 0;   /* ST-058-R2 sec.3.3 p.32, see ygl.h */
   addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s])
@@ -4566,6 +4587,7 @@ static INLINE u8 Vdp2CtrlRamReadByte(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  if (ctrl->chr_noaccess) return 0;   /* ST-058-R2 sec.3.3 p.32, see ygl.h */
   addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 1) < VDP2_VRAM_BANK_SIZE)
@@ -4577,6 +4599,7 @@ static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr) {
 
 static INLINE u32 Vdp2CtrlRamReadLong(Vdp2Ctrl *ctrl, u32 addr) {
   u32 off = 0;
+  if (ctrl->chr_noaccess) return 0;   /* ST-058-R2 sec.3.3 p.32, see ygl.h */
   addr = Vdp2BitmapFetchAddr(ctrl, addr);
   const int s = Vdp2VramSnapshotSlice(ctrl->regs, addr, &off);
   if (s >= 0 && s < 4 && ctrl->vram_bank[s] && (off + 3) < VDP2_VRAM_BANK_SIZE)
@@ -5902,7 +5925,18 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
         /* Kronos#520: see isVramAccessible() above for why char_bank[]
          * alone can be stale for a zone mid-frame (snapshot = tranche
          * physique, droits = banque logique). */
-        if (ctrl->info.char_bank[charAddrBk] == 1 || (charSnap >= 0 && charSnap < 4 && ctrl->vram_bank[charSnap])) {
+        const int chrOk = (ctrl->info.char_bank[charAddrBk] == 1)
+                       || (charSnap >= 0 && charSnap < 4 && ctrl->vram_bank[charSnap]);
+        /* No character pattern read access in the bank of this cell
+         * (ST-058-R2 sec.3.3 p.32: the access is not done). With xxTPON=0
+         * the cell is entirely transparent and can be skipped as before;
+         * with xxTPON=1 the transparency code is displayed (sec.4.1 p.48),
+         * so the cell must still be drawn, from zero data. Sonic Jam,
+         * white transition after choosing a game: NBG1 (N1TPON=1) reads
+         * its characters only in VRAM-B but part of its cells point into
+         * VRAM-A; skipping them showed the back screen (0x7474, violet)
+         * where NBG0 is transparent. */
+        if (chrOk || !ctrl->info.transparencyenable) {
           int x = h - charx;
           int y = v - chary;
           int ytop   = y;
@@ -5924,7 +5958,9 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
 
           ctrl->info.draw_line = ytop;
           if (delayed && (h == -ctrl->info.patternpixelwh)) continue;
+          ctrl->chr_noaccess = chrOk ? 0 : 1;
           Vdp2DrawPatternPos(ctrl, x+delayed*8, ytop, 0, ycell, ylines);
+          ctrl->chr_noaccess = 0;
         }
       }
     }
@@ -6085,6 +6121,11 @@ static void Vdp2DrawLineColorScreen(Vdp2 *varVdp2Regs)
 
 static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_size_2x2) {
   if (_Ygl->rwidth >= 640) {
+    /* ST-058-R2 sec.3.3: in high resolution / exclusive monitor modes only
+     * T0-T3 are in effect, T4-T7 are ignored. The masks and the
+     * "char_access < ptn_access" order tests below assume 4 timings. */
+    char_access &= 0x0F;
+    ptn_access  &= 0x0F;
     if (ptn_access & 0x01) { // T0
       if ((char_access & 0x07) != 0) {
         if (char_access < ptn_access) {
