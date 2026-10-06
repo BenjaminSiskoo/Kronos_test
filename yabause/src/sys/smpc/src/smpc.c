@@ -839,10 +839,28 @@ static u8 m_pdr1_readback = 0;
 u8 FASTCALL SmpcReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x7F;
    if (addr == 0x063) {
-     bustmp = SmpcRegsT[addr >> 1] & 0xFE;
-     bustmp |= SmpcRegs->SF;
-     SMPCLOG("Read SMPC[0x63] 0x%x %d\n", bustmp, yabsys.LineCount);
-     return bustmp;
+     /* SF : seul le bit 0 est defini en lecture. ST-169-R1 (SMPC User's
+      * Manual) p.6 : "During read, all bits except bit0 are undefined."
+      * Les bits 7-1 sont ceux du bus, soit la derniere valeur ecrite dans un
+      * registre du SMPC (bustmp, mis a jour par SmpcWriteByte uniquement),
+      * comme dans Ymir (smpc.cpp, ReadSF : SF | (m_busValue & 0xFE),
+      * m_busValue n'etant mis a jour qu'en ecriture).
+      *
+      * L'ancien code prenait les bits 7-1 dans la derniere valeur ecrite dans
+      * SF lui-meme (toujours 01H), si bien qu'une lecture de SF valait 00H ou
+      * 01H, et en ecrasant bustmp il modifiait aussi le bus vu par les
+      * lectures suivantes.
+      *
+      * Pro Yakyuu Greatest Nine '97 Make Miracle : sa fonction d'envoi de
+      * commande (060050C8) compare l'octet entier a 01H, le relit une fois,
+      * puis boucle sur un "bt" vers lui-meme sans plus relire SF. Appelee
+      * pendant l'INTBACK lance au V-Blank IN (dernier ecrit : COMREG = 10H),
+      * elle lisait 01H deux fois et ne sortait plus de la boucle (ecran noir
+      * apres le second "Now Loading"). Avec le bus, la lecture vaut 11H et le
+      * jeu poursuit. */
+     u8 val = (u8)((bustmp & 0xFE) | (SmpcRegs->SF & 0x01));
+     SMPCLOG("Read SMPC[0x63] 0x%x %d\n", val, yabsys.LineCount);
+     return val;
    }
    if (addr == 0x77){
      //PDR2
