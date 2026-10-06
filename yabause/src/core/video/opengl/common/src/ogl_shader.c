@@ -1377,9 +1377,15 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
     glUniform1i(glGetUniformLocation(vdp2blit_prg, "u_field_weave"), weave);
   }
 
-  if (_Ygl->interlace == NORMAL_INTERLACE){
+  if ((_Ygl->interlace == NORMAL_INTERLACE) || _Ygl->original_fbo_fresh) {
     //double density interlaced or progressive _ Do not mix fields. Maybe required by double density. To check
+    /* Also when original_fbo has just been recreated (ygl.h): the rows of
+     * the other field would come from an empty texture and show black
+     * lines for one image. Sonic Jam: VDP1 TVMR/FBCR change on the first
+     * two images of the white transition (vdp1 density 1x1 -> 1x2 -> 2x2),
+     * each one rebuilding the frame buffers. */
     glUniform1i(glGetUniformLocation(vdp2blit_prg, "nbFrame"),2);
+    _Ygl->original_fbo_fresh = 0;
   } else {
     //Single density
     if (((varVdp2Regs->TVSTAT>>1)&0x1)==0)
