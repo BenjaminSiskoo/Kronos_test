@@ -28,6 +28,7 @@
 #include "vidshared.h"
 #include "bicubic_shader.h"
 #include "scanline_shader.h"
+#include "embellish_shader.h"
 #include "common_glshader.h"
 
 #undef YGLLOG
@@ -303,25 +304,19 @@ static void Ygl_releaseTmpBuffer(void) {
   glBindFramebuffer(GL_FRAMEBUFFER, saveFB);
 }
 
-int Ygl_useUpscaleBuffer(void){
-  // Create Screen size frame buffer
-  int up_scale = 1;
-  switch (_Ygl->upmode) {
-    case UP_6XBRZ:
-      up_scale = 6;
-      break;
-    case UP_HQ4X:
-    case UP_4XBRZ:
-      up_scale = 4;
-      break;
-    default:
-      up_scale = 1;
-  }
+/* Allocate (or resize) the upscale target to outw x outh.
+ * The upscale output size now depends on the filter: an integer factor of
+ * the Saturn resolution (HQ4x, xBRZ, Scale3x/4x), the composed texture size
+ * (Sharpen) or the output viewport size (FSR), see YglUpscaleGetOutputSize().
+ * Returns 0 on success. */
+static int upfbo_w = 0;
+static int upfbo_h = 0;
+int Ygl_useUpscaleBuffer(int outw, int outh){
+  if ((outw <= 0) || (outh <= 0)) return -1;
   if (_Ygl->upfbo == 0) {
-    GLuint error;
     glGenTextures(1, &_Ygl->upfbotex);
     glBindTexture(GL_TEXTURE_2D, _Ygl->upfbotex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, up_scale*_Ygl->rwidth, up_scale*_Ygl->rheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, outw, outh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -330,12 +325,19 @@ int Ygl_useUpscaleBuffer(void){
     glGenFramebuffers(1, &_Ygl->upfbo);
     glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->upfbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _Ygl->upfbotex, 0);
+    upfbo_w = outw;
+    upfbo_h = outh;
   }
-  // bind Screen size frame buffer
-  else{
-    glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->upfbo);
+  else if ((upfbo_w != outw) || (upfbo_h != outh)) {
+    /* Window resized (FSR) or Saturn resolution changed: redefine the
+     * storage of the attached texture, the FBO keeps its attachment. */
+    glBindTexture(GL_TEXTURE_2D, _Ygl->upfbotex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, outw, outh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    upfbo_w = outw;
+    upfbo_h = outh;
   }
-  return up_scale;
+  glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->upfbo);
+  return 0;
 }
 
 /*------------------------------------------------------------------------------------
@@ -1377,9 +1379,15 @@ int YglBlitTexture(int* prioscreens, int* modescreens, int* isRGB, int * isBlur,
     glUniform1i(glGetUniformLocation(vdp2blit_prg, "u_field_weave"), weave);
   }
 
-  if (_Ygl->interlace == NORMAL_INTERLACE){
+  if ((_Ygl->interlace == NORMAL_INTERLACE) || _Ygl->original_fbo_fresh) {
     //double density interlaced or progressive _ Do not mix fields. Maybe required by double density. To check
+    /* Also when original_fbo has just been recreated (ygl.h): the rows of
+     * the other field would come from an empty texture and show black
+     * lines for one image. Sonic Jam: VDP1 TVMR/FBCR change on the first
+     * two images of the white transition (vdp1 density 1x1 -> 1x2 -> 2x2),
+     * each one rebuilding the frame buffers. */
     glUniform1i(glGetUniformLocation(vdp2blit_prg, "nbFrame"),2);
+    _Ygl->original_fbo_fresh = 0;
   } else {
     //Single density
     if (((varVdp2Regs->TVSTAT>>1)&0x1)==0)
@@ -1931,8 +1939,9 @@ static int u_l = -1;
 static int u_d = -1;
 static int u_f = -1;
 static int u_s = -1;
-static int outputSize = -1;
-static int inputSize = -1;
+static int u_o = -1;
+static int u_sl = -1;
+static int u_r = -1;
 
 static const char vblit_img[] =
   SHADER_VERSION
@@ -1958,6 +1967,9 @@ static const char fblit_head[] =
   "uniform float decim; \n"
   "uniform int field; \n"
   "uniform int scale; \n"
+  "uniform vec2 outSize; \n"
+  "uniform float srcLines; \n"
+  "uniform int rotated; \n"
   "in highp vec2 vTexCoord;     \n"
   "uniform sampler2D u_Src;     \n"
   "out vec4 fragColor; \n";
@@ -2075,7 +2087,14 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
 
   const GLchar * fblit_bob_img_v[] = { fblit_head, fbobob_img, fblit_img, fblit_img_end, NULL };
 
+  const GLchar * fblit_lanczos3_img_v[] = { fblit_head, fblitlanczos3_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_sharpbilinear_img_v[] = { fblit_head, fblitsharpbilinear_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_fxaa_img_v[] = { fblit_head, fblitfxaa_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_crt_img_v[] = { fblit_head, fblitcrt_img, fblit_img, fblit_img_end, NULL };
+
   int aamode = _Ygl->aamode;
+  /* Unknown value (e.g. config written by a newer build): plain display */
+  if ((aamode < AA_NONE) || (aamode > AA_CRT_FILTER)) aamode = AA_NONE;
 
   float const vertexPosition[] = {
     1.0f, -1.0f,
@@ -2096,8 +2115,22 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   float nbLines = h;//yabsys.IsPal?625.0f:525.0f;
   if ((_Ygl->stretch == INTEGER_RATIO) || (_Ygl->stretch == INTEGER_RATIO_FULL)) nbLines = height;
 
+#ifndef __LIBRETRO__
+  u32 isRotated = (yabsys.isRotated != 0);
+#else
+  u32 isRotated = 0;
+#endif
+  /* Output size seen from the texture: x/y swapped when rotated, since the
+   * final quad maps the texture width onto the screen height. */
+  float outTexW = isRotated ? disph : dispw;
+  float outTexH = isRotated ? dispw : disph;
+
   if (_Ygl->upmode != UP_NONE) {
-    int scale = 1;
+    int outw = 0;
+    int outh = 0;
+    GLint saved_viewport[4];
+    GLint saved_scissor[4];
+    GLboolean scissor_on;
     if (last_upmode != _Ygl->upmode) {
       if (_Ygl->upfbotex != 0) glDeleteTextures(1, &_Ygl->upfbotex);
       if (_Ygl->upfbo != 0) glDeleteFramebuffers(1, &_Ygl->upfbo);
@@ -2105,16 +2138,26 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
       _Ygl->upfbotex = 0;
       last_upmode = _Ygl->upmode;
     }
-    scale = Ygl_useUpscaleBuffer();
-    glGetIntegerv( GL_VIEWPORT, _Ygl->m_viewport );
-    glViewport(0, 0, scale*_Ygl->rwidth, scale*_Ygl->rheight);
-    glScissor(0, 0, scale*_Ygl->rwidth, scale*_Ygl->rheight);
-    YglUpscaleFramebuffer(srcTexture, _Ygl->upfbo, _Ygl->rwidth, _Ygl->rheight, _Ygl->width, _Ygl->height);
-    glViewport(_Ygl->m_viewport[0], _Ygl->m_viewport[1], _Ygl->m_viewport[2], _Ygl->m_viewport[3]);
-    glScissor(_Ygl->m_viewport[0], _Ygl->m_viewport[1], _Ygl->m_viewport[2], _Ygl->m_viewport[3]);
-    tex = _Ygl->upfbotex;
-    width = scale*_Ygl->rwidth;
-    height = scale*_Ygl->rheight;
+    YglUpscaleGetOutputSize(_Ygl->upmode, _Ygl->rwidth, _Ygl->rheight, _Ygl->width, _Ygl->height,
+                            (int)outTexW, (int)outTexH, &outw, &outh);
+    /* Save the full viewport/scissor state: the scissor of the caller may
+     * be smaller than the viewport (border clip in integer ratio modes),
+     * restoring it from the viewport lost that clip. */
+    glGetIntegerv(GL_VIEWPORT, saved_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, saved_scissor);
+    scissor_on = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    if ((Ygl_useUpscaleBuffer(outw, outh) == 0) &&
+        (YglUpscaleFramebuffer(srcTexture, _Ygl->upfbo, _Ygl->rwidth, _Ygl->rheight, _Ygl->width, _Ygl->height, outw, outh) == 0)) {
+      tex = _Ygl->upfbotex;
+      width = outw;
+      height = outh;
+    }
+    /* else: upscale shader unavailable, display the composed frame as is */
+    glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
+    glViewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+    glScissor(saved_scissor[0], saved_scissor[1], saved_scissor[2], saved_scissor[3]);
+    if (scissor_on) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
   }
   //if ((aamode == AA_NONE) && ((w != dispw) || (h != disph))) aamode = AA_BILINEAR_FILTER;
   if (_Ygl->interlace == NORMAL_INTERLACE) {
@@ -2182,6 +2225,18 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
         else
           glShaderSource(fshader, 5, fblit_img_scanline_is_interlace_v, NULL);
         break;
+      case AA_LANCZOS3_FILTER:
+        glShaderSource(fshader, 4, fblit_lanczos3_img_v, NULL);
+        break;
+      case AA_SHARP_BILINEAR_FILTER:
+        glShaderSource(fshader, 4, fblit_sharpbilinear_img_v, NULL);
+        break;
+      case AA_FXAA_FILTER:
+        glShaderSource(fshader, 4, fblit_fxaa_img_v, NULL);
+        break;
+      case AA_CRT_FILTER:
+        glShaderSource(fshader, 4, fblit_crt_img_v, NULL);
+        break;
     }
     glCompileShader(fshader);
     glGetShaderiv(fshader, GL_COMPILE_STATUS, &compiled);
@@ -2211,6 +2266,9 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
     u_d = glGetUniformLocation(blit_prg, "decim");
     u_f = glGetUniformLocation(blit_prg, "field");
     u_s = glGetUniformLocation(blit_prg, "scale");
+    u_o = glGetUniformLocation(blit_prg, "outSize");
+    u_sl = glGetUniformLocation(blit_prg, "srcLines");
+    u_r = glGetUniformLocation(blit_prg, "rotated");
   }
   else{
     GLUSEPROG(blit_prg);
@@ -2225,11 +2283,6 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   glBufferData(GL_ARRAY_BUFFER, sizeof(vertexPosition), vertexPosition, GL_STREAM_DRAW);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
   glEnableVertexAttribArray(0);
-#ifndef __LIBRETRO__
-  u32 isRotated = yabsys.isRotated;
-#else
-  u32 isRotated = 0;
-#endif
   if (textureCoord_buf[isRotated] == 0)
      glGenBuffers(1, &textureCoord_buf[isRotated]);
   glBindBuffer(GL_ARRAY_BUFFER, textureCoord_buf[isRotated]);
@@ -2244,10 +2297,14 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   glUniform1f(u_d, (float)decim);
   glUniform1i(u_f, (Vdp2Regs->TVSTAT>>1)&0x1);
   glUniform1i(u_s, _Ygl->vdp1ratio);
+  glUniform2f(u_o, outTexW, outTexH);
+  glUniform1f(u_sl, (float)_Ygl->rheight);
+  glUniform1i(u_r, (int)isRotated);
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, tex);
-  if (aamode == AA_BILINEAR_FILTER) {
+  if ((aamode == AA_BILINEAR_FILTER) || (aamode == AA_SHARP_BILINEAR_FILTER) ||
+      (aamode == AA_FXAA_FILTER) || (aamode == AA_CRT_FILTER)) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   } else {
@@ -2429,6 +2486,8 @@ void Ygl_prog_Destroy(void) {
   if (vdp1_read_prg != -1)  glDeleteProgram(vdp1_read_prg);   vdp1_read_prg = -1;
   if (blit_prg != -1)       glDeleteProgram(blit_prg);        blit_prg = -1;
   if (mosaic_prg != -1)     glDeleteProgram(mosaic_prg);      mosaic_prg = -1;
+  blit_mode = -1;
+  YglUpscaleDestroy();
   for(int i = 0; i<PG_MAX; i++) {
     if(_prgid[i] != 0) {
       glDeleteProgram(_prgid[i]);
