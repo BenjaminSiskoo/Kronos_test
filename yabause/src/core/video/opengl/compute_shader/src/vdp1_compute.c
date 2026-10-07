@@ -915,11 +915,20 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	int maxy = 0;
 	point A,B;
 
-    /* VDP1 §4.1 TVMR bit 0: 0=16bpp, 1=8bpp.
-     * VDP1 §6.3: CC is unavailable in 8bpp mode → getProgramLine() selects
-     * REPLACE when TVMR bit 0 = 1.  cmd->CMDPMOD is NOT mutated here.
-     * Mutating cmd would corrupt it if the same command is executed twice
-     * (e.g. double-shadow technique per VDP1 §6.3 "shadow twice = 1/4"). */
+	/* TVMR bit 0 = 1: 8 bits/pixel frame buffer. Color calculation only works
+	 * on a 16-bit frame buffer, replace must be used (commit 7df83a8f2, fixes
+	 * the True Pinball menu).
+	 * getProgramLine() applies this rule for the SD pipeline (vdp1_add) only:
+	 * the upscale pipeline does not use it, its shader switches on
+	 * CMDPMOD & 7 directly, so the CC bits (and the Gouraud bit 2) have to be
+	 * cleared here. MON (bit 15) and Mesh (bit 8) remain valid.
+	 * cmd is the local copy filled by Vdp1Draw() for each command read in
+	 * VDP1 RAM (vdp1cmd_struct cmd = {0} in the command loop), so changing it
+	 * does not affect a later execution of the same command. */
+	if ((clipcmd == 0) && ((Vdp1Regs->TVMR & 0x1) != 0)) {
+		cmd->CMDPMOD &= ~0x7U;
+	}
+
 	if (_Ygl->vdp1IsNotEmpty[_Ygl->drawframe] != -1) {
 		if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
 		vdp1_write();
@@ -943,40 +952,29 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 	if (_Ygl->wireframe_mode != 0) apply_wireframe_type(cmd);
 
 		if (clipcmd == 0) {
-			// VDP2 Manual §9.1 + VDP1 Manual §6.3:
-			// The MON→Mesh workaround applies ONLY in IMPROVED_MESH mode.
-			// In ORIGINAL_MESH mode, MON=1 is handled by the MSB_SHADOW shader path
-			// and cmd->CMDPMOD must NOT be modified here.
-			if (_Ygl->meshmode != ORIGINAL_MESH) {
-      /* IMPROVED_MESH: approximate MON=1 with Mesh+Shadow when the FB is
-       * in mixed palette+RGB format (SPCTL SPCLMD=1, bit 5).
-       *
-       * VDP1 §6.3 MON: forces bit15=1 in FB without CC.
-       * VDP2 §9.1 SPCLMD=1: FB has mixed palette+RGB → VDP2 uses bit15 as
-       * RGB discriminator, so MON's "bit15=1" marks the pixel as RGB.
-       * The improved-mesh approximation uses Mesh+Shadow as a visual stand-in
-       * because the MSB_SHADOW shader path does not look right in IMPROVED_MESH.
-       *
-       * VDP1 §6.3: "Do not specify color calculation when MON=1."
-       * We clear CC bits (0x7) and Gouraud bit (0x8000→ clearing), then set
-       * Mesh (bit8=0x100) and Shadow (CC=1=0x1) as the approximation.
-       *
-       * Games: J.League Go Go Goal, Sailor Moon SS (both use SPCLMD=1). */
-		  if ((cmd->CMDPMOD & 0x8000) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
-			  cmd->CMDPMOD &= ~0x8007U;   /* clear MON + CC bits */
-			  cmd->CMDPMOD |=  0x0101U;   /* set Mesh(bit8) + Shadow(CC=1) */
-		  }
-		}
-		// ORIGINAL_MESH: MSB_SHADOW shader handles MON=1 correctly per §6.3.
-		// No CMDPMOD mutation here — preserves correct shadow for:
-		// Advanced World War Sennetoku and all games using genuine MSB shadow.
-		/* ORIGINAL_MESH: the MSB_SHADOW shader (getProgramLine delta=0) correctly
-		* implements MON=1 per VDP1 §6.3 — forces bit15=1 on every non-transparent
-		* pixel without doing any color calculation.  Do not mutate CMDPMOD. */
-
-			// ORIGINAL_MESH: MSB_SHADOW shader handles MON=1 correctly per §6.3.
-			// No CMDPMOD mutation here — preserves correct shadow for:
-			// Advanced World War Sennetoku and all games using genuine MSB shadow.
+			/* IMPROVED_MESH only: MON (CMDPMOD bit 15) with the VDP2 sprite data in
+			 * mixed palette/RGB format (SPCTL bit 5 SPCLMD = 1).
+			 * MON sets bit 15 of every frame buffer pixel covered by the sprite and
+			 * leaves bits 14-0 unchanged (STTECHSOA2). The VDP2 can only use that
+			 * bit as MSB shadow when SPCLMD = 0 (STTECHSOA2); with SPCLMD = 1 it
+			 * reads such a pixel as RGB: an empty pixel (0x0000) becomes 0x8000,
+			 * opaque black, and an RGB pixel is left as is. J.League Go Go Goal and
+			 * Sailor Moon SS use it this way, giving a black (meshed) shadow on the
+			 * backgrounds. To render it as a transparent shadow in improved mesh
+			 * mode, the command is drawn meshed so that the MSB result goes to the
+			 * mesh surface and is blended over the frame buffer instead of
+			 * replacing it.
+			 * MON and the CC bits are kept. The previous version replaced MON with
+			 * the shadow color calculation (CMDPMOD = (CMDPMOD & ~0x8007) | 0x101):
+			 * a shadow does not draw on palette pixels (MSB = 0), so these shadows
+			 * disappeared from the VDP2 backgrounds and darkened the RGB sprites
+			 * instead. With MON the CC bits are not used by the shader (MSB_SHADOW
+			 * path), as the VDP1 manual forbids specifying both.
+			 * ORIGINAL_MESH: the command is drawn as is (MSB_SHADOW path). */
+			if ((_Ygl->meshmode != ORIGINAL_MESH) &&
+			    ((cmd->CMDPMOD & 0x8000) != 0) && ((Vdp2Regs->SPCTL & 0x20) != 0)) {
+				cmd->CMDPMOD |= 0x0100U;   /* Mesh */
+			}
 
 			point A = (point){
 			.x= MIN(cmd->CMDXA, MIN(cmd->CMDXB, MIN(cmd->CMDXC, cmd->CMDXD))),
