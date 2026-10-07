@@ -401,18 +401,32 @@ static const char vdp1_get_pixel_replace_f[] =
 "  return VDP1COLOR(color);\n"
 "}\n";
 
+/* Shadow (CMDPMOD color calculation = 1).
+ * The original graphic is never written: it only selects the pixels whose
+ * frame buffer value is altered. If the background pixel is RGB (MSB = 1),
+ * its R, G and B are halved. If the background pixel is a palette pixel
+ * (MSB = 0, including the 0x0000 left by the erase), nothing is drawn.
+ * Unlike half-transparency (which draws the original graphic as is on a
+ * palette background), the shadow must not fall back to the original
+ * graphic. Since the 2.7.0 SD pipeline it did, so the sprite appeared opaque
+ * with its own colours on palette pixels (Powerslave enemy shadows drawn
+ * yellow under the status bar, Duke Nukem 3D pause menu items visible over
+ * the VDP2 background). The upscale pipeline (SHADOW macro) and Ymir
+ * (vdp_renderer_sw.cpp, color calc case 1) leave such pixels untouched.
+ * valid = false so that neither outSurface nor outMeshSurface is written. */
 static const char vdp1_get_pixel_shadow_f[] =
 "vec4 getColoredPixel(cmdparameter_struct pixcmd, vec2 uv, ivec2 P, out bool valid)\n""{\n"
-"  uint color = getColor(pixcmd, uv, valid);\n"
+"  getColor(pixcmd, uv, valid);\n"
 "  vec4 oldcol = imageLoad(outSurface, P);\n"
 "  uint oldcolor = uint(oldcol.r*255.0) + (uint(oldcol.g*255.0)<<8);\n"
-"  if ((oldcolor & 0x8000) != 0) {\n"
-"   uint Rht = ((oldcolor >> 00) & 0x1F)>>1;\n"
-"   uint Ght = ((oldcolor >> 05) & 0x1F)>>1;\n"
-"   uint Bht = ((oldcolor >> 10) & 0x1F)>>1;\n"
-"   uint MSBht = oldcolor & 0x8000;\n"
-"   color = MSBht | Rht | (Ght<<05) | (Bht<<10);\n"
+"  if ((oldcolor & 0x8000u) == 0u) {\n"
+"   valid = false;\n"
+"   return oldcol;\n"
 "  }\n"
+"  uint Rht = ((oldcolor >> 00) & 0x1Fu)>>1;\n"
+"  uint Ght = ((oldcolor >> 05) & 0x1Fu)>>1;\n"
+"  uint Bht = ((oldcolor >> 10) & 0x1Fu)>>1;\n"
+"  uint color = 0x8000u | Rht | (Ght<<05) | (Bht<<10);\n"
 "  return VDP1COLOR(color);\n"
 "}\n";
 
