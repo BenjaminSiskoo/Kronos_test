@@ -1008,6 +1008,15 @@ static int Cs2Exec_CMD_unit(u32 timing) {
   return 0;
 }
 
+/* 1 if FAD lies in an audio track (TOC control nibble without the data bit,
+ * 0x40 of the control/ADR byte). CD-DA sectors go to the audio output, not to
+ * the CD buffer (Cs2ReadFilteredSector), so a full buffer must not hold them. */
+static int Cs2FADIsAudio(u32 fad) {
+  const u8 t = Cs2FADToTrack(fad);
+  if (t == 0 || t == 0xFF || t > 99) return 0;
+  return ((Cs2Area->TOC[t - 1] >> 24) & 0x40) == 0;
+}
+
 static void Cs2Exec_unit(u32 timing) {
    Cs2Area->_statuscycles += timing * 3;
    Cs2Area->_periodiccycles += timing * 3;
@@ -1157,7 +1166,13 @@ static void Cs2Exec_unit(u32 timing) {
             break;
          }
 		 case CDB_STAT_SEEK:{
-			if (!Cs2Area->isbufferfull) {
+			/* A full buffer only stops sectors that would be stored in it.
+			   CD-DA is played to the audio output: ST-162 / STTECH08 describe the
+			   buffer-full PAUSE for CD reads. Steam-Heart's switches its music
+			   from a data stream to CD-DA track 4 while the buffer is still full
+			   of stream sectors it no longer reads: the drive stayed in SEEK and
+			   the CD-DA never started (no in-game music). */
+			if (!Cs2Area->isbufferfull || Cs2FADIsAudio(Cs2Area->FAD)) {
 				/* the status stays SEEK until a sector has been processed
 				   (see Cs2SeekReading); the next reports read sectors */
 				Cs2SeekReading = 1;
@@ -1867,6 +1882,10 @@ void Cs2PlayDisc(void) {
   pdspos = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
   pdepos = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
   pdpmode = Cs2Area->reg.CR3 >> 8;
+  /* Play mode bit 7: do not move the pickup to the start position
+   * (CDC_PM_PIC_NOMOV, ST-162 "CD Play Parameters"). 0xFF means no change. */
+  const int pick_nomove = (pdpmode != 0xFF) && (pdpmode & 0x80);
+  const int start_given = (pdspos != 0xFFFFFF) && (pdpmode != 0xFF);
 
   CDLOG("[CDB] Command: Play; Start = 0x%06x, End = 0x%06x, Mode = 0x%02x\n", pdspos, pdepos, pdpmode);
   u32 current_fad = Cs2Area->FAD;
@@ -1912,6 +1931,16 @@ void Cs2PlayDisc(void) {
      {
         // Preserve Pickup Position
         Cs2SetupDefaultPlayStats((u8)(pdspos >> 8), 0);
+        /* The play range still starts at the new track: only the pickup
+         * stays where it is. playFAD was left at the previous range, so a
+         * repeat or a move to the start went back to the old position
+         * (Steam-Heart's: PlayDisc track 4, mode 8Fh, kept reading the data
+         * stream at 89E1h instead of the CD-DA). */
+        {
+          const u8 trk = (u8)(pdspos >> 8);
+          if (trk != 0 && trk != 0xFF && trk <= 99)
+            Cs2Area->playFAD = Cs2Area->TOC[trk - 1] & 0x00FFFFFF;
+        }
 
 		CDLOG("[CDB] pos = TRACK:%02X FAD:%02X noupd\n", (u8)(pdspos >> 8), Cs2Area->FAD );
      }
@@ -1942,6 +1971,34 @@ void Cs2PlayDisc(void) {
   {
      // Default Mode
      Cs2Area->playendFAD = Cs2TrackToFAD(0xFFFF);
+  }
+
+  /* Pickup not moved and current position outside the new play range:
+   * STTECH08 table 4.5 "Operation outside the play range", row "CD play
+   * (play range modification, pause release)": without repeat, <PAUSE> at
+   * the current position; with repeat, repeat operation (seek to the start
+   * position, then <PLAY>). ST-162 CDC_PM_PIC_NOMOV: "<PAUSE> status when
+   * current position is outside play range". */
+  if (pick_nomove && start_given &&
+      (Cs2Area->FAD < Cs2Area->playFAD || Cs2Area->FAD > Cs2Area->playendFAD))
+  {
+     if (Cs2Area->maxrepeat != 0)
+     {
+        Cs2Area->FAD = Cs2Area->playFAD;
+        Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+     }
+     else
+     {
+        Cs2Area->_periodiccycles = 0;
+        Cs2Area->_periodictiming = 0;
+        setStatus(CDB_STAT_PAUSE);
+        Cs2Area->nextStatus = 0xFF;
+        Cs2Area->options = 0;
+        Cs2Area->playtype = CDB_PLAYTYPE_SECTOR;
+        doCDReport(Cs2Area->status);
+        Cs2SetIRQ(CDB_HIRQ_CMOK);
+        return;
+     }
   }
 
   // setup play mode here
