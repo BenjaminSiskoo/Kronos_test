@@ -96,14 +96,21 @@ const Items mVideoFilterMode = Items()
 	<< Item("3", "Deinterlacing Adaptative")
 	<< Item("4", "Deinterlacing Debug Adaptative")
 	<< Item("5", "Deinterlacing Bob")
-	<< Item("6", "Scanline");
+	<< Item("6", "Scanline")
+	<< Item("7", "Lanczos3")
+	<< Item("8", "Sharp Bilinear")
+	<< Item("9", "FXAA")
+	<< Item("10", "CRT (Aperture Grille)");
 
 const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
 	<< Item("1", "HQ4x")
 	<< Item("2", "4xBRZ")
 	<< Item("3", "6xBRZ")
-	<< Item("4", "Sharpen (Adaptive)");
+	<< Item("4", "Sharpen (Adaptive)")
+	<< Item("5", "FSR 1.0 (EASU + RCAS)")
+	<< Item("6", "Scale3x")
+	<< Item("7", "Scale4x");
 
 const Items mResolutionMode = Items()
 	<< Item("1", "1x (original resolution of the Saturn)")
