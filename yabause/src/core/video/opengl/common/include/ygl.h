@@ -397,7 +397,12 @@ typedef enum
   AA_ADAPTATIVE_FILTER,
   AA_ADAPTATIVE_DEBUG_FILTER,
   AA_BOB_FILTER,
-  AA_SCANLINE
+  AA_SCANLINE,
+  /* New values are appended: the settings store the numeric id */
+  AA_LANCZOS3_FILTER,
+  AA_SHARP_BILINEAR_FILTER,
+  AA_FXAA_FILTER,
+  AA_CRT_FILTER
 } AAMODE;
 
 typedef enum
@@ -407,6 +412,11 @@ typedef enum
   UP_4XBRZ,
   UP_6XBRZ,
   UP_SHARPEN,
+  /* New values are appended: the settings store the numeric id */
+  UP_FSR,
+  UP_SCALE3X,
+  UP_SCALE4X,
+  UP_MAX
 } UPMODE;
 
 typedef enum
@@ -580,6 +590,12 @@ typedef struct {
    /* Same flag packed per blit-shader layer id, filled by the renderer
     * just before YglBlitTexture(). */
    int win_all_draw;
+   /* 1 when original_fbo (composition target) has just been (re)created
+    * by YglGenerateOriginalBuffer(): it holds no previous field. The next
+    * composition must then write both field rows (nbFrame = 2) instead of
+    * keeping the rows of the other field from an image that no longer
+    * exists. Reset by YglBlitTexture's uniform setup (ogl_shader.c). */
+   int original_fbo_fresh;
 
    YglMatrix rbgModelView;
 
@@ -716,6 +732,16 @@ typedef struct {
    * a non-NULL value says nothing about VRAM handoffs: access checks must
    * not look at it. Copied with the struct into the async cell queue. */
   const u8 *vram_compose;
+  /* Character pattern read impossible for the cell being drawn: no
+   * character pattern read command (VRAM cycle pattern) of this NBG in the
+   * bank holding the character data. ST-058-R2 sec.3.3 p.32: the access is
+   * not done. The VDP2 still outputs dots for the cell; they are decoded
+   * from all-zero character data (as Ymir does, vdp_renderer_sw.cpp
+   * VDP2FetchPixel), so they are transparent with xxTPON=0 and show the
+   * palette entry 0 of the cell with xxTPON=1 (sec.4.1 p.48). Set only around
+   * the Vdp2DrawPatternPos() call of such a cell in Vdp2DrawMapTest(),
+   * copied with the struct into the async cell queue. */
+  u8 chr_noaccess;
 } Vdp2Ctrl;
 
 typedef struct {
@@ -786,7 +812,10 @@ int YglExpandVertexBuffer( int addsize, void ** vpos, void **tcpos, void **vapos
 intptr_t YglGetOffset( void* address );
 int YglBlitVDP1(u32 srcTexture, float w, float h, int flip);
 int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disph);
-int YglUpscaleFramebuffer(u32 srcTexture, u32 targetFbo, float w, float h, float texw, float texh);
+int YglUpscaleFramebuffer(u32 srcTexture, u32 targetFbo, float w, float h, float texw, float texh, int outw, int outh);
+void YglUpscaleGetOutputSize(int mode, int w, int h, int texw, int texh, int dispw, int disph, int *outw, int *outh);
+void YglUpscaleDestroy(void);
+int Ygl_useUpscaleBuffer(int outw, int outh);
 
 u32 * YglGetLineColorScreenPointer();
 void YglSetLineColorScreen(u32 * pbuf, int size);
