@@ -645,15 +645,19 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
        0xC0 = six 32-byte command tables, the size of a typical FMV list
        (system clip, user clip, local coords, background sprite, frame sprite,
        draw end). */
-    ts << "########## VDP1 RAM 0x00000-0x000C0 et 0x01000-0x010C0 (raw) ##########\n\n";
+    ts << "########## VDP1 RAM 0x00000-0x00200 et 0x01000-0x010C0 (raw) ##########\n\n";
     if (Vdp1Ram) {
         /* Deux fenetres : la tete de liste, et 0x1000 -- la cible du stub
            "call" que le jeu depose parfois en 0x00000. Sans la seconde on ne
            peut pas dire si la liste reelle vit la-bas ou si l'adresse ne
            contient qu'un END. */
+        /* first window widened to 0x200 (16 command tables): lists with
+           more than six commands (Zero Divide title menu: 5 sprites after
+           the clipping/local commands) were cut before their sprites. */
         static const u32 kWindows[2] = { 0x00000, 0x01000 };
+        static const u32 kSizes[2] = { 0x200, 0xC0 };
         for (int w = 0; w < 2; w++) {
-        for (u32 a = kWindows[w]; a < kWindows[w] + 0xC0; a += 16) {
+        for (u32 a = kWindows[w]; a < kWindows[w] + kSizes[w]; a += 16) {
             ts << QString("%1  ").arg(a, 5, 16, QChar('0')).toUpper();
             for (int i = 0; i < 16; i += 2)
                 ts << QString("%1 ").arg(T1ReadWord(Vdp1Ram, a + i),

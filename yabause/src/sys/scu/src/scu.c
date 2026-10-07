@@ -1545,6 +1545,15 @@ static void ScuDmaProc(scudmainfo_struct * dma, int time) {
     /* Transfert abandonne sans rien ecrire, comme si le SCU n'avait rien
        ramene du bus. */
     dma->TransferNumber = 0;
+    /* The bus / VDP1 holds taken for this level when the transfer started
+       must be released here too. Returning without it left accessVdp1Ram
+       set: the VDP1 stayed blocked (0 drawing cycles per line) until this
+       level was restarted. Zero Divide's title menu: its level-1 indirect
+       DMA reaches a table entry whose source is 00000004 (Boot ROM, refused
+       here) while the VDP1 hold is on, and the menu sprites were never
+       drawn for hundreds of frames. */
+    setupBusConcurrency(dma);
+    setupVdp1Concurrency(dma);
     return;
   }
   ScuDmaCheck(dma, time);

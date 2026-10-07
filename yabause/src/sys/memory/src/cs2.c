@@ -740,19 +740,74 @@ void Cs2DeInit(void) {
  * The delay is kept in two statics (not in the save state): a state saved
  * inside the two-report window resumes as BUSY -> PAUSE without PEND. */
 static u8 Cs2PlayEndReports = 0;
+static u8 Cs2PlayEndPending = 0;
+/* Seek finished, sectors are being read, but the status still says SEEK
+   until a report that follows the first processed sector (Mednafen:
+   CurPosInfo.status = PLAY only when PlaySectorProcessed). 1 = reading,
+   no sector processed yet; 2 = first sector processed at this report. */
+static u8 Cs2SeekReading = 0;
 static u16 Cs2PlayEndIrqs = 0;
 
+/* Called at the periodic report that stored the LAST sector of the range.
+ * That report still says PLAY: in Mednafen the end is only detected at the
+ * next periodic report (CheckEndMet() on the following sector), which goes
+ * BUSY; PAUSE and the play-end interrupts come two reports after that
+ * (PauseCounter 0 -> 1 -> PAUSE). So: PLAY (last sector), BUSY, BUSY, PAUSE.
+ *
+ * Timing of that next report: in Mednafen the drive tick that hands the
+ * last sector to the buffer (CSCT) also prefetches the following one --
+ * CurPosInfo.fad is then already the FAD after the range, so Get Status
+ * shows PLAY with the end FAD -- and schedules the periodic report 17712
+ * clocks of 44100*256 Hz later (~1.57 ms), which detects the end (BUSY).
+ * So there is a short "PLAY, end FAD, every sector buffered" window:
+ *  - Zero Divide's GFS CD read (GFS_NwCdRead of 162 sectors) completes
+ *    only inside it (0603D784: FAD >= end, HIRQ CSCT or PAUSE, drive not
+ *    BUSY); the game polls Get Sector Number right after the sector and
+ *    stops serving that access once all sectors are counted.
+ *  - Hop Step Idol's GFS step copies the last sector (51 52 53 61, CPU
+ *    copy, 06 62 51) and only then looks at the drive: it must see BUSY
+ *    there, or it finishes its read in the copying step and the
+ *    decompressor overwrites the vector table.
+ * Hop Step Idol's file is ONE sector: in Mednafen the status only becomes
+ * PLAY at a periodic report that follows a processed sector
+ * (PlaySectorProcessed); after a seek, the first sector is buffered while
+ * the drive still reports SEEK. With a one-sector range the end is met at
+ * the very next report, so PLAY never appears: SEEK (sector buffered),
+ * BUSY, BUSY, PAUSE -- and its GFS step sees SEEK ("moving") there. Kronos
+ * switched to PLAY as soon as the seek ended (see Cs2SeekReading).
+ * * Going BUSY in the same report as the last sector broke the GFS "CD read"
+ * access (GFS_NwCdRead, a read into the CD block buffer with no transfer):
+ * GFS completes it when it sees every requested sector AND a drive state
+ * that is not BUSY/SEEK (0603DA1C/0603D784 in Zero Divide's GFS: BUSY maps
+ * to "still moving", PLAY or PAUSE to "stopped or reading"). Zero Divide
+ * pre-reads 162 sectors with it and stops serving that access as soon as
+ * all sectors are counted; with BUSY at that moment GFS never completed it,
+ * kept the drive "owned" by that handle ([work+A8]) and every later
+ * GFS_Fread waited for the owner and timed out (-22): the data of the
+ * fight were never loaded and the game froze in its AI code. */
+#define CS2_PLAYEND_REPORT_DELAY 4707   /* 17712 / (44100*256) s = 1.569 ms, in us * 3 */
 static void Cs2BeginPlayEnd(u16 irqs)
 {
+   Cs2PlayEndPending = 1;      /* this report stays PLAY */
+   Cs2PlayEndReports = 0;
+   Cs2PlayEndIrqs = irqs;
+   Cs2Area->_periodictiming = CS2_PLAYEND_REPORT_DELAY;   /* the BUSY report comes ~1.57 ms later */
+}
+
+/* next periodic report after the last sector: the end is met */
+static void Cs2PlayEndMet(void)
+{
+   Cs2PlayEndPending = 0;
    setStatus(CDB_STAT_BUSY);
    Cs2Area->nextStatus = CDB_STAT_PAUSE;
    Cs2Area->options = 0x8;
    Cs2PlayEndReports = 2;
-   Cs2PlayEndIrqs = irqs;
 }
 
 static INLINE void Cs2CancelPlayEnd(void)
 {
+   Cs2SeekReading = 0;
+   Cs2PlayEndPending = 0;
    Cs2PlayEndReports = 0;
    Cs2PlayEndIrqs = 0;
 }
@@ -953,6 +1008,15 @@ static int Cs2Exec_CMD_unit(u32 timing) {
   return 0;
 }
 
+/* 1 if FAD lies in an audio track (TOC control nibble without the data bit,
+ * 0x40 of the control/ADR byte). CD-DA sectors go to the audio output, not to
+ * the CD buffer (Cs2ReadFilteredSector), so a full buffer must not hold them. */
+static int Cs2FADIsAudio(u32 fad) {
+  const u8 t = Cs2FADToTrack(fad);
+  if (t == 0 || t == 0xFF || t > 99) return 0;
+  return ((Cs2Area->TOC[t - 1] >> 24) & 0x40) == 0;
+}
+
 static void Cs2Exec_unit(u32 timing) {
    Cs2Area->_statuscycles += timing * 3;
    Cs2Area->_periodiccycles += timing * 3;
@@ -992,7 +1056,8 @@ static void Cs2Exec_unit(u32 timing) {
       Cs2Area->_periodictiming = 0;
       Cs2Area->status |= CDB_STAT_PERI;
       // Get Drive's current status and compare with old status
-      switch (Cs2Area->status & 0xF) {
+      /* seek done, reading under a SEEK status: run the PLAY logic */
+      switch (((Cs2Area->status & 0xF) == CDB_STAT_SEEK && Cs2SeekReading) ? CDB_STAT_PLAY : (Cs2Area->status & 0xF)) {
          case CDB_STAT_PAUSE:
          {
              break;
@@ -1000,6 +1065,18 @@ static void Cs2Exec_unit(u32 timing) {
          case CDB_STAT_PLAY:
          {
             partition_struct * playpartition;
+            if (Cs2PlayEndPending) {
+              /* the previous report stored the last sector (see Cs2BeginPlayEnd) */
+              Cs2SeekReading = 0;
+              Cs2PlayEndMet();
+              Cs2SetTiming(1);
+              break;
+            }
+            if (Cs2SeekReading == 2) {
+              /* the previous report processed the first sector: PLAY now */
+              Cs2SeekReading = 0;
+              setStatus(CDB_STAT_PLAY);
+            }
             CDLOG("Effective Read %x \n", Cs2Area->FAD);
             int ret = Cs2ReadFilteredSector(Cs2Area->FAD, &playpartition);
             switch (ret)
@@ -1010,6 +1087,8 @@ static void Cs2Exec_unit(u32 timing) {
                   Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
                   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
                   Cs2SetTiming(1); //As we read one disc sector, we need to wait a while to simulate disc speed
+                  if (Cs2SeekReading == 1)
+                     Cs2SeekReading = 2;   /* first sector processed, this report still SEEK */
 
                   if (playpartition != NULL)
                   {
@@ -1024,6 +1103,7 @@ static void Cs2Exec_unit(u32 timing) {
 
 					 if (Cs2Area->isbufferfull) {
 						 CDLOG("BUFFER IS FULL\n");
+						 Cs2SeekReading = 0;   /* a real SEEK (buffer full), not reading */
 						 setStatus(CDB_STAT_SEEK);
 						 Cs2Area->nextStatus = 0xFF;
 						 Cs2Area->options = 0x00;
@@ -1086,8 +1166,16 @@ static void Cs2Exec_unit(u32 timing) {
             break;
          }
 		 case CDB_STAT_SEEK:{
-			if (!Cs2Area->isbufferfull) {
-				setStatus(CDB_STAT_PLAY);
+			/* A full buffer only stops sectors that would be stored in it.
+			   CD-DA is played to the audio output: ST-162 / STTECH08 describe the
+			   buffer-full PAUSE for CD reads. Steam-Heart's switches its music
+			   from a data stream to CD-DA track 4 while the buffer is still full
+			   of stream sectors it no longer reads: the drive stayed in SEEK and
+			   the CD-DA never started (no in-game music). */
+			if (!Cs2Area->isbufferfull || Cs2FADIsAudio(Cs2Area->FAD)) {
+				/* the status stays SEEK until a sector has been processed
+				   (see Cs2SeekReading); the next reports read sectors */
+				Cs2SeekReading = 1;
 				Cs2Area->_periodiccycles = 0;
 				Cs2SetTiming(1);          // ← AJOUT : timing lecture, pas seek
 				Cs2Area->options = 0x8;
@@ -1164,7 +1252,7 @@ void Cs2Exec(u32 timing) {
 /* Returns the number of (emulated) microseconds before the next sector
  * will have been completely read in */
 int Cs2GetTimeToNextSector(void) {
-   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY) {
+   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY && !Cs2SeekReading) {
       return 0;
    } else {
       // Round up, since the caller wants to know when it'll be safe to check
@@ -1794,6 +1882,10 @@ void Cs2PlayDisc(void) {
   pdspos = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
   pdepos = ((Cs2Area->reg.CR3 & 0xFF) << 16) | Cs2Area->reg.CR4;
   pdpmode = Cs2Area->reg.CR3 >> 8;
+  /* Play mode bit 7: do not move the pickup to the start position
+   * (CDC_PM_PIC_NOMOV, ST-162 "CD Play Parameters"). 0xFF means no change. */
+  const int pick_nomove = (pdpmode != 0xFF) && (pdpmode & 0x80);
+  const int start_given = (pdspos != 0xFFFFFF) && (pdpmode != 0xFF);
 
   CDLOG("[CDB] Command: Play; Start = 0x%06x, End = 0x%06x, Mode = 0x%02x\n", pdspos, pdepos, pdpmode);
   u32 current_fad = Cs2Area->FAD;
@@ -1839,6 +1931,16 @@ void Cs2PlayDisc(void) {
      {
         // Preserve Pickup Position
         Cs2SetupDefaultPlayStats((u8)(pdspos >> 8), 0);
+        /* The play range still starts at the new track: only the pickup
+         * stays where it is. playFAD was left at the previous range, so a
+         * repeat or a move to the start went back to the old position
+         * (Steam-Heart's: PlayDisc track 4, mode 8Fh, kept reading the data
+         * stream at 89E1h instead of the CD-DA). */
+        {
+          const u8 trk = (u8)(pdspos >> 8);
+          if (trk != 0 && trk != 0xFF && trk <= 99)
+            Cs2Area->playFAD = Cs2Area->TOC[trk - 1] & 0x00FFFFFF;
+        }
 
 		CDLOG("[CDB] pos = TRACK:%02X FAD:%02X noupd\n", (u8)(pdspos >> 8), Cs2Area->FAD );
      }
@@ -1869,6 +1971,34 @@ void Cs2PlayDisc(void) {
   {
      // Default Mode
      Cs2Area->playendFAD = Cs2TrackToFAD(0xFFFF);
+  }
+
+  /* Pickup not moved and current position outside the new play range:
+   * STTECH08 table 4.5 "Operation outside the play range", row "CD play
+   * (play range modification, pause release)": without repeat, <PAUSE> at
+   * the current position; with repeat, repeat operation (seek to the start
+   * position, then <PLAY>). ST-162 CDC_PM_PIC_NOMOV: "<PAUSE> status when
+   * current position is outside play range". */
+  if (pick_nomove && start_given &&
+      (Cs2Area->FAD < Cs2Area->playFAD || Cs2Area->FAD > Cs2Area->playendFAD))
+  {
+     if (Cs2Area->maxrepeat != 0)
+     {
+        Cs2Area->FAD = Cs2Area->playFAD;
+        Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
+     }
+     else
+     {
+        Cs2Area->_periodiccycles = 0;
+        Cs2Area->_periodictiming = 0;
+        setStatus(CDB_STAT_PAUSE);
+        Cs2Area->nextStatus = 0xFF;
+        Cs2Area->options = 0;
+        Cs2Area->playtype = CDB_PLAYTYPE_SECTOR;
+        doCDReport(Cs2Area->status);
+        Cs2SetIRQ(CDB_HIRQ_CMOK);
+        return;
+     }
   }
 
   // setup play mode here

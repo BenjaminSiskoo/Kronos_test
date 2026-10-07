@@ -148,7 +148,7 @@ typedef struct {
    u16 VRSIZE; // 0x25F80006
    u16 HCNT;   // 0x25F80008
    u16 VCNT;   // 0x25F8000A
-   u16 EWDR;   // 0x25F8000C — External Write Data Register (ST-013-R3 §3.4, write-only)
+   u16 EWDR;   // 0x25F8000C — reserved on VDP2 (ST-058-R2 register map). EWDR is a VDP1 register (ST-013-R3); field name kept for compatibility
    u16 RAMCTL; // 0x25F8000E
    u16 CYCA0L; // 0x25F80010
    u16 CYCA0U; // 0x25F80012
@@ -734,7 +734,7 @@ typedef struct {
    u16 VRSIZE; // 0x25F80006
    u16 HCNT;   // 0x25F80008
    u16 VCNT;   // 0x25F8000A
-   u16 EWDR;   // 0x25F8000C — External Write Data Register (ST-013-R3 §3.4, write-only)
+   u16 EWDR;   // 0x25F8000C — reserved on VDP2 (ST-058-R2 register map). EWDR is a VDP1 register (ST-013-R3); field name kept for compatibility
    u16 RAMCTL; // 0x25F8000E
    u16 CYCA0L; // 0x25F80010
    u16 CYCA0U; // 0x25F80012

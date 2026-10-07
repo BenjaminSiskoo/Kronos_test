@@ -324,6 +324,17 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
 
    //glClearBufferfv(GL_COLOR, 0, colopaque);
    //glClearBufferfi(GL_DEPTH_STENCIL, 0, 0, 0);
+   if ((varVdp2Regs->TVMD & 0x8000)==0) {
+     /* ST-058-R2, TVMD: DISP=0 -> the picture is not displayed; the whole
+      * display shows black (BDCLMD=0) or the back screen (BDCLMD=1).
+      * Returning without touching the output left the last composed image
+      * on screen instead. */
+     float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+     glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
+     glViewport(0, 0, GlWidth, GlHeight);
+     glScissor(0, 0, GlWidth, GlHeight);
+     glClearBufferfv(GL_COLOR, 0, (varVdp2Regs->TVMD & 0x100) ? _Ygl->last_back_color : black);
+   }
    if (((varVdp2Regs->TVMD & 0x8000)==0) || (YglTM_vdp2 == NULL)) {
      finishCSRender();
      return;
@@ -494,7 +505,9 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
    int scali = (int)(scale);
    glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
 #ifndef __LIBRETRO__
-  if ((Vdp2Regs->TVMD & 0x100) != 0) {
+  /* Border colour mode of the composed frame (varVdp2Regs), not of the
+   * live register which may already belong to the next frame. */
+  if ((varVdp2Regs->TVMD & 0x100) != 0) {
     //Use last border color to clear the screen
     glViewport(0, 0, GlWidth, GlHeight);
     glScissor(0, 0, GlWidth, GlHeight);

@@ -89,6 +89,22 @@ static const char * const SH2CacheDBList[] = {
    et le jeu s'arrete (lecture volontaire en 00000001, 0602054C) juste avant
    d'entrer en jeu.
 
+   Zero Divide - The Final Conflict : en combat, le maitre construit la
+   table indirecte du SCU-DMA niveau 1 (260F8000 / 260FC000) qui recopie la
+   liste VDP1 en V-Blank (0604174A). Le prefixe fixe se termine par une
+   entree portant le bit de fin ; le maitre ne l'enleve et n'ajoute les
+   modeles 3D des combattants que si l'esclave (transformations MAC.L,
+   0602Cxxx) a fini avant que lui-meme se mette en attente du V-Blank
+   (060050C2, compteur 0606022C). Avec le cout actuel du fetch, l'esclave
+   finit dans les memes lignes que le maitre (vers la ligne 115) et arrive
+   trop tard une trame sur deux a sept : seule l'en-tete part, les
+   combattants restent sur leur pose precedente et les animations sautent
+   (saut sans sa descente). Le cout du fetch seul suffit a le provoquer
+   (ancien cout des lectures de donnees garde : meme defaut) ; avec l'ancien
+   cout du fetch, la liste complete part a chaque trame. Meme cause probable
+   que Space Jam : le maitre ne paie presque rien pour ses acces aux
+   registres et ses ecritures, l'esclave paie ses defauts de cache.
+
    A retirer quand le cout des acces aux registres (Mednafen : SCU 8 cycles,
    B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
    jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
@@ -102,6 +118,7 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-8125H",    // Space Jam (USA)
    "T-8125H-50", // Space Jam (Europe)
    "T-27808G", // Yuukyuu Gensoukyoku ensemble
+   "T-31601G", // Zero Divide - The Final Conflict (Japan)
    NULL
 };
 

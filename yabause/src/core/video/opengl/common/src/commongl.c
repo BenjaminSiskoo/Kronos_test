@@ -714,17 +714,16 @@ void YglGenReset() {
 //////////////////////////////////////////////////////////////////////////////
 int VIDCSGenFrameBuffer() {
     u32* vdp1_framebuffer[2];
-  /* DIAGNOSTIC (temporaire) : log INCONDITIONNEL (pas seulement sur
-   * changement) pour prouver que cette fonction est bien appelee et
-   * voir la vraie valeur de densite a chaque fois, meme si elle ne
-   * change jamais. Limite a quelques lignes puis 1 fois toutes les
-   * 500 fois pour ne pas noyer le fichier. */
-  {
-    static unsigned int call_count = 0;
-    call_count++;
-    if (call_count <= 10 || (call_count % 500) == 0) {
-    }
-  }
+  /* Etat du filtre de densite VDP1 ci-dessous. Declare au niveau de la
+   * fonction (et non plus dans le bloc du filtre) pour pouvoir le
+   * resynchroniser quand une regeneration a lieu, quelle qu'en soit la
+   * cause (voir apres le test rebuild_frame_buffer). */
+  static float last_vdp1wdensity = -1.0f;
+  static float last_vdp1hdensity = -1.0f;
+  static float pending_vdp1wdensity = -1.0f;
+  static float pending_vdp1hdensity = -1.0f;
+  static int stable_count = 0;
+  #define VDP1_DENSITY_DEBOUNCE_FRAMES 5
   /* CORRECTION (regression) : Vdp1SetTextureRatio() (vidcs.c) met a
    * jour _Ygl->vdp1wdensity/vdp1hdensity a chaque appel (tres frequent
    * -- lie au traitement de la resolution VDP2, y compris quand un
@@ -754,13 +753,6 @@ int VIDCSGenFrameBuffer() {
    * oscillations rapides tout en traitant correctement les vrais
    * changements durables (transition Hi-Res, etc.). */
   {
-    static float last_vdp1wdensity = -1.0f;
-    static float last_vdp1hdensity = -1.0f;
-    static float pending_vdp1wdensity = -1.0f;
-    static float pending_vdp1hdensity = -1.0f;
-    static int stable_count = 0;
-    #define VDP1_DENSITY_DEBOUNCE_FRAMES 5
-
     if ((_Ygl->vdp1wdensity != pending_vdp1wdensity) || (_Ygl->vdp1hdensity != pending_vdp1hdensity)) {
       /* Nouvelle valeur candidate : on redemarre le compteur de stabilite. */
       pending_vdp1wdensity = _Ygl->vdp1wdensity;
@@ -780,6 +772,22 @@ int VIDCSGenFrameBuffer() {
   if (rebuild_frame_buffer == 0){
     return 0;
   }
+  /* La regeneration qui suit alloue les tampons a la densite VDP1
+   * courante. Le filtre ci-dessus doit le savoir : sinon, quand c'est
+   * YglChangeResolution() qui a demande la regeneration (Vdp2SetResolution
+   * -> Vdp1SetTextureRatio -> changement de densite detecte -> rebuild
+   * immediat), last_vdp1*density garde l'ancienne valeur, le compteur
+   * atteint VDP1_DENSITY_DEBOUNCE_FRAMES quelques appels plus tard (cette
+   * fonction est appelee a chaque tour de la boucle de lignes de
+   * YabauseEmulate(), pas une fois par trame) et une SECONDE regeneration
+   * complete est lancee pour la meme densite. Constate sur Sonic Jam
+   * (transition blanche, densite 1x1 -> 1x2 -> 2x2) : deux
+   * YglGenerateOriginalBuffer() par changement. Le filtre garde son role
+   * pour un changement de densite qui n'aurait pas declenche de
+   * regeneration par ailleurs. */
+  last_vdp1wdensity    = pending_vdp1wdensity = _Ygl->vdp1wdensity;
+  last_vdp1hdensity    = pending_vdp1hdensity = _Ygl->vdp1hdensity;
+  stable_count         = VDP1_DENSITY_DEBOUNCE_FRAMES;
   /* La regeneration recree les textures des deux frame buffers VDP1
    * (vdp1_compute_init -> generateComputeBuffer), qui repartent effaces.
    * Leur contenu est donc sauvegarde ici puis restaure.
@@ -1052,6 +1060,9 @@ static int YglGenerateOriginalBuffer(){
   float col[4] = {0.0f,0.0f,0.0f,0.0f};
 
   YGLDEBUG("YglGenerateOriginalBuffer: %d,%d\n", _Ygl->width, _Ygl->height);
+
+  /* New textures: no previous field to keep (see ygl.h). */
+  _Ygl->original_fbo_fresh = 1;
 
   glGenTextures(NB_RENDER_LAYER, &_Ygl->original_fbotex[0]);
   for (int i=0; i<NB_RENDER_LAYER; i++) {
