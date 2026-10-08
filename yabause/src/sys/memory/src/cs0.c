@@ -1664,6 +1664,19 @@ int CartInit(const char * filename, int type)
          CartridgeArea->Cs2WriteByte = &NetlinkWriteByte;
          break;
       }
+      case CART_MPEGCARD: // Video CD Card / MPEG Card
+      {
+         // Unlike the RAM/ROM carts above, the Video CD Card does not
+         // expose anything on the CS0 memory-mapped cartridge bus: per the
+         // Yabause wiki (MPEGCard page), "All communication with the
+         // device goes through the CD Block using commands" (CR1-CR4,
+         // commands 0x90-0xAF/0xE0-0xE2 handled in cs2.c). So there is
+         // nothing to wire up here beyond marking a cart as present --
+         // Cs2.c/bios.c gate the actual MPEG/VCD behaviour on
+         // CartridgeArea->carttype == CART_MPEGCARD directly.
+         CartridgeArea->cartid = 0xFF; // real id unknown/undocumented
+         break;
+      }
       case CART_ROM16MBIT: // 16 Mbit Rom Cart
       {
          if ((CartridgeArea->rom = T1MemoryInit(0x200000)) == NULL)
