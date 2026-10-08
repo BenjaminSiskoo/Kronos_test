@@ -37,6 +37,8 @@
 #include "threads.h"
 #include "yui.h"
 #include "ygl.h"
+#include "mpegcard.h"
+#include "cs2.h"
 
 u8 * Vdp2Ram;
 u8 * Vdp2ColorRam;
@@ -900,6 +902,17 @@ void Vdp2VBlankIN(void) {
      VIDCore->Vdp2Draw();
      isSkipped = 0;
    }
+   // Video CD Card (EXPERIMENTAL, see mpegcard.h): let the decoder take its
+   // sectors out of the CD buffer, then run it for one frame's worth of
+   // time. Both are cheap no-ops when no card/stream is in use.
+   //
+   // The picture is NOT drawn from here any more: VIDCore->Vdp2Draw() only
+   // queues this frame, the actual composite (composeFB/VIDCSRender) runs
+   // later and clears the output, so anything blitted at this point was
+   // overwritten before reaching the screen. The renderer now fetches the
+   // picture itself while compositing (see VIDCSDrawMpegLayer() in yglcs.c).
+   Cs2MpegDecoderPump();
+   Cs2MpegAdvance(yabsys.IsPal ? (1.0 / 50.0) : (1.0 / 59.94));
    nextFrameTime  += yabsys.OneFrameTime;
 
    VIDCore->Sync();
