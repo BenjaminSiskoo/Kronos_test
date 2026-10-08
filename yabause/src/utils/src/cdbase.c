@@ -33,6 +33,7 @@
 #include <ctype.h>
 #include <wchar.h>
 #include "cdbase.h"
+#include "yui.h"
 #include "error.h"
 #include "debug.h"
 #include "junzip.h"
@@ -293,6 +294,8 @@ typedef struct
    int isZip;
    char* filename;
    ZipEntry* tr;
+   int sync_checked;      /* raw data track: start offset already validated */
+   int scrambled;         /* raw sectors are stored scrambled (ECMA-130) */
 } track_info_struct;
 
 typedef struct
@@ -1841,6 +1844,58 @@ static s32 ISOCDReadTOC(u32 * TOC) {
 
 track_info_struct *currentTrack = NULL;
 
+/* ECMA-130 11.3: before being written to disc, everything in a sector past
+   the 12 sync bytes is scrambled with a 15-bit LFSR (x^15 + x + 1, preset to
+   1), and the drive normally unscrambles it again on read. Some dumps -- a
+   drive read in fully raw mode, or a dumper that skips the step -- keep the
+   scrambled form: the sync pattern is intact (it is never scrambled), but the
+   header, subheader and user data are noise. Readers that trust the sync then
+   hand the CD block garbage, and MPEG/XA sectors are silently discarded for
+   having no valid subheader. Detect that per track and unscramble on read. */
+
+static const u8 *CDScramblerTable(void)
+{
+   static u8 tbl[2340];
+   static int built = 0;
+   int i, bit;
+   u16 reg = 1;
+
+   if (!built)
+   {
+      for (i = 0; i < 2340; i++)
+      {
+         u8 v = 0;
+         for (bit = 0; bit < 8; bit++)
+         {
+            v |= (u8)((reg & 1) << bit);
+            reg = (u16)((reg >> 1) | (((reg ^ (reg >> 1)) & 1) << 14));
+         }
+         tbl[i] = v;
+      }
+      built = 1;
+   }
+   return tbl;
+}
+
+static void CDUnscramble(u8 *sector)
+{
+   const u8 *tbl = CDScramblerTable();
+   int i;
+   for (i = 12; i < 2352; i++)
+      sector[i] ^= tbl[i - 12];
+}
+
+/* A plausible CD-ROM sector head: mode 1 or 2, and for mode 2 the 4-byte
+   subheader must appear twice, as the format requires. */
+static int CDSectorHeadLooksValid(const u8 *head)
+{
+   if (head[15] == 0x01)
+      return 1;
+   if (head[15] == 0x02)
+      return memcmp(head + 16, head + 20, 4) == 0;
+   return 0;
+}
+
 static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
    int i,j;
    size_t num_read = 0;
@@ -1901,6 +1956,101 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
    // FAD < fad_start possible (pre-gap INDEX 00 dans le fichier) : calcul signe.
    offset = (int)currentTrack->file_offset + ((int)FAD - (int)currentTrack->fad_start) * (int)currentTrack->sector_size;
    if (offset < 0) offset = 0;
+
+   /* A raw data track (MODE1/MODE2 with 2352- or 2448-byte sectors) must
+      begin with the 12-byte sync pattern 00 FF*10 00 at the offset computed
+      above. When it does not, the track's start offset is wrong -- typically
+      because the .bin does not actually contain the pregap that the cue's
+      INDEX 00/INDEX 01 pair implies, so every sector is read from the wrong
+      place. The caller then sees no sync header, takes the sector for CD-DA
+      and throws it away, silently.
+
+      Rather than fail that way, locate the real sector boundary once per
+      track and correct file_offset by the difference. The search window is
+      bounded (a few sectors either side, which is all a pregap
+      mismatch can ever amount to) so a genuinely corrupt image is still
+      reported instead of being papered over. */
+   if (!currentTrack->sync_checked && currentTrack->isZip != 1 &&
+       currentTrack->fp != NULL && (currentTrack->ctl_addr & 0x40) &&
+       (currentTrack->sector_size == 2352 || currentTrack->sector_size == 2448))
+   {
+      static const u8 sync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+      const int window = 8 * 2352;            /* +/- 8 sectors */
+      long base = (long)currentTrack->file_offset;
+      long from = base - window; long to = base + window;
+      u8 *buf; long span; long found = -1; long i;
+
+      currentTrack->sync_checked = 1;
+
+      if (from < 0) from = 0;
+      if (to > (long)currentTrack->file_size - 12) to = (long)currentTrack->file_size - 12;
+      span = to - from + 12;
+
+      if (span > 0 && (buf = (u8 *)malloc((size_t)span)) != NULL)
+      {
+         fseek(currentTrack->fp, from, SEEK_SET);
+         span = (long)fread(buf, 1, (size_t)span, currentTrack->fp);
+
+         /* Prefer the candidate closest to the computed offset. */
+         for (i = 0; i + 12 <= span; i++)
+            if (memcmp(buf + i, sync, 12) == 0)
+               if (found < 0 || labs((from + i) - base) < labs(found - base))
+                  found = from + i;
+         free(buf);
+      }
+
+      if (found >= 0 && found != base)
+      {
+         YuiMsg("[CD] track FAD %d..%d: start offset %d is NOT a sector boundary; "
+                "real one found at %d (%+d bytes, %+d sectors) - corrected\n",
+                currentTrack->fad_start, currentTrack->fad_end, (int)base, (int)found,
+                (int)(found - base), (int)((found - base) / (long)currentTrack->sector_size));
+         currentTrack->file_offset = (u32)found;
+         offset = (int)currentTrack->file_offset + ((int)FAD - (int)currentTrack->fad_start) * (int)currentTrack->sector_size;
+         if (offset < 0) offset = 0;
+      }
+
+      /* Scrambled or not? Test the sector head as stored, then unscrambled. */
+      if (found >= 0)
+      {
+         u8 head[24];
+         long keep = ftell(currentTrack->fp);
+
+         fseek(currentTrack->fp, found, SEEK_SET);
+         if (fread(head, 1, 24, currentTrack->fp) == 24 && !CDSectorHeadLooksValid(head))
+         {
+            const u8 *tbl = CDScramblerTable();
+            u8 test[24];
+            int i;
+            memcpy(test, head, 24);
+            for (i = 12; i < 24; i++)
+               test[i] ^= tbl[i - 12];
+
+            if (CDSectorHeadLooksValid(test))
+            {
+               currentTrack->scrambled = 1;
+               YuiMsg("[CD] track FAD %d..%d: sectors are stored SCRAMBLED (ECMA-130) - "
+                      "unscrambling on read\n", currentTrack->fad_start, currentTrack->fad_end);
+            }
+            else
+            {
+               YuiMsg("[CD] track FAD %d..%d: sector head is not valid either way "
+                      "(mode byte %02X) - the image may be damaged\n",
+                      currentTrack->fad_start, currentTrack->fad_end, head[15]);
+            }
+         }
+         fseek(currentTrack->fp, keep, SEEK_SET);
+      }
+      else
+      {
+         YuiMsg("[CD] track FAD %d..%d: no sync pattern within +/-8 sectors of offset %d - "
+                "the image may not be a raw %d-byte-per-sector dump\n",
+                currentTrack->fad_start, currentTrack->fad_end, (int)base,
+                currentTrack->sector_size);
+      }
+   }
+
    if (currentTrack->isZip != 1) {
 	 if (offset > currentTrack->file_size) offset = currentTrack->file_size;
      fseek(currentTrack->fp, offset, SEEK_SET);
@@ -1978,6 +2128,13 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
         zipBuffer+=delta;
       }
    }
+
+   /* Raw sectors only: the 2048 branch above builds its own sync header and
+      its payload was never scrambled to begin with. */
+   if (currentTrack->scrambled &&
+       (currentTrack->sector_size == 2352 || currentTrack->sector_size == 2448))
+      CDUnscramble((u8 *)buffer);
+
 	return 1;
 }
 
