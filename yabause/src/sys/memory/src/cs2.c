@@ -25,9 +25,13 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <stdarg.h>
+#include <string.h>
 #include "cs2.h"
+#include "sh2core.h"
 #include "debug.h"
 #include "error.h"
+#include "mpegcard.h"
 #include "japmodem.h"
 #include "netlink.h"
 #include "scsp.h"
@@ -70,6 +74,59 @@
 #define CDB_PLAYTYPE_FILE       0x02
 
 // #define CDLOG YuiMsg
+
+// Video CD Card traces (handshake, MPEG commands 0x90-0xAF, CD-side commands
+// that route sectors to the decoder), through CDLOG like the rest of the
+// CD block: compiled in only for debug builds.
+#define CS2_MPEG_TRACE(...) CDLOG(__VA_ARGS__)
+#define CS2_MPEG_CMD_TRACE(name) CDLOG("MPEG card: %s CR1=%04X CR2=%04X CR3=%04X CR4=%04X\n", name, \
+   Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4)
+#define CS2_CD_TRACE(name) CDLOG("MPEG card: [CD] %s CR1=%04X CR2=%04X CR3=%04X CR4=%04X\n", name, \
+   Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4)
+
+// Set once the host has issued MPEG Set Connection (0x9A): from then on the
+// buffer partitions it named are fed to the decoder (Cs2MpegDecoderPump()).
+// Kept out of Cs2Area on purpose so the savestate layout doesn't change.
+static int Cs2MpegConnSet = 0;
+
+
+// Set by MPEG Play (0x95), cleared by MPEG Init (0x93). Drives the MPEG
+// status report below.
+static int Cs2MpegPlaying = 0;
+
+
+
+// Put Sector Data (64h): sectors being written by the host, routed through
+// filter Cs2PutFilter at End Data Transfer.
+static block_struct *Cs2PutBlk[MAX_BLOCKS];
+static u8 Cs2PutBlkNum[MAX_BLOCKS];
+static u32 Cs2PutCount = 0;
+static u32 Cs2PutBase = 24;
+static u8 Cs2PutFilter = 0;
+
+// MPEG Set Decoding Method (0x96, CDC_MpSetDec, CD Communication Interface
+// MPEG part 20.8). pautim: 0000H pause (also "re-pause": one picture forward
+// when already paused), 0001H release, 0002H-FFFEH slow playback (picture
+// interval until the next pause), FFFFH no change. frztim: same scheme for
+// the displayed picture (freeze / strobe). mute: bit 0 right, bit 1 left.
+// Initial values (manual): mute 00H, pautim 0000H (paused), frztim 0000H
+// (frozen); MPEG Init restores them.
+static u16 Cs2MpegPauTim = 0;
+static u16 Cs2MpegFrzTim = 0;
+static int Cs2MpegStep = 0;        // pictures to advance while paused
+static u32 Cs2MpegSlowCount = 0;
+static void Cs2MpegApplyDecodingMethod(u8 mute, u16 pautim, u16 frztim, int init);
+
+// CD Scan (0x12): -1 = not scanning, 0 = forward, 1 = reverse.
+static int Cs2ScanMode = -1;
+static int Cs2ScanCounter = 0;
+void Cs2MpegUpdateStatus(void);
+
+
+// Pending MPEG interrupt factors, reported by MPEG Get Interrupt (0x91).
+static u32 Cs2MpegIntPending = 0;
+
+
 
 extern void resetSyncVideo(void);
 
@@ -174,8 +231,37 @@ static INLINE void Cs2SetIRQ(u32 irq){
 
 //////////////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////////////
+// A-bus CS2 access time for the SH-2.
+//
+// Kronos charged nothing for an SH-2 access to the CD block, so a register
+// poll cost only the instruction cycles. Mednafen (ss/scu.inc,
+// ABusRW_DB_u16_W0_SH0/SH1, "A-Bus CS2") adds 8 cycles per 16-bit bus access
+// in 0x05800000-0x058FFFFF; an SH-2 read always goes through ABus_Read
+// (both 16-bit halves, 16 cycles, whatever the size), a byte or word write
+// is one half (8 cycles), a long write both halves (16 cycles). DMA accesses
+// (context == NULL) are not charged here.
+//
+// Bounded poll loops in CD-block libraries depend on it: the file library
+// of the Video CD Card player waits for SCDQ with 24372 reads of HIRQ
+// (06068BDC in the card program). Without the bus time that loop gave up
+// after ~13 ms, shorter than the 16.7 ms periodic SCDQ interval of a seek,
+// so the read of the ISO volume descriptor failed now and then; the player
+// then took another start-up path that never sent the Play Disc of the
+// movie. With the bus time the loop lasts ~27 ms.
+#define CS2_ABUS_READ_CYCLES     16
+#define CS2_ABUS_WRITE16_CYCLES   8
+#define CS2_ABUS_WRITE32_CYCLES  16
+
+static INLINE void Cs2ABusCost(SH2_struct *context, u32 cycles)
+{
+   if (context != NULL)
+      context->cycles += cycles;
+}
+
 u8 FASTCALL Cs2ReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
+   Cs2ABusCost(context, CS2_ABUS_READ_CYCLES);
    return CartridgeArea->Cs2ReadByte(context, memory, addr);
 }
 
@@ -183,6 +269,7 @@ u8 FASTCALL Cs2ReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
 
 void FASTCALL Cs2WriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
 {
+   Cs2ABusCost(context, CS2_ABUS_WRITE16_CYCLES);
    CartridgeArea->Cs2WriteByte(context, memory, addr, val);
 }
 
@@ -190,6 +277,7 @@ void FASTCALL Cs2WriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 
 
 u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
   u16 val = 0;
+   Cs2ABusCost(context, CS2_ABUS_READ_CYCLES);
   addr &= 0x3F; // fix me(I should really have proper mapping)
 
   switch(addr) {
@@ -392,6 +480,7 @@ u16 FASTCALL Cs2ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr) {
 //////////////////////////////////////////////////////////////////////////////
 
 void FASTCALL Cs2WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val) {
+   Cs2ABusCost(context, CS2_ABUS_WRITE16_CYCLES);
 
   addr &= 0x3F; // fix me(I should really have proper mapping)
 
@@ -443,6 +532,7 @@ void FASTCALL Cs2WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16
 u32 FASTCALL Cs2ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr) {
   s32 i;
   u32 val = 0;
+   Cs2ABusCost(context, CS2_ABUS_READ_CYCLES);
   addr &= 0x3F; // fix me(I should really have proper mapping)
 
   switch(addr) {
@@ -553,6 +643,7 @@ u32 FASTCALL Cs2ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr) {
 //////////////////////////////////////////////////////////////////////////////
 
 void FASTCALL Cs2WriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 addr, UNUSED u32 val) {
+   Cs2ABusCost(context, CS2_ABUS_WRITE32_CYCLES);
    addr &= 0x3F; // fix me(I should really have proper mapping)
 
    switch (addr)
@@ -560,32 +651,21 @@ void FASTCALL Cs2WriteLong(SH2_struct *context, UNUSED u8* memory, UNUSED u32 ad
 	case 0x00:
 	   if (Cs2Area->datatranstype == CDB_DATATRANSTYPE_PUTSECTOR)
 	   {
-		  if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans)
+		  // Put Sector Data: the words fill the staged sectors one after
+		  // the other, from Cs2PutBase on, putsectsize bytes each.
+		  if (Cs2Area->datanumsecttrans < Cs2Area->datasectstotrans &&
+		      Cs2PutBlk[Cs2Area->datanumsecttrans] != NULL)
 		  {
-			 // FIXED BUG 8: suppression du calcul d'offset négatif (size/offset inutilisés)
-			 // FIXED: suppression du double incrément cdwnum/datatransoffset
-			 // Ref: ST-040-R4-051795 §6.13 "Put Sector Data (command 0x64)"
-
-			 if (Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans] == NULL)
-			 {
-				CDLOG("cs2\t: PutSector block NULL\n");
-				return;
-			 }
-
-			 u8 *ptr = &Cs2Area->datatranspartition->block[
-				Cs2Area->datanumsecttrans]->data[Cs2Area->datatransoffset];
+			 u8 *ptr = &Cs2PutBlk[Cs2Area->datanumsecttrans]->data[Cs2PutBase + Cs2Area->datatransoffset];
 			 T1WriteLong(ptr, 0, val);
 
 			 Cs2Area->cdwnum          += 4;
 			 Cs2Area->datatransoffset += 4;
 
-			 if (Cs2Area->datatransoffset >=
-				Cs2Area->datatranspartition->block[Cs2Area->datanumsecttrans]->size)
+			 if (Cs2Area->datatransoffset >= (u32)Cs2Area->putsectsize)
 			 {
 				Cs2Area->datatransoffset = 0;
 				Cs2Area->datanumsecttrans++;
-				if (Cs2Area->datanumsecttrans >= Cs2Area->datasectstotrans)
-				   Cs2SetIRQ(CDB_HIRQ_EHST);
 			 }
 		  }
 	   }
@@ -607,6 +687,12 @@ int Cs2Init(int coreid, const char *cdpath, const char *mpegpath) {
 
    Cs2Area->nextStatus = 0xFF;
    Cs2Area->mpegpath = mpegpath;
+
+   // Video CD Card boot ROM: raw dump or .zip (see MpegCardLoadRom()).
+   MpegCardLoadRom(mpegpath);
+   Cs2MpegConnSet = 0;
+   Cs2MpegPlaying = 0;
+   Cs2MpegIntPending = 0;
    Cs2Area->cdi=NULL;
 
    if ((ret = Cs2ChangeCDCore(coreid, cdpath)) != 0)
@@ -634,6 +720,8 @@ int Cs2Init(int coreid, const char *cdpath, const char *mpegpath) {
 
    if ((cdip = (ip_struct *) calloc(sizeof(ip_struct), 1)) == NULL)
       return -1;
+
+   MpegCardInit();
 
    return 0;
 }
@@ -693,6 +781,9 @@ int Cs2ChangeCDCore(int coreid, const char *cdpath)
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2DeInit(void) {
+   MpegCardDeInit();
+   MpegCardFreeRom();
+
    if(Cs2Area != NULL) {
       if (Cs2Area->cdi != NULL) {
          Cs2Area->cdi->DeInit();
@@ -746,6 +837,11 @@ static u8 Cs2PlayEndPending = 0;
    CurPosInfo.status = PLAY only when PlaySectorProcessed). 1 = reading,
    no sector processed yet; 2 = first sector processed at this report. */
 static u8 Cs2SeekReading = 0;
+/* Seek time still to elapse after a Play Disc, in _periodictiming units
+   (us * 3). The drive keeps sending its periodic report and raising SCDQ
+   while it seeks; see the periodic handler in Cs2Exec_unit. */
+static u32 Cs2SeekRemaining = 0;
+#define CS2_PERIODIC_IDLE 50000u   /* 16.7 ms * 3: "when not playing" (ST-162 4.2, STTECH08) */
 static u16 Cs2PlayEndIrqs = 0;
 
 /* Called at the periodic report that stored the LAST sector of the range.
@@ -807,6 +903,8 @@ static void Cs2PlayEndMet(void)
 static INLINE void Cs2CancelPlayEnd(void)
 {
    Cs2SeekReading = 0;
+   Cs2SeekRemaining = 0;
+   Cs2ScanMode = -1;
    Cs2PlayEndPending = 0;
    Cs2PlayEndReports = 0;
    Cs2PlayEndIrqs = 0;
@@ -864,6 +962,15 @@ void Cs2Reset(void) {
   Cs2Area->isbufferfull = 0;
   Cs2Area->isonesectorstored = 0;
   Cs2Area->isaudio = 0;
+
+  // Video CD Card / MPEG state defaults. Picture size starts at the White
+  // Book NTSC frame and is replaced by the decoder's real frame size as soon
+  // as a picture comes out (see Cs2MpegUpdateStatus): a Nova trace of a PAL
+  // disc shows the card answering 352x288 here, so a fixed 352x240 would be
+  // wrong for every PAL Video CD.
+  Cs2Area->mpegpicturewidth = 352;
+  Cs2Area->mpegpictureheight = 240;
+  Cs2Area->isvideocd = 0;
 
   Cs2Area->reg.CR1 = ( 0 <<8) | 'C';
   Cs2Area->reg.CR2 = ('D'<<8) | 'B';
@@ -988,6 +1095,7 @@ int Cs2ForceCloseTray( int coreid, const char * cdpath ){
   }
   Cs2Area->cdi->SetStatus(CDCORE_NORMAL);
   Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
+  Cs2DetectVideoCD();
   return 0;
 };
 
@@ -1015,6 +1123,36 @@ static int Cs2FADIsAudio(u32 fad) {
   const u8 t = Cs2FADToTrack(fad);
   if (t == 0 || t == 0xFF || t > 99) return 0;
   return ((Cs2Area->TOC[t - 1] >> 24) & 0x40) == 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// CD Scan (command 12h, fast forward / fast reverse).
+//
+// ST-162 / ST-038 only name the command (CDC_CdScan, "fast forward play",
+// direction 0 forward, 1 reverse). The sector pattern is Mednafen's
+// (ss/cdb.c, StartScan and DRIVEPHASE_PLAY): data keeps being read and stored
+// as in PLAY, and after every 6 sector units (1 per CD-ROM sector, 2 per
+// CD-DA sector) the pickup jumps forward by 102 + FAD * 1773936 / 2^32
+// sectors, or back by 104 + FAD * 2180000 / 2^32. The status reads SCAN.
+// Kronos only set the SCAN status and read nothing, without even a CD
+// report (the command registers were left as the reply).
+static void Cs2ScanStep(void)
+{
+   Cs2ScanCounter += Cs2Area->isaudio ? 2 : 1;
+   if (Cs2ScanCounter < 6)
+      return;
+   Cs2ScanCounter = 0;
+
+   if (Cs2ScanMode == 0)
+      Cs2Area->FAD += 102 + (u32)(((u64)1773936 * Cs2Area->FAD + ((u64)1 << 31)) >> 32);
+   else
+   {
+      u32 back = 104 + (u32)(((u64)2180000 * Cs2Area->FAD + ((u64)1 << 31)) >> 32);
+      /* Mednafen stops at FAD 0; Kronos cannot read below the play range
+         start (lead-in / pregap), so reverse scanning stops there. */
+      Cs2Area->FAD = (Cs2Area->FAD > Cs2Area->playFAD + back) ? Cs2Area->FAD - back : Cs2Area->playFAD;
+   }
+   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
 }
 
 static void Cs2Exec_unit(u32 timing) {
@@ -1051,13 +1189,50 @@ static void Cs2Exec_unit(u32 timing) {
 
    if (Cs2Area->_periodiccycles >= Cs2Area->_periodictiming)
    {
+      u32 elapsed = Cs2Area->_periodictiming;
+      int seeking;
+
       Cs2Area->_periodiccycles -= Cs2Area->_periodictiming;
 
       Cs2Area->_periodictiming = 0;
       Cs2Area->status |= CDB_STAT_PERI;
+
+      /* Periodic report and SCDQ during a seek.
+       *
+       * ST-162 (4.2, periodic response) and STTECH08 give the update cycle of
+       * the periodic response, "the same as the SCDQ flag update timing":
+       * 13.3 ms at standard speed, 6.7 ms at double speed, "16.7 ms or less"
+       * otherwise. A seek is not an exception: Mednafen (ss/cdb.c, Drive_Run)
+       * runs PeriodicIdleCounter (reload 187065 / (44100*256) s, ~16.6 ms)
+       * independently of DrivePhase, so a report and SCDQ come every ~16.6 ms
+       * during DRIVEPHASE_SEEK too.
+       *
+       * Kronos used the whole seek time as one periodic interval, so nothing
+       * came for the length of the seek. With the Mednafen seek model
+       * (0236a88dd) a short seek lasts ~87 ms. The file library of the Video
+       * CD Card player waits for SCDQ with a bounded poll loop (06068BDC in
+       * the card program, 24372 reads of HIRQ) inside its load loop: it timed
+       * out during the seek to the ISO volume descriptor, abandoned the read
+       * without releasing its CD-drive lock (060B94D8), and the movie
+       * playback, which waits for that lock, never sent its Play Disc
+       * (pressing Play did nothing, then the player's watchdog reset).
+       *
+       * The seek time is now consumed in periodic steps of at most 16.7 ms;
+       * the seek completion itself still happens after the full seek time. */
+      seeking = ((Cs2Area->status & 0xF) == CDB_STAT_SEEK && !Cs2SeekReading && Cs2SeekRemaining > 0);
+      if (seeking)
+      {
+         Cs2SeekRemaining = (elapsed >= Cs2SeekRemaining) ? 0 : Cs2SeekRemaining - elapsed;
+         seeking = (Cs2SeekRemaining > 0);
+      }
+
+      if (seeking)
+         Cs2Area->_periodictiming = (Cs2SeekRemaining > CS2_PERIODIC_IDLE) ? CS2_PERIODIC_IDLE : Cs2SeekRemaining;
+      else
       // Get Drive's current status and compare with old status
       /* seek done, reading under a SEEK status: run the PLAY logic */
-      switch (((Cs2Area->status & 0xF) == CDB_STAT_SEEK && Cs2SeekReading) ? CDB_STAT_PLAY : (Cs2Area->status & 0xF)) {
+      switch ((((Cs2Area->status & 0xF) == CDB_STAT_SEEK && Cs2SeekReading) ||
+               ((Cs2Area->status & 0xF) == CDB_STAT_SCAN && Cs2ScanMode >= 0)) ? CDB_STAT_PLAY : (Cs2Area->status & 0xF)) {
          case CDB_STAT_PAUSE:
          {
              break;
@@ -1075,7 +1250,7 @@ static void Cs2Exec_unit(u32 timing) {
             if (Cs2SeekReading == 2) {
               /* the previous report processed the first sector: PLAY now */
               Cs2SeekReading = 0;
-              setStatus(CDB_STAT_PLAY);
+              setStatus((Cs2ScanMode >= 0) ? CDB_STAT_SCAN : CDB_STAT_PLAY);
             }
             CDLOG("Effective Read %x \n", Cs2Area->FAD);
             int ret = Cs2ReadFilteredSector(Cs2Area->FAD, &playpartition);
@@ -1084,6 +1259,8 @@ static void Cs2Exec_unit(u32 timing) {
                case 0:
                   // Sector Read OK
                   Cs2Area->FAD++;
+                  if (Cs2ScanMode >= 0)
+                     Cs2ScanStep();
                   Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
                   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
                   Cs2SetTiming(1); //As we read one disc sector, we need to wait a while to simulate disc speed
@@ -1101,9 +1278,25 @@ static void Cs2Exec_unit(u32 timing) {
                      Cs2SetIRQ(CDB_HIRQ_CSCT);
                      Cs2Area->isonesectorstored = 1;
 
+                     // Feed the MPEG decoder here, and only with the sectors
+                     // the filters actually routed to the partitions named by
+                     // MPEG Set Connection. That is what the decoder device
+                     // reads on real hardware, and it keeps the streams the
+                     // application did not select out of the decoder.
+                     if (Cs2MpegConnSet && Cs2IsMpegCardPresent() && (Cs2Area->workblock.sm & 0x20))
+                     {
+                        int pnum = (int)(playpartition - Cs2Area->partition);
+
+                        if ((pnum == Cs2Area->mpegcon[0].vidbufnum && Cs2Area->mpegcon[0].vidcon != 0) ||
+                            (pnum == Cs2Area->mpegcon[0].audbufnum && Cs2Area->mpegcon[0].audcon != 0))
+                           MpegCardPushData(Cs2Area->workblock.data + 24, 2324);
+                     }
+
+
 					 if (Cs2Area->isbufferfull) {
 						 CDLOG("BUFFER IS FULL\n");
 						 Cs2SeekReading = 0;   /* a real SEEK (buffer full), not reading */
+						 Cs2SeekRemaining = 0;
 						 setStatus(CDB_STAT_SEEK);
 						 Cs2Area->nextStatus = 0xFF;
 						 Cs2Area->options = 0x00;
@@ -1340,6 +1533,7 @@ void Cs2Execute(void) {
       break;
     case 0x10:
       CDLOG("cs2\t: Command: playDisc %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Play Disc (0x10)");
       Cs2PlayDisc();
       break;
     case 0x11:
@@ -1356,6 +1550,7 @@ void Cs2Execute(void) {
       break;
     case 0x30:
       CDLOG("cs2\t: Command: setCDDeviceConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set CD Device Connection (0x30)");
       Cs2SetCDDeviceConnection();
       break;
 	case 0x31:
@@ -1372,6 +1567,7 @@ void Cs2Execute(void) {
       break;
     case 0x40:
       CDLOG("cs2\t: Command: setFilterRange %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set Filter Range (0x40)");
       Cs2SetFilterRange();
       break;
     case 0x41:
@@ -1381,6 +1577,7 @@ void Cs2Execute(void) {
       break;
     case 0x42:
       CDLOG("cs2\t: Command: setFilterSubheaderConditions %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set Filter Subheader Conditions (0x42)");
       Cs2SetFilterSubheaderConditions();
       break;
     case 0x43:
@@ -1390,6 +1587,7 @@ void Cs2Execute(void) {
       break;
     case 0x44:
       CDLOG("cs2\t: Command: setFilterMode %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set Filter Mode (0x44)");
       Cs2SetFilterMode();
       break;
     case 0x45:
@@ -1399,6 +1597,7 @@ void Cs2Execute(void) {
       break;
     case 0x46:
       CDLOG("cs2\t: Command: setFilterConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set Filter Connection (0x46)");
       Cs2SetFilterConnection();
       break;
     case 0x47:
@@ -1408,6 +1607,7 @@ void Cs2Execute(void) {
        break;
     case 0x48:
       CDLOG("cs2\t: Command: resetSelector %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Reset Selector (0x48)");
       Cs2ResetSelector();
       CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       break;
@@ -1446,6 +1646,7 @@ void Cs2Execute(void) {
       break;
     case 0x60:
       CDLOG("cs2\t: Command: setSectorLength %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      CS2_CD_TRACE("Set Sector Length (0x60)");
       Cs2SetSectorLength();
       break;
     case 0x61:
@@ -1505,6 +1706,7 @@ void Cs2Execute(void) {
       break;
     case 0x75:
       CDLOG("cs2\t: Command: abortFile\n");
+      CS2_CD_TRACE("Abort File (0x75)");
       Cs2AbortFile();
       CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       break;
@@ -1538,6 +1740,20 @@ void Cs2Execute(void) {
       CDLOG("cs2\t: Command: mpegSetDecodingMethod %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR4);
       Cs2MpegSetDecodingMethod();
       break;
+    case 0x97:
+      CDLOG("cs2\t: Command: mpegOutDecodingSync %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR4);
+      Cs2MpegOutDecodingSync();
+      break;
+    case 0x98:
+      CDLOG("cs2\t: Command: mpegGetTimecode\n");
+      Cs2MpegGetTimecode();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x99:
+      CDLOG("cs2\t: Command: mpegGetPts\n");
+      Cs2MpegGetPts();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
     case 0x9A:
       CDLOG("cs2\t: Command: mpegSetConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       Cs2MpegSetConnection();
@@ -1547,6 +1763,10 @@ void Cs2Execute(void) {
       Cs2MpegGetConnection();
       CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       break;
+    case 0x9C:
+      CDLOG("cs2\t: Command: mpegChangeConnection %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegChangeConnection();
+      break;
     case 0x9D:
       CDLOG("cs2\t: Command: mpegSetStream %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       Cs2MpegSetStream();
@@ -1554,6 +1774,11 @@ void Cs2Execute(void) {
     case 0x9E:
       CDLOG("cs2\t: Command: mpegGetStream\n");
       Cs2MpegGetStream();
+      CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      break;
+    case 0x9F:
+      CDLOG("cs2\t: Command: mpegGetPictureSize\n");
+      Cs2MpegGetPictureSize();
       CDLOG("cs2\t: ret: %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       break;
     case 0xA0:
@@ -1575,6 +1800,34 @@ void Cs2Execute(void) {
     case 0xA4:
       CDLOG("cs2\t: Command: mpegSetVideoEffects %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
       Cs2MpegSetVideoEffects();
+      break;
+    case 0xA5:
+      CDLOG("cs2\t: Command: mpegGetImage %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegGetImage();
+      break;
+    case 0xA6:
+      CDLOG("cs2\t: Command: mpegSetImage %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegSetImage();
+      break;
+    case 0xA7:
+      CDLOG("cs2\t: Command: mpegReadImage %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegReadImage();
+      break;
+    case 0xA8:
+      CDLOG("cs2\t: Command: mpegWriteImage %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegWriteImage();
+      break;
+    case 0xA9:
+      CDLOG("cs2\t: Command: mpegReadSector %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegReadSector();
+      break;
+    case 0xAA:
+      CDLOG("cs2\t: Command: mpegWriteSector %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegWriteSector();
+      break;
+    case 0xAE:
+      CDLOG("cs2\t: Command: mpegGetLSI %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
+      Cs2MpegGetLSI();
       break;
     case 0xAF:
       CDLOG("cs2\t: Command: mpegSetLSI %04x %04x %04x %04x %04x\n", Cs2Area->reg.HIRQ, Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4);
@@ -1613,9 +1866,13 @@ void Cs2GetHardwareInfo(void) {
      Cs2Area->isdiskchanged = 0;
 
   Cs2Area->reg.CR1 = Cs2Area->status << 8;
-  // hardware flags/CD Version
-  //Cs2Area->reg.CR2 = 0x0201; // mpeg card exists
-  Cs2Area->reg.CR2 = 0x0001; // No mpeg card exists
+  // hardware flags/CD Version. Bit 9 (0x0200) of CR2 is the "MPEG card
+  // present" flag per the Yabause wiki (CDBlock page, "Get Hardware
+  // Info"); it was hardcoded to always report absent (0x0001), which
+  // means BiosCheckMPEGCard() and any game probing this command first
+  // (before ever reaching Authenticate Device / 0xE0-0xE2) would never
+  // see the card even with one configured.
+  Cs2Area->reg.CR2 = Cs2IsMpegCardPresent() ? 0x0201 : 0x0001;
   // mpeg version, it actually is required(at least by the bios)
 
   if (Cs2Area->mpgauth)
@@ -1634,6 +1891,11 @@ void Cs2GetToc(void) {
     Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
 	// ST-040-R4-051795, §6.4 « Get TOC (command 0x02) » :
 	// À l'issue de la commande, le flag Disc Changed doit être effacé si la lecture TOC réussit.
+    if (Cs2Area->isdiskchanged)
+    {
+       Cs2DetectVideoCD(); // new disc: (re)check for a Video CD layout
+       MpegCardReset();    // drop whatever the old disc was decoding
+    }
     Cs2Area->isdiskchanged = 0;
 
     Cs2Area->transfercount = 0;
@@ -1862,6 +2124,43 @@ void Cs2EndDataTransfer(void) {
 
         break;
      }
+     case CDB_DATATRANSTYPE_PUTSECTOR:
+     {
+        // Put Sector Data finished: the sectors enter the CD buffer through
+        // the filter named by the command, into its true-output partition
+        // (Mednafen FilterBuf; the filter's conditions are not applied
+        // here). Without a connected partition they are dropped.
+        u8 dst = Cs2Area->filter[Cs2PutFilter].condtrue;
+        u32 n;
+
+        Cs2Area->datatranstype = CDB_DATATRANSTYPE_INVALID;
+
+        for (n = 0; n < Cs2PutCount; n++)
+        {
+           partition_struct *part;
+
+           if (Cs2PutBlk[n] == NULL)
+              continue;
+
+           if (dst >= MAX_SELECTORS || Cs2Area->partition[dst].numblocks >= MAX_BLOCKS)
+           {
+              Cs2FreeBlock(Cs2PutBlk[n]);
+              Cs2PutBlk[n] = NULL;
+              continue;
+           }
+
+           part = &Cs2Area->partition[dst];
+           part->block[part->numblocks] = Cs2PutBlk[n];
+           part->blocknum[part->numblocks] = Cs2PutBlkNum[n];
+           part->numblocks++;
+           part->size += Cs2PutBlk[n]->size;
+           Cs2Area->isonesectorstored = 1;
+
+           Cs2PutBlk[n] = NULL;
+        }
+        Cs2PutCount = 0;
+        break;
+     }
      default: break;
   }
 
@@ -2011,6 +2310,7 @@ void Cs2PlayDisc(void) {
 
   Cs2Area->_periodiccycles = 0;
   Cs2Area->_periodictiming = 0;
+  Cs2SeekRemaining = 0;
   if (Cs2Area->_seekToStop == 1) {
     // The seek command as previously generated a stop.
     // Simulate a wait time - need for batman forever texture loading
@@ -2028,10 +2328,13 @@ void Cs2PlayDisc(void) {
     if (head_fad != 0 && head_fad != 0xFFFFFFFF)
       head_fad--;
 
-    Cs2Area->_periodictiming = Cs2ComputeSeekTiming(head_fad, Cs2Area->FAD);
+    /* The seek lasts Cs2SeekRemaining; the periodic report keeps its own
+       16.7 ms cycle meanwhile (see the periodic handler in Cs2Exec_unit). */
+    Cs2SeekRemaining = Cs2ComputeSeekTiming(head_fad, Cs2Area->FAD);
+    Cs2Area->_periodictiming = (Cs2SeekRemaining > CS2_PERIODIC_IDLE) ? CS2_PERIODIC_IDLE : Cs2SeekRemaining;
 
     CDLOG("cs2\t: seek %x -> %x : %d us\n",
-          head_fad, Cs2Area->FAD, Cs2Area->_periodictiming / 3);
+          head_fad, Cs2Area->FAD, Cs2SeekRemaining / 3);
   }
   setStatus(CDB_STAT_SEEK);      // need to be seek
   Cs2Area->nextStatus = 0xFF;
@@ -2123,9 +2426,33 @@ void Cs2SeekDisc(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2ScanDisc(void) {
-   setStatus(CDB_STAT_SCAN);
+   u8 dir = Cs2Area->reg.CR1 & 0xFF;
 
-   // finish me
+   /* Mednafen COMMAND_SCAN: a direction other than 0/1 is rejected. */
+   if (dir >= 2)
+   {
+      doCDReport(CDB_STAT_REJECT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK);
+      return;
+   }
+
+   Cs2CancelPlayEnd();   /* a new drive command replaces a pending play end */
+   Cs2ScanMode = dir;
+   Cs2ScanCounter = 0;
+
+   if ((Cs2Area->status & 0xF) != CDB_STAT_PLAY)
+   {
+      /* not reading yet: start reading where the pickup is, like a seek
+         that has already arrived (Mednafen: DRIVEPHASE_SEEK_START2) */
+      Cs2SeekReading = 1;
+      Cs2Area->_periodiccycles = 0;
+      Cs2SetTiming(1);
+      Cs2Area->options = 0x8;
+   }
+   setStatus(CDB_STAT_SCAN);
+   Cs2Area->nextStatus = 0xFF;
+
+   doCDReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK);
 }
 
@@ -2960,61 +3287,82 @@ void Cs2GetThenDeleteSectorData(void)
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2PutSectorData(void) {
-   u32 psdbufno;
-   u32 psdsectnum;
+   // Put Sector Data (64h, CDC_PutSctData, ST-162 7.5): "Writes sector data
+   // to the designated filter". CR3 high byte is a FILTER number (ST-162;
+   // the older ST-038 called it a buffer partition), CR4 the sector count.
+   // The host then writes the data through the data register and ends with
+   // End Data Transfer (06h); the sectors go through the filter into its
+   // true-output partition at that point (Mednafen ss/cdb.c,
+   // COMMAND_PUT_SECDATA and COMMAND_END_DATAXFER).
+   //
+   // Kronos wrote no response at all (the registers came back as sent, so
+   // the status byte read 64h), took the number as a partition, and stored
+   // the blocks at once. The Video CD Card player uses this command for
+   // fast forward / reverse (one sector put into filter 2, then MPEG Set
+   // Connection on partition 2): with the garbage status it gave the
+   // operation up and kept repositioning on the same entry.
+   u32 fnum = Cs2Area->reg.CR3 >> 8;
+   u32 numsec = Cs2Area->reg.CR4;
+   u32 i;
 
-   psdbufno = Cs2Area->reg.CR3 >> 8;
-   psdsectnum = Cs2Area->reg.CR4;
-
-   if (psdbufno < MAX_SELECTORS)
-   {
-     // Make sure there's enough free space
-     if (psdsectnum > Cs2Area->blockfreespace)
-       Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
-     else
-     {
-         // Allocate buffer
-         IOCheck_struct check = { 0, 0 };
-         partition_struct *putpartition = &Cs2Area->partition[psdbufno];
-         u32 i;
-
-         putpartition->size = 0;
-         int startpos = putpartition->numblocks;
-         // psdsectnum was only checked against the global free-block count
-         // (blockfreespace), never against this partition's own remaining
-         // capacity in its fixed-size block[]/blocknum[] arrays (MAX_BLOCKS
-         // entries) -- if this partition already held blocks from an
-         // earlier, not fully consumed PutSectorData call, that global
-         // check alone doesn't stop numblocks from running past MAX_BLOCKS.
-         // Also guard the allocation result before dereferencing it, same
-         // as every other Cs2AllocateBlock call site in this file.
-         for (i = 0; i < psdsectnum && putpartition->numblocks < MAX_BLOCKS; i++)
-         {
-            putpartition->block[putpartition->numblocks] = Cs2AllocateBlock(&putpartition->blocknum[putpartition->numblocks], Cs2Area->putsectsize);
-            if (putpartition->block[putpartition->numblocks] == NULL)
-               break;
-            putpartition->block[putpartition->numblocks]->FAD = i;
-            putpartition->numblocks++;
-            putpartition->size += Cs2Area->putsectsize;
-         }
-
-         // Setup Data Transfer
-         Cs2Area->cdwnum = 0;
-         Cs2Area->datatranstype = CDB_DATATRANSTYPE_PUTSECTOR;
-         Cs2Area->datatranspartition = Cs2Area->partition + psdbufno;
-         Cs2Area->datatranspartitionnum = (u8)psdbufno;
-         Cs2Area->datatransoffset = 0;
-         Cs2Area->datanumsecttrans = startpos; // startpos;
-         Cs2Area->datatranssectpos = 0;
-         Cs2Area->datasectstotrans = startpos+(u16)psdsectnum;
-         Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
-      }
-   }
-   else
+   if (fnum >= MAX_SELECTORS)
    {
       doCDReport(CDB_STAT_REJECT);
-      Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_EHST);
+      Cs2SetIRQ(CDB_HIRQ_CMOK);
+      return;
    }
+
+   // Mednafen: no sector, not enough free buffers, or a transfer already
+   // running -> WAIT.
+   if (numsec == 0 || numsec > MAX_BLOCKS || (s32)numsec > Cs2Area->blockfreespace ||
+       Cs2Area->datatranstype == CDB_DATATRANSTYPE_PUTSECTOR)
+   {
+      doCDReport(CDB_STAT_WAIT);
+      Cs2SetIRQ(CDB_HIRQ_CMOK);
+      return;
+   }
+
+   Cs2PutCount = 0;
+   for (i = 0; i < numsec; i++)
+   {
+      block_struct *blk = Cs2AllocateBlock(&Cs2PutBlkNum[i], Cs2Area->putsectsize);
+      if (blk == NULL)
+         break;
+      memset(blk->data, 0, sizeof(blk->data));
+      blk->FAD = 0;
+      blk->fn = 0;
+      blk->cn = 0;
+      // Subheader bytes are "not fixed" (ST-162 7.5). Marked Form 2 so the
+      // MPEG card side treats a put sector as stream data, like the decoder
+      // that reads it on hardware.
+      blk->sm = 0x20;
+      blk->ci = 0;
+      Cs2PutBlk[i] = blk;
+      Cs2PutCount++;
+   }
+
+   // Where the written words land in the 2352-byte sector, per put sector
+   // length (Mednafen DTW_OffsTab, in bytes): 2048 -> user data of a Mode 2
+   // Form 1 sector (24), 2336 -> 16, 2340 -> 12, 2352 -> 0.
+   switch (Cs2Area->putsectsize)
+   {
+      case 2336: Cs2PutBase = 16; break;
+      case 2340: Cs2PutBase = 12; break;
+      case 2352: Cs2PutBase = 0;  break;
+      default:   Cs2PutBase = 24; break;
+   }
+   Cs2PutFilter = (u8)fnum;
+
+   Cs2Area->cdwnum = 0;
+   Cs2Area->datatranstype = CDB_DATATRANSTYPE_PUTSECTOR;
+   Cs2Area->datatransoffset = 0;
+   Cs2Area->datanumsecttrans = 0;
+   Cs2Area->datatranssectpos = 0;
+   Cs2Area->datasectstotrans = (u16)Cs2PutCount;
+
+   doCDReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_DRDY);
+
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3357,11 +3705,16 @@ void Cs2MpegGetStatus(void) {
 void Cs2MpegGetInterrupt(void) {
    u32 mgiworkinterrupt;
 
-   // mpeg interrupt should be retrieved here
-   mgiworkinterrupt = 0;
+   CS2_MPEG_CMD_TRACE("MPEG Get Interrupt (0x91)");
 
-   // mask interupt
-   mgiworkinterrupt &= Cs2Area->mpegintmask;
+   // Factors accumulated since the last read. The mask gates the interrupt
+   // line (Cs2SetIRQ), not what this command reports: ST-162 §3.1 says a
+   // masked factor is still visible in the request register so it can be
+   // polled. Reporting mgiworkinterrupt & mpegintmask meant a program that
+   // never set a mask -- which is what the Video CD player does -- always
+   // read back zero.
+   mgiworkinterrupt = Cs2MpegIntPending;
+   Cs2MpegIntPending = 0; // reading the factors clears them
 
    Cs2Area->reg.CR1 = (u16)((Cs2Area->status << 8) | ((mgiworkinterrupt >> 16) & 0xFF));
    Cs2Area->reg.CR2 = (u16) mgiworkinterrupt;
@@ -3374,6 +3727,7 @@ void Cs2MpegGetInterrupt(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetInterruptMask(void) {
+   CS2_MPEG_CMD_TRACE("MPEG Set Interrupt Mask (0x92)");
    Cs2Area->mpegintmask = ((Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
 
    doMPEGReport(Cs2Area->status);
@@ -3384,6 +3738,29 @@ void Cs2MpegSetInterruptMask(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegInit(void) {
+  CS2_MPEG_CMD_TRACE("MPEG Init (0x93)");
+
+  // MPEG Init means "reset the decoder", and the Video CD player issues it
+  // whenever playback stops (stop, and before restarting after a pause). The
+  // decoder has to genuinely start over: after a stop the drive seeks
+  // elsewhere, so the bytes arriving next do not continue the stream still
+  // sitting in the decoder's input buffer. Only clearing the picture, as this
+  // did, left that buffer and the old stream position in place and the
+  // demuxer then tried to decode across the splice -- pressing Play again
+  // gave a frozen picture. A full reset makes it re-lock on the new data,
+  // which takes well under a second (see MpegCardForceStreams).
+  //
+  // The picture size is cleared too, so that the "size changed" test in
+  // Cs2MpegUpdateStatus() fires again and the player gets a fresh
+  // "picture size available" interrupt (factor 0x08) for the new stream,
+  // exactly as it did for the first one.
+  Cs2MpegPlaying = 0;
+  Cs2MpegIntPending = 0;
+  Cs2Area->mpegpicturewidth = 0;
+  Cs2Area->mpegpictureheight = 0;
+  MpegCardReset();
+  Cs2MpegApplyDecodingMethod(0, 0, 0, 1);   // manual: mute 00H, paused, frozen
+  Cs2MpegUpdateStatus();
 
   if (Cs2Area->mpgauth)
      Cs2Area->reg.CR1 = Cs2Area->status << 8;
@@ -3406,6 +3783,7 @@ void Cs2MpegInit(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetMode(void) {
+   CS2_MPEG_CMD_TRACE("MPEG Set Mode (0x94)");
    u8 vidplaymode=Cs2Area->reg.CR1 & 0xFF;
    u8 dectimingmode=Cs2Area->reg.CR2 >> 8;
    u8 outmode=Cs2Area->reg.CR2 & 0xFF;
@@ -3430,7 +3808,10 @@ void Cs2MpegSetMode(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegPlay(void) {
-   // fix me
+   CS2_MPEG_CMD_TRACE("MPEG Play (0x95)");
+
+   Cs2MpegPlaying = 1;
+   Cs2MpegUpdateStatus();
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
@@ -3438,10 +3819,78 @@ void Cs2MpegPlay(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+static void Cs2MpegApplyDecodingMethod(u8 mute, u16 pautim, u16 frztim, int init)
+{
+   if (init || !(mute & 0x80))
+      MpegCardSetMute(mute & 3);
+
+   if (init)
+      Cs2MpegStep = 0;
+
+   if (init || pautim != 0xFFFF)
+   {
+      /* "0000H: pause (re-pause, frame-by-frame)": already paused -> one
+         picture forward, then paused again */
+      if (!init && pautim == 0 && Cs2MpegPauTim == 0)
+         Cs2MpegStep++;
+      Cs2MpegPauTim = pautim;
+      Cs2MpegSlowCount = 0;
+   }
+
+   if (init || frztim != 0xFFFF)
+   {
+      Cs2MpegFrzTim = frztim;
+      MpegCardSetFreeze(frztim == 0, (frztim >= 2 && frztim != 0xFFFF) ? frztim : 0);
+   }
+}
+
 void Cs2MpegSetDecodingMethod(void) {
-   // fix me
+   CS2_MPEG_CMD_TRACE("MPEG Set Decoding Method (0x96)");
+   // CDC_MpSetDec (MPEG part 20.8): mute in CR1 low byte (bit 7 = no
+   // change), pautim in CR2, frztim in CR4 -- the layout the Video CD player
+   // sends: 9604 0001 0000 0001 (sound on, release pause and freeze) before
+   // MPEG Play, 9607 FFFF 0000 FFFF (mute both channels) after it.
+   Cs2MpegApplyDecodingMethod((u8)(Cs2Area->reg.CR1 & 0xFF), Cs2Area->reg.CR2, Cs2Area->reg.CR4, 0);
+   Cs2MpegUpdateStatus();
 
    doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG Out Decoding Sync (command 0x97). Not covered by any document we
+// could locate (unlike the CD-specific commands, ST-040-R4-051795 stops
+// short of the MPEG command set); acknowledged as a one-shot trigger,
+// following the same pattern already used for Cs2MpegPlay/
+// Cs2MpegSetDecodingMethod above rather than inventing a persisted state
+// this project has no way to verify.
+void Cs2MpegOutDecodingSync(void) {
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG Get Timecode (command 0x98): reports Cs2Area->mpegtimecode, the
+// running decode position VideoCdPlayerAdvance() maintains (see
+// mpegcard.c) across CR3:CR4, mirroring how doCDReport() spreads the FAD
+// across the same two words.
+void Cs2MpegGetTimecode(void) {
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->actionstatus;
+   Cs2Area->reg.CR2 = Cs2Area->vcounter;
+   Cs2Area->reg.CR3 = (u16)(Cs2Area->mpegtimecode >> 16);
+   Cs2Area->reg.CR4 = (u16)(Cs2Area->mpegtimecode);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG Get Pts (command 0x99): reports Cs2Area->mpegpts, the last decoded
+// picture's presentation timestamp in 90kHz units (ISO/IEC 11172-1
+// §2.4.4.3), across CR3:CR4 the same way.
+void Cs2MpegGetPts(void) {
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->actionstatus;
+   Cs2Area->reg.CR2 = Cs2Area->vcounter;
+   Cs2Area->reg.CR3 = (u16)(Cs2Area->mpegpts >> 16);
+   Cs2Area->reg.CR4 = (u16)(Cs2Area->mpegpts);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
@@ -3449,6 +3898,8 @@ void Cs2MpegSetDecodingMethod(void) {
 
 void Cs2MpegSetConnection(void) {
    int mscnext = (Cs2Area->reg.CR3 >> 8);
+   int wasoff = (Cs2Area->mpegcon[0].audcon == 0 && Cs2Area->mpegcon[0].vidcon == 0);
+
 
    if (mscnext == 0)
    {
@@ -3459,6 +3910,59 @@ void Cs2MpegSetConnection(void) {
       Cs2Area->mpegcon[0].vidcon = Cs2Area->reg.CR3 & 0xFF;
       Cs2Area->mpegcon[0].vidlay = Cs2Area->reg.CR4 >> 8;
       Cs2Area->mpegcon[0].vidbufnum = Cs2Area->reg.CR4 & 0xFF;
+
+      // Coming back from a full stop (both modes 0): the decoder still holds
+      // the stream it was decoding before, and the disc has been re-seeked
+      // meanwhile, so the bytes that arrive next do not continue it. Reset it
+      // here as well as in MPEG Init, because the player restarts by
+      // rebuilding the CD side first and only then re-enabling the streams --
+      // without this the decoder tries to span the splice and shows nothing.
+      if (wasoff && (Cs2Area->mpegcon[0].audcon != 0 || Cs2Area->mpegcon[0].vidcon != 0))
+      {
+         // The partitions still hold the sectors that were queued when the
+         // user pressed Stop -- the log shows all 200 of them still there.
+         // Those belong to the old play position, so feeding them to the
+         // freshly reset decoder would splice two unrelated stretches of
+         // stream together and leave the picture black. Drop them, and let
+         // the decoder start on the sectors the drive is about to read.
+         int p, dropped = 0;
+         for (p = 0; p < 2; p++)
+         {
+            u8 bufno = p ? Cs2Area->mpegcon[0].audbufnum : Cs2Area->mpegcon[0].vidbufnum;
+            partition_struct *part;
+
+            if (bufno >= MAX_SELECTORS)
+               continue;
+            if (p && bufno == Cs2Area->mpegcon[0].vidbufnum)
+               continue;  // same partition, already emptied
+
+            part = &Cs2Area->partition[bufno];
+            while (part->numblocks > 0 && part->block[0] != NULL)
+            {
+               part->size -= part->block[0]->size;
+               Cs2FreeBlock(part->block[0]);
+               part->block[0] = NULL;
+               part->blocknum[0] = 0xFF;
+               Cs2SortBlocks(part);
+               part->numblocks--;
+               dropped++;
+            }
+         }
+
+         if (dropped && Cs2Area->blockfreespace == MAX_BLOCKS)
+            Cs2Area->isonesectorstored = 0;
+
+
+
+         MpegCardReset();
+         Cs2Area->mpegpicturewidth = 0;
+         Cs2Area->mpegpictureheight = 0;
+         Cs2MpegIntPending = 0;
+      }
+
+
+      Cs2MpegConnSet = 1;
+      CS2_MPEG_CMD_TRACE("MPEG Set Connection decoded as above:");
    }
    else
    {
@@ -3469,6 +3973,7 @@ void Cs2MpegSetConnection(void) {
       Cs2Area->mpegcon[1].vidcon = Cs2Area->reg.CR3 & 0xFF;
       Cs2Area->mpegcon[1].vidlay = Cs2Area->reg.CR4 >> 8;
       Cs2Area->mpegcon[1].vidbufnum = Cs2Area->reg.CR4 & 0xFF;
+
    }
 
    doMPEGReport(Cs2Area->status);
@@ -3501,8 +4006,104 @@ void Cs2MpegGetConnection(void) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// MPEG Change Connection (command 0x9C): activates the "next" connection
+// bank Cs2MpegSetConnection() staged into mpegcon[1], the same
+// current/next double-buffering convention SCU/VDP2 use for their own
+// "reflected at the next field/line" registers. Layout undocumented
+// beyond the command's name; this is the natural reading of it given
+// mpegcon[] already existing as a [current,next] pair.
+void Cs2MpegChangeConnection(void) {
+   // A Nova trace of the same player prints this command as
+   //   MpChgCon [chg_a: 00, chg_v: FF, clr_a: 00, clr_v: 00]
+   //   MpChgCon [chg_a: FF, chg_v: 00, clr_a: 00, clr_v: 00]
+   // It is not a bank swap (my first reading): it carries one value per
+   // stream, and 0xFF means "leave this one alone", the convention every
+   // other command in this API uses for an unchanged field. The player uses
+   // it to switch the audio and the video connection one after the other,
+   // which a swap could never express -- swapping twice just put everything
+   // back where it started.
+   //
+   // Field placement confirmed by lining up Kronos's raw registers with a
+   // Nova trace of the same two commands:
+   //   CR2=00FF -> MpChgCon [chg_a: 00, chg_v: FF, ...]
+   //   CR2=FF00 -> MpChgCon [chg_a: FF, chg_v: 00, ...]
+   // so the two "change this stream" flags are the high and low bytes of
+   // CR2, and the clear flags are the two bytes of CR3. My first guess put
+   // them in CR1/CR3, which read both flags as 0x00 and therefore replaced
+   // *both* connections at once.
+   u8 chg_a = (u8)(Cs2Area->reg.CR2 >> 8);
+   u8 chg_v = (u8)(Cs2Area->reg.CR2 & 0xFF);
+   u8 clr_a = (u8)(Cs2Area->reg.CR3 >> 8);
+   u8 clr_v = (u8)(Cs2Area->reg.CR3 & 0xFF);
+
+   CS2_MPEG_CMD_TRACE("MPEG Change Connection (0x9C)");
+
+   // CDC_MpChgCon (MPEG part, 8.2.2): "Forcibly switch the connection
+   // destination of the MPEG decoder. Alternatively, forcibly disconnect the
+   // connection destination. To forcibly terminate MPEG playback, specify
+   // disconnection with this function."
+   //   chg_a / chg_v: CDC_MPCOF_ABT (00H) detachment (forced termination),
+   //                  CDC_MPCOF_CHG (01H) forced switch to the next stream
+   //                  registered by CDC_MpSetCon(CDC_MPSTF_NEXT),
+   //                  CDC_PARA_NOCHG (FFH) no change.
+   // (ABT/CHG values: beetle-saturn mpeg.h, Mednafen-derived; the manual
+   // only gives the symbols. CDC_MpGetCon returns CDC_NUL_SEL as the
+   // buffer partition when "not connected".)
+   //
+   // A detachment disconnects the stream: its buffer partition becomes
+   // NUL_SEL (FFH), which MPEG Get Connection (9Bh) then reports. The Video
+   // CD player reads it after a Stop, a fast forward / reverse jump or a
+   // chapter change, and only sends MPEG Set Decoding Method, MPEG Play and
+   // MPEG Set Connection again when the connection is gone -- Nova trace of
+   // the same player: MpChgCon (ABT audio), MpChgCon (ABT video), CdPlay,
+   // MpSetDec 04/0001/0001, MpPlay, MpSetCon<CUR> 06/26. Kronos stored the
+   // flag as the connection mode and left the partitions attached; the
+   // player then skipped straight to waiting for factor 08H and nothing
+   // reached the decoder again (fast forward hung, watchdog reset).
+   if (chg_a == 0x01)
+   {
+      Cs2Area->mpegcon[0].audcon = Cs2Area->mpegcon[1].audcon;
+      Cs2Area->mpegcon[0].audlay = Cs2Area->mpegcon[1].audlay;
+      Cs2Area->mpegcon[0].audbufnum = Cs2Area->mpegcon[1].audbufnum;
+   }
+   else if (chg_a != 0xFF)
+      Cs2Area->mpegcon[0].audbufnum = 0xFF;   // CDC_MPCOF_ABT
+
+   if (chg_v == 0x01)
+   {
+      Cs2Area->mpegcon[0].vidcon = Cs2Area->mpegcon[1].vidcon;
+      Cs2Area->mpegcon[0].vidlay = Cs2Area->mpegcon[1].vidlay;
+      Cs2Area->mpegcon[0].vidbufnum = Cs2Area->mpegcon[1].vidbufnum;
+   }
+   else if (chg_v != 0xFF)
+      Cs2Area->mpegcon[0].vidbufnum = 0xFF;   // CDC_MPCOF_ABT
+
+   (void)clr_a;
+
+   // Both streams disconnected: playback is terminated. The decoder drops
+   // what it holds (the next data comes from elsewhere on the disc) and the
+   // status reports "stopped" until the next MPEG Play.
+   if (Cs2Area->mpegcon[0].audbufnum == 0xFF && Cs2Area->mpegcon[0].vidbufnum == 0xFF)
+   {
+      Cs2MpegPlaying = 0;
+      MpegCardReset();
+      if (clr_v == 0x00)          // CDC_MPCLV_FRM: VBV and WBC cleared now
+         MpegCardClearPicture();
+      Cs2Area->mpegpicturewidth = 0;
+      Cs2Area->mpegpictureheight = 0;
+   }
+
+   Cs2MpegConnSet = 1;
+
+
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetStream(void) {
+   CS2_MPEG_CMD_TRACE("MPEG Set Stream (0x9D)");
    int mssnext = (Cs2Area->reg.CR3 >> 8);
 
    if (mssnext == 0)
@@ -3534,6 +4135,24 @@ void Cs2MpegSetStream(void) {
 
 void Cs2MpegGetStream(void) {
    int mgsnext = (Cs2Area->reg.CR3 >> 8);
+   static int traced = 0;
+
+   // The Video CD player asks which streams the decoder locked onto, but it
+   // never issues MPEG Set Stream (0x9D), so mpegstm[] was still all zeros
+   // and this answered "no audio stream, no video stream". While playing,
+   // report the identifiers a Video CD always uses (White Book: MPEG-1 video
+   // on 0xE0, MPEG-1 Layer II audio on 0xC0), on the channels the
+   // application selected through MPEG Set Connection.
+   if (Cs2MpegPlaying && Cs2Area->mpegstm[0].vidstmid == 0 &&
+       Cs2Area->mpegstm[0].audstmid == 0)
+   {
+      Cs2Area->mpegstm[0].vidstm = 1;
+      Cs2Area->mpegstm[0].vidstmid = 0xE0;
+      Cs2Area->mpegstm[0].vidchannum = Cs2Area->mpegcon[0].vidbufnum;
+      Cs2Area->mpegstm[0].audstm = 1;
+      Cs2Area->mpegstm[0].audstmid = 0xC0;
+      Cs2Area->mpegstm[0].audchannum = Cs2Area->mpegcon[0].audbufnum;
+   }
 
    if (mgsnext == 0)
    {
@@ -3552,13 +4171,50 @@ void Cs2MpegGetStream(void) {
       Cs2Area->reg.CR4 = (Cs2Area->mpegstm[1].vidstmid << 8) | Cs2Area->mpegstm[1].vidchannum;
    }
 
+   if (!traced)
+   {
+      traced = 1;
+      CS2_MPEG_CMD_TRACE("MPEG Get Stream (0x9E) answered");
+   }
+
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG Get Picture Size (command 0x9F): reports the currently decoded
+// picture's dimensions across CR3:CR4 (same slots doMPEGReport() uses for
+// pictureinfo/mpegvideostatus, since this command returns picture data
+// instead of the general MPEG status). Cs2Area->mpegpicturewidth/height
+// default to the White Book Video CD's standard NTSC frame size
+// (352x240; PAL discs use 352x288) until mpegcard.c starts decoding a
+// real stream and updates them per-frame.
+void Cs2MpegGetPictureSize(void) {
+   CS2_MPEG_CMD_TRACE("MPEG Get Picture Size (0x9F)");
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->actionstatus;
+   Cs2Area->reg.CR2 = Cs2Area->vcounter;
+   Cs2Area->reg.CR3 = Cs2Area->mpegpicturewidth;
+   Cs2Area->reg.CR4 = Cs2Area->mpegpictureheight;
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegDisplay(void) {
-   // fix me(should be setting display setting)
+   CS2_MPEG_CMD_TRACE("MPEG Display (0xA0)");
+   // "MPEG Display"(0xA0): toggles the "display enable" bit of the LSI
+   // status register (see the mpeglsi_struct comment in cs2.h) on/off.
+   // CR1 low byte: 0=hide the decoded picture, 1=show it, 0xFF=leave as-is
+   // (0xFF-means-"unchanged" is the same convention Cs2MpegSetMode()
+   // already uses for its own CR1-CR3 fields just above).
+   u8 dispctrl = Cs2Area->reg.CR1 & 0xFF;
+
+   if (dispctrl != 0xFF)
+   {
+      if (dispctrl)
+         Cs2Area->mpeglsi.status |= 0x02;
+      else
+         Cs2Area->mpeglsi.status &= ~0x02;
+   }
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
@@ -3567,9 +4223,21 @@ void Cs2MpegDisplay(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetWindow(void) {
-   // fix me(should be setting windows settings)
+   CS2_MPEG_CMD_TRACE("MPEG Set Window (0xA1)");
+   // "MPEG Set Window"(0xA1): display-window rectangle. See the
+   // mpegwindow_struct comment in cs2.h for why this is read as a
+   // top-left/bottom-right rectangle across all four command words.
+   // X/Y position are also mirrored into the LSI register bank, since
+   // that is where 0xAE/0xAF (Get/Set LSI) and real BIOS window-drawing
+   // code would read them back from.
+   Cs2Area->mpegwindow.x1 = Cs2Area->reg.CR1;
+   Cs2Area->mpegwindow.y1 = Cs2Area->reg.CR2;
+   Cs2Area->mpegwindow.x2 = Cs2Area->reg.CR3;
+   Cs2Area->mpegwindow.y2 = Cs2Area->reg.CR4;
 
-   // return default mpeg stats
+   Cs2Area->mpeglsi.xpos = Cs2Area->mpegwindow.x1;
+   Cs2Area->mpeglsi.ypos = Cs2Area->mpegwindow.y1;
+
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
@@ -3577,7 +4245,11 @@ void Cs2MpegSetWindow(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetBorderColor(void) {
-   // fix me(should be setting border color)
+   // "MPEG Set Border Color"(0xA2): only CR1/CR2 carry data (see the
+   // command's own CDLOG line above), so the color is read the same way
+   // Cs2GetMPEGRom() already reads its own 24-bit offset field: low byte
+   // of CR1 as the high byte, CR2 as the low 16 bits.
+   Cs2Area->mpeglsi.bordercolor = ((u32)(Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
@@ -3586,7 +4258,12 @@ void Cs2MpegSetBorderColor(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetFade(void) {
-   // fix me(should be setting fade setting)
+   // "MPEG Set Fade"(0xA3): rate in CR1, direction in CR2, see the
+   // mpegfade_struct comment in cs2.h (modelled on the VDP2 gradation
+   // function, ST-058-R2 §12.2, the only documented Saturn fading
+   // hardware).
+   Cs2Area->mpegfade.rate = Cs2Area->reg.CR1 & 0xFF;
+   Cs2Area->mpegfade.direction = Cs2Area->reg.CR2 & 0xFF;
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
@@ -3595,17 +4272,110 @@ void Cs2MpegSetFade(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetVideoEffects(void) {
-   // fix me(should be setting video effects settings)
+   // "MPEG Set Video Effects"(0xA4): bit-level meaning of the effect
+   // flags isn't publicly documented anywhere we could find, so CR1 is
+   // stored as-is and echoed back verbatim by Cs2MpegGetStatus() rather
+   // than being decoded into effects we can't verify.
+   Cs2Area->mpegvideoeffects = Cs2Area->reg.CR1;
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// MPEG Get/Set Image, MPEG Read/Write Image, MPEG Read/Write Sector
+// (commands 0xA5-0xAA): these six commands have no public documentation
+// at all -- not even an opcode-only mention survives outside the Yabause
+// wiki's command list, and no other Saturn emulator implements them
+// either. Rather than invent a plausible-looking but unverifiable buffer
+// format, they are acknowledged as harmless completed commands, the same
+// spirit as Cs2MpegPlay/Cs2MpegSetDecodingMethod's existing "fix me"
+// stubs: any game or BIOS path that calls them gets a valid CMOK/MPCM
+// response instead of falling through to "Command %02x not implemented"
+// and stalling.
+
+void Cs2MpegGetImage(void) {                       // 0xA5
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+void Cs2MpegSetImage(void) {                       // 0xA6
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+void Cs2MpegReadImage(void) {                      // 0xA7
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+void Cs2MpegWriteImage(void) {                     // 0xA8
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+void Cs2MpegReadSector(void) {                     // 0xA9
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+void Cs2MpegWriteSector(void) {                    // 0xAA
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void Cs2MpegGetLSI(void) {
+   // "MPEG Get LSI"(0xAE), counterpart to Cs2MpegSetLSI() below: same
+   // address encoding, value returned across CR3:CR4.
+   u32 addr = ((u32)(Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+   u32 val = 0;
+
+   switch (addr)
+   {
+      case 0x000000: val = Cs2Area->mpeglsi.status; break;
+      case 0x000006: val = Cs2Area->mpeglsi.xpos; break;
+      case 0x000008: val = Cs2Area->mpeglsi.ypos; break;
+      case 0x000012: val = Cs2Area->mpeglsi.bordercolor; break;
+      default: break; // register outside the documented set: reads back 0
+   }
+
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | ((addr >> 16) & 0xFF);
+   Cs2Area->reg.CR2 = (u16)addr;
+   Cs2Area->reg.CR3 = (u16)(val >> 16);
+   Cs2Area->reg.CR4 = (u16)val;
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 
 void Cs2MpegSetLSI(void) {
-   // fix me(should be setting the LSI, among other things)
-  Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
+   // "MPEG Set/Get LSI"(0xAF/0xAE) address the small SH-1-side register
+   // bank documented on the Yabause wiki (MPEGCard page, "LSI" table):
+   // 0xA100000 status (interpolation/display enable), 0xA100006 X
+   // position, 0xA100008 Y position, 0xA100012 border color -- see
+   // mpeglsi_struct in cs2.h. CR1/CR2 carry the low 24 bits of the
+   // address (the same "(CR1&0xFF)<<16|CR2" convention Cs2GetMPEGRom()
+   // already uses for its own offset field); CR3/CR4 carry the value.
+   u32 addr = ((u32)(Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+   u32 val  = ((u32)Cs2Area->reg.CR3 << 16) | Cs2Area->reg.CR4;
+
+   switch (addr)
+   {
+      case 0x000000: Cs2Area->mpeglsi.status = (u8)val; break;
+      case 0x000006: Cs2Area->mpeglsi.xpos = (u16)val; break;
+      case 0x000008: Cs2Area->mpeglsi.ypos = (u16)val; break;
+      case 0x000012: Cs2Area->mpeglsi.bordercolor = val; break;
+      default: break; // register outside the documented set, ignored
+   }
+
+   // No reply used to be written: the command registers came back as they
+   // were sent, so the status byte read 0xAF (WAIT, PERI, ...). The Video CD
+   // player sends AF03 0008 0000 0000 after each display update and kept
+   // retrying it, about 1300 commands a second.
+   doMPEGReport(Cs2Area->status);
+   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3629,14 +4399,25 @@ void Cs2AuthenticateDevice(void) {
      if (mpegauth == 1)
      {
         Cs2SetIRQ(CDB_HIRQ_MPED);
-        Cs2Area->mpgauth = 2;
+        // "MPEG Get Pts"(1) authentication only succeeds if a Video CD
+        // Card is actually the cartridge plugged into CS0: per the
+        // MPEGCard page on the Yabause wiki, this is how games probe for
+        // the card before touching any of the 0x90-0xAF commands. Without
+        // this check every game used to see an MPEG card whether or not
+        // one was configured.
+        Cs2Area->mpgauth = Cs2IsMpegCardPresent() ? 2 : 0;
      }
      else
      {
         // if authentication passes(obviously it always does), CDB_HIRQ_CSCT is set
         Cs2Area->isonesectorstored = 1;
         Cs2SetIRQ(CDB_HIRQ_EFLS | CDB_HIRQ_CSCT);
-        Cs2Area->satauth = 4;
+        // Was hardcoded to 4 (always "original Saturn disc"): a mounted
+        // audio CD or Video CD would still be reported as a genuine
+        // Saturn game. Cs2DetectDiscType() tells them apart using the
+        // same "SEGA SEGASATURN" IP.BIN signature check Cs2GetIP() uses,
+        // and the isaudio flag already tracked elsewhere in this file.
+        Cs2Area->satauth = Cs2DetectDiscType();
      }
 
      // Set registers all back to normal values
@@ -3647,11 +4428,15 @@ void Cs2AuthenticateDevice(void) {
      if (mpegauth == 1)
      {
         Cs2SetIRQ(CDB_HIRQ_MPED);
-        Cs2Area->mpgauth = 2;
+        Cs2Area->mpgauth = Cs2IsMpegCardPresent() ? 2 : 0;
      }
      else
        Cs2SetIRQ(CDB_HIRQ_EFLS | CDB_HIRQ_CSCT);
   }
+
+  CS2_MPEG_TRACE("MPEG card: Authenticate Device (0xE0) type=%d -> %s=%d\n",
+                 mpegauth, mpegauth == 1 ? "mpgauth" : "satauth",
+                 mpegauth == 1 ? Cs2Area->mpgauth : Cs2Area->satauth);
 
   doCDReport(Cs2Area->status);
   Cs2SetIRQ(CDB_HIRQ_CMOK);
@@ -3660,11 +4445,27 @@ void Cs2AuthenticateDevice(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2IsDeviceAuthenticated(void) {
+  static int lastmpg = -1, lastsat = -1;
+
   Cs2Area->reg.CR1 = (Cs2Area->status << 8);
   if (Cs2Area->reg.CR2)
+  {
      Cs2Area->reg.CR2 = Cs2Area->mpgauth;
+     if (lastmpg != Cs2Area->mpgauth) // polled in a loop: only log changes
+     {
+        lastmpg = Cs2Area->mpgauth;
+        CS2_MPEG_TRACE("MPEG card: Is Device Authenticated (0xE1) MPEG -> %d\n", Cs2Area->mpgauth);
+     }
+  }
   else
+  {
      Cs2Area->reg.CR2 = Cs2Area->satauth;
+     if (lastsat != Cs2Area->satauth)
+     {
+        lastsat = Cs2Area->satauth;
+        CS2_MPEG_TRACE("MPEG card: Is Device Authenticated (0xE1) disc -> %d (2 = non-Saturn data disc, expected for a VCD)\n", Cs2Area->satauth);
+     }
+  }
   Cs2Area->reg.CR3 = 0;
   Cs2Area->reg.CR4 = 0;
   Cs2SetIRQ(CDB_HIRQ_CMOK);
@@ -3673,21 +4474,254 @@ void Cs2IsDeviceAuthenticated(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 int Cs2IsMpegCardPresent(void) {
-  // Pas de carte Video CD (MPEG Card) emulee dans cette branche :
-  // Cs2GetHardwareInfo() repond deja CR2 = 0x0001 ("No mpeg card exists",
-  // CD Communication Interface, commande 01h Get Hardware Info, bit MPEG
-  // de CR2). BiosCheckMPEGCard() doit donner la meme reponse.
-  // A remplacer par la vraie detection (MpegCardHasRom() / CART_MPEGCARD)
-  // lors de l'integration du lot Video CD.
-  return 0;
+  if (MpegCardHasRom())
+     return 1;
+
+  return (CartridgeArea != NULL && CartridgeArea->carttype == CART_MPEGCARD);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG decoder input side.
+//
+// CD Communication Interface manual (ST-162, §5 "Stream Select", Fig. 5.1
+// and the connector table p.46): the CD-ROM device outputs into a filter,
+// filters store into buffer partitions, and the MPEG decoders (A)/(V) are
+// *devices whose input is a partition output connector*. So on a real
+// Saturn the decoder pulls the MPEG sectors out of the partitions named by
+// MPEG Set Connection and they never stay in the CD buffer.
+//
+// The WIP never emptied those partitions: after 200 sectors (the whole CD
+// buffer, ~2.7s of VCD at 1x) the buffer was full, the drive went to SEEK
+// and stopped reading, so almost nothing ever reached the decoder.
+//
+// The payload itself is still handed to the decoder at read time from the
+// raw sector (Cs2ReadFilteredSector(), full 2324-byte Form 2 user data,
+// independent of the host's Get Sector Length setting); here the
+// corresponding blocks are released, in FAD order, as long as the
+// decoder's own input buffer has room. That gives the same flow control as
+// the hardware: when the decoder is full, the partitions fill up and the
+// drive pauses; when it drains, reading resumes.
+//
+// Only Form 2 sectors are consumed, so Form 1 data (INFO.VCD, PSD, ISO9660)
+// the host may have routed to the same partition is never touched.
+
+// How much not-yet-demuxed stream the decoder may hold before it stops
+// pulling sectors (~2s of VCD at 1x). Size of the real card's buffer is
+// not documented; this only needs to absorb CD read jitter.
+#define CS2_MPEG_DECODER_BUFFER (384 * 1024)
+
+static int Cs2MpegPartitionHead(u8 bufno, u8 conmode, u32 *fad)
+{
+  partition_struct *p;
+
+  // conmode 0 means the application has switched this stream off (see
+  // Cs2MpegChangeConnection); 0xFF means no partition is attached.
+  if (bufno >= MAX_SELECTORS || conmode == 0)
+     return 0;
+
+  p = &Cs2Area->partition[bufno];
+  if (p->numblocks == 0 || p->block[0] == NULL)
+     return 0;
+
+  if (!(p->block[0]->sm & 0x20)) // not Form 2: not MPEG, leave it to the host
+     return 0;
+
+  *fad = p->block[0]->FAD;
+  return 1;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Runs the decoder for one emulated frame, honouring pause and slow playback
+// (CDC_MpSetDec pautim). Called by Vdp2VBlankIN instead of MpegCardAdvance.
+void Cs2MpegAdvance(double seconds)
+{
+   double fps;
+
+   if (Cs2MpegPauTim == 1 || Cs2MpegPauTim == 0xFFFF)
+   {
+      MpegCardAdvance(seconds);
+      return;
+   }
+
+   fps = MpegCardGetFrameRate();
+   if (fps <= 0.0)
+      fps = 25.0;
+
+   if (Cs2MpegPauTim == 0)
+   {
+      /* paused: only the pictures requested by re-pause commands */
+      if (Cs2MpegStep > 0)
+      {
+         Cs2MpegStep--;
+         MpegCardAdvance(1.0 / fps);
+      }
+      return;
+   }
+
+   /* slow playback: one picture every pautim operation intervals */
+   if ((++Cs2MpegSlowCount % Cs2MpegPauTim) == 0)
+      MpegCardAdvance(1.0 / fps);
+}
+
+void Cs2MpegDecoderPump(void)
+{
+  u8 bufs[2];
+  u32 drained = 0;
+
+  if (Cs2Area == NULL || !Cs2MpegConnSet || !Cs2IsMpegCardPresent())
+     return;
+
+  bufs[0] = Cs2Area->mpegcon[0].vidbufnum;
+  bufs[1] = Cs2Area->mpegcon[0].audbufnum;
+
+  while (MpegCardGetBufferedBytes() < CS2_MPEG_DECODER_BUFFER)
+  {
+     u32 fad0 = 0, fad1 = 0;
+     int has0 = Cs2MpegPartitionHead(bufs[0], Cs2Area->mpegcon[0].vidcon, &fad0);
+     int has1 = (bufs[1] != bufs[0]) &&
+                Cs2MpegPartitionHead(bufs[1], Cs2Area->mpegcon[0].audcon, &fad1);
+     partition_struct *p;
+
+     if (!has0 && !has1)
+        break;
+
+     // Oldest sector first, so audio and video leave in disc order.
+     p = &Cs2Area->partition[(has0 && (!has1 || fad0 <= fad1)) ? bufs[0] : bufs[1]];
+
+     p->size -= p->block[0]->size;
+     Cs2FreeBlock(p->block[0]);
+     p->block[0] = NULL;
+     p->blocknum[0] = 0xFF;
+     Cs2SortBlocks(p);
+     p->numblocks--;
+     drained++;
+  }
+
+  if (drained && Cs2Area->blockfreespace == MAX_BLOCKS)
+     Cs2Area->isonesectorstored = 0;
+
+  // A Video CD player has nothing to poll while a movie runs: it sleeps and
+  // relies on the card's interrupt to wake up each picture, refresh its
+  // display and read the pad. Kronos never raised one, so after MPEG Get
+  // Stream the program went to sleep for good -- video and audio kept
+  // running (this module decodes them independently of the SH2), but the
+  // pad appeared dead. Signal one MPEG status interrupt per decoded picture.
+  if (Cs2MpegPlaying)
+  {
+     static u32 lastserial = 0;
+     u32 serial = MpegCardGetFrameSerial();
+
+     if (serial != lastserial)
+     {
+        lastserial = serial;
+        Cs2MpegIntPending |= 0x000001; // picture decoded
+        Cs2SetIRQ(CDB_HIRQ_MPST);
+     }
+  }
+
+  Cs2MpegUpdateStatus();
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// MPEG status data (returned by every 0x9x/0xAx command through
+// doMPEGReport(), and polled continuously by the Video CD player):
+//
+//   CR1 = CD status (high byte), MPEG Play Status (low byte)
+//   CR2 = V-counter
+//   CR3 = Picture Info (high byte), MPEG Audio Status (low byte)
+//   CR4 = MPEG Video Status (word)
+//
+// Play Status:  0x01 video stopped, 0x04 video transferring/playing,
+//               0x10 audio stopped, 0x40 audio transferring/playing
+//               (video in the low nibble, audio in the high nibble).
+// Audio Status: 0x01 decoding, 0x10 buffer empty, 0x40 left output,
+//               0x80 right output.
+// Video Status: 0x0001 decoding, 0x0002 display, 0x0040 update picture,
+//               0x0100 output preparation completion, 0x0800 first
+//               picture display, 0x1000 video buffer empty.
+// Source: Yabause wiki, MPEGStatusData (the Sega "MPEG part" of the CD
+// Communication Interface manual is not publicly available).
+//
+// These four fields were never assigned anywhere: the report always said
+// "stopped, nothing decoded, no output", so the player had no reason to
+// ever move past its start-up polling loop.
+
+void Cs2MpegUpdateStatus(void)
+{
+   u32 buffered;
+
+   if (Cs2Area == NULL || !Cs2IsMpegCardPresent())
+      return;
+
+   if (!Cs2MpegPlaying)
+   {
+      Cs2Area->actionstatus = 0x01 | 0x10; // video stopped, audio stopped
+      Cs2Area->mpegvideostatus = 0;
+      Cs2Area->mpegaudiostatus = 0;
+      Cs2Area->pictureinfo = 0;
+      return;
+   }
+
+   buffered = MpegCardGetBufferedBytes();
+
+   {
+      int w = 0, h = 0;
+      if (MpegCardGetFrameRGBA(&w, &h) != NULL && w > 0 && h > 0)
+      {
+         if (Cs2Area->mpegpicturewidth != (u32)w || Cs2Area->mpegpictureheight != (u32)h)
+         {
+            Cs2Area->mpegpicturewidth = (u32)w;
+            Cs2Area->mpegpictureheight = (u32)h;
+            Cs2MpegIntPending |= 0x000008;   // picture size available
+            Cs2SetIRQ(CDB_HIRQ_MPST);
+         }
+      }
+   }
+
+   // Video and audio are both "transferring/playing" while MPEG Play is in
+   // effect; this module decodes the two together from one program stream.
+   Cs2Area->actionstatus = 0x04 | 0x40;
+
+   Cs2Area->mpegvideostatus = 0x0001 | 0x0002 | 0x0100; // decoding, display, output ready
+   if (Cs2MpegPauTim == 0)
+      Cs2Area->mpegvideostatus |= 0x0004;               // pause (MPEG part 7.2.2, stat_v bit 2)
+   if (Cs2MpegFrzTim == 0)
+      Cs2Area->mpegvideostatus |= 0x0008;               // freeze (stat_v bit 3)
+   if (MpegCardIsActive())
+      Cs2Area->mpegvideostatus |= 0x0040 | 0x0800;      // picture updated, first picture shown
+   if (buffered == 0)
+      Cs2Area->mpegvideostatus |= 0x1000;               // starved: video buffer empty
+
+   Cs2Area->mpegaudiostatus = 0x01 | 0x40 | 0x80;       // decoding, left and right output
+   if (buffered == 0)
+      Cs2Area->mpegaudiostatus |= 0x10;                 // audio buffer empty
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
 void Cs2GetMPEGRom(void) {
-  u16 i;
-  FILE * mpgfp;
+  u32 i;
+  u32 readoffset;
+  u32 readsize;
   partition_struct * mpgpartition;
+
+  if (!Cs2IsMpegCardPresent())
+  {
+     // No Video CD Card installed: there is no ROM to read. Mirror the
+     // "invalid registers" pattern Cs2AuthenticateDevice uses above for
+     // an absent/not-ready device instead of pretending success.
+     Cs2Area->reg.CR1 = (Cs2Area->status << 8) | 0xFF;
+     Cs2Area->reg.CR2 = 0xFFFF;
+     Cs2Area->reg.CR3 = 0xFFFF;
+     Cs2Area->reg.CR4 = 0xFFFF;
+     Cs2SetIRQ(CDB_HIRQ_CMOK);
+     return;
+  }
+
+  // The ROM is normally loaded once by Cs2Init(); retry here in case the
+  // path only became valid afterwards (file copied/extracted meanwhile).
+  if (!MpegCardHasRom() && Cs2Area->mpegpath != NULL && Cs2Area->mpegpath[0] != '\0')
+     MpegCardLoadRom(Cs2Area->mpegpath);
 
   // fix me
   Cs2Area->mpgauth |= 0x300;
@@ -3695,41 +4729,208 @@ void Cs2GetMPEGRom(void) {
   Cs2Area->outconmpegrom = Cs2Area->filter + 0;
   Cs2Area->outconmpegromnum = 0;
 
-  if (Cs2Area->mpegpath && (mpgfp = fopen(Cs2Area->mpegpath, "rb")) != NULL)
-  {
-     u32 readoffset = ((Cs2Area->reg.CR1 & 0xFF) << 8) | Cs2Area->reg.CR2;
-     u16 readsize = Cs2Area->reg.CR4;
+  // Sector offset: 24-bit value split across CR1 low byte / CR2, the same
+  // layout every other 24-bit CD Block parameter (FAD etc.) uses. It used
+  // to be shifted by 8 instead of 16, which only mattered for offsets
+  // >= 64K sectors, i.e. never for a 512KB ROM.
+  readoffset = ((u32)(Cs2Area->reg.CR1 & 0xFF) << 16) | Cs2Area->reg.CR2;
+  readsize = Cs2Area->reg.CR4;
 
-     fseek(mpgfp, readoffset * Cs2Area->getsectsize, SEEK_SET);
+  CS2_MPEG_TRACE("MPEG card: Get MPEG ROM (0xE2) CR1=%04X CR2=%04X CR3=%04X CR4=%04X -> offset=%u sectors, count=%u, sectsize=%u, rom=%u bytes\n",
+        Cs2Area->reg.CR1, Cs2Area->reg.CR2, Cs2Area->reg.CR3, Cs2Area->reg.CR4,
+        readoffset, readsize, Cs2Area->getsectsize, MpegCardGetRomSize());
+
+  if (MpegCardHasRom())
+  {
      if ((mpgpartition = Cs2GetPartition(Cs2Area->outconmpegrom)) != NULL && !Cs2Area->isbufferfull)
      {
-        IOCheck_struct check = { 0, 0 };
-        mpgpartition->size = 0;
-
         for (i = 0; i < readsize && mpgpartition->numblocks < MAX_BLOCKS; i++)
         {
            mpgpartition->block[mpgpartition->numblocks] = Cs2AllocateBlock(&mpgpartition->blocknum[mpgpartition->numblocks], Cs2Area->getsectsize);
 
-           if (mpgpartition->block[mpgpartition->numblocks] != NULL) {
-              // read data
-              yread(&check, (void *)mpgpartition->block[mpgpartition->numblocks]->data, 1, Cs2Area->getsectsize, mpgfp);
-
-              mpgpartition->numblocks++;
-              mpgpartition->size += Cs2Area->getsectsize;
-           }
-           else
+           if (mpgpartition->block[mpgpartition->numblocks] == NULL)
               break; // global block pool exhausted, matches Cs2CopySectorData's convention
+
+           // Served from the in-memory image (loaded from a raw dump or
+           // extracted from a .zip by MpegCardLoadRom(), already remapped to
+           // the Saturn-side layout); reads past the end mirror the chip.
+           MpegCardReadRom((readoffset + i) * Cs2Area->getsectsize,
+                           mpgpartition->block[mpgpartition->numblocks]->data,
+                           Cs2Area->getsectsize);
+
+           mpgpartition->numblocks++;
+           mpgpartition->size += Cs2Area->getsectsize;
         }
 
         Cs2Area->isonesectorstored = 1;
         Cs2SetIRQ(CDB_HIRQ_CSCT);
      }
-
-     fclose(mpgfp);
   }
 
   doCDReport(Cs2Area->status);
   Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPED);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Small, portable (no strcasecmp/_stricmp dependency) case-insensitive
+// ISO9660 identifier comparison, used by Cs2DetectVideoCD() below.
+static int Cs2NameEqualsCI(const char *name, const char *ref)
+{
+   while (*name && *ref)
+   {
+      char a = *name, b = *ref;
+      if (a >= 'a' && a <= 'z') a -= 32;
+      if (b >= 'a' && b <= 'z') b -= 32;
+      if (a != b) return 0;
+      name++; ref++;
+   }
+   return *name == '\0' && *ref == '\0';
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Frees the single block Cs2ReadUnFilteredSector() just allocated, the way
+// Cs2ReadFileSystem() already does around its own root-directory lookup
+// (see the fid==0xFFFFFF case above). Kept local: Cs2AuthenticateDevice()
+// and Cs2DetectVideoCD() both need to peek at one sector and give the block
+// straight back to the pool without disturbing any partition/filter state
+// a game might currently have in flight.
+static void Cs2FreeLastBlock(partition_struct *part)
+{
+   part->size -= part->block[part->numblocks - 1]->size;
+   Cs2FreeBlock(part->block[part->numblocks - 1]);
+   part->block[part->numblocks - 1] = NULL;
+   part->blocknum[part->numblocks - 1] = 0xFF;
+   Cs2SortBlocks(part);
+   part->numblocks -= 1;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Tells apart what "Authenticate Device"(0xE0)/satauth is supposed to
+// report: 1=audio CD, 2=any other non-Saturn data disc (Video CD, Photo
+// CD, plain CD-ROM...), 4=genuine Saturn disc. See the Yabause wiki,
+// MPEGCard page: "If a disc is detected to be an audio disc or a
+// non-Saturn game disc(such as a video cd), the CD Block instantly
+// approves" -- i.e. only a real Saturn header should ever fail here.
+//
+// 3="pirated Saturn disc" is deliberately never returned: that value
+// reflects the physical "ring" copy-protection groove Sega pressed into
+// genuine discs, which has no equivalent in a disc image, so no emulator
+// can detect it from image data alone.
+int Cs2DetectDiscType(void)
+{
+   partition_struct *part;
+   u8 *buf;
+
+   if (Cs2Area->isaudio)
+      return 1;
+
+   if ((part = Cs2ReadUnFilteredSector(150)) == NULL) // LBA 0 / IP.BIN
+      return 0;
+
+   buf = part->block[part->numblocks - 1]->data;
+
+   // Same check Cs2GetIP() uses to accept/reject the IP.BIN it just read.
+   if (memcmp(buf, "SEGA SEGASATURN", 15) == 0)
+   {
+      Cs2FreeLastBlock(part);
+      return 4;
+   }
+
+   Cs2FreeLastBlock(part);
+   return 2;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Looks for the mandatory VIDEO_CD (or SVCD, for the Super Video CD
+// variant) root directory the Philips "Video CD Specification" ("White
+// Book") requires on every compliant Video CD, right next to MPEGAV and
+// the ISO9660 filesystem the BIOS already knows how to walk. Confirmed by
+// the Yabause wiki MPEGCard page, which describes the card's ROM as
+// letting "the user play Video and Photo CDs" straight off a disc that
+// otherwise looks like a plain data CD to satauth.
+//
+// Deliberately does not touch Cs2Area->curdirsect/curdirfidoffset/
+// fileinfo/numfiles: those belong to whatever Change/Read Directory
+// sequence a game may currently have in progress, and this scan can run
+// at any time (from Cs2AuthenticateDevice()) without being allowed to
+// disturb it.
+int Cs2DetectVideoCD(void)
+{
+   partition_struct *part;
+   u8 *buf;
+   dirrec_struct rootrec, entry;
+   u32 sectorsleft;
+   u32 curlba;
+
+   Cs2Area->isvideocd = 0;
+
+   if (Cs2Area->cdi == NULL || (Cs2Area->status & 0xF) == CDB_STAT_NODISC)
+      return 0;
+
+   // --- Primary Volume Descriptor (ISO9660 sector 16 / FAD 166) ---
+   if ((part = Cs2ReadUnFilteredSector(166)) == NULL)
+      return 0;
+
+   buf = part->block[part->numblocks - 1]->data;
+
+   // ECMA-119 / ISO9660 §8.4: type=1, "CD001", version=1 for the PVD.
+   if (buf[0] != 1 || memcmp(buf + 1, "CD001", 5) != 0)
+   {
+      Cs2FreeLastBlock(part);
+      return 0;
+   }
+
+   // Root directory record is embedded at offset 156 (0x9C) of the PVD,
+   // same offset Cs2ReadFileSystem() already reads for fid==0xFFFFFF.
+   Cs2CopyDirRecord(buf + 0x9C, &rootrec);
+   Cs2FreeLastBlock(part);
+
+   sectorsleft = (rootrec.size + Cs2Area->getsectsize - 1) / Cs2Area->getsectsize;
+   if (sectorsleft == 0)
+      return 0;
+   if (sectorsleft > 16) // a root directory this big is not a VCD anyway
+      sectorsleft = 16;
+
+   curlba = rootrec.lba;
+
+   while (sectorsleft-- > 0)
+   {
+      u32 recofs;
+
+      if ((part = Cs2ReadUnFilteredSector(curlba + 150)) == NULL)
+         return 0;
+
+      buf = part->block[part->numblocks - 1]->data;
+      recofs = 0;
+
+      while (recofs < Cs2Area->getsectsize && buf[recofs] != 0)
+      {
+         char name[32];
+         u32 namelen;
+
+         Cs2CopyDirRecord(buf + recofs, &entry);
+
+         namelen = entry.namelength < sizeof(name) - 1 ? entry.namelength : sizeof(name) - 1;
+         memcpy(name, entry.name, namelen);
+         name[namelen] = '\0';
+
+         if (Cs2NameEqualsCI(name, "VIDEO_CD") || Cs2NameEqualsCI(name, "SVCD"))
+         {
+            Cs2FreeLastBlock(part);
+            Cs2Area->isvideocd = 1;
+            return 1;
+         }
+
+         if (entry.recordsize == 0)
+            break; // malformed record, avoid an infinite loop
+         recofs += entry.recordsize;
+      }
+
+      Cs2FreeLastBlock(part);
+      curlba++;
+   }
+
+   return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3958,6 +5159,10 @@ partition_struct * Cs2FilterData(filter_struct * curfilter, int isaudio)
      }
      else
      {
+        // Why was it rejected? Report each condition and the raw sector
+        // header, so a wrong subheader offset in the disc image can be told
+        // apart from a filter condition the player set that we mishandle.
+
         Cs2Area->lastbuffer = curfilter->condfalse;
 
         // 0xFF means "not connected" (sector discarded); any other
@@ -4489,6 +5694,8 @@ int Cs2ReadFilteredSector(u32 rfsFAD, partition_struct **partition) {
   unsigned char syncheader[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                           0xFF, 0xFF, 0xFF, 0x00};
   int isaudio = 0;
+
+
   if (Cs2Area->outconcddev != NULL && !Cs2Area->isbufferfull)
   {
      // read a sector using cd interface function to workblock.data
@@ -4502,6 +5709,7 @@ int Cs2ReadFilteredSector(u32 rfsFAD, partition_struct **partition) {
      Cs2Area->workblock.FAD = rfsFAD;
 
      if (memcmp(syncheader, Cs2Area->workblock.data, 12) != 0) isaudio = 1;
+
 
      // force 1x speed if reading from an audio track
      Cs2Area->isaudio = isaudio;
@@ -4523,6 +5731,23 @@ int Cs2ReadFilteredSector(u32 rfsFAD, partition_struct **partition) {
         Cs2Area->workblock.cn = Cs2Area->workblock.data[0x11];
         Cs2Area->workblock.sm = Cs2Area->workblock.data[0x12];
         Cs2Area->workblock.ci = Cs2Area->workblock.data[0x13];
+
+        // Video CD Card (EXPERIMENTAL, see mpegcard.h): every Mode 2
+        // Form 2 sector read while a White Book Video CD is mounted and
+        // the Video CD Card is the configured cartridge is handed to the
+        // MPEG-PS decoder as-is. PL_MPEG's own demuxer sorts video from
+        // audio packets internally, so this doesn't need to decode the
+        // XA submode bits itself -- simpler, and avoids guessing at
+        // Video-CD-specific submode conventions no document confirms.
+        // Only Form 2 sectors (submode bit 5) carry the MPEG streams; their
+        // user data is exactly 2324 bytes after the 24-byte sync+header+
+        // subheader. Form 1 sectors (ISO9660, INFO.VCD...) are not MPEG and
+        // may report a 2352-byte size, which would read past the buffer.
+
+        // NB: the decoder is fed further down, once the filters have decided
+        // where the sector goes (see the "stored in partition" path in the
+        // play loop). Feeding it from here would bypass the routing the
+        // application set up with Set Filter Subheader Conditions.
      }
 
 
