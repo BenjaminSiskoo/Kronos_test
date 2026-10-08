@@ -100,7 +100,8 @@ const Items mVideoFilterMode = Items()
 	<< Item("7", "Lanczos3")
 	<< Item("8", "Sharp Bilinear")
 	<< Item("9", "FXAA")
-	<< Item("10", "CRT (Aperture Grille)");
+	<< Item("10", "CRT (Aperture Grille)")
+	<< Item("11", "CRT cgwg fast");
 
 const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
@@ -110,7 +111,8 @@ const Items mUpscaleFilterMode = Items()
 	<< Item("4", "Sharpen (Adaptive)")
 	<< Item("5", "FSR 1.0 (EASU + RCAS)")
 	<< Item("6", "Scale3x")
-	<< Item("7", "Scale4x");
+	<< Item("7", "Scale4x")
+	<< Item("8", "5xBR v3.7c + CRT");
 
 const Items mResolutionMode = Items()
 	<< Item("1", "1x (original resolution of the Saturn)")
