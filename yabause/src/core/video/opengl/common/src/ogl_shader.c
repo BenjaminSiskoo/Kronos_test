@@ -29,6 +29,7 @@
 #include "bicubic_shader.h"
 #include "scanline_shader.h"
 #include "embellish_shader.h"
+#include "crt_cgwg_shader.h"
 #include "common_glshader.h"
 
 #undef YGLLOG
@@ -1941,6 +1942,7 @@ static int u_f = -1;
 static int u_s = -1;
 static int u_o = -1;
 static int u_sl = -1;
+static int u_sc = -1;
 static int u_r = -1;
 
 static const char vblit_img[] =
@@ -1969,6 +1971,7 @@ static const char fblit_head[] =
   "uniform int scale; \n"
   "uniform vec2 outSize; \n"
   "uniform float srcLines; \n"
+  "uniform float srcCols; \n"
   "uniform int rotated; \n"
   "in highp vec2 vTexCoord;     \n"
   "uniform sampler2D u_Src;     \n"
@@ -2091,10 +2094,11 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   const GLchar * fblit_sharpbilinear_img_v[] = { fblit_head, fblitsharpbilinear_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_fxaa_img_v[] = { fblit_head, fblitfxaa_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_crt_img_v[] = { fblit_head, fblitcrt_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_crtcgwg_img_v[] = { fblit_head, fblitcrtcgwg_img, fblit_img, fblit_img_end, NULL };
 
   int aamode = _Ygl->aamode;
   /* Unknown value (e.g. config written by a newer build): plain display */
-  if ((aamode < AA_NONE) || (aamode > AA_CRT_FILTER)) aamode = AA_NONE;
+  if ((aamode < AA_NONE) || (aamode > AA_CRT_CGWG_FAST)) aamode = AA_NONE;
 
   float const vertexPosition[] = {
     1.0f, -1.0f,
@@ -2237,6 +2241,9 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
       case AA_CRT_FILTER:
         glShaderSource(fshader, 4, fblit_crt_img_v, NULL);
         break;
+      case AA_CRT_CGWG_FAST:
+        glShaderSource(fshader, 4, fblit_crtcgwg_img_v, NULL);
+        break;
     }
     glCompileShader(fshader);
     glGetShaderiv(fshader, GL_COMPILE_STATUS, &compiled);
@@ -2268,6 +2275,7 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
     u_s = glGetUniformLocation(blit_prg, "scale");
     u_o = glGetUniformLocation(blit_prg, "outSize");
     u_sl = glGetUniformLocation(blit_prg, "srcLines");
+    u_sc = glGetUniformLocation(blit_prg, "srcCols");
     u_r = glGetUniformLocation(blit_prg, "rotated");
   }
   else{
@@ -2299,6 +2307,7 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   glUniform1i(u_s, _Ygl->vdp1ratio);
   glUniform2f(u_o, outTexW, outTexH);
   glUniform1f(u_sl, (float)_Ygl->rheight);
+  glUniform1f(u_sc, (float)_Ygl->rwidth);
   glUniform1i(u_r, (int)isRotated);
 
   glActiveTexture(GL_TEXTURE0);
