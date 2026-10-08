@@ -998,39 +998,38 @@ static void insertInterruptReturnHandling(SH2_struct *context) {
 }
 
 static void notify(SH2_struct *context, u32 start, u32 length) {
-  int i;
+  u32 i;
+  opcode_func *const *codes = cacheCode[context->isslave];
   for (i=0; i<length; i+=2) {
-    int id = ((start + i) >> 20) & 0xFFF;
-    int addr = (start + i) >> 1;
-    if (cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]] != outOfInt)
-      cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]] = decode;
+    const u32 id = cacheId[((start + i) >> 20) & 0xFFF];
+    opcode_func *entry = &codes[id][((start + i) >> 1) & cacheMask[id]];
+    if (*entry != outOfInt)
+      *entry = decode;
   }
 }
 
+/* Invalide le decodage des instructions ecrites, pour 'context' seulement.
+ *
+ * Le seul appelant, SH2WriteNotify() (sh2core.c), appelle deja cette
+ * fonction pour les deux CPU. L'ancienne version notifiait en plus :
+ *   - l'alias cache-through de l'adresse (| 0x20000000) : cacheId[] donne
+ *     la meme table pour une page 0xxx et sa page 2xxx, et l'index
+ *     (adresse >> 1) & cacheMask[] (au plus 0x1FFFFF) ne voit pas le bit
+ *     29, donc la meme entree etait reecrite deux fois ;
+ *   - l'autre CPU (deux alias) quand son cache etait coupe, alors que
+ *     SH2WriteNotify() le notifie de toute facon juste apres.
+ * Soit jusqu'a 8 passes de notify() par ecriture SH-2 (16 pour les
+ * ecritures DMA qui appelaient SH2WriteNotify() pour chaque CPU) pour 2
+ * utiles. Le resultat est identique : notify() ne fait que remettre
+ * decode() (sauf sur outOfInt), une operation idempotente. */
 void SH2KronosWriteNotify(SH2_struct *context, u32 start, u32 length){
-  int id = start>>29;
- if((id == 0x0) || (id == 0x1)) {
-   //in case of standard access
-   notify(context, start & 0x1FFFFFFF, length);
-   notify(context, (start & 0x1FFFFFFF)|0x20000000, length);
-   //If the other core does not have the cache on, then it needs to see the modification
-   if ((context->isslave != 0) && (MSH2->cacheOn == 0)) {
-     notify(MSH2, start & 0x1FFFFFFF, length);
-     notify(MSH2, (start & 0x1FFFFFFF)|0x20000000, length);
-   }
-   if ((context->isslave == 0) && (SSH2->cacheOn == 0)) {
-     notify(SSH2, start & 0x1FFFFFFF, length);
-     notify(SSH2, (start & 0x1FFFFFFF)|0x20000000, length);
-   }
-}
-else {
-  if (id == 0x6) {
+  const u32 id = start >> 29;
+  if ((id == 0x0) || (id == 0x1)) {
+    notify(context, start & 0x1FFFFFFF, length);
+  } else if (id == 0x6) {
     //Data Array access
     notify(context, start, length);
   }
-}
-//Need to add verification of cacheId in case non cacheable area is updated
-//Maybe need to fix accessing equivalent non cacheable area in any case
 }
 
 //////////////////////////////////////////////////////////////////////////////
