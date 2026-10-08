@@ -2194,8 +2194,22 @@ static void SH2tas(SH2_struct * sh, u32 n)
       sh->regs.SR.part.T=0;
 
    temp|=0x00000080;
+   /* Ecriture : SH7604 Hardware Manual 8.4.4, "The updated value is written
+      to memory through the internal data bus, but before that the address
+      tag is compared and if there are any matching entries, a write is
+      performed to the corresponding data array". Seule la LECTURE de TAS
+      contourne le cache ; l'ecriture est une ecriture normale a l'adresse
+      de l'instruction : ecriture immediate en memoire (la meme case que la
+      lecture ci-dessus, donc le test et la pose restent coherents) et mise
+      a jour de la ligne si elle est en cache.
+
+      L'ecriture passait par l'adresse cache-through (tasaddr) : avec le
+      cache emule, une ligne qui contenait l'octet gardait l'ancienne valeur
+      (bit 7 a 0), et une lecture suivante par l'adresse cache voyait le
+      semaphore libre. Si R[n] est deja une adresse cache-through,
+      l'ecriture n'ecrit pas dans le cache (8.4.3), comme avant. */
    if ((tasaddr & 0x0FF00000) != 0x05A00000)   /* sound RAM: already written atomically */
-      SH2MappedMemoryWriteByte(sh, tasaddr, temp);
+      SH2MappedMemoryWriteByte(sh, sh->regs.R[n], temp);
    sh->regs.PC+=2;
    sh->cycles += 4;
 }
