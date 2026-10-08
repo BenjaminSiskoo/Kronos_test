@@ -402,7 +402,8 @@ typedef enum
   AA_LANCZOS3_FILTER,
   AA_SHARP_BILINEAR_FILTER,
   AA_FXAA_FILTER,
-  AA_CRT_FILTER
+  AA_CRT_FILTER,
+  AA_CRT_CGWG_FAST
 } AAMODE;
 
 typedef enum
@@ -416,6 +417,7 @@ typedef enum
   UP_FSR,
   UP_SCALE3X,
   UP_SCALE4X,
+  UP_5XBR_CRT,
   UP_MAX
 } UPMODE;
 
