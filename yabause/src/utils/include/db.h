@@ -10,6 +10,7 @@ extern "C" {
 void DBLookup(int* const cart_type, const char**  cartpath, const char * support_dir);
 int DBLookupForceSH2Cache(void);
 int DBLookupLegacySH2FetchTiming(void);
+int DBLookupMpegCard(const char *game_code);
 
 
 typedef struct GameDB_s{
