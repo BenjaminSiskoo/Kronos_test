@@ -421,7 +421,8 @@ VIDCSVdp1DrawFB,
 VIDCSGetVdp2ScreenExtract,
 VIDCSSetupVdp1Scale,
 VIDCSStartVdp1Render,
-VIDCSEndVdp1Render
+VIDCSEndVdp1Render,
+NULL /* Vdp2DrawMpegOverlay: unused, the compositor draws the MPEG layer itself (VIDCSDrawMpegLayer, yglcs.c) */
 };
 
 
