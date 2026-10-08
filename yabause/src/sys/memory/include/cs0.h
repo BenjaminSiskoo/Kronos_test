@@ -41,6 +41,7 @@ extern "C" {
 #define CART_ROMSTV            11
 #define CART_DRAM128MBIT       12
 #define CART_DEV               13
+#define CART_MPEGCARD          14 // Video CD Card / MPEG Card (see yabause wiki "MPEGCard")
 #define CART_USBDEV            25 //Not used
 
 #define CART_BUP4MBIT_SIZE  0x080000
@@ -139,6 +140,7 @@ extern "C" {
 #define CART_ROMSTV            11
 #define CART_DRAM128MBIT       12
 #define CART_DEV               13
+#define CART_MPEGCARD          14 // Video CD Card / MPEG Card (see yabause wiki "MPEGCard")
 #define CART_USBDEV            25 //Not used
 
 #define CART_BUP4MBIT_SIZE  0x080000
