@@ -29,6 +29,248 @@
 #include "error.h"
 #include "vdp1_compute.h"
 #include "perfetto_trace.h"
+#include "mpegcard.h"
+
+//////////////////////////////////////////////////////////////////////////////
+// Video CD Card (EXPERIMENTAL, see mpegcard.h).
+//
+// On real hardware the card's picture is not drawn on top of anything: it
+// is fed into VDP2's external video input (the EXBG pins, see the VDP2
+// pinout in the service manual) and VDP2 composites it as the EXBG screen.
+// VDP2 manual ST-058-R2 is explicit about what EXBG is (§1.3 Table 1.2
+// "External Input Screen EXBG", and §2.5): the external screen data
+// *becomes NBG1 screen data*, so NBG1 cannot be displayed at the same time
+// and every NBG1 register doubles as the EXBG register. Table 2.2 lists
+// them: N1ON (display), N1PRIN (priority), the W0/W1/SW window bits,
+// N1CCEN/N1CCRT (color calculation), N1COEN/N1COSL (color offset),
+// N1LCEN, N1SDEN, and so on.
+//
+// That is exactly why the picture is rendered here, into the NBG1 layer
+// buffer, rather than blitted over the finished frame: everything
+// downstream -- priority against the other scroll screens and the sprites,
+// windows, color calculation, color offset -- is the NBG1 plumbing this
+// renderer already implements, and it applies to the movie for free. The
+// on-screen display of the BIOS Video CD player therefore lands above or
+// below the picture according to the priorities it actually programs.
+//
+// Layer pixels encode their priority and color-calculation ratio in the
+// alpha channel (see VDP2COLOR() in ygl.h and VDP2_SCREEN_SETUP() in
+// common_glshader.c: bits 0-2 priority, bits 3-7 CC ratio), so the shader
+// below writes the NBG1 values there.
+//
+// When the application never enables EXBG (EXTEN bit 0), there is nothing
+// to composite into, and the picture is drawn into the back screen instead
+// so that something is still visible -- experimental fallback, not
+// hardware behaviour.
+
+static GLuint mpegLayerTex = 0;
+static int mpegLayerTexW = 0;
+static int mpegLayerTexH = 0;
+static u32 mpegLayerSerial = 0xFFFFFFFF;
+static GLint mpegLayerPrg = -1;
+static GLint mpegLayerLocSize = -1;
+static GLint mpegLayerLocAlpha = -1;
+
+static const char mpegLayer_v[] =
+  SHADER_VERSION
+  "layout (location = 0) in vec2 a_position;   \n"
+  "void main()       \n"
+  "{ \n"
+  "  gl_Position = vec4(a_position.x, a_position.y, 0.0, 1.0); \n"
+  "} \n";
+
+// u_size.xy = size of the area being drawn, u_size.z = height of the
+// target buffer (the area sits at its bottom, glViewport(0,0,w,h)).
+// u_alpha is the encoded priority/CC-ratio byte, already divided by 255.
+static const char mpegLayer_f[] =
+  SHADER_VERSION
+  "#ifdef GL_ES\n"
+  "precision highp float; \n"
+  "#endif\n"
+  "layout(origin_upper_left) in vec4 gl_FragCoord; \n"
+  "uniform sampler2D u_mpeg; \n"
+  "uniform vec3 u_size; \n"
+  "uniform float u_alpha; \n"
+  "out vec4 fragColor; \n"
+  "void main() \n"
+  "{ \n"
+  "  vec2 uv = vec2(gl_FragCoord.x / u_size.x, \n"
+  "                 (gl_FragCoord.y - (u_size.z - u_size.y)) / u_size.y); \n"
+  "  fragColor = vec4(texture(u_mpeg, uv).rgb, u_alpha); \n"
+  "} \n";
+
+static void VIDCSMpegLayerLog(GLuint obj, int isprogram)
+{
+  char log[1024];
+  GLsizei len = 0;
+  if (isprogram) glGetProgramInfoLog(obj, sizeof(log) - 1, &len, log);
+  else glGetShaderInfoLog(obj, sizeof(log) - 1, &len, log);
+  log[len > 0 ? len : 0] = '\0';
+  YuiMsg("%s\n", log);
+}
+
+static int VIDCSMpegLayerProgram(void)
+{
+  const GLchar *vsrc[] = { mpegLayer_v, NULL };
+  const GLchar *fsrc[] = { mpegLayer_f, NULL };
+  GLuint vs, fs, prg;
+  GLint ok = GL_FALSE;
+
+  if (mpegLayerPrg != -1)
+    return mpegLayerPrg != 0;
+
+  mpegLayerPrg = 0; // 0 = failed, don't retry every frame
+
+  vs = glCreateShader(GL_VERTEX_SHADER);
+  glShaderSource(vs, 1, vsrc, NULL);
+  glCompileShader(vs);
+  glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+  if (ok == GL_FALSE) { YuiMsg("MPEG card: layer vertex shader failed to compile\n"); VIDCSMpegLayerLog(vs, 0); return 0; }
+
+  fs = glCreateShader(GL_FRAGMENT_SHADER);
+  glShaderSource(fs, 1, fsrc, NULL);
+  glCompileShader(fs);
+  glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+  if (ok == GL_FALSE) { YuiMsg("MPEG card: layer fragment shader failed to compile\n"); VIDCSMpegLayerLog(fs, 0); return 0; }
+
+  prg = glCreateProgram();
+  glAttachShader(prg, vs);
+  glAttachShader(prg, fs);
+  glLinkProgram(prg);
+  glGetProgramiv(prg, GL_LINK_STATUS, &ok);
+  if (ok == GL_FALSE) { YuiMsg("MPEG card: layer shader failed to link\n"); VIDCSMpegLayerLog(prg, 1); return 0; }
+
+  glUseProgram(prg);
+  glUniform1i(glGetUniformLocation(prg, "u_mpeg"), 0);
+  mpegLayerLocSize = glGetUniformLocation(prg, "u_size");
+  mpegLayerLocAlpha = glGetUniformLocation(prg, "u_alpha");
+  mpegLayerPrg = (GLint)prg;
+  return 1;
+}
+
+// True when the application has routed the card into VDP2: external screen
+// input enabled (EXTEN bit 0, EXBGEN) with a non-zero priority, since
+// priority 0 means "not displayed" for every VDP2 screen (§11.1).
+//
+// Note it does NOT require N1ON (BGON bit 1). EXBGEN is itself the enable
+// for the external screen: Table 2.2 of ST-058-R2, which lists every
+// register that configures EXBG, names N1TPON at 180020H bit 9 but not
+// N1ON at bit 1. The Video CD player indeed runs with BGON=0001, i.e. NBG1
+// switched off -- which is consistent, since EXBG replaces NBG1 and the two
+// cannot be displayed together (§1.3). Requiring that bit hid the picture
+// and sent it to the back-screen fallback.
+static int VIDCSMpegExbgEnabled(Vdp2 *varVdp2Regs)
+{
+  if (varVdp2Regs == NULL)
+    return 0;
+
+  return (varVdp2Regs->EXTEN & 0x1) &&
+         (((varVdp2Regs->PRINA >> 8) & 0x7) != 0);
+}
+
+// Uploads the current picture and draws it over the bound buffer.
+// `alphabyte` goes to the alpha channel verbatim (priority + CC ratio for
+// a scroll layer, 0xFF for the opaque back-screen fallback).
+static void VIDCSDrawMpegPicture(int width, int height, int bufheight, u32 alphabyte)
+{
+  static const float vertexPosition[] = {
+    1.0f, -1.0f,
+    -1.0f, -1.0f,
+    1.0f, 1.0f,
+    -1.0f, 1.0f };
+  const u8 *rgba;
+  int mw = 0, mh = 0;
+
+  if ((rgba = MpegCardGetFrameRGBA(&mw, &mh)) == NULL || mw <= 0 || mh <= 0)
+    return;
+  if (!VIDCSMpegLayerProgram())
+    return;
+
+  if (mpegLayerTex == 0)
+    glGenTextures(1, &mpegLayerTex);
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, mpegLayerTex);
+
+  if (mpegLayerSerial != MpegCardGetFrameSerial() || mw != mpegLayerTexW || mh != mpegLayerTexH)
+  {
+    // This renderer streams VDP data through pixel-unpack buffers; with
+    // one still bound, `rgba` would be read as an offset into it.
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+    if (mw != mpegLayerTexW || mh != mpegLayerTexH)
+    {
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, mw, mh, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      mpegLayerTexW = mw;
+      mpegLayerTexH = mh;
+    }
+    else
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, mw, mh, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+
+    mpegLayerSerial = MpegCardGetFrameSerial();
+  }
+
+  glUseProgram((GLuint)mpegLayerPrg);
+  glUniform3f(mpegLayerLocSize, (float)width, (float)height, (float)bufheight);
+  glUniform1f(mpegLayerLocAlpha, (float)(alphabyte & 0xFF) / 255.0f);
+
+  glDisable(GL_BLEND);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_DEPTH_TEST);
+
+  glBindBuffer(GL_ARRAY_BUFFER, _Ygl->vertexPosition_buf);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(vertexPosition), vertexPosition, GL_STREAM_DRAW);
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+  glEnableVertexAttribArray(0);
+
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+  glDisableVertexAttribArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// Draws the picture as the EXBG (= NBG1) layer. Called with screen_fbo
+// bound and DrawBuffers[NBG1] selected, exactly like a normal scroll
+// screen, so the result flows through the usual priority/window/color
+// pipeline. Returns 1 when something was drawn.
+static int VIDCSDrawMpegExbg(Vdp2 *varVdp2Regs)
+{
+  u32 priority, ccr, alphabyte;
+
+  if (!MpegCardIsActive() || !VIDCSMpegExbgEnabled(varVdp2Regs))
+    return 0;
+
+  priority = (varVdp2Regs->PRINA >> 8) & 0x7;
+
+  // Same NBG1 color-calculation ratio the rest of this renderer uses
+  // (CCRNA upper byte, inverted: 0 = opaque), encoded the way
+  // VDP2COLOR() does it.
+  ccr = (u32)(((~(varVdp2Regs->CCRNA >> 8) & 0x1F) * 255) / 31);
+  alphabyte = (ccr & 0xF8) | priority;
+
+  VIDCSDrawMpegPicture(_Ygl->rwidth, _Ygl->rheight, _Ygl->rheight, alphabyte);
+  return 1;
+}
+
+// Fallback when the application never enables EXBG: paint the picture on
+// the back screen so it is at least visible, under every other layer.
+static void VIDCSDrawMpegBackScreen(Vdp2 *varVdp2Regs, int width, int height)
+{
+
+  if (!MpegCardIsActive() || VIDCSMpegExbgEnabled(varVdp2Regs))
+    return;
+
+  // Keep the back screen's own alpha: it carries its color-calculation
+  // ratio (see COMMON_START in common_glshader.c).
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+  VIDCSDrawMpegPicture(width, height, _Ygl->rheight, 0xFF);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
 
 #define YGLDEBUG
 
@@ -389,6 +631,12 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
       glDrawBuffers(1, &DrawBuffers[i]);
     }
     drawScreen[i] = DrawVDP2Screen(varVdp2Regs, i);
+    // Video CD Card: when EXBG is enabled the external picture *is* the
+    // NBG1 screen (VDP2 manual §1.3/§2.5), so it replaces whatever NBG1
+    // drew. DrawVDP2Screen() still runs first, to consume and reset the
+    // NBG1 command queue for this frame.
+    if (i == NBG1 && VIDCSDrawMpegExbg(varVdp2Regs))
+      drawScreen[i] = 1;
     if ((Vdp2External.disptoggle & (1<<i)) == 0) {
       drawScreen[i] = 0;
     }
@@ -492,6 +740,8 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   // résiduelles du frame précédent, visibles via YglFillWithBackScreen()
   // et le uniform s_back du shader de composition.
   YglDrawBackScreen();
+  // Video CD Card fallback path only (see VIDCSDrawMpegBackScreen).
+  VIDCSDrawMpegBackScreen(varVdp2Regs, _Ygl->width, _Ygl->height);
 
   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->original_fbo);
 
