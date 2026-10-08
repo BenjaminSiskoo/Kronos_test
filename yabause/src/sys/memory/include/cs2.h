@@ -127,6 +127,44 @@ typedef struct
    u8 vidchannum;
 } mpegstm_struct;
 
+// MPEG/Video CD Card "LSI" register bank, as documented on the Yabause wiki
+// (MPEGCard page, section "LSI", table of SH-1-space registers used by the
+// card's firmware): 0xA100000 interpolation(bits4-7)/display enable(bit1),
+// 0xA100006 X position, 0xA100008 Y position, 0xA100012 border color. The
+// CD Block's "MPEG Set/Get LSI" commands (0xAF/0xAE) address this bank by
+// offset; "MPEG Set Window"(0xA1) and "MPEG Set Border Color"(0xA2) are the
+// higher-level commands that end up writing the same registers.
+typedef struct
+{
+   u8  status;       // 0xA100000 : bit1 display enable, bits4-7 interpolation mode
+   u16 xpos;         // 0xA100006
+   u16 ypos;         // 0xA100008
+   u32 bordercolor;  // 0xA100012
+} mpeglsi_struct;
+
+// "MPEG Set Window"(0xA1) display-window rectangle. The exact CR1-CR4 field
+// layout for this command isn't part of any document we could find (unlike
+// the CD-specific commands, which ST-040-R4-051795 covers); we mirror it as
+// a top-left/bottom-right rectangle by analogy with the VDP1 clipping window
+// commands (System/User Clipping, ST-013-R3 §4.4), which is the closest
+// documented Saturn convention for "set a rectangle via 4 command words".
+typedef struct
+{
+   u16 x1, y1, x2, y2;
+} mpegwindow_struct;
+
+// "MPEG Set Fade"(0xA3): fade the decoded picture toward/away from the
+// border color. Layout undocumented; CR1 low byte is taken as the fade
+// rate and CR2 low byte as direction(0=fade out to border color, 1=fade
+// in from it), by analogy with the VDP2 color-calculation "gradation"
+// (BOKE) function described in the VDP2 Manual ST-058-R2 §12.2 p.238,
+// the only Saturn fading hardware that is actually documented.
+typedef struct
+{
+   u8 rate;
+   u8 direction;
+} mpegfade_struct;
+
 typedef struct
 {
    u32 DTR;
@@ -225,6 +263,33 @@ typedef struct {
   mpegmode_struct mpegmode;
   mpegcon_struct mpegcon[2];
   mpegstm_struct mpegstm[2];
+
+  // --- MPEG/Video CD Card state added for commands 0x97-0x99, 0x9C, 0x9F,
+  // 0xA1-0xA4, 0xA5-0xAA, 0xAE (see MPEGCommands list on the Yabause wiki,
+  // CDBlock page, "MPEG Specific Commands"). These commands previously
+  // either fell through to the "not implemented" default case (0x97-0x99,
+  // 0x9C, 0x9F, 0xA5-0xAA, 0xAE) or were stubbed without persisting the
+  // values the game sent (0xA1-0xA4).
+  u32 mpegtimecode;         // running decode timecode, see Cs2MpegGetTimecode (0x98)
+  u32 mpegpts;              // last decoded picture's presentation timestamp,
+                             // 90kHz units per the MPEG-1 System Stream PTS
+                             // format (ISO/IEC 11172-1 §2.4.4.3), see
+                             // Cs2MpegGetPts (0x99)
+  u16 mpegpicturewidth;     // Cs2MpegGetPictureSize (0x9F)
+  u16 mpegpictureheight;
+  mpegwindow_struct mpegwindow;    // current window rectangle (0xA1)
+  mpegfade_struct mpegfade;
+  u16 mpegvideoeffects;     // raw 0xA4 effect flags; bit meaning is not
+                             // publicly documented so this is stored as-is
+                             // and echoed back verbatim by MpegGetStatus.
+  mpeglsi_struct mpeglsi;
+  int isvideocd;             // set by Cs2DetectVideoCD(): the mounted disc
+                              // matches the White Book Video CD layout
+                              // (ISO9660 + VIDEO_CD/MPEGAV per the Philips
+                              // "Video CD Specification", cross-referenced
+                              // against the MPEGCard wiki page which states
+                              // that non-Saturn discs -- audio CDs and Video
+                              // CDs alike -- are auto-authenticated).
 
   int _command;
   u32 _statuscycles;
@@ -341,31 +406,68 @@ void Cs2MpegInit(void);                    // 0x93
 void Cs2MpegSetMode(void);                 // 0x94
 void Cs2MpegPlay(void);                    // 0x95
 void Cs2MpegSetDecodingMethod(void);       // 0x96
-// MPEG Out Decoding Sync                  // 0x97
-// MPEG Get Timecode                       // 0x98
-// MPEG Get Pts                            // 0x99
+void Cs2MpegOutDecodingSync(void);         // 0x97
+void Cs2MpegGetTimecode(void);             // 0x98
+void Cs2MpegGetPts(void);                  // 0x99
 void Cs2MpegSetConnection(void);           // 0x9A
 void Cs2MpegGetConnection(void);           // 0x9B
-// MPEG Change Connection                  // 0x9C
+void Cs2MpegChangeConnection(void);        // 0x9C
 void Cs2MpegSetStream(void);               // 0x9D
 void Cs2MpegGetStream(void);               // 0x9E
-// MPEG Get Picture Size                   // 0x9F
+void Cs2MpegGetPictureSize(void);          // 0x9F
 void Cs2MpegDisplay(void);                 // 0xA0
 void Cs2MpegSetWindow(void);               // 0xA1
 void Cs2MpegSetBorderColor(void);          // 0xA2
 void Cs2MpegSetFade(void);                 // 0xA3
 void Cs2MpegSetVideoEffects(void);         // 0xA4
-// MPEG Get Image                          // 0xA5
-// MPEG Set Image                          // 0xA6
-// MPEG Read Image                         // 0xA7
-// MPEG Write Image                        // 0xA8
-// MPEG Read Sector                        // 0xA9
-// MPEG Write Sector                       // 0xAA
-// MPEG Get LSI                            // 0xAE
+void Cs2MpegGetImage(void);                // 0xA5
+void Cs2MpegSetImage(void);                // 0xA6
+void Cs2MpegReadImage(void);               // 0xA7
+void Cs2MpegWriteImage(void);              // 0xA8
+void Cs2MpegReadSector(void);              // 0xA9
+void Cs2MpegWriteSector(void);             // 0xAA
+void Cs2MpegGetLSI(void);                  // 0xAE
 void Cs2MpegSetLSI(void);                  // 0xAF
 void Cs2AuthenticateDevice(void);          // 0xE0
 void Cs2IsDeviceAuthenticated(void);       // 0xE1
 void Cs2GetMPEGRom(void);                  // 0xE2
+
+// Video CD (White Book) disc detection, used by Cs2AuthenticateDevice() and
+// by the disc-type report in Cs2GetHardwareInfo()'s IsCDAuth-style callers.
+// Looks for the ISO9660 primary volume descriptor plus a VIDEO_CD or SVCD
+// directory containing INFO.VCD/ENTRIES.VCD, per the Philips "Video Compact
+// Disc Specification" ("White Book") -- see Cs2DetectVideoCD() in cs2.c for
+// the exact checks and their sourcing.
+int Cs2DetectVideoCD(void);
+
+// Tells apart audio CD / other non-Saturn data disc (incl. Video CD) /
+// genuine Saturn disc for Cs2AuthenticateDevice()'s satauth -- see
+// Cs2DetectDiscType() in cs2.c. Missing this prototype previously left
+// the call inside Cs2AuthenticateDevice() relying on the compiler's
+// old-style implicit-declaration fallback instead of the real signature
+// (MSVC C4013 / GCC -Wimplicit-function-declaration).
+int Cs2DetectDiscType(void);
+
+// True when a Video CD Card is plugged in. On real hardware the card sits in
+// the dedicated MPEG slot at the back, NOT in the A-bus cartridge port, so it
+// can coexist with a RAM/backup cartridge. It is therefore considered present
+// as soon as a Video CD Card ROM was loaded from the "Mpeg ROM" setting (raw
+// dump or .zip), or when "Video CD Card (MPEG Card)" is the selected cart
+// type (kept for compatibility, e.g. games using MPEG without the ROM).
+int Cs2IsMpegCardPresent(void);
+
+// Lets the (emulated) MPEG decoder consume the Form 2 sectors stored in the
+// partitions named by MPEG Set Connection, like the real decoder device
+// does. Called once per frame, before MpegCardAdvance().
+void Cs2MpegDecoderPump(void);
+
+// Runs the MPEG decoder for one emulated frame, honouring MPEG Set Decoding
+// Method pause / slow playback. Called once per frame after the pump.
+void Cs2MpegAdvance(double seconds);
+
+// Refreshes the MPEG play/audio/video status fields reported by
+// doMPEGReport() (see the comment in cs2.c for the bit layout).
+void Cs2MpegUpdateStatus(void);
 
 u8 Cs2FADToTrack(u32 val);
 u32 Cs2TrackToFAD(u16 trackandindex);
@@ -411,11 +513,6 @@ int Cs2ForceCloseTray( int coreid, const char * cdpath );
 // Returns 0 on success, -1 if the file cannot be written or if the CD block
 // is not initialised.
 int Cs2SaveDebugReport(const char *filename);
-
-// Returns 1 if a MPEG card (Video CD card) is present, 0 otherwise.
-// Used by the HLE BIOS (BiosCheckMPEGCard) : without this prototype the call
-// in bios.c is an implicit declaration, which is an error with GCC >= 14.
-int Cs2IsMpegCardPresent(void);
 
 #ifdef __cplusplus
 }
