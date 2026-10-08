@@ -76,6 +76,23 @@ writebytefunc CacheWriteByteList[0x1000];
 writewordfunc CacheWriteWordList[0x1000];
 writelongfunc CacheWriteLongList[0x1000];
 
+/* Raccourcis en ligne des deux fonctions de sh2core.c appelees a chaque
+ * acces SH-2 (fetch compris) :
+ *   - SH2UpdateABusAccess() ne fait rien si l'etat d'acces au bus CPU ne
+ *     change pas, ce qui est le cas de presque tous les acces ;
+ *   - SH2DMABusPenalty() ne fait rien hors du SH-2 maitre ou quand le DMAC
+ *     est arrete (DMAOR : DME = 1, NMIF = AE = 0 requis).
+ * Le test est fait ici, avant l'appel : meme resultat, sans l'appel de
+ * fonction hors module dans le cas courant. */
+static INLINE void SH2ABusAccessFast(SH2_struct *context, int on) {
+  if (context->isAccessingCPUBUS != on) SH2UpdateABusAccess(context, on);
+}
+
+static INLINE void SH2DMABusPenaltyFast(SH2_struct *context) {
+  if ((context == MSH2) && ((context->onchip.DMAOR & 0x07) == 0x01))
+    SH2DMABusPenalty(context);
+}
+
 #define EXTENDED_BACKUP_SIZE 0x00800000
 #define EXTENDED_BACKUP_ADDR 0x08000000
 
@@ -848,7 +865,8 @@ u8 FASTCALL DMAMappedMemoryReadByte(u32 addr) {
  * jeux de SH2LegacyFetchDBList (ancien temps d'acces, voir db.c).
  * Retour : 1 = Work RAM-H, 2 = Work RAM-L, 0 = chemin normal. */
 static int SH2UnemulatedCacheDataPath(SH2_struct *context, u32 addr);
-static void SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region);
+static int SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region);
+static INLINE void SH2UnemulatedCacheWrite(SH2_struct *context, u32 addr);
 
 u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr) {
 CACHE_LOG("rb %x %x\n", addr, addr >> 29);
@@ -861,8 +879,8 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    {
       case 0x1:
       {
-        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2DMABusPenaltyFast(context);   /* acces externe (cache-through) */
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         SH2WaitScuDmaOnABBus(context, addr);
         return ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
@@ -873,15 +891,15 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
             Sans emulation du cache : lectures traitees comme des succes. */
          {
-           const int hit = SH2UnemulatedCacheDataPath(context, addr);
-           if (hit != 0) {
-             SH2UnemulatedCacheDataRead(context, addr, hit);
+           const int region = SH2UnemulatedCacheDataPath(context, addr);
+           if ((region != 0) && SH2UnemulatedCacheDataRead(context, addr, region)) {
+             const int hit = region;
              return T2ReadByte((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
            }
          }
-         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
-         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-         else SH2UpdateABusAccess(context, 1);
+         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenaltyFast(context);
+         if (context->cacheOn) SH2ABusAccessFast(context, 0);
+         else SH2ABusAccessFast(context, 1);
          if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
            return context->cacheOn
                    ? CacheReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
@@ -931,7 +949,9 @@ u16 FASTCALL DMAMappedMemoryReadWord(u32 addr) {
    here, so nothing could tell them apart. They are split now: SH2FetchWord is
    what krfetchlist points at, which keeps instrumentation on the data path
    from seeing every instruction fetch. */
-static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
+/* isFetch : fetch d'instruction (soumis a CCR.ID dans le cache emule,
+   voir CacheFetchWord()) plutot que lecture de donnee (CCR.OD). */
+static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr, int isFetch)
 {
     int id = addr >> 29;
     if (context == NULL) id =1;
@@ -939,8 +959,8 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
    {
       case 0x1:
       {
-        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2DMABusPenaltyFast(context);   /* acces externe (cache-through) */
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         SH2WaitScuDmaOnABBus(context, addr);
         return ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
@@ -949,10 +969,15 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr)
       /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
          externe. Cache actif : seuls les defauts le sont (CacheFetch()).
          Sans emulation du cache : lectures traitees comme des succes. */
-      if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
-      if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-      else SH2UpdateABusAccess(context, 1);
+      if (yabsys.usecache && !context->cacheOn) SH2DMABusPenaltyFast(context);
+      if (context->cacheOn) SH2ABusAccessFast(context, 0);
+      else SH2ABusAccessFast(context, 1);
       if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
+#ifdef USE_CACHE
+      if (isFetch && context->cacheOn &&
+          (CacheReadWordList[(addr >> 16) & 0xFFF] == CacheReadWord))
+         return CacheFetchWord(context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
+#endif
            return context->cacheOn
                    ? CacheReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
                    : ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
@@ -1002,13 +1027,13 @@ u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
    /* Lecture de donnees (les fetchs passent par SH2FetchWord()) : voir
       SH2UnemulatedCacheDataPath(). */
    {
-     const int hit = SH2UnemulatedCacheDataPath(context, addr);
-     if (hit != 0) {
-       SH2UnemulatedCacheDataRead(context, addr, hit);
+     const int region = SH2UnemulatedCacheDataPath(context, addr);
+     if ((region != 0) && SH2UnemulatedCacheDataRead(context, addr, region)) {
+       const int hit = region;
        return T2ReadWord((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
      }
    }
-   return SH2ReadWordRaw(context, addr);
+   return SH2ReadWordRaw(context, addr, 0);
 }
 
 /* Modele de temps du cache d'instructions du SH-2 quand le jeu active le
@@ -1043,17 +1068,22 @@ u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
 #define SH2_FETCH_MISS_LWRAM 56
 static u32 SH2FetchCacheTag[2][64][4];
 static u8  SH2FetchCacheAge[2][64][4];
+/* Voie la plus recemment utilisee (age 0) de chaque ligne. Voir
+ * SH2FetchCacheAccess(). */
+static u8  SH2FetchCacheMRU[2][64];
 static int SH2FetchCacheReady = 0;
 static int SH2LegacyFetchTiming = 0;
 
 static void SH2FetchCacheClear(int cpu)
 {
    int l, w;
-   for (l = 0; l < 64; l++)
+   for (l = 0; l < 64; l++) {
       for (w = 0; w < 4; w++) {
          SH2FetchCacheTag[cpu][l][w] = 0xFFFFFFFF;
          SH2FetchCacheAge[cpu][l][w] = (u8)w;
       }
+      SH2FetchCacheMRU[cpu][l] = 0;   /* voie 0 : age 0 */
+   }
 }
 
 /* Purge complete (CCR.CP, sh2core.c), ou des deux CPU si context == NULL. */
@@ -1082,31 +1112,66 @@ void SH2SetLegacyFetchTiming(int on)
    SH2LegacyFetchTiming = on;
 }
 
-/* 1 = succes, 0 = defaut (la ligne est alors chargee). */
-static int SH2FetchCacheAccess(SH2_struct *context, u32 addr)
+/* Acces au modele : 1 = succes (LRU mis a jour), 0 = defaut. Sur un
+ * defaut, la ligne est chargee (voie la plus ancienne) sauf si noReplace.
+ *
+ * Regles du SH7604 Hardware Manual, section 8 :
+ *   - les 4 voies sont comparees, meme en mode deux voies (8.4.5) ; seul
+ *     le remplacement est limite aux voies 2 et 3 quand CCR.TW = 1. Avant,
+ *     la recherche elle-meme etait limitee a [first, 4) ;
+ *   - LRU mis a jour sur un succes en lecture ou en ecriture et sur un
+ *     remplacement (8.4.5). Les ages forment un vrai LRU : les 6 bits du
+ *     materiel (Figure 8.8) codent l'ordre de chaque paire de voies, donc
+ *     l'ordre complet ; ages remis a 0,1,2,3 par CCR.CP = ordre de
+ *     remplacement voie 3, 2, 1, 0 (8.4.5). Verifie contre les Tables 8.3
+ *     et 8.4 sur 8 millions d'acces aleatoires (4 voies et 2 voies) :
+ *     memes voies remplacees ;
+ *   - CCR.OD / CCR.ID : pas de remplacement sur un defaut de donnee /
+ *     d'instruction (noReplace), les succes restent servis (8.2).
+ *
+ * Raccourci MRU : un acces a la voie la plus recemment utilisee de la
+ * ligne (age 0) est un succes qui ne change aucun age (seuls les ages
+ * inferieurs a 0 seraient incrementes). La voie MRU garde l'age 0 tant
+ * qu'aucun autre acces n'a lieu sur la ligne (chacun re-enregistre la MRU,
+ * une purge la remet a la voie 0, d'age 0). Une etiquette n'est jamais
+ * presente dans deux voies (une ligne n'est chargee que si aucune des 4
+ * voies ne la porte) : si la voie MRU porte l'etiquette, c'est la seule
+ * correspondance. */
+static int SH2FetchCacheAccess(SH2_struct *context, u32 addr, int noReplace)
 {
-   int cpu = (context == SSH2) ? 1 : 0;
-   int line = (addr >> 4) & 0x3F;
-   u32 tag = (addr >> 10) & 0x7FFFF;
-   int first = (context->onchip.CCR & 0x08) ? 2 : 0;   /* CCR.TW */
-   int w, k, victim = first;
+   const int cpu = (context == SSH2) ? 1 : 0;
+   const int line = (addr >> 4) & 0x3F;
+   const u32 tag = (addr >> 10) & 0x7FFFF;
+   const int first = (context->onchip.CCR & 0x08) ? 2 : 0;   /* CCR.TW */
+   u32 *tags;
+   u8 *age;
+   int w, k, victim;
    u8 old;
    if (!SH2FetchCacheReady) SH2FetchCachePurge(NULL);
-   for (w = first; w < 4; w++) {
-      if (SH2FetchCacheTag[cpu][line][w] == tag) {
-         old = SH2FetchCacheAge[cpu][line][w];
+   tags = SH2FetchCacheTag[cpu][line];
+   age = SH2FetchCacheAge[cpu][line];
+   if (tags[SH2FetchCacheMRU[cpu][line]] == tag)
+      return 1;
+   for (w = 0; w < 4; w++) {
+      if (tags[w] == tag) {
+         old = age[w];
          for (k = first; k < 4; k++)
-            if (SH2FetchCacheAge[cpu][line][k] < old) SH2FetchCacheAge[cpu][line][k]++;
-         SH2FetchCacheAge[cpu][line][w] = 0;
+            if (age[k] < old) age[k]++;
+         age[w] = 0;
+         SH2FetchCacheMRU[cpu][line] = (u8)w;
          return 1;
       }
-      if (SH2FetchCacheAge[cpu][line][w] > SH2FetchCacheAge[cpu][line][victim]) victim = w;
    }
-   old = SH2FetchCacheAge[cpu][line][victim];
+   if (noReplace) return 0;
+   victim = first;
+   for (w = first + 1; w < 4; w++)
+      if (age[w] > age[victim]) victim = w;
+   old = age[victim];
    for (k = first; k < 4; k++)
-      if (SH2FetchCacheAge[cpu][line][k] < old) SH2FetchCacheAge[cpu][line][k]++;
-   SH2FetchCacheAge[cpu][line][victim] = 0;
-   SH2FetchCacheTag[cpu][line][victim] = tag;
+      if (age[k] < old) age[k]++;
+   age[victim] = 0;
+   tags[victim] = tag;
+   SH2FetchCacheMRU[cpu][line] = (u8)victim;
    return 0;
 }
 
@@ -1125,31 +1190,9 @@ static int SH2UnemulatedCacheDataPath(SH2_struct *context, u32 addr)
    return 0;
 }
 
-static void SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region)
+/* Cout d'un remplissage de ligne apres un defaut. */
+static INLINE void SH2UnemulatedCacheMiss(SH2_struct *context, u32 addr, int region)
 {
-   int hit;
-   if (context->onchip.CCR & 0x04) {
-      /* CCR.OD = 1 : un defaut de donnee n'alloue pas de ligne. */
-      int cpu = (context == SSH2) ? 1 : 0;
-      int line = (addr >> 4) & 0x3F;
-      u32 tag = (addr >> 10) & 0x7FFFF;
-      int first = (context->onchip.CCR & 0x08) ? 2 : 0;
-      int w;
-      if (!SH2FetchCacheReady) SH2FetchCachePurge(NULL);
-      hit = 0;
-      for (w = first; w < 4; w++)
-         if (SH2FetchCacheTag[cpu][line][w] == tag) { hit = 1; break; }
-      if (hit) {
-         /* succes : mise a jour LRU comme un acces normal */
-         (void)SH2FetchCacheAccess(context, addr);
-      }
-   } else {
-      hit = SH2FetchCacheAccess(context, addr);
-   }
-   if (hit) {
-      SH2UpdateABusAccess(context, 0);
-      return;
-   }
    if (region == 1) {
       context->cycles += SH2_FETCH_MISS_HWRAM;
       lastHWRamBankCol = (addr >> 10) & 0x3FF;
@@ -1157,7 +1200,35 @@ static void SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region
       context->cycles += SH2_FETCH_MISS_LWRAM;
       lastLWRamBankCol = (addr >> 11) & 0x1FF;
    }
-   SH2UpdateABusAccess(context, 1);
+   SH2ABusAccessFast(context, 1);
+}
+
+/* 1 = lecture traitee par le modele (succes, ou defaut avec remplissage de
+ * ligne) : l'appelant lit la Work RAM sans autre cout. 0 = defaut sans
+ * remplacement (CCR.OD = 1) : "the missed address data is read and
+ * directly transferred to the CPU" (8.4.5), un seul acces externe ;
+ * l'appelant reprend le chemin normal, qui en compte le cout. Avant, ce
+ * cas etait facture comme un remplissage de ligne (7 / 56 cycles). */
+static int SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region)
+{
+   const int noReplace = (context->onchip.CCR & 0x04) != 0;   /* CCR.OD */
+   if (SH2FetchCacheAccess(context, addr, noReplace)) {
+      SH2ABusAccessFast(context, 0);
+      return 1;
+   }
+   if (noReplace) return 0;
+   SH2UnemulatedCacheMiss(context, addr, region);
+   return 1;
+}
+
+/* Ecriture en zone cache : un succes met a jour le LRU (8.4.5) ; un defaut
+ * d'ecriture n'alloue pas de ligne (8.4.2). Le cout de l'ecriture
+ * immediate est compte par le chemin normal. Avant, les ecritures ne
+ * touchaient pas le modele. */
+static INLINE void SH2UnemulatedCacheWrite(SH2_struct *context, u32 addr)
+{
+   if (SH2UnemulatedCacheDataPath(context, addr) != 0)
+      (void)SH2FetchCacheAccess(context, addr, 1);
 }
 
 u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
@@ -1169,38 +1240,63 @@ u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
       nothing reported. */
    if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
 #endif
-   /* Cache SH-2 active par le jeu (CCR.CE = 1, CCR.ID = 0) mais non emule
-    * (yabsys.usecache = 0) : le fetch passe par le modele de cache
-    * d'instructions a etiquettes (SH2FetchCacheAccess()). Succes : pas
-    * d'acces externe, aucun cycle. Defaut : remplissage d'une ligne de
-    * 16 octets. Les autres cas (cache emule, CE = 0, ID = 1, zone
-    * cache-through, BIOS, cartouche) et les jeux de la liste
-    * SH2LegacyFetchDBList restent sur SH2ReadWordRaw(). */
+   /* Cache SH-2 active par le jeu (CCR.CE = 1) mais non emule
+    * (yabsys.usecache = 0) : le fetch passe par le modele a etiquettes
+    * (SH2FetchCacheAccess()). Succes : pas d'acces externe, aucun cycle.
+    * Defaut : remplissage d'une ligne de 16 octets, sauf si CCR.ID = 1
+    * (8.2 : les succes restent servis par le cache, un defaut est un
+    * seul acces externe, compte par le chemin hors cache plus bas). Avant,
+    * CCR.ID = 1 coupait tout le modele et chaque fetch, meme present en
+    * cache, etait facture comme un acces externe. Les autres cas (cache
+    * emule, CE = 0, zone cache-through, BIOS, cartouche) et les jeux de la
+    * liste SH2LegacyFetchDBList restent sur le chemin normal. */
    if ((context != NULL) && !SH2LegacyFetchTiming && (yabsys.usecache == 0) &&
-       ((addr >> 29) == 0) && ((context->onchip.CCR & 0x03) == 0x01)) {
-      u32 page = (addr >> 16) & 0xFFF;
-      if ((page >= 0x600) && (page <= 0x7FF)) {
-         if (SH2FetchCacheAccess(context, addr)) {
-            SH2UpdateABusAccess(context, 0);
-         } else {
-            context->cycles += SH2_FETCH_MISS_HWRAM;
-            lastHWRamBankCol = (addr >> 10) & 0x3FF;
-            SH2UpdateABusAccess(context, 1);
+       ((addr >> 29) == 0) && (context->onchip.CCR & 0x01)) {
+      const u32 page = (addr >> 16) & 0xFFF;
+      const int region = ((page >= 0x600) && (page <= 0x7FF)) ? 1 :
+                         ((page >= 0x020) && (page <= 0x02F)) ? 2 : 0;
+      if (region != 0) {
+         const int noReplace = (context->onchip.CCR & 0x02) != 0;   /* CCR.ID */
+         if (SH2FetchCacheAccess(context, addr, noReplace)) {
+            SH2ABusAccessFast(context, 0);
+            return T2ReadWord((region == 1) ? HighWram : LowWram, addr & 0xFFFFF);
          }
-         return T2ReadWord(HighWram, addr & 0xFFFFF);
-      }
-      if ((page >= 0x020) && (page <= 0x02F)) {
-         if (SH2FetchCacheAccess(context, addr)) {
-            SH2UpdateABusAccess(context, 0);
-         } else {
-            context->cycles += SH2_FETCH_MISS_LWRAM;
-            lastLWRamBankCol = (addr >> 11) & 0x1FF;
-            SH2UpdateABusAccess(context, 1);
+         if (!noReplace) {
+            SH2UnemulatedCacheMiss(context, addr, region);
+            return T2ReadWord((region == 1) ? HighWram : LowWram, addr & 0xFFFFF);
          }
-         return T2ReadWord(LowWram, addr & 0xFFFFF);
       }
    }
-   return SH2ReadWordRaw(context, addr);
+   /* Fetch en Work RAM hors cache : cache-through (2xxxxxxx), ou zone cache
+    * avec un cache inactif pour ce CPU (cacheOn = 0 : cache non emule, ou
+    * emule mais CCR.CE = 0). C'est le chemin de chaque instruction quand le
+    * jeu n'active pas le cache.
+    *
+    * Meme travail que SH2ReadWordRaw(), dans le meme ordre, sans le switch
+    * ni les deux appels indirects : penalite DMAC (zone cache : seulement
+    * avec le cache emule, comme SH2ReadWordRaw()), acces au bus CPU, puis
+    * le gestionnaire Work RAM appele directement (suivi de rangee DRAM et
+    * cycles inchanges). SH2WaitScuDmaOnABBus() n'est pas appele : la Work
+    * RAM n'est ni sur l'A-bus ni sur le B-bus (ScuIsSH2ABBusAddress() vaut
+    * 0). Le gestionnaire installe est compare au gestionnaire Work RAM :
+    * un point d'arret memoire (qui le remplace) reprend le chemin normal. */
+   if (context != NULL) {
+      const u32 id = addr >> 29;
+      if ((id == 0x1) || ((id == 0x0) && !context->cacheOn)) {
+         const u32 page = (addr >> 16) & 0xFFF;
+         if (ReadWordList[page] == HighWramMemoryReadWord) {
+            if ((id == 0x1) || yabsys.usecache) SH2DMABusPenaltyFast(context);
+            SH2ABusAccessFast(context, 1);
+            return HighWramMemoryReadWord(context, *(MemoryBuffer[page]), addr);
+         }
+         if (ReadWordList[page] == LowWramMemoryReadWord) {
+            if ((id == 0x1) || yabsys.usecache) SH2DMABusPenaltyFast(context);
+            SH2ABusAccessFast(context, 1);
+            return LowWramMemoryReadWord(context, *(MemoryBuffer[page]), addr);
+         }
+      }
+   }
+   return SH2ReadWordRaw(context, addr, 1);
 }
 
 u32 FASTCALL DMAMappedMemoryReadLong(u32 addr)
@@ -1222,8 +1318,8 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
    {
       case 0x1: //0x0 no cache
       {
-        SH2DMABusPenalty(context);   /* acces externe (cache-through) */
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2DMABusPenaltyFast(context);   /* acces externe (cache-through) */
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         SH2WaitScuDmaOnABBus(context, addr);
         return ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
@@ -1234,15 +1330,15 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
             Sans emulation du cache : lectures traitees comme des succes. */
          {
-           const int hit = SH2UnemulatedCacheDataPath(context, addr);
-           if (hit != 0) {
-             SH2UnemulatedCacheDataRead(context, addr, hit);
+           const int region = SH2UnemulatedCacheDataPath(context, addr);
+           if ((region != 0) && SH2UnemulatedCacheDataRead(context, addr, region)) {
+             const int hit = region;
              return T2ReadLong((hit == 1) ? HighWram : LowWram, addr & 0xFFFFF);
            }
          }
-         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenalty(context);
-        if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-        else SH2UpdateABusAccess(context, 1);
+         if (yabsys.usecache && !context->cacheOn) SH2DMABusPenaltyFast(context);
+        if (context->cacheOn) SH2ABusAccessFast(context, 0);
+        else SH2ABusAccessFast(context, 1);
         if (!context->cacheOn) SH2WaitScuDmaOnABBus(context, addr);
            return context->cacheOn
                    ? CacheReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr)
@@ -1289,8 +1385,8 @@ LOG("Unhandled SH2 Long R %x %d\n", addr,(addr >> 29));
 
 void FASTCALL DMAMappedMemoryWriteByte(u32 addr, u8 val)
 {
+  /* SH2WriteNotify() notifie deja les deux CPU : un seul appel. */
   SH2WriteNotify(MSH2, addr, 1);
-  SH2WriteNotify(SSH2, addr, 1);
     WriteByteList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
@@ -1302,14 +1398,14 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
    if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
-     SH2DMABusPenalty(context);
+     SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
    switch (id)
    {
       case 0x1:
       {
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         WriteByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
         return;
       }
@@ -1317,8 +1413,9 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
       case 0x4:
       {
         CACHE_LOG("wb %x %x\n", addr, addr >> 29);
-        if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-        else SH2UpdateABusAccess(context, 1);
+        SH2UnemulatedCacheWrite(context, addr);   /* LRU sur succes (8.4.5) */
+        if (context->cacheOn) SH2ABusAccessFast(context, 0);
+        else SH2ABusAccessFast(context, 1);
          if (context->cacheOn)
             CacheWriteByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          else
@@ -1368,8 +1465,8 @@ LOG("Unhandled Byte W %x\n", addr);
 
 void FASTCALL DMAMappedMemoryWriteWord(u32 addr, u16 val)
 {
+  /* SH2WriteNotify() notifie deja les deux CPU : un seul appel. */
   SH2WriteNotify(MSH2, addr, 2);
-  SH2WriteNotify(SSH2, addr, 2);
   WriteWordList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
@@ -1384,14 +1481,14 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
    if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
-     SH2DMABusPenalty(context);
+     SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
    switch (id)
    {
       case 0x1:
       {
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         WriteWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
         return;
       }
@@ -1400,8 +1497,9 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
       {
 CACHE_LOG("ww %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
-         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-         else SH2UpdateABusAccess(context, 1);
+         SH2UnemulatedCacheWrite(context, addr);   /* LRU sur succes (8.4.5) */
+         if (context->cacheOn) SH2ABusAccessFast(context, 0);
+         else SH2ABusAccessFast(context, 1);
          if (context->cacheOn)
             CacheWriteWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          else
@@ -1452,8 +1550,8 @@ LOG("Unhandled Word W %x\n", addr);
 
 void FASTCALL DMAMappedMemoryWriteLong(u32 addr, u32 val)
 {
+  /* SH2WriteNotify() notifie deja les deux CPU : un seul appel. */
   SH2WriteNotify(MSH2, addr, 4);
-  SH2WriteNotify(SSH2, addr, 4);
   WriteLongList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
@@ -1468,14 +1566,14 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
    if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
-     SH2DMABusPenalty(context);
+     SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
    switch (id)
    {
       case 0x1:
       {
-        SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
+        SH2ABusAccessFast(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
         WriteLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
         return;
       }
@@ -1484,8 +1582,9 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
       {
 CACHE_LOG("wl %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
-         if (context->cacheOn) SH2UpdateABusAccess(context, 0);
-         else SH2UpdateABusAccess(context, 1);
+         SH2UnemulatedCacheWrite(context, addr);   /* LRU sur succes (8.4.5) */
+         if (context->cacheOn) SH2ABusAccessFast(context, 0);
+         else SH2ABusAccessFast(context, 1);
          if (context->cacheOn)
             CacheWriteLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
          else
