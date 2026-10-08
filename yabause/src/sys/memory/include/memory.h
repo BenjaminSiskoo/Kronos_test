@@ -393,14 +393,17 @@ extern "C" {
   extern readlongfunc ReadLongList[0x1000];
 
   extern u8** MemoryBuffer[0x1000];
-#ifdef USE_CACHE
+  /* Toujours declarees : memory.c les definit et les remplit sans
+     condition, et les points d'arret memoire de sh2core.c les modifient
+     aussi sans USE_CACHE. Sous #ifdef USE_CACHE, la compilation avec
+     YAB_USE_CACHE=OFF echouait dans sh2core.c (CacheReadByteList non
+     declare). */
   extern readbytefunc CacheReadByteList[0x1000];
   extern readwordfunc CacheReadWordList[0x1000];
   extern readlongfunc CacheReadLongList[0x1000];
   extern writebytefunc CacheWriteByteList[0x1000];
   extern writewordfunc CacheWriteWordList[0x1000];
   extern writelongfunc CacheWriteLongList[0x1000];
-#endif
 
   typedef struct {
     u32 addr;
