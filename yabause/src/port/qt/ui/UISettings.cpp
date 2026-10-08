@@ -87,7 +87,16 @@ const Items mCartridgeTypes = Items()
 	<< Item( "10", "Japanese Modem", false, false, true )
 	<< Item( "11", "STV Rom game", true, false, false, true )
 	<< Item( "12", "128 Mbit Dram", false, false )
-	<< Item( "13", "Development Extension", false, false );
+	<< Item( "13", "Development Extension", false, false )
+	// CART_MPEGCARD (see cs0.h). Like the Netlink/Dram entries above, no
+	// path is needed here: the Video CD Card has nothing memory-mapped on
+	// the CS0 bus -- all of it goes through CD Block commands
+	// (Cs2AuthenticateDevice/Cs2GetMPEGRom/the 0x90-0xAF MPEG commands in
+	// cs2.c). Selecting it is optional: setting "Mpeg ROM" (raw dump or
+	// .zip) is enough for the card to be detected, and leaves the cartridge
+	// port free for a RAM/backup cart, like on real hardware where the card
+	// goes in the rear MPEG slot. See Cs2IsMpegCardPresent().
+	<< Item( "14", "Video CD Card (MPEG Card)", false, false );
 
 const Items mVideoFilterMode = Items()
 	<< Item("0", "None")
@@ -100,8 +109,7 @@ const Items mVideoFilterMode = Items()
 	<< Item("7", "Lanczos3")
 	<< Item("8", "Sharp Bilinear")
 	<< Item("9", "FXAA")
-	<< Item("10", "CRT (Aperture Grille)")
-	<< Item("11", "CRT cgwg fast");
+	<< Item("10", "CRT (Aperture Grille)");
 
 const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
@@ -111,8 +119,7 @@ const Items mUpscaleFilterMode = Items()
 	<< Item("4", "Sharpen (Adaptive)")
 	<< Item("5", "FSR 1.0 (EASU + RCAS)")
 	<< Item("6", "Scale3x")
-	<< Item("7", "Scale4x")
-	<< Item("8", "5xBR v3.7c + CRT");
+	<< Item("7", "Scale4x");
 
 const Items mResolutionMode = Items()
 	<< Item("1", "1x (original resolution of the Saturn)")
@@ -359,7 +366,7 @@ void UISettings::tbBrowse_clicked()
 	else if ( tb == tbMemory )
 		requestNewFile( QtYabause::translate( "Choose a memory file" ), leMemory );
 	else if ( tb == tbMpegROM )
-		requestFile( QtYabause::translate( "Open a mpeg rom" ), leMpegROM );
+		requestFile( QtYabause::translate( "Open a mpeg rom" ), leMpegROM, QtYabause::translate( "Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)" ) );
 	else if ( tb == tbAddr2Line )
 		requestFile( QtYabause::translate( "Choose the location of the addr2line executable" ), leAddr2Line );
 }
