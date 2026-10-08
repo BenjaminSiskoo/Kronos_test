@@ -105,6 +105,8 @@
 #include "scspdsp.h"
 #include "threads.h"
 #include "vdp2.h"
+#include "mpegcard.h"
+#include "yui.h"
 
 #ifndef max
 #define max(a,b) (((a) > (b)) ? (a) : (b))
@@ -1996,6 +1998,7 @@ scsp_trigger_sound_interrupt (u32 id)
    scsp_check_interrupt();
 }
 
+////////////////////////////////////////////////////////////////
 
 void scsp_main_interrupt (u32 id)
 {
@@ -5578,6 +5581,8 @@ ScspReceiveCDDA (const u8 *sector)
 }
 
 
+static void MpegCardMixAudio(s32 *bufL, s32 *bufR, int len);
+
 void new_scsp_update_samples(s32 *bufL, s32 *bufR, int scspsoundlen)
 {
    int i;
@@ -5591,6 +5596,60 @@ void new_scsp_update_samples(s32 *bufL, s32 *bufR, int scspsoundlen)
    }
 
    new_scsp_outbuf_pos = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Video CD Card (EXPERIMENTAL, see mpegcard.h). Real hardware feeds MPEG
+// audio to the DAC bypassing SCSP synthesis entirely; additively mixing
+// it into the same s32 accumulation buffers SCSP's own voices just wrote
+// is the closest equivalent available here; the existing 16-bit clamp in
+// ScspConvert32uto16s() already handles the (rare) case both are loud at
+// once, the same way it already handles multiple loud SCSP voices.
+//
+// MpegCardPullAudioSamples() drains the decoder's own FIFO (see
+// mpegcard.c) in whatever chunks it has ready -- typically 1152-sample
+// MPEG audio frames, which don't line up evenly with SCSP's ~735/882
+// samples per tick -- so this drains only up to `len` samples per call
+// and lets the remainder sit in that FIFO for the next tick.
+//
+// Called from ScspExecAsync() (sound thread) on the samples of the frame
+// just produced (new_scsp_outbuf_l/r), before they are copied into the
+// ring buffer. new_scsp_update_samples() is no longer called since the
+// per-frame ring-buffer copy (e0c8d2969), so mixing there was silent.
+static void MpegCardMixAudio(s32 *bufL, s32 *bufR, int len)
+{
+   float samples[1024 * 2];
+   int samplerate = 0;
+   u32 got;
+   int i;
+
+   if (len <= 0)
+      return;
+   if (len > 1024)
+      len = 1024; // clamp to `samples`'s capacity; scspsoundlen never gets
+                   // anywhere near this in practice (max ~882 @ 50Hz)
+
+   got = MpegCardPullAudioSamples(samples, (u32)len, &samplerate);
+
+   // No resampling: Video CD audio is MPEG-1 Layer II at 44.1kHz (White
+   // Book), the same rate this mixer runs at, so 1:1 is correct. Warn once
+   // instead of silently playing a differently-clocked stream too fast or
+   // too slow, which would be hard to diagnose from the sound alone.
+   if (got > 0 && samplerate != 44100)
+   {
+      static int warned = 0;
+      if (!warned)
+      {
+         warned = 1;
+         YuiMsg("MPEG card: audio is %d Hz, not the expected 44100 Hz; playback speed will be off\n", samplerate);
+      }
+   }
+
+   for (i = 0; i < (int)got; i++)
+   {
+      bufL[i] += (s32)(samples[i * 2] * 32767.0f);
+      bufR[i] += (s32)(samples[i * 2 + 1] * 32767.0f);
+   }
 }
 
 void ScspLockThread() {
@@ -5753,6 +5812,10 @@ void ScspExecAsync() {
         len = 900;  /* size of new_scsp_outbuf_l/r */
      if (len > scspsoundbufsize)
         len = scspsoundbufsize;
+
+     /* Video CD Card: add the MPEG audio decoded for this frame to the
+        samples the SCSP just produced, before they enter the ring buffer. */
+     MpegCardMixAudio(new_scsp_outbuf_l, new_scsp_outbuf_r, (int)len);
 
      if (scspsoundoutleft + len > scspsoundbufsize)
      {
