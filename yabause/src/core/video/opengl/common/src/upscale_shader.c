@@ -8,6 +8,7 @@
 #include "4xbrz_shader.h"
 #include "sharpen_shader.h"
 #include "upscale_ext_shader.h"
+#include "xbr5x_crt_shader.h"
 
 /*
  * Upscale stage of the final output (called by YglBlitFramebuffer).
@@ -23,6 +24,8 @@
  *  UP_SCALE3X                  : 1 pass, Saturn resolution x3
  *  UP_SCALE4X                  : Scale2x -> Scale2x, Saturn resolution x4
  *  UP_FSR                      : EASU -> RCAS, output (viewport) resolution
+ *  UP_5XBR_CRT                 : 1 pass, output (viewport) resolution
+ *                                (Hyllian 5xBR v3.7c + CRT-caligari)
  */
 
 /* RCAS strength in stops (0 = maximum sharpness, each +1 halves it).
@@ -38,6 +41,7 @@ enum {
   UPP_SCALE3X,
   UPP_FSR_EASU,
   UPP_FSR_RCAS,
+  UPP_5XBR_CRT,
   UPP_MAX
 };
 
@@ -51,7 +55,7 @@ typedef struct {
 static UpscaleProgram up_progs[UPP_MAX];
 
 static const char * const up_prog_name[UPP_MAX] = {
-  "HQ4x", "4xBRZ", "6xBRZ", "Sharpen", "Scale2x", "Scale3x", "FSR EASU", "FSR RCAS"
+  "HQ4x", "4xBRZ", "6xBRZ", "Sharpen", "Scale2x", "Scale3x", "FSR EASU", "FSR RCAS", "5xBR v3.7c + CRT"
 };
 
 static const GLchar * up_vertex_src(int id) {
@@ -74,6 +78,7 @@ static const GLchar * up_fragment_src(int id) {
     case UPP_SCALE3X:  return Yglprg_upscale_scale3x_f;
     case UPP_FSR_EASU: return Yglprg_upscale_fsr_easu_f;
     case UPP_FSR_RCAS: return Yglprg_upscale_fsr_rcas_f;
+    case UPP_5XBR_CRT: return Yglprg_upscale_5xbr_crt_f;
     default:           return NULL;
   }
 }
@@ -287,6 +292,7 @@ void YglUpscaleGetOutputSize(int mode, int w, int h, int texw, int texh, int dis
       *outh = texh;
       break;
     case UP_FSR:
+    case UP_5XBR_CRT:
       *outw = dispw;
       *outh = disph;
       break;
@@ -322,6 +328,7 @@ int YglUpscaleFramebuffer(u32 srcTexture, u32 targetFbo, float w, float h, float
     case UP_SHARPEN: ret = up_use_program(UPP_SHARPEN); break;
     case UP_SCALE3X: ret = up_use_program(UPP_SCALE3X); break;
     case UP_SCALE4X: ret = up_use_program(UPP_SCALE2X); break;
+    case UP_5XBR_CRT: ret = up_use_program(UPP_5XBR_CRT); break;
     case UP_FSR:
       ret = up_use_program(UPP_FSR_RCAS);
       if (ret == 0) ret = up_use_program(UPP_FSR_EASU);
@@ -371,11 +378,13 @@ int YglUpscaleFramebuffer(u32 srcTexture, u32 targetFbo, float w, float h, float
     case UP_6XBRZ:
     case UP_SHARPEN:
     case UP_SCALE3X:
+    case UP_5XBR_CRT:
     {
       int id = (mode == UP_HQ4X) ? UPP_HQ4X :
                (mode == UP_4XBRZ) ? UPP_4XBRZ :
                (mode == UP_6XBRZ) ? UPP_6XBRZ :
-               (mode == UP_SHARPEN) ? UPP_SHARPEN : UPP_SCALE3X;
+               (mode == UP_SHARPEN) ? UPP_SHARPEN :
+               (mode == UP_SCALE3X) ? UPP_SCALE3X : UPP_5XBR_CRT;
       /* Already bound by the check above */
       up_set_sizes(id, w, h, texw, texh);
       up_draw(id, srcTexture, targetFbo, outw, outh);
