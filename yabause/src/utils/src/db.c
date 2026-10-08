@@ -1,4 +1,6 @@
 #include <sys/stat.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "cs0.h"
 #include "cs2.h"
@@ -121,6 +123,32 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-31601G", // Zero Divide - The Final Conflict (Japan)
    NULL
 };
+
+/* Jeux Saturn qui utilisent la carte Video CD (carte MPEG). En dehors des
+   Video CD, la carte n'est presentee qu'a ces jeux (voir
+   Cs2IsMpegCardPresent() dans cs2.c) ; les autres disques la voient absente.
+
+   Sources : FAQ GameFAQs "JVC Twin Operator MPEG Card" (liste de John
+   Hokanson Jr.) pour les titres ; codes produit verifies sur satakore.com et
+   chromagi.com (catalogue Saturn). */
+static const char * const MpegCardDBList[] = {
+   "T-27904G", // Lunar Silver Star Story MPEG-ban (Japan) -- carte obligatoire
+   "GS-9134",  // Sakura Taisen Hanagumi Tsuushin (Japan)
+   "GS-9160",  // Sakura Taisen Jouki Radio Show (Japan)
+   "GS-9172",  // Moritaka Chisato Watarasebashi / Lala Sunshine (Japan)
+   NULL
+};
+
+/* Retourne 1 si game_code figure dans MpegCardDBList. */
+int DBLookupMpegCard(const char *game_code)
+{
+   int i;
+   if (game_code == NULL || game_code[0] == '\0') return 0;
+   for (i = 0; MpegCardDBList[i] != NULL; i++) {
+      if (strcmp(MpegCardDBList[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
 
 /* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
 int DBLookupLegacySH2FetchTiming(void)
