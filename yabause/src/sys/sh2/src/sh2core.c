@@ -50,6 +50,7 @@ void SCITransmitByte(u8);
 void enableCache(SH2_struct *ctx);
 void disableCache(SH2_struct *ctx);
 void InvalidateCache(SH2_struct *ctx);
+void SH2CacheInitTags(SH2_struct *ctx);
 
 static void (*SH2BlockableExec)(SH2_struct *context, u32 cycles);
 static void (*SH2StandardExec)(SH2_struct *context, u32 cycles);
@@ -499,12 +500,8 @@ int SH2Init(int coreid)
    MSH2->cacheOn = 0;
    SSH2->cacheOn = 0;
 
-#ifdef USE_CACHE
-   memset(MSH2->tagWay, 0x4, 64*0x80000);
-   memset(MSH2->cacheTagArray, 0x0, 64*4*sizeof(u32));
-   memset(SSH2->tagWay, 0x4, 64*0x80000);
-   memset(SSH2->cacheTagArray, 0x0, 64*4*sizeof(u32));
-#endif
+   SH2CacheInitTags(MSH2);
+   SH2CacheInitTags(SSH2);
    // So which core do we want?
    if (coreid == SH2CORE_DEFAULT)
       coreid = 0; // Assume we want the first one
@@ -2429,31 +2426,58 @@ void FASTCALL OnchipWriteLong(SH2_struct *context, u32 addr, u32 val)  {
 
 //////////////////////////////////////////////////////////////////////////////
 #ifdef USE_CACHE
-static void UpdateLRU(SH2_struct *context, u8 line, u8 way) {
-//Table 8.3 SH7604_Hardware_Manual.pdf
-  switch (way) {
-    case 0:
-      context->cacheLRU[line] &= 0x7;
-    break;
-    case 1:
-      context->cacheLRU[line] &= 0x19;
-      context->cacheLRU[line] |= 0x20;
-    break;
-    case 2:
-      context->cacheLRU[line] &= 0x2A;
-      context->cacheLRU[line] |= 0x14;
-    break;
-    case 3:
-      context->cacheLRU[line] |= 0x0B;
-    break;
-    default:
-    break;
-  }
-  // CACHE_LOG("%s : Update Line %d => way %d\n", (context==SSH2)?"SSH2":"MSH2", line, way);
+/* Cache du SH7604 (SH7604 Hardware Manual, section 8) : 64 lignes de
+   16 octets, 4 voies, ecriture immediate (write-through), unifie
+   instructions / donnees.
+
+   Mise a jour LRU, Table 8.3 : acceder a la voie 'way' revient a
+   LRU = (LRU & masque_ET[way]) | masque_OU[way]. Les bits marques "—"
+   gardent leur valeur ; la voie 3 ne fait que mettre des bits a 1. Le LRU
+   est mis a jour sur un succes en lecture, un succes en ecriture et un
+   remplacement apres un defaut (8.4.5). */
+static const u8 cacheLRUAnd[4] = { 0x07, 0x19, 0x2A, 0xFF };
+static const u8 cacheLRUOr[4]  = { 0x00, 0x20, 0x14, 0x0B };
+
+static INLINE void UpdateLRU(SH2_struct *context, u32 line, u32 way) {
+  context->cacheLRU[line] = (u8)((context->cacheLRU[line] & cacheLRUAnd[way]) | cacheLRUOr[way]);
 }
 
+/* Ligne 'line' de la voie 'way' dans le tableau de donnees (8.4.8 :
+   H'C0000000 + way * 0x400 + line * 16). Le tableau de donnees est
+   DataArray, aussi lu et ecrit par les acces en zone Cxxxxxxx : en mode
+   deux voies (CCR.TW = 1), les voies 0 et 1 y sont la RAM de 2 Ko et le
+   cache n'utilise que les voies 2 et 3.
+
+   Avant, les lignes etaient rangees dans un tableau separe (cacheData) :
+   une lecture de H'C0000000-H'C0000FFF ne voyait pas le contenu du cache,
+   et une ecriture dans le tableau de donnees ne modifiait pas la ligne. */
+static INLINE u8 *CacheLineData(SH2_struct *context, u32 line, u32 way) {
+  return &context->DataArray[(way << 10) | (line << 4)];
+}
+
+/* Recherche associative : voie 0-3 qui contient 'tag' sur la ligne, 4 si
+   aucune. Les 4 voies sont comparees, y compris en mode deux voies (8.4.5 :
+   "Comparisons of tag addresses of address arrays are carried out on all
+   four ways even in two-way mode"). Une voie invalide (bit
+   SH2_CACHE_TAG_INVALID) ne correspond jamais (8.4.1), 'tag' etant sur
+   19 bits.
+
+   Remplace l'index tagWay[64][0x80000] (u8, 32 Mo par CPU), lu a une
+   position quasi aleatoire a chaque acces. */
+static INLINE u32 CacheLookup(const SH2_struct *context, u32 line, u32 tag) {
+  const u32 *t = context->cacheTagArray[line];
+  if (t[0] == tag) return 0;
+  if (t[1] == tag) return 1;
+  if (t[2] == tag) return 2;
+  if (t[3] == tag) return 3;
+  return 4;
+}
+
+/* Voie a remplacer, Table 8.4. En mode deux voies, seules les voies 2 et 3
+   sont remplacees et seul l'ordre entre elles compte : le bit 0 du LRU
+   (mis a 1 par un acces a la voie 3, a 0 par un acces a la voie 2). LRU a
+   0 apres une purge : voie 3, puis voie 2 (8.5.4). */
 static u8 getLRU(SH2_struct *context, u32 tag, u8 line) {
-//Table 8.3 SH7604_Hardware_Manual.pdf
   u8 way = -1;
   if (context->onchip.CCR & (1 << 3))//2-way mode
   {
@@ -2468,19 +2492,14 @@ static u8 getLRU(SH2_struct *context, u32 tag, u8 line) {
     else if ((context->cacheLRU[line] & 0x26) == 0x6) way=1;
     else if ((context->cacheLRU[line] & 0x15) == 0x1) way=2;
     else if ((context->cacheLRU[line] & 0x0B) == 0x0) way=3;
-    //Init phase
-    else if (context->cacheLRU[line] == 0xB) way=2;
-    //Shall never be reached
-    else if (context->cacheLRU[line] == 0x1E) way=1;
-    else if (context->cacheLRU[line] == 0x38) way=0;
-    /* Table 8.3 leaves 32 of the 64 LRU encodings undefined. They are not
-       reachable from the reset state, but "way" starts life as (u8)-1 and is
-       used unchecked as an index into cacheTagArray[64][4] and
-       cacheData[64][4][16], so any future change that reaches one of those
-       states becomes a silent out-of-bounds write. Pin it to a valid way. */
+    /* Table 8.4 leaves 32 of the 64 LRU encodings undefined. They are not
+       reachable from the purge state through Table 8.3 updates (the manual
+       asks software to write only 0 as LRU through the address array, 8.4.9),
+       but "way" starts life as (u8)-1 and is used unchecked as an index, so
+       pin it to a valid way. Les anciens cas 0xB, 0x1E et 0x38 qui suivaient
+       ici etaient inatteignables (0xB et 0x38 sont deja pris par les tests
+       de la Table 8.4 ci-dessus, 0x1E tombait dans le cas suivant). */
     else way=0;
-
-    // CACHE_LOG("%s : Line %d => way %d\n", (context==SSH2)?"SSH2":"MSH2", line, way);
   }
   return way;
 }
@@ -2500,55 +2519,39 @@ static inline void CacheWriteThrough(SH2_struct *context, u8* mem, u32 addr, u32
   }
 }
 
-static inline void CacheWriteVal(SH2_struct *context, u32 addr, u32 val, u8 size ) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 byte = addr&0xF;
-  u8 way=context->tagWay[line][tag];
-  /* La ligne de cache est une memoire interne au SH-2 : y ecrire ne doit
-     passer ni par le gestionnaire de la zone externe ni par son modele de
-     temps.
-
-     Les gestionnaires Work RAM (HighWram/LowWramMemoryWrite*) comptent un
-     changement de rangee DRAM a partir de l'adresse recue et ajoutent des
-     cycles. Appeles ici avec l'adresse 0-15 de la ligne, ils voyaient une
-     rangee 0 fictive : +2 cycles (Work RAM-H) ou +4 (Work RAM-L) a chaque
-     mise a jour de ligne, et le suivi de rangee de la vraie memoire etait
-     fausse, si bien que l'ecriture reelle qui suit payait elle aussi un
-     changement de rangee. Le stockage de la ligne suit le format T2 des deux
-     Work RAM (seules zones mises en cache, voir enableCache()). */
+/* La ligne de cache est une memoire interne au SH-2 : y ecrire ne doit
+   passer ni par le gestionnaire de la zone externe ni par son modele de
+   temps (suivi de rangee DRAM des gestionnaires Work RAM). Le stockage de
+   la ligne suit le format T2 des deux Work RAM, seules zones mises en
+   cache (enableCache()), et de DataArray. */
+static INLINE void CacheWriteVal(SH2_struct *context, u32 line, u32 way, u32 addr, u32 val, u8 size) {
+  u8 *data = CacheLineData(context, line, way);
+  const u32 byte = addr & 0xF;
   switch(size) {
   case 1:
-    T2WriteByte(context->cacheData[line][way], byte, val);
+    T2WriteByte(data, byte, val);
     break;
   case 2:
-    T2WriteWord(context->cacheData[line][way], byte, val);
+    T2WriteWord(data, byte, val);
     break;
   case 4:
-    T2WriteLong(context->cacheData[line][way], byte, val);
+    T2WriteLong(data, byte, val);
     break;
   }
 }
 
+/* Ecriture en zone cache (8.4.2) : si une voie porte l'etiquette, la
+   donnee y est ecrite et le LRU mis a jour ; l'ecriture part dans tous les
+   cas vers la memoire externe, et un defaut d'ecriture n'alloue pas de
+   ligne. */
 void CacheWrite(SH2_struct *context, u8* mem, u32 addr, u32 val, u8 size) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 byte = addr&0xF;
-  u8 way=context->tagWay[line][tag];
-  u8 ret = 0;
-  if (byte + size > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
-  // CACHE_LOG("Write (%d %x) tag %x **** %x (%x %x)\n", line, way, context->cacheTagArray[line][way], tag, addr, val);
-  if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
-    // Cache hit => update cache
-    // CACHE_LOG("Hit Write (%d %x) tag %x **** %x (%x %x)\n", line, way, context->cacheTagArray[line][way], tag, addr, val);
+  const u32 line = (addr>>4)&0x3F;
+  const u32 tag = (addr>>10)&0x7FFFF;
+  const u32 way = CacheLookup(context, line, tag);
+  if (way <= 0x3) {
     UpdateLRU(context, line, way);
-    CacheWriteVal(context, addr, val, size);
-    // for (int i =0; i<=0xF; i++) {
-    //   printf("%x ", context->cacheData[line][way][i]);
-    // }
-    // printf("\n");
+    CacheWriteVal(context, line, way, addr, val, size);
   }
-  // else   CACHE_LOG("Write Miss (%d %x) tag %x **** %x (%x %x)\n", line, way, context->cacheTagArray[line][way], tag, addr, val);
   CacheWriteThrough(context, mem, addr, val, size);
 }
 
@@ -2561,7 +2564,24 @@ void CacheWriteWord(SH2_struct *context,u8* mem, u32 addr, u16 val){
 void CacheWriteLong(SH2_struct *context,u8* mem, u32 addr, u32 val){
   CacheWrite(context, mem, addr, val, 4);
 }
+
+/* Toutes les voies invalides, etiquettes conservees. */
+static void CacheInvalidateAllTags(SH2_struct *ctx) {
+  int line, way;
+  for (line = 0; line < 64; line++)
+    for (way = 0; way < 4; way++)
+      ctx->cacheTagArray[line][way] |= SH2_CACHE_TAG_INVALID;
+}
 #endif
+
+/* Mise a l'etat initial des structures du cache (SH2Init()). */
+void SH2CacheInitTags(SH2_struct *ctx) {
+#ifdef USE_CACHE
+  memset(ctx->cacheTagArray, 0x0, 64*4*sizeof(u32));
+  CacheInvalidateAllTags(ctx);
+  memset(ctx->cacheLRU, 0, 64);
+#endif
+}
 
 void InvalidateCache(SH2_struct *ctx) {
 #ifdef USE_CACHE
@@ -2580,24 +2600,20 @@ void InvalidateCache(SH2_struct *ctx) {
 
      Walking cacheTagArray reconstructs each resident line's address as
      (tag << 10) | (line << 4): 256 lines of 16 bytes at most, far cheaper
-     than notifying the 2 MB of cacheable space, and precise. */
+     than notifying the 2 MB of cacheable space, and precise. Les voies
+     invalides sont sautees (avant, elles l'etaient sous l'adresse
+     line << 4, debut de la ROM BIOS, ce qui remettait aussi a decode() les
+     points d'accroche decodeInt() poses la). */
   for (line = 0; line < 64; line++)
     for (way = 0; way < 4; way++)
-      SH2WriteNotify(ctx,
-                     (ctx->cacheTagArray[line][way] << 10) | (line << 4), 16);
+      if ((ctx->cacheTagArray[line][way] & SH2_CACHE_TAG_INVALID) == 0)
+        SH2WriteNotify(ctx,
+                       (ctx->cacheTagArray[line][way] << 10) | (line << 4), 16);
 
-  /* tagWay est un index tag -> voie de 64 x 512 Ko = 32 Mo par CPU. Le
-     remettre entierement a 0x4 a chaque purge (CCR.CP) coutait un memset de
-     32 Mo ; un jeu qui purge a chaque image (Tennis Arena : CCR <- 11H dans
-     une commande de l'esclave) devenait tres lent avec le cache emule.
-     Seules les entrees des 256 lignes presentes peuvent designer une voie
-     valide : on ne remet que celles-la. Une entree perimee restante est sans
-     effet, chaque recherche verifiant cacheTagArray[line][way] == tag. */
-  for (line = 0; line < 64; line++)
-    for (way = 0; way < 4; way++)
-      ctx->tagWay[line][ctx->cacheTagArray[line][way] & 0x7FFFF] = 0x4;
+  /* CCR.CP (8.2, 8.4.6) : bits de validite et LRU remis a 0. Les
+     etiquettes et les donnees ne sont pas effacees. */
+  CacheInvalidateAllTags(ctx);
   memset(ctx->cacheLRU, 0, 64);
-  memset(ctx->cacheTagArray, 0x0, 64*4*sizeof(u32));
 #endif
   ctx->cycles += 1;
 }
@@ -2658,57 +2674,81 @@ void disableCache(SH2_struct *context) {
 }
 
 #ifdef USE_CACHE
-void CacheFetch(SH2_struct *context, u8* memory, u32 addr, u8 way) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
+/* Remplissage d'une ligne apres un defaut (8.4.1) : etiquette ecrite, bit V
+   a 1, LRU mis a jour, 4 mots longs lus en memoire externe. */
+static void CacheFetch(SH2_struct *context, u8* memory, u32 addr, u32 line, u32 tag, u32 way) {
+  const u32 base = addr & (~0xF);
+  readlongfunc rl = ReadLongList[(addr >> 16) & 0xFFF];
+  u8 *data = CacheLineData(context, line, way);
+  int i;
   SH2UpdateABusAccess(context, 1); //When cpu access CPU-BUs at the same time as SCU, there might be a penalty
   SH2DMABusPenalty(context);   /* remplissage de ligne : acces externe */
   UpdateLRU(context, line, way);
-  context->tagWay[line][tag] = way;
   context->cacheTagArray[line][way] = tag;
-  for (int i=0; i<4; i++) {
-    u32 ret = ReadLongList[(addr >> 16) & 0xFFF](context, memory,(addr&(~0xF))|(i*4));
-    CacheWriteVal(context, (addr&(~0xF))|(i*4), ret, 4);
-    // printf("Fetch (%x) (%d)=%x\n", (addr&(~0xF))|(i*4), i, ret);
-  }
+  for (i=0; i<4; i++)
+    T2WriteLong(data, i*4, rl(context, memory, base|(i*4)));
   /* A cache line is 16 bytes and all four longwords were just refilled by
-     the loop above, but only the first four bytes were invalidated: the
-     remaining six instructions of the line kept whatever decode they had
-     from before the fetch. */
-  SH2WriteNotify(context, (addr&(~0xF)), 16);
-  // for (int i =0; i<=0xF; i++) {
-  //   printf("%x ", context->cacheData[line][way][i]);
-  // }
-  // printf("\n");
+     the loop above: the whole line must be redecoded. */
+  SH2WriteNotify(context, base, 16);
 }
 
-/* Lecture en cache : le succes (hit) est servi par la memoire interne du
-   SH-2, lue directement (format T2), sans passer par le gestionnaire de la
-   Work RAM ni par son suivi de rangee DRAM (voir CacheWriteVal()). */
-u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 byte = addr&0xF;
-  u8 way = context->tagWay[line][tag];
-  if (byte + 1 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
-  if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
+/* Lecture en zone cache. Succes : servi par la ligne, LRU mis a jour.
+   Defaut : la voie a remplacer est choisie (Table 8.4) et la ligne
+   remplie, sauf si le remplacement est interdit pour ce type d'acces
+   (noReplace = CCR.OD pour une donnee, CCR.ID pour une instruction, 8.2 et
+   8.4.5) : "the missed address data is read and directly transferred to the
+   CPU". Retourne alors NULL et l'appelant lit la memoire externe.
+
+   Avant, OD et ID etaient ignores : chaque defaut remplacait une ligne. */
+static INLINE u8 *CacheReadLine(SH2_struct *context, u8* memory, u32 addr, u8 noReplace) {
+  const u32 line = (addr>>4)&0x3F;
+  const u32 tag = (addr>>10)&0x7FFFF;
+  u32 way = CacheLookup(context, line, tag);
+  if (way <= 0x3) {
     UpdateLRU(context, line, way);
-    u8 ret = T2ReadByte(context->cacheData[line][way],byte);
-#ifdef CACHE_DEBUG
-    if (ret != ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-      YuiMsg("Read Byte addr %x from cache = %x (%x)\n", addr, ret, ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr));
-      fflush(stdout);
-      abort();
-    }
-#endif
-    return ret;
+  } else {
+    if (context->onchip.CCR & noReplace) return NULL;
+    way = getLRU(context, tag, line);
+    CacheFetch(context, memory, addr, line, tag, way);
   }
-  way = getLRU(context, tag, line);
-  CacheFetch(context, memory, addr, way);
-  u8 ret = T2ReadByte(context->cacheData[line][way],byte);
+  return CacheLineData(context, line, way);
+}
+
+/* Defaut sans remplacement : un seul acces externe a l'adresse. */
+static INLINE void CacheDirectReadAccess(SH2_struct *context) {
+  SH2UpdateABusAccess(context, 1);
+  SH2DMABusPenalty(context);
+}
+
+u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
+  u8 ret;
+  u8 *data = CacheReadLine(context, memory, addr, 0x04);
+  if (data == NULL) {
+    CacheDirectReadAccess(context);
+    return ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr);
+  }
+  ret = T2ReadByte(data, addr & 0xF);
 #ifdef CACHE_DEBUG
   if (ret != ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-    YuiMsg("Read Byte addr %x out of cache = %x (%x)\n", addr, ret, ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr));
+    YuiMsg("Read Byte addr %x from cache = %x (%x)\n", addr, ret, ReadByteList[(addr >> 16) & 0xFFF](context, memory, addr));
+    fflush(stdout);
+    abort();
+  }
+#endif
+  return ret;
+}
+
+static INLINE u16 CacheReadWordCommon(SH2_struct *context,u8* memory, u32 addr, u8 noReplace) {
+  u16 ret;
+  u8 *data = CacheReadLine(context, memory, addr, noReplace);
+  if (data == NULL) {
+    CacheDirectReadAccess(context);
+    return ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr);
+  }
+  ret = T2ReadWord(data, addr & 0xF);
+#ifdef CACHE_DEBUG
+  if (ret != ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr)) {
+    YuiMsg("Read Word addr %x (%x) from cache = %x (%x)\n", addr, (addr >> 16) & 0xFFF, ret, ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr));
     fflush(stdout);
     abort();
   }
@@ -2717,60 +2757,24 @@ u8 CacheReadByte(SH2_struct *context,u8* memory, u32 addr) {
 }
 
 u16 CacheReadWord(SH2_struct *context,u8* memory, u32 addr) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 byte = (addr&0xF);
-  u8 way = context->tagWay[line][tag];
-  if (byte + 2 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
-  if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
-    UpdateLRU(context, line, way);
-    u16 ret = T2ReadWord(context->cacheData[line][way],byte);
-#ifdef CACHE_DEBUG
-    if (ret != ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-      YuiMsg("Read Word addr %x (%x) from of cache = %x (%x)\n", addr, (addr >> 16) & 0xFFF, ret, ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr));
-      fflush(stdout);
-      abort();
-    }
-#endif
-    return ret;
-  }
-  way = getLRU(context, tag, line);
-  CacheFetch(context, memory, addr, way);
-  u16 ret = T2ReadWord(context->cacheData[line][way],byte);
-#ifdef CACHE_DEBUG
-  if (ret != ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-    YuiMsg("Read Word addr %x (%x) out of cache = %x (%x)\n", addr, (addr >> 16) & 0xFFF, ret, ReadWordList[(addr >> 16) & 0xFFF](context, memory, addr));
-    fflush(stdout);
-    abort();
-  }
-#endif
-  return ret;
+  return CacheReadWordCommon(context, memory, addr, 0x04);   /* donnee : CCR.OD */
+}
+
+u16 CacheFetchWord(SH2_struct *context,u8* memory, u32 addr) {
+  return CacheReadWordCommon(context, memory, addr, 0x02);   /* instruction : CCR.ID */
 }
 
 u32 CacheReadLong(SH2_struct *context,u8* memory, u32 addr) {
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 byte = (addr&0xF);
-  u8 way = context->tagWay[line][tag];
-  if (byte + 4 > 16) CACHE_LOG("!!!!!!!!!!!!!!!! Warn out of line....\n");
-  if ((way <= 0x3) && (context->cacheTagArray[line][way] == tag)) {
-    UpdateLRU(context, line, way);
-    u32 ret = T2ReadLong(context->cacheData[line][way],byte);
-#ifdef CACHE_DEBUG
-    if (ret != ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-      YuiMsg("Read Long addr %x from cache = %x (%x)\n", addr, ret, ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr));
-      fflush(stdout);
-      abort();
-    }
-#endif
-    return ret;
+  u32 ret;
+  u8 *data = CacheReadLine(context, memory, addr, 0x04);
+  if (data == NULL) {
+    CacheDirectReadAccess(context);
+    return ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr);
   }
-  way = getLRU(context, tag, line);
-  CacheFetch(context, memory, addr, way);
-  u32 ret = T2ReadLong(context->cacheData[line][way],byte);
+  ret = T2ReadLong(data, addr & 0xF);
 #ifdef CACHE_DEBUG
   if (ret != ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr)) {
-    YuiMsg("Read Long addr %x out of cache = %x (%x)\n", addr, ret, ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr));
+    YuiMsg("Read Long addr %x from cache = %x (%x)\n", addr, ret, ReadLongList[(addr >> 16) & 0xFFF](context, memory, addr));
     fflush(stdout);
     abort();
   }
@@ -2779,25 +2783,50 @@ u32 CacheReadLong(SH2_struct *context,u8* memory, u32 addr) {
 }
 #endif
 
+/* Purge associative (ecriture en zone 4xxxxxxx, 8.4.7 et 8.5.2) : les
+   quatre voies sont comparees et seule celle qui porte l'adresse voit son
+   bit V remis a 0 ; si aucune ne la porte, rien n'est purge. 2 cycles.
+
+   Corrections :
+   - l'ancienne version prenait la voie dans tagWay[line][tag], qui n'etait
+     pas remis a jour a l'eviction : purger une adresse sortie du cache
+     invalidait la ligne qui l'avait remplacee dans la meme voie ;
+   - elle remettait aussi le LRU de la ligne a 0. Le manuel ne parle que
+     du bit V pour la purge associative ; seul CCR.CP remet le LRU a 0
+     (8.4.6). Un LRU remis a 0 faisait remplacer la voie 3 au defaut
+     suivant, quelle que soit la voie la plus ancienne. */
 void CacheInvalidate(SH2_struct *context,u32 addr){
 #ifdef USE_CACHE
   if (yabsys.usecache == 0) return;
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 way = context->tagWay[line][tag];
-  context->tagWay[line][tag] = 0x4;
-  if (way <= 0x3) context->cacheTagArray[line][way] = 0x0;
-  context->cacheLRU[line] = 0;
+  {
+    const u32 line = (addr>>4)&0x3F;
+    const u32 tag = (addr>>10)&0x7FFFF;
+    u32 *t = context->cacheTagArray[line];
+    if (t[0] == tag) t[0] |= SH2_CACHE_TAG_INVALID;
+    if (t[1] == tag) t[1] |= SH2_CACHE_TAG_INVALID;
+    if (t[2] == tag) t[2] |= SH2_CACHE_TAG_INVALID;
+    if (t[3] == tag) t[3] |= SH2_CACHE_TAG_INVALID;
+  }
 #endif
   context->cycles += 2;
 }
 
+/* Lecture du tableau d'adresses (8.4.9, Figure 8.11) : voie choisie par
+   CCR.W1/W0, donnee = etiquette en bits 28-10, LRU en bits 9-4, V en
+   bit 2.
+
+   Correction : V etait rendu en bit 1, et l'etiquette d'une voie invalide
+   etait rendue nulle. */
 u32 FASTCALL AddressArrayReadLong(SH2_struct *context,u32 addr) {
 #ifdef USE_CACHE
   if (yabsys.usecache == 0) return 0;
-  u8 line = (addr>>4)&0x3F;
-  u8 way = (context->onchip.CCR>>6)&0x3;
-  return ((context->cacheLRU[line]&0x3F)<<4) | ((context->cacheTagArray[line][way]&0x7FFFF)<<10) | ((context->cacheTagArray[line][way]!= 0x0)<<1);
+  {
+    const u32 line = (addr>>4)&0x3F;
+    const u32 way = (context->onchip.CCR>>6)&0x3;
+    const u32 t = context->cacheTagArray[line][way];
+    return ((t & 0x7FFFF) << 10) | ((u32)(context->cacheLRU[line] & 0x3F) << 4) |
+           (((t & SH2_CACHE_TAG_INVALID) == 0) ? 0x4 : 0x0);
+  }
 #else
   return 0;
 #endif
@@ -2805,20 +2834,19 @@ u32 FASTCALL AddressArrayReadLong(SH2_struct *context,u32 addr) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Ecriture du tableau d'adresses (8.4.9, Figure 8.11) : etiquette (bits
+   28-10) et V (bit 2) pris dans l'adresse, LRU (bits 9-4) dans la donnee,
+   voie choisie par CCR.W1/W0. */
 void FASTCALL AddressArrayWriteLong(SH2_struct *context,u32 addr, u32 val)  {
 #ifdef USE_CACHE
   if (yabsys.usecache == 0) return;
-  u8 line = (addr>>4)&0x3F;
-  u32 tag = (addr>>10)&0x7FFFF;
-  u8 valid = (addr>>2)&0x1;
-  u8 way = (context->onchip.CCR>>6)&0x3;
-  context->cacheLRU[line] = (val>>4)&0x3F;
-  if (valid) {
-    context->tagWay[line][tag] = way;
-    context->cacheTagArray[line][way] = tag;
-  } else {
-    context->tagWay[line][tag] = 0x4;
-    context->cacheTagArray[line][way] = 0x0;
+  {
+    const u32 line = (addr>>4)&0x3F;
+    const u32 tag = (addr>>10)&0x7FFFF;
+    const u32 valid = (addr>>2)&0x1;
+    const u32 way = (context->onchip.CCR>>6)&0x3;
+    context->cacheLRU[line] = (val>>4)&0x3F;
+    context->cacheTagArray[line][way] = valid ? tag : (tag | SH2_CACHE_TAG_INVALID);
   }
 #endif
 }

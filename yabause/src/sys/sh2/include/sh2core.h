@@ -498,8 +498,18 @@ typedef struct SH2_struct_s
 #ifdef USE_CACHE
    u8 nbCacheWay;
    u8 cacheLRU[64];
-   u8 cacheData[64][4][16];
-   u8 tagWay[64][0x80000];
+   /* Tableau d'adresses : etiquette (bits 28-10 de l'adresse) de chaque
+      voie, plus SH2_CACHE_TAG_INVALID (bit 31) quand le bit V est a 0. Le
+      materiel garde l'etiquette d'une voie invalide (lecture du tableau
+      d'adresses, SH7604 Hardware Manual 8.4.9) ; une voie invalide ne
+      correspond a aucune recherche (8.4.1). La recherche compare
+      directement les 4 voies de la ligne (CacheLookup(), sh2core.c) :
+      l'ancien index tag -> voie tagWay[64][0x80000] (32 Mo par CPU) est
+      supprime.
+
+      Il n'y a plus de cacheData : les donnees des lignes sont rangees dans
+      DataArray, qui EST le tableau de donnees du cache (8.4.8 : voie W,
+      ligne L, octet B en H'C0000000 + W*0x400 + L*16 + B). */
    u32 cacheTagArray[64][4];
 #endif
    u32 cycleFrac;
@@ -700,11 +710,16 @@ int BackupHandled(SH2_struct * sh, u32 addr);
 int isBackupHandled(u32 addr);
 
 #ifdef USE_CACHE
+#define SH2_CACHE_TAG_INVALID 0x80000000
 u8 CacheReadByte(SH2_struct *context, u8* mem, u32 addr);
 u16 CacheReadWord(SH2_struct *context, u8* mem, u32 addr);
 u32 CacheReadLong(SH2_struct *context, u8* mem, u32 addr);
+/* Fetch d'instruction en zone cache, cache emule actif : comme
+   CacheReadWord(), mais un defaut ne remplace pas de ligne quand CCR.ID = 1
+   (CacheReadWord() est une lecture de donnees, soumise a CCR.OD). */
+u16 CacheFetchWord(SH2_struct *context, u8* mem, u32 addr);
 void CacheWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val);
-void CacheWriteShort(SH2_struct *context, u8* mem, u32 addr, u16 val);
+void CacheWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val);
 void CacheWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val);
 #endif
 void CacheInvalidate(SH2_struct *context,u32 addr);
