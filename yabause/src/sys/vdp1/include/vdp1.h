@@ -189,6 +189,13 @@ typedef struct
    void (*SetupVdp1Scale)(int scale);
    void (*startVdp1Render)(void);
    void (*endVdp1Render)(void);
+   // Video CD Card (EXPERIMENTAL, see mpegcard.h): draws the currently
+   // decoded picture on top of the frame the rest of Vdp2Draw() just
+   // produced. Optional -- appended at the end of the struct so every
+   // existing backend's positional initializer (which lists fewer
+   // members than this struct now has) simply leaves it NULL, per
+   // C99 6.7.9p21, and keeps behaving exactly as before.
+   void (*Vdp2DrawMpegOverlay)(const u8 *rgba, int width, int height);
 } VideoInterface_struct;
 
 extern VideoInterface_struct *VIDCore;
