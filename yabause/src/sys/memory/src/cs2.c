@@ -38,6 +38,7 @@
 #include "scu.h"
 #include "smpc.h"
 #include "yui.h"
+#include "db.h"
 
 #define CDB_HIRQ_CMOK      0x0001
 #define CDB_HIRQ_DRDY      0x0002
@@ -103,6 +104,10 @@ static u8 Cs2PutBlkNum[MAX_BLOCKS];
 static u32 Cs2PutCount = 0;
 static u32 Cs2PutBase = 24;
 static u8 Cs2PutFilter = 0;
+
+// Video CD Card shown to Video CDs and to the games of db.c only (see
+// Cs2IsMpegCardPresent()).
+static void Cs2MpegDiscInvalidate(void);
 
 // MPEG Set Decoding Method (0x96, CDC_MpSetDec, CD Communication Interface
 // MPEG part 20.8). pautim: 0000H pause (also "re-pause": one picture forward
@@ -769,6 +774,7 @@ int Cs2ChangeCDCore(int coreid, const char *cdpath)
    }
 
    Cs2Area->isdiskchanged = 1;
+   Cs2MpegDiscInvalidate();
    setStatus(CDB_STAT_PAUSE);
    SmpcRecheckRegion();
 
@@ -918,6 +924,7 @@ void Cs2Reset(void) {
 
 
   resetSyncVideo();
+  Cs2MpegDiscInvalidate();
   switch (Cs2Area->cdi->GetStatus())
   {
      case 0:
@@ -1171,6 +1178,7 @@ static void Cs2Exec_unit(u32 timing) {
             {
                setStatus(CDB_STAT_PAUSE);
                Cs2Area->isdiskchanged = 1;
+               Cs2MpegDiscInvalidate();
             }
             break;
          case 2:
@@ -4473,11 +4481,143 @@ void Cs2IsDeviceAuthenticated(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-int Cs2IsMpegCardPresent(void) {
-  if (MpegCardHasRom())
-     return 1;
+//////////////////////////////////////////////////////////////////////////////
+// Which discs see the Video CD Card.
+//
+// The card is only shown to Video CDs and to the Saturn games listed in
+// db.c (MpegCardDBList). Any other disc sees no card: its CD block reports
+// no MPEG device, as on a console without one, so a game that probes for
+// the card does not take an MPEG code path by accident.
+//
+// The disc is identified with plain reads through the CD interface into a
+// local buffer, so this can be called at any time (from a command handler,
+// the BIOS emulation...) without touching the CD block's partitions,
+// filters or device connection. The result is kept until the disc changes
+// (Cs2MpegDiscInvalidate()).
+static int Cs2NameEqualsCI(const char *name, const char *ref);
+static int Cs2MpegDiscChecked = 0;
+static int Cs2MpegDiscAllowed = 0;
 
-  return (CartridgeArea != NULL && CartridgeArea->carttype == CART_MPEGCARD);
+static void Cs2MpegDiscInvalidate(void)
+{
+  Cs2MpegDiscChecked = 0;
+  Cs2MpegDiscAllowed = 0;
+}
+
+// Reads one sector and returns a pointer to its user data (Mode 1: offset
+// 16, Mode 2 Form 1: offset 24), or NULL.
+static const u8 *Cs2MpegPeekSector(u32 fad, u8 *buf)
+{
+  static const u8 sync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                               0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+
+  if (Cs2Area->cdi == NULL || !Cs2Area->cdi->ReadSectorFAD(fad, buf))
+     return NULL;
+  if (memcmp(buf, sync, 12) != 0)
+     return NULL; // audio sector
+  return (buf[15] == 2) ? buf + 24 : buf + 16;
+}
+
+// ISO9660 root directory holds VIDEO_CD (VCD, White Book) or SVCD.
+static int Cs2MpegDiscIsVideoCD(void)
+{
+  u8 buf[2352];
+  const u8 *d;
+  u32 rootlba, rootsize, sectors, s;
+
+  // Primary Volume Descriptor: ISO9660 sector 16 (FAD 166).
+  if ((d = Cs2MpegPeekSector(166, buf)) == NULL)
+     return 0;
+  if (d[0] != 1 || memcmp(d + 1, "CD001", 5) != 0)
+     return 0;
+
+  // Root directory record at offset 156: extent (LBA) at +2, size at +10,
+  // both-endian fields, little-endian half first.
+  rootlba  = d[156 + 2] | (d[156 + 3] << 8) | (d[156 + 4] << 16) | ((u32)d[156 + 5] << 24);
+  rootsize = d[156 + 10] | (d[156 + 11] << 8) | (d[156 + 12] << 16) | ((u32)d[156 + 13] << 24);
+  sectors = (rootsize + 2047) / 2048;
+  if (sectors == 0 || sectors > 16)
+     sectors = (sectors == 0) ? 1 : 16;
+
+  for (s = 0; s < sectors; s++)
+  {
+     u32 ofs = 0;
+
+     if ((d = Cs2MpegPeekSector(rootlba + 150 + s, buf)) == NULL)
+        return 0;
+
+     while (ofs < 2048 && d[ofs] != 0)
+     {
+        u32 reclen = d[ofs];
+        u32 namelen = d[ofs + 32];
+        char name[32];
+
+        if (ofs + 33 + namelen > 2048)
+           break;
+        if (namelen > sizeof(name) - 1)
+           namelen = sizeof(name) - 1;
+        memcpy(name, d + ofs + 33, namelen);
+        name[namelen] = '\0';
+
+        if (Cs2NameEqualsCI(name, "VIDEO_CD") || Cs2NameEqualsCI(name, "SVCD"))
+           return 1;
+
+        ofs += reclen;
+     }
+  }
+
+  return 0;
+}
+
+// Product number of a Saturn disc (IP.BIN, FAD 150, offset 0x20), as
+// Cs2GetIP() reads it.
+static int Cs2MpegDiscGameCode(char *code, size_t size)
+{
+  u8 buf[2352];
+  const u8 *d;
+  char tmp[11];
+
+  if (size < 11)
+     return 0;
+  if ((d = Cs2MpegPeekSector(150, buf)) == NULL)
+     return 0;
+  if (memcmp(d, "SEGA SEGASATURN", 15) != 0)
+     return 0;
+
+  memcpy(tmp, d + 0x20, 10);
+  tmp[10] = '\0';
+  if (sscanf(tmp, "%10s", code) != 1)
+     return 0;
+  return 1;
+}
+
+static int Cs2MpegDiscUsesCard(void)
+{
+  if (!Cs2MpegDiscChecked)
+  {
+     char code[16];
+
+     if (Cs2Area == NULL || Cs2Area->cdi == NULL)
+        return 0;
+     // No disc yet: decide when one is there.
+     if ((Cs2Area->status & 0xF) == CDB_STAT_NODISC || (Cs2Area->status & 0xF) == CDB_STAT_OPEN ||
+         Cs2Area->cdi->GetStatus() > 1)
+        return 0;
+
+     Cs2MpegDiscAllowed = Cs2MpegDiscIsVideoCD() ||
+                          (Cs2MpegDiscGameCode(code, sizeof(code)) && DBLookupMpegCard(code));
+     Cs2MpegDiscChecked = 1;
+  }
+
+  return Cs2MpegDiscAllowed;
+}
+
+int Cs2IsMpegCardPresent(void) {
+  if (!MpegCardHasRom() &&
+      !(CartridgeArea != NULL && CartridgeArea->carttype == CART_MPEGCARD))
+     return 0;
+
+  return Cs2MpegDiscUsesCard();
 }
 
 //////////////////////////////////////////////////////////////////////////////
