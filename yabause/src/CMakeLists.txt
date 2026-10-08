@@ -159,6 +159,7 @@ set(kronos_SOURCES
 	sys/memory/src/cs0.c
 	sys/memory/src/cs1.c
 	sys/memory/src/cs2.c
+	sys/memory/src/mpegcard.c
 	sys/memory/src/eeprom.c
 	sys/memory/src/decrypt.c
 	core/video/opengl/common/src/vidshared.c
