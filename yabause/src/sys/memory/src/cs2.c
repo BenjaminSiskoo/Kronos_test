@@ -4504,9 +4504,17 @@ static void Cs2MpegDiscInvalidate(void)
   Cs2MpegDiscAllowed = 0;
 }
 
-// Reads one sector and returns a pointer to its user data (Mode 1: offset
-// 16, Mode 2 Form 1: offset 24), or NULL.
-static const u8 *Cs2MpegPeekSector(u32 fad, u8 *buf)
+// Reads one sector straight from the CD interface into the caller's buffer
+// and returns a pointer to its user data (Mode 1: offset 16, Mode 2 Form 1:
+// offset 24), or NULL for an audio sector or a read error. No CD block state
+// is touched: no partition, filter, block or CD device connection.
+//
+// buf MUST hold CS2_PEEK_SECTOR_SIZE (2448) bytes: ISOCDReadSectorFAD()
+// starts with memset(buffer, 0, 2448), and the CHD reader copies
+// track->sector_size bytes, 2448 for a track with subcode
+// (cdbase.c; Cs2Area->workblock.data is 2448 bytes for the same reason).
+#define CS2_PEEK_SECTOR_SIZE 2448
+static const u8 *Cs2PeekSector(u32 fad, u8 *buf)
 {
   static const u8 sync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
@@ -4518,15 +4526,33 @@ static const u8 *Cs2MpegPeekSector(u32 fad, u8 *buf)
   return (buf[15] == 2) ? buf + 24 : buf + 16;
 }
 
-// ISO9660 root directory holds VIDEO_CD (VCD, White Book) or SVCD.
+// A Video CD is recognised by its root directory.
+//
+// White Book (Video CD 1.1 / 2.0): the root holds the directories VCD
+// (INFO.VCD, ENTRIES.VCD -- INFO.VCD itself starts with the system
+// identification "VIDEO_CD") and MPEGAV (the MPEG tracks); a Super Video CD
+// has SVCD (INFO.SVD) and MPEG2 instead. The check only looked for a root
+// entry named "VIDEO_CD" (the identifier INSIDE INFO.VCD, not a directory
+// name) or "SVCD", so a standard Video CD was never recognised: the Video
+// CD Card stayed hidden and the BIOS CD player answered "Disc requires
+// system application". Accepted now: VCD, MPEGAV, SVCD, and VIDEO_CD kept
+// for any non-standard disc that would really name a directory that way.
+// Only directory entries count (flags bit 1, ECMA-119 9.1.6), so a file
+// that happens to bear one of these names is not taken for a Video CD.
+//
+// Returns 1 for a Video CD, 0 for any other disc, -1 when a sector could
+// not be read (no verdict: the caller must not cache it).
 static int Cs2MpegDiscIsVideoCD(void)
 {
-  u8 buf[2352];
+  u8 buf[CS2_PEEK_SECTOR_SIZE];
   const u8 *d;
   u32 rootlba, rootsize, sectors, s;
 
-  // Primary Volume Descriptor: ISO9660 sector 16 (FAD 166).
-  if ((d = Cs2MpegPeekSector(166, buf)) == NULL)
+  // Primary Volume Descriptor: ISO9660 sector 16 (FAD 166). An audio
+  // sector there (audio CD) is a verdict, not a read failure.
+  if (Cs2Area->cdi == NULL || !Cs2Area->cdi->ReadSectorFAD(166, buf))
+     return -1;
+  if ((d = Cs2PeekSector(166, buf)) == NULL)
      return 0;
   if (d[0] != 1 || memcmp(d + 1, "CD001", 5) != 0)
      return 0;
@@ -4543,8 +4569,8 @@ static int Cs2MpegDiscIsVideoCD(void)
   {
      u32 ofs = 0;
 
-     if ((d = Cs2MpegPeekSector(rootlba + 150 + s, buf)) == NULL)
-        return 0;
+     if ((d = Cs2PeekSector(rootlba + 150 + s, buf)) == NULL)
+        return -1;
 
      while (ofs < 2048 && d[ofs] != 0)
      {
@@ -4559,7 +4585,9 @@ static int Cs2MpegDiscIsVideoCD(void)
         memcpy(name, d + ofs + 33, namelen);
         name[namelen] = '\0';
 
-        if (Cs2NameEqualsCI(name, "VIDEO_CD") || Cs2NameEqualsCI(name, "SVCD"))
+        if ((d[ofs + 25] & 0x02) &&
+            (Cs2NameEqualsCI(name, "VCD") || Cs2NameEqualsCI(name, "MPEGAV") ||
+             Cs2NameEqualsCI(name, "SVCD") || Cs2NameEqualsCI(name, "VIDEO_CD")))
            return 1;
 
         ofs += reclen;
@@ -4573,13 +4601,13 @@ static int Cs2MpegDiscIsVideoCD(void)
 // Cs2GetIP() reads it.
 static int Cs2MpegDiscGameCode(char *code, size_t size)
 {
-  u8 buf[2352];
+  u8 buf[CS2_PEEK_SECTOR_SIZE];
   const u8 *d;
   char tmp[11];
 
   if (size < 11)
      return 0;
-  if ((d = Cs2MpegPeekSector(150, buf)) == NULL)
+  if ((d = Cs2PeekSector(150, buf)) == NULL)
      return 0;
   if (memcmp(d, "SEGA SEGASATURN", 15) != 0)
      return 0;
@@ -4604,8 +4632,15 @@ static int Cs2MpegDiscUsesCard(void)
          Cs2Area->cdi->GetStatus() > 1)
         return 0;
 
-     Cs2MpegDiscAllowed = Cs2MpegDiscIsVideoCD() ||
-                          (Cs2MpegDiscGameCode(code, sizeof(code)) && DBLookupMpegCard(code));
+     {
+        // A failed read is not a verdict: caching it would hide the card
+        // until the next disc change. Ask again at the next call.
+        int vcd = Cs2MpegDiscIsVideoCD();
+        if (vcd < 0)
+           return 0;
+        Cs2MpegDiscAllowed = (vcd > 0) ||
+                             (Cs2MpegDiscGameCode(code, sizeof(code)) && DBLookupMpegCard(code));
+     }
      Cs2MpegDiscChecked = 1;
   }
 
@@ -4928,23 +4963,6 @@ static int Cs2NameEqualsCI(const char *name, const char *ref)
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Frees the single block Cs2ReadUnFilteredSector() just allocated, the way
-// Cs2ReadFileSystem() already does around its own root-directory lookup
-// (see the fid==0xFFFFFF case above). Kept local: Cs2AuthenticateDevice()
-// and Cs2DetectVideoCD() both need to peek at one sector and give the block
-// straight back to the pool without disturbing any partition/filter state
-// a game might currently have in flight.
-static void Cs2FreeLastBlock(partition_struct *part)
-{
-   part->size -= part->block[part->numblocks - 1]->size;
-   Cs2FreeBlock(part->block[part->numblocks - 1]);
-   part->block[part->numblocks - 1] = NULL;
-   part->blocknum[part->numblocks - 1] = 0xFF;
-   Cs2SortBlocks(part);
-   part->numblocks -= 1;
-}
-
-//////////////////////////////////////////////////////////////////////////////
 // Tells apart what "Authenticate Device"(0xE0)/satauth is supposed to
 // report: 1=audio CD, 2=any other non-Saturn data disc (Video CD, Photo
 // CD, plain CD-ROM...), 4=genuine Saturn disc. See the Yabause wiki,
@@ -4956,121 +4974,72 @@ static void Cs2FreeLastBlock(partition_struct *part)
 // reflects the physical "ring" copy-protection groove Sega pressed into
 // genuine discs, which has no equivalent in a disc image, so no emulator
 // can detect it from image data alone.
+//
+// The authentication is the CD block's own business: it does not go
+// through the host's CD device connection, filters or buffer partitions.
+// This used to read IP.BIN with Cs2ReadUnFilteredSector(), i.e. through
+// Cs2Area->outconcddev. After a game disconnects the CD device (Set CD
+// Device Connection, filter FFh: outconcddev = NULL) and the BIOS then
+// authenticates the disc again (Skeleton Warriors, after its intro movie),
+// Cs2GetPartition(NULL) dereferenced a NULL pointer and Kronos crashed.
+// It could also fail (satauth 0) whenever the buffer was full, and it took
+// a block from whatever partition the game had connected.
+//
+// The disc type also came from Cs2Area->isaudio, which only describes the
+// LAST SECTOR READ: after a game played a CD-DA track, a Saturn disc was
+// reported as an audio CD. The first track's control field (TOC) is used
+// instead: an audio CD starts with an audio track.
 int Cs2DetectDiscType(void)
 {
-   partition_struct *part;
-   u8 *buf;
+   u8 buf[CS2_PEEK_SECTOR_SIZE];
+   u32 toc[102];
+   const u8 *d;
 
-   if (Cs2Area->isaudio)
-      return 1;
-
-   if ((part = Cs2ReadUnFilteredSector(150)) == NULL) // LBA 0 / IP.BIN
+   if (Cs2Area->cdi == NULL ||
+       (Cs2Area->status & 0xF) == CDB_STAT_NODISC || (Cs2Area->status & 0xF) == CDB_STAT_OPEN)
       return 0;
 
-   buf = part->block[part->numblocks - 1]->data;
+   // TOC entry of track 1: control/ADR in the top byte, bit 6 (0x40) set
+   // for a data track (same test as Cs2FADIsAudio()). Read into a local
+   // copy: Cs2Area->TOC is only filled by Get TOC / tray close, and Get TOC
+   // is not required before Authenticate Device.
+   memset(toc, 0xFF, sizeof(toc));
+   Cs2Area->cdi->ReadTOC(toc);
+   if (toc[0] != 0xFFFFFFFF && ((toc[0] >> 24) & 0x40) == 0)
+      return 1;
+
+   if ((d = Cs2PeekSector(150, buf)) == NULL) // LBA 0 / IP.BIN
+      return 0;
 
    // Same check Cs2GetIP() uses to accept/reject the IP.BIN it just read.
-   if (memcmp(buf, "SEGA SEGASATURN", 15) == 0)
-   {
-      Cs2FreeLastBlock(part);
+   if (memcmp(d, "SEGA SEGASATURN", 15) == 0)
       return 4;
-   }
 
-   Cs2FreeLastBlock(part);
    return 2;
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// Looks for the mandatory VIDEO_CD (or SVCD, for the Super Video CD
-// variant) root directory the Philips "Video CD Specification" ("White
-// Book") requires on every compliant Video CD, right next to MPEGAV and
-// the ISO9660 filesystem the BIOS already knows how to walk. Confirmed by
-// the Yabause wiki MPEGCard page, which describes the card's ROM as
-// letting "the user play Video and Photo CDs" straight off a disc that
-// otherwise looks like a plain data CD to satauth.
+// Looks for the mandatory VCD / MPEGAV (or SVCD, for the Super Video CD
+// variant) root directories the Philips "Video CD Specification" ("White
+// Book") requires on every compliant Video CD.
 //
-// Deliberately does not touch Cs2Area->curdirsect/curdirfidoffset/
-// fileinfo/numfiles: those belong to whatever Change/Read Directory
-// sequence a game may currently have in progress, and this scan can run
-// at any time (from Cs2AuthenticateDevice()) without being allowed to
-// disturb it.
+// Same scan as Cs2MpegDiscIsVideoCD(): plain reads through the CD
+// interface into a local buffer. The previous version read through
+// Cs2ReadUnFilteredSector(), i.e. through the host's CD device connection
+// and buffer partitions, with the same NULL dereference as
+// Cs2DetectDiscType() when the CD device was disconnected (it is called
+// from Get TOC after a disc change), and it never touches
+// curdirsect/fileinfo/numfiles either.
 int Cs2DetectVideoCD(void)
 {
-   partition_struct *part;
-   u8 *buf;
-   dirrec_struct rootrec, entry;
-   u32 sectorsleft;
-   u32 curlba;
-
    Cs2Area->isvideocd = 0;
 
-   if (Cs2Area->cdi == NULL || (Cs2Area->status & 0xF) == CDB_STAT_NODISC)
+   if (Cs2Area->cdi == NULL ||
+       (Cs2Area->status & 0xF) == CDB_STAT_NODISC || (Cs2Area->status & 0xF) == CDB_STAT_OPEN)
       return 0;
 
-   // --- Primary Volume Descriptor (ISO9660 sector 16 / FAD 166) ---
-   if ((part = Cs2ReadUnFilteredSector(166)) == NULL)
-      return 0;
-
-   buf = part->block[part->numblocks - 1]->data;
-
-   // ECMA-119 / ISO9660 §8.4: type=1, "CD001", version=1 for the PVD.
-   if (buf[0] != 1 || memcmp(buf + 1, "CD001", 5) != 0)
-   {
-      Cs2FreeLastBlock(part);
-      return 0;
-   }
-
-   // Root directory record is embedded at offset 156 (0x9C) of the PVD,
-   // same offset Cs2ReadFileSystem() already reads for fid==0xFFFFFF.
-   Cs2CopyDirRecord(buf + 0x9C, &rootrec);
-   Cs2FreeLastBlock(part);
-
-   sectorsleft = (rootrec.size + Cs2Area->getsectsize - 1) / Cs2Area->getsectsize;
-   if (sectorsleft == 0)
-      return 0;
-   if (sectorsleft > 16) // a root directory this big is not a VCD anyway
-      sectorsleft = 16;
-
-   curlba = rootrec.lba;
-
-   while (sectorsleft-- > 0)
-   {
-      u32 recofs;
-
-      if ((part = Cs2ReadUnFilteredSector(curlba + 150)) == NULL)
-         return 0;
-
-      buf = part->block[part->numblocks - 1]->data;
-      recofs = 0;
-
-      while (recofs < Cs2Area->getsectsize && buf[recofs] != 0)
-      {
-         char name[32];
-         u32 namelen;
-
-         Cs2CopyDirRecord(buf + recofs, &entry);
-
-         namelen = entry.namelength < sizeof(name) - 1 ? entry.namelength : sizeof(name) - 1;
-         memcpy(name, entry.name, namelen);
-         name[namelen] = '\0';
-
-         if (Cs2NameEqualsCI(name, "VIDEO_CD") || Cs2NameEqualsCI(name, "SVCD"))
-         {
-            Cs2FreeLastBlock(part);
-            Cs2Area->isvideocd = 1;
-            return 1;
-         }
-
-         if (entry.recordsize == 0)
-            break; // malformed record, avoid an infinite loop
-         recofs += entry.recordsize;
-      }
-
-      Cs2FreeLastBlock(part);
-      curlba++;
-   }
-
-   return 0;
+   Cs2Area->isvideocd = (Cs2MpegDiscIsVideoCD() > 0);
+   return Cs2Area->isvideocd;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -5213,6 +5182,12 @@ void Cs2SortBlocks(partition_struct * part) {
 partition_struct * Cs2GetPartition(filter_struct * curfilter)
 {
   // go through various filter conditions here(fix me)
+
+  // No filter: the CD device is not connected (Set CD Device Connection
+  // with filter FFh, ST-162 7.4). Nothing can be stored, and there is no
+  // filter to read condtrue from.
+  if (curfilter == NULL)
+     return NULL;
 
   // condtrue is an 8-bit value written verbatim from a command register
   // (Cs2SetFilterConnection); guard against it pointing past the 24
@@ -5758,7 +5733,15 @@ partition_struct * Cs2ReadUnFilteredSector(u32 rufsFAD) {
 
      // read a sector using cd interface function
      if (!Cs2Area->cdi->ReadSectorFAD(rufsFAD, Cs2Area->workblock.data))
+     {
+        // Give the block back: it was taken from the pool (blockfreespace)
+        // but never attached to the partition (numblocks not incremented),
+        // so it would otherwise be lost for good.
+        Cs2FreeBlock(rufspartition->block[rufspartition->numblocks]);
+        rufspartition->block[rufspartition->numblocks] = NULL;
+        rufspartition->blocknum[rufspartition->numblocks] = 0xFF;
         return NULL;
+     }
 
      // convert raw sector to type specified in getsectsize
      switch(Cs2Area->getsectsize)
