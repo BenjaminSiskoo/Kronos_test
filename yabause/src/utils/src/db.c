@@ -63,13 +63,39 @@ static GameDB GameDBList[NB_GAMES_DB] = {
 
    Sources :
    - verifie dans Kronos : Tennis Arena ;
+   - Mednafen (ss/db.c, liste des modes de cache, CPUCACHE_EMUMODE_FULL,
+     "Fixes graphical glitches") : Virtua Fighter et Virtua Fighter Remix,
+     toutes regions.
 
+   Virtua Fighter (Europe), MK_8100550, analyse dans Kronos : le maitre et
+   l'esclave se servent tous deux des variables 0609EA40 / 0609EA44 (adresse
+   cache) comme brouillon. L'esclave, dans la fonction du sol du ring
+   (0601B380-0601B568), y ecrit 4.0 et 7.0, empile quatre registres, puis les
+   relit pour calculer par division en virgule fixe (060069B8) l'echelle X/Z
+   du sol, 1.75. Le maitre ecrit les memes variables (0603420A, 06034136).
+   Sur la console, chaque SH-2 relit sa propre ligne de cache (ecriture
+   immediate qui met a jour la ligne presente) et les durees relatives
+   maitre/esclave sont celles du cache reel ; Mednafen n'affiche le jeu
+   correctement qu'avec l'emulation complete du cache. Sans elle, dans
+   Kronos, la relecture de l'esclave voit l'ecriture du maitre : le diviseur devient quelconque (12D2H, 2759H,
+   B385H... au lieu de 40000H), l'echelle vaut -16.25, -20.5 ou 0.024,
+   le sol est projete hors de l'ecran et ses polygones sont tous rejetes
+   (table 060D0000 vide) : le ring disparait une a trois images pendant
+   les coups.
 
    Seul Tennis Arena a ete teste dans Kronos. Un jeu de cette liste qui
    regresserait avec le cache emule doit en etre retire. */
 static const char * const SH2CacheDBList[] = {
    // verifie dans Kronos
    "T-17703G",   // Tennis Arena (Japan) -- ecran noir apres le BIOS
+   // Mednafen CPUCACHE_EMUMODE_FULL
+   "GS-9001",    // Virtua Fighter (Japan)
+   "MK-81005",   // Virtua Fighter (USA)
+   "MK_8100550", // Virtua Fighter (Europe) -- sol du ring qui disparait
+   "GS-9039",    // Virtua Fighter Remix (Japan)
+   "MK-81023",   // Virtua Fighter Remix (USA)
+   "MK-8102350", // Virtua Fighter Remix (Europe)
+   "SG-7103",    // Virtua Fighter Remix (SegaNet)
    NULL
 };
 
