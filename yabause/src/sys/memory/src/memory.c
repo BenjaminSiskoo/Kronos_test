@@ -1287,6 +1287,32 @@ u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
          if (ReadWordList[page] == HighWramMemoryReadWord) {
             if ((id == 0x1) || yabsys.usecache) SH2DMABusPenaltyFast(context);
             SH2ABusAccessFast(context, 1);
+            /* Cache emule : un fetch en Work RAM-H hors cache (cache-through,
+               ou CCR.CE = 0) est un acces externe a la SDRAM. Mednafen
+               (ss/sh7095.inc, SH7095_BSC_BusRead, CS3) le compte 7 cycles ;
+               Kronos n'en comptait qu'un (plus 2 a un changement de rangee
+               DRAM, HighWramMemoryReadWord()). On ajoute les 6 manquants.
+
+               Virtua Fighter (Europe, MK_8100550, emulation du cache forcee
+               par SH2CacheDBList, db.c) : chaque travail de l'esclave
+               (0601B124) commence par vider son cache (0607AD70 : CCR.CE = 0,
+               puis 256 ecritures du tableau d'adresses en environ 800
+               instructions, lues hors cache). Il ecrit ensuite 4.0 et 7.0
+               dans les variables 0609EA40 / 0609EA44, partagees avec le
+               maitre, et les relit 6 instructions plus loin pour calculer
+               l'echelle du sol du ring (0601B388-0601B396, division
+               060069B8). La purge durait ~800 cycles au lieu de ~5600 :
+               l'esclave arrivait a cette sequence au moment ou le maitre
+               ecrit 0609EA40 (06028234). Sa relecture, qui manque le cache
+               vide, lisait la valeur du maitre (C0H, C55H, CE0H... au lieu
+               de 40000H) : echelle aberrante, sol projete hors de l'ecran,
+               ring absent 1 a 4 images pendant les coups.
+
+               Limite au cache emule (yabsys.usecache) : sans emulation, le
+               modele a etiquettes et les temps actuels sont gardes (Space
+               Jam et Zero Divide dependent de ces temps, SH2LegacyFetchDBList
+               dans db.c). */
+            if (yabsys.usecache) context->cycles += 6;
             return HighWramMemoryReadWord(context, *(MemoryBuffer[page]), addr);
          }
          if (ReadWordList[page] == LowWramMemoryReadWord) {
