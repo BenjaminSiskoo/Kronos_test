@@ -33,9 +33,9 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { "T-1248G", 0, CART_DRAM32MBIT, NULL }, // Final Fight Revenge
    { "T-20109G", 0, CART_DRAM32MBIT, NULL }, // Friends: Seishun no Kagayaki
    { "T-14411G", 0, CART_DRAM32MBIT, NULL }, // Groove On Fight: Gouketsuji Ichizoku 3
-   { "T-7032H-50VV1.000", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
+   { "T-7032H-50", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes (Europe)
    { "T-1214H", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
-   { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
+   { "T-1215G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes (Japan)
    { "T-1238G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes vs. Street Fighter
    { "T-22205G", 0, CART_DRAM32MBIT, NULL }, // Noël 3
    { "T-20114G", 0, CART_DRAM32MBIT, NULL }, // Pia Carrot e Youkoso!! 2
