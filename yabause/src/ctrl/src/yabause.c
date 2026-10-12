@@ -468,6 +468,13 @@ static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
       if (legacy)
          YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
    }
+   /* Fin de l'INTBACK : SmpcLegacyIntbackDBList (utils/src/db.c). */
+   {
+      int legacy = DBLookupLegacySmpcIntbackTiming();
+      SmpcSetLegacyIntbackTiming(legacy);
+      if (legacy)
+         YuiMsg("SMPC legacy INTBACK end timing for this game (game database)\n");
+   }
 }
 
 static int YabauseFullInit(yabauseinit_struct *init)
