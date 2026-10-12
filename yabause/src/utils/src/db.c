@@ -202,18 +202,34 @@ static const char * const SmpcLegacyIntbackDBList[] = {
    NULL
 };
 
+/* Retourne 1 si 'game_code' figure dans la liste 'list' (terminee par NULL). */
+static int DBListHasCode(const char * const *list, const char *game_code)
+{
+   int i;
+   if (game_code == NULL) return 0;
+   for (i = 0; list[i] != NULL; i++) {
+      if (strcmp(list[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
+
+/* Retourne 1 si 'game_code' figure dans SmpcLegacyIntbackDBList. */
+int DBLookupLegacySmpcIntbackTimingForCode(const char *game_code)
+{
+   return DBListHasCode(SmpcLegacyIntbackDBList, game_code);
+}
+
 /* Retourne 1 si le jeu en cours figure dans SmpcLegacyIntbackDBList. */
 int DBLookupLegacySmpcIntbackTiming(void)
 {
-   const char* game_code;
-   int i;
    Cs2GetIP(0);
-   game_code = Cs2GetCurrentGmaecode();
-   if (game_code == NULL) return 0;
-   for (i = 0; SmpcLegacyIntbackDBList[i] != NULL; i++) {
-      if (strcmp(SmpcLegacyIntbackDBList[i], game_code) == 0) return 1;
-   }
-   return 0;
+   return DBLookupLegacySmpcIntbackTimingForCode(Cs2GetCurrentGmaecode());
+}
+
+/* Retourne 1 si 'game_code' figure dans SH2LegacyFetchDBList. */
+int DBLookupLegacySH2FetchTimingForCode(const char *game_code)
+{
+   return DBListHasCode(SH2LegacyFetchDBList, game_code);
 }
 
 /* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
