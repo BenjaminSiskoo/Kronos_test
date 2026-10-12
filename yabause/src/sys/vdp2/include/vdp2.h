@@ -53,18 +53,22 @@ extern u8 Vdp2ColorRamToSync[];
                                             than any known game needs */
 
 typedef struct {
-   int line;                          /* yabsys.LineCount at capture time */
+   int line;                          /* first display line it applies to */
+   int endLine;                       /* first line it no longer applies to:
+                                         the line where the bank lost read
+                                         access, or 0x7FFFFFFF (open) */
    u8  data[VDP2_VRAM_BANK_SIZE];
 } Vdp2VramBankSnapshot;
 
 /* Slot 'Vdp2VramCaptureSlot' is being written to in real time by this
- * frame's Vdp2HBlankIN/vdp2RamAccessCPUCheck calls. Slot
- * '1 - Vdp2VramCaptureSlot' holds the *previous* frame's finished
- * captures, exactly what composeFB and its queued async NBG0 cell jobs
- * should be reading for as long as they're still in flight (the
- * compute-shader renderer queues NBG0 cell decoding onto a background
- * thread by default - CELL_ASYNC / YAB_WANT_ASYNC_CELL - so a frame's
- * captures must outlive that frame's own composeFB call). */
+ * frame's vdp2RamAccessCPUCheck/Vdp2CaptureOnReadGrant calls, and is the
+ * one the frame reads when it is drawn at V-blank IN. It changes at the
+ * following V-blank OUT, so slot '1 - Vdp2VramCaptureSlot' holds the
+ * *previous* frame's finished captures for as long as the async NBG0 cell
+ * jobs it queued are still in flight (the compute-shader renderer queues
+ * NBG0 cell decoding onto a background thread by default - CELL_ASYNC /
+ * YAB_WANT_ASYNC_CELL - so a frame's captures must outlive that frame's
+ * own composeFB call). */
 extern Vdp2VramBankSnapshot Vdp2VramSnapshots[2][4][VDP2_MAX_VRAM_SNAPSHOTS];
 extern int Vdp2VramSnapshotCount[2][4];
 extern int Vdp2VramCaptureSlot;
@@ -76,12 +80,8 @@ extern int Vdp2VramCaptureSlot;
  * live Vdp2Ram in that case). */
 const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine);
 
-/* Must be called exactly once per frame, after this frame's previously-
- * pending async NBG0 cell jobs are confirmed drained (i.e. right after
- * WaitVdp2Async()) and before composeFB starts consuming/queuing new
- * ones. Flips which slot is being captured into and clears the new
- * capture slot's counts, without ever touching the slot composeFB (and
- * its async jobs) are about to read from. */
+/* No-op, kept for the renderer: the capture slot is now switched at
+ * V-blank OUT, once per drawn frame (see Vdp2VBlankOUT() in vdp2.c). */
 void Vdp2VramSnapshotSwap(void);
 
 /* Double-density interlace (True Pinball).
