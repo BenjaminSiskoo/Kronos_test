@@ -1029,6 +1029,10 @@ void SH2KronosWriteNotify(SH2_struct *context, u32 start, u32 length){
   } else if (id == 0x6) {
     //Data Array access
     notify(context, start, length);
+  } else if (id == 0x4) {
+    /* 80000000-9FFFFFFF : miroir du tableau de donnees (memory.c). Le code
+       qui y est decode l'est sous son adresse C0000000 (cacheId 7). */
+    notify(context, (start & 0x1FFFFFFF) | 0xC0000000, length);
   }
 }
 
