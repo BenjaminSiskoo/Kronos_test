@@ -498,6 +498,7 @@ u32 Cs2GetMasterExecutionAdress();
 // external CD drive command
 void Cs2ForceOpenTray();
 int Cs2ForceCloseTray( int coreid, const char * cdpath );
+int Cs2ReadDiscGameCode(char *code, size_t size);
 
 //////////////////////////////////////////////////////////////////////////////
 // Human readable dump of the whole CD block state (host interface registers,
