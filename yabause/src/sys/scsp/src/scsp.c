@@ -4944,15 +4944,28 @@ scu_interrupt_handler (void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Adressage de la RAM son, commun aux acces octet, mot et mot long, que
+   l'acces vienne du SH-2, du 68000 ou du SCSP :
+   - 00000-7FFFF : RAM son (4 Mbit, 512 Ko) ;
+   - MEM4MB (bit 9 de 100400h) = 0 : seul 1 Mbit (128 Ko) est accessible et la
+     RAM se repete tous les 128 Ko ; MEM4MB = 1 : les 4 Mbit ;
+   - 80000-FFFFF (MEM4MB = 1) : non cable, lecture a FF (FFFF, FFFFFFFF),
+     ecriture ignoree.
+   Les acces octet masquaient sur 7FFFF : une lecture au-dela de 512 Ko
+   revenait au debut de la RAM au lieu de rendre FF comme SoundRamReadWord /
+   SoundRamReadLong, et une ecriture d'octet y modifiait la RAM alors que
+   SoundRamWriteWord / SoundRamWriteLong l'ignorent. */
 u8 FASTCALL
 SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
 {
-  addr &= 0x7FFFF;
+  addr &= 0xFFFFF;
   u8 val = 0;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return 0xFF;
 
   val = T2ReadByte(mem, addr);
   return val;
@@ -4996,11 +5009,13 @@ static INLINE void SoundRamSh2WriteCost(SH2_struct *context, u32 cycles)
 void FASTCALL
 SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 {
-  addr &= 0x7FFFF;
+  addr &= 0xFFFFF;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return;
 
   T2WriteByte (mem, addr, val);
   M68K->WriteNotify (addr, 1);
@@ -5028,10 +5043,12 @@ u8 FASTCALL SoundRamTestAndSetByte(SH2_struct *context, u32 addr)
   u8 *p;
   u8 old;
 
-  addr &= 0x7FFFF;
-  // If mem4b is set, mirror ram every 256k
+  addr &= 0xFFFFF;
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return 0xFF;   /* non cable : lu a FF, ecriture ignoree */
 
 #ifdef WORDS_BIGENDIAN
   p = &SoundRam[addr];
@@ -5092,7 +5109,7 @@ SoundRamWriteWord (SH2_struct *context, u8* mem, u32 addr, u16 val)
 {
   addr &= 0xFFFFF;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF)
@@ -5113,7 +5130,7 @@ SoundRamReadLong (SH2_struct *context, u8* mem, u32 addr)
   u32 val;
   u32 pre_cycle = m68kcycle;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF) {
@@ -5139,7 +5156,7 @@ SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
   addr &= 0xFFFFF;
   //u32 pre_cycle = m68kcycle;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF)
