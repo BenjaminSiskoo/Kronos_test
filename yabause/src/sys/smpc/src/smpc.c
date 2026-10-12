@@ -730,13 +730,38 @@ static void processCommand(void) {
  * only when SF = 0, i.e. when no report is still coming. The pad report
  * must then land in slot 1, the one its parser (0602E1C8) reads; with SF
  * already 0, the index was reset and the pad report went to slot 0: the
- * parser kept reading a stale slot and no button ever registered. */
+ * parser kept reading a stale slot and no button ever registered.
+ *
+ * SMPC User's Manual (ST-169-R1) : "The INTBACK command begins collecting
+ * peripheral data at V-BLANK-OUT" (p.17) et "The INTBACK command terminates
+ * at the time peripheral data collection is finished" (p.56) ; la duree
+ * "varies depending on the type and number of peripherals" (p.56) et n'est
+ * pas chiffree (INTBACK : "minimum TBD to maximum TBD", p.42-43). SF (OREG31)
+ * vaut 1 tant que la commande s'execute (p.35). Le manuel confirme donc que
+ * SF reste a 1 apres le V-Blank OUT ; la duree de ~355 us vient de Mednafen.
+ * Un port vide est reconnu a son octet d'etat F0H : multitap ID FH ("not
+ * connected at all") et 0 connecteur ("Not connected"), Tables 3.5 et 3.6.
+ *
+ * Exception : les jeux de SmpcLegacyIntbackDBList (utils/src/db.c) gardent
+ * l'ancienne fin (premiere etape SMPC de la ligne qui suit le V-Blank OUT).
+ * Voir SmpcSetLegacyIntbackTiming(). */
+static int SmpcLegacyIntbackTiming = 0;
+
+/* Appele au chargement de chaque jeu (yabause.c) avec le resultat de
+ * DBLookupLegacySmpcIntbackTiming(). */
+void SmpcSetLegacyIntbackTiming(int on)
+{
+   SmpcLegacyIntbackTiming = on;
+}
+
 static s32 SmpcPeripheralAcquireTime(void)
 {
    const s32 port_base = 380 + 2 * 50;           /* port start + ID read */
    const s32 pad_data = 2 * 50 + 30 + 8 * 21;    /* digital pad data */
    const s32 empty_data = 2 * 21;                /* "no peripheral" */
    s32 clocks = 120;
+   if (SmpcLegacyIntbackTiming)
+      return 1;   /* SmpcLegacyIntbackDBList : fin a la ligne suivante */
    clocks += port_base + ((PORTDATA1.data[0] == 0xF0) ? empty_data : pad_data);
    clocks += port_base + ((PORTDATA2.data[0] == 0xF0) ? empty_data : pad_data);
    return (clocks + 3) / 4;                      /* 4 SMPC clocks per us */
