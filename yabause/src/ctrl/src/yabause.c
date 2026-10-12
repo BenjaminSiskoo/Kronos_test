@@ -444,6 +444,40 @@ void StopTracing(std::unique_ptr<perfetto::TracingSession> tracing_session) {
    modifie ici : les structures du cache sont initialisees par SH2Init()
    quel que soit le reglage, et l'emulation ne demarre qu'a l'ecriture de CCR
    par le jeu (enableCache()). */
+/* Reglages de temps propres a un jeu, d'apres le code produit 'game_code'
+   (NULL : aucun) : ancien cout du fetch SH-2 (SH2LegacyFetchDBList) et
+   ancienne fin de l'INTBACK (SmpcLegacyIntbackDBList), utils/src/db.c.
+   Le modele de temps du fetch repart de lignes vides. */
+static void YabauseApplyTimingDBForCode(const char *game_code)
+{
+   int legacy;
+   SH2FetchCachePurge(NULL);
+   legacy = DBLookupLegacySH2FetchTimingForCode(game_code);
+   SH2SetLegacyFetchTiming(legacy);
+   if (legacy)
+      YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
+   legacy = DBLookupLegacySmpcIntbackTimingForCode(game_code);
+   SmpcSetLegacyIntbackTiming(legacy);
+   if (legacy)
+      YuiMsg("SMPC legacy INTBACK end timing for this game (game database)\n");
+}
+
+/* Appele par Cs2ForceCloseTray() (cs2.c) apres un changement de disque :
+   le jeu suivant demarre par le BIOS sans YabauseInit(), donc sans
+   YabauseApplySH2CacheDB(). Avant, les reglages du jeu precedent restaient
+   actifs : apres Space Jam, Batman Forever (Saturn) tournait avec
+   l'ancienne fin de l'INTBACK et affichait "NO PAD IN PORT 1".
+   Le code est lu par Cs2ReadDiscGameCode(), qui ne touche pas a l'etat du
+   CD block (Cs2GetIP(), utilise au demarrage, change la connexion du
+   CD et prend un bloc du tampon). L'emulation du cache (SH2CacheDBList)
+   n'est pas changee ici : elle depend de structures preparees a
+   l'initialisation. */
+void YabauseApplyDiscTimingDB(void)
+{
+   char code[16];
+   YabauseApplyTimingDBForCode(Cs2ReadDiscGameCode(code, sizeof(code)) ? code : NULL);
+}
+
 static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
 {
    yabsys.usecache = init->usecache;
@@ -458,23 +492,11 @@ static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
       if (MSH2 != NULL) MSH2->cacheOn = 0;
       if (SSH2 != NULL) SSH2->cacheOn = 0;
    }
-   /* Modele de temps du fetch sans emulation du cache (memory.c) : il
-      repart de lignes vides a chaque jeu, et les jeux de
-      SH2LegacyFetchDBList (utils/src/db.c) gardent l'ancien cout. */
-   SH2FetchCachePurge(NULL);
-   {
-      int legacy = DBLookupLegacySH2FetchTiming();
-      SH2SetLegacyFetchTiming(legacy);
-      if (legacy)
-         YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
-   }
-   /* Fin de l'INTBACK : SmpcLegacyIntbackDBList (utils/src/db.c). */
-   {
-      int legacy = DBLookupLegacySmpcIntbackTiming();
-      SmpcSetLegacyIntbackTiming(legacy);
-      if (legacy)
-         YuiMsg("SMPC legacy INTBACK end timing for this game (game database)\n");
-   }
+   /* Reglages de temps du jeu (SH2LegacyFetchDBList, SmpcLegacyIntbackDBList,
+      utils/src/db.c), voir YabauseApplyTimingDBForCode(). Apres un simple
+      changement de disque, c'est YabauseApplyDiscTimingDB() qui s'en charge. */
+   Cs2GetIP(0);
+   YabauseApplyTimingDBForCode(Cs2GetCurrentGmaecode());
 }
 
 static int YabauseFullInit(yabauseinit_struct *init)
