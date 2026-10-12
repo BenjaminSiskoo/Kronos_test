@@ -57,6 +57,9 @@ static int ckchg_start_pending = 0;    /* CKCHG ecrit dans COMREG : remise a zer
 static int intback_sf_clear_pending = 0; /* INTBACK abandonne au V-Blank IN : SF retombe une ligne plus tard */
 static int intback_sf_clear_line = 0;
 static u8 bustmp = 0;
+static u16 m_pmode;           /* defini plus bas (SmpcINTBACKPeripheral) */
+static u8 m_pdr2_readback;    /* definis plus bas (SmpcReadByte) */
+static u8 m_pdr1_readback;
 static const char *smpcfilename = NULL;
 
 // #define SMPCLOG printf
@@ -177,6 +180,26 @@ void SmpcReset(void) {
    SmpcInternalVars->firstPeri=0;
 
    SmpcInternalVars->timing=0;
+
+   /* Etat interne de smpc.c, hors de SmpcRegs/SmpcInternalVars : il doit
+      repartir de zero lui aussi. SmpcReset() n'est appele que par
+      YabauseResetNoLoad(), au demarrage et a chaque changement de jeu.
+      Avant, un INTBACK ou un CKCHG en cours dans le jeu precedent restait
+      en attente (intback_wait_for_vblankout, intback_sf_clear_pending,
+      ckchg_start_pending) et se terminait pendant le BIOS ou le demarrage
+      du jeu suivant : SF, OREG et une interruption SMPC arrivaient sans
+      commande. Lancer Batman Forever (Saturn) apres Space Jam sans fermer
+      Kronos affichait "NO PAD IN PORT 1". */
+   intback_wait_for_vblankout = 0;
+   vblankout_wait_frame = 0;
+   ckchg_reset_done = 0;
+   ckchg_start_pending = 0;
+   intback_sf_clear_pending = 0;
+   intback_sf_clear_line = 0;
+   bustmp = 0;
+   m_pmode = 0;
+   m_pdr1_readback = 0;
+   m_pdr2_readback = 0;
 
    memset((void *)&SmpcInternalVars->port1, 0, sizeof(PortData_struct));
    memset((void *)&SmpcInternalVars->port2, 0, sizeof(PortData_struct));
