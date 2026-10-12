@@ -39,6 +39,7 @@
 #include "smpc.h"
 #include "yui.h"
 #include "db.h"
+#include "yabause.h"
 
 #define CDB_HIRQ_CMOK      0x0001
 #define CDB_HIRQ_DRDY      0x0002
@@ -1103,6 +1104,11 @@ int Cs2ForceCloseTray( int coreid, const char * cdpath ){
   Cs2Area->cdi->SetStatus(CDCORE_NORMAL);
   Cs2Area->cdi->ReadTOC(Cs2Area->TOC);
   Cs2DetectVideoCD();
+  /* Changement de disque sans reinitialisation de l'emulateur (Qt : ouvrir
+     une image pendant qu'un jeu tourne) : la console redemarre sur le
+     nouveau disque par le BIOS, sans passer par YabauseInit(). Les
+     reglages de temps propres a un jeu (db.c) doivent suivre le disque. */
+  YabauseApplyDiscTimingDB();
   return 0;
 };
 
@@ -4617,6 +4623,16 @@ static int Cs2MpegDiscGameCode(char *code, size_t size)
   if (sscanf(tmp, "%10s", code) != 1)
      return 0;
   return 1;
+}
+
+/* Code produit du disque present (IP.BIN, FAD 150), lu dans un tampon local
+   sans toucher a l'etat du CD block (partitions, filtres, connexions),
+   contrairement a Cs2GetIP(). Retourne 1 si un code a ete lu. */
+int Cs2ReadDiscGameCode(char *code, size_t size)
+{
+  if (Cs2Area == NULL || Cs2Area->cdi == NULL)
+     return 0;
+  return Cs2MpegDiscGameCode(code, size);
 }
 
 static int Cs2MpegDiscUsesCard(void)
