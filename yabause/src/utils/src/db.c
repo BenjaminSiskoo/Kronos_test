@@ -176,6 +176,46 @@ int DBLookupMpegCard(const char *game_code)
    return 0;
 }
 
+/* Jeux qui gardent l'ancienne fin de l'INTBACK (smpc.c,
+   SmpcPeripheralAcquireTime()) : SF retombe a la premiere etape SMPC de la
+   ligne qui suit le V-Blank OUT, au lieu de rester a 1 le temps de lire les
+   ports (~355 us pour une manette et un port vide, valeur de Mednafen,
+   0ccf380). Le comportement general suit le SMPC User's Manual (ST-169-R1,
+   p.17 et p.56 : la lecture des ports commence au V-Blank OUT et l'INTBACK
+   ne se termine qu'a sa fin) ; c'est ce jeu qui fait exception.
+
+   Space Jam : avec SF a 1 environ 5 lignes de plus apres le V-Blank OUT, le
+   maitre s'arrete en entrant en jeu (erreur d'adresse, lecture longue en
+   00000001 a 0602054E, pointeur encore nul dans une structure que l'esclave
+   remplit). Verifie dans Kronos : le jeu fonctionne au commit d0f7e33 avec
+   seulement 0ccf380 annule. C'est la meme fragilite que celle de
+   SH2LegacyFetchDBList : son ordonnanceur calcule le temps de chaque image
+   a partir de VCNT lu juste apres le V-Blank OUT, et la course entre le
+   maitre et l'esclave depend des durees que Kronos ne facture pas encore
+   (acces aux registres SCU, B-Bus, SMPC ; entree en interruption).
+
+   A retirer avec SH2LegacyFetchDBList, quand ces couts seront modelises. */
+static const char * const SmpcLegacyIntbackDBList[] = {
+   "T-8119G",    // Space Jam (Japan)
+   "T-8125H",    // Space Jam (USA)
+   "T-8125H-50", // Space Jam (Europe)
+   NULL
+};
+
+/* Retourne 1 si le jeu en cours figure dans SmpcLegacyIntbackDBList. */
+int DBLookupLegacySmpcIntbackTiming(void)
+{
+   const char* game_code;
+   int i;
+   Cs2GetIP(0);
+   game_code = Cs2GetCurrentGmaecode();
+   if (game_code == NULL) return 0;
+   for (i = 0; SmpcLegacyIntbackDBList[i] != NULL; i++) {
+      if (strcmp(SmpcLegacyIntbackDBList[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
+
 /* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
 int DBLookupLegacySH2FetchTiming(void)
 {
