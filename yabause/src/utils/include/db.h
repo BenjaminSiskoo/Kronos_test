@@ -11,6 +11,8 @@ void DBLookup(int* const cart_type, const char**  cartpath, const char * support
 int DBLookupForceSH2Cache(void);
 int DBLookupLegacySH2FetchTiming(void);
 int DBLookupLegacySmpcIntbackTiming(void);
+int DBLookupLegacySH2FetchTimingForCode(const char *game_code);
+int DBLookupLegacySmpcIntbackTimingForCode(const char *game_code);
 int DBLookupMpegCard(const char *game_code);
 
 
