@@ -21,8 +21,6 @@
 UIHexInput::UIHexInput( u32 value, int size, QWidget* p )
 	: QDialog( p )
 {
-   char format[5];
-
 	// setup dialog
 	setupUi( this );
 
