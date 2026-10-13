@@ -22,6 +22,7 @@
 #include "ui_UIDebugCPU.h"
 #include "../YabauseThread.h"
 #include "../QtYabause.h"
+#include <QColor>
 
 class UIDebugCPU : public QDialog, public Ui::UIDebugCPU
 {
@@ -59,10 +60,23 @@ public:
    int exec() override;
    void done(int) override;
 
+   // Colored chip with the name of the CPU, and a chip with the current PC.
+   // Both stay hidden until a debugger sets them.
+   void setProcBadge(const QString &text, const QColor &color);
+   void setPcChip(u32 pc);
+   void setStatus(const QString &text);
+
 protected:
    YabauseThread *mYabauseThread;
    enum PROCTYPE context;
    bool isReadWriteButtonAndTextOK();
+
+   // Shows the code breakpoints of lwCodeBreakpoints in the disassembly margin
+   void updateBreakpointMarkers();
+   QListWidgetItem *findBreakpointItem(QListWidget *list, u32 addr) const;
+   static bool parseHex(const QString &text, u32 *value);
+   static QString hex8(u32 value);
+   void applyStyle();
 
 protected slots:
    void on_lwRegisters_itemDoubleClicked ( QListWidgetItem * item );
@@ -71,6 +85,7 @@ protected slots:
    void on_leCodeBreakpoint_textChanged( const QString & text);
    void on_leMemoryBreakpoint_textChanged( const QString & text);
    void on_lwCodeBreakpoints_itemSelectionChanged ();
+   void on_lwCodeBreakpoints_itemDoubleClicked ( QListWidgetItem * item );
    void on_pbAddCodeBreakpoint_clicked();
    void on_pbDelCodeBreakpoint_clicked();
    void on_lwMemoryBreakpoints_itemSelectionChanged ();

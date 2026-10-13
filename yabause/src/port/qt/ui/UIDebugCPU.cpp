@@ -22,6 +22,25 @@
 #include "UIMemoryEditor.h"
 #include "UIMemoryTransfer.h"
 #include "../CommonDialogs.h"
+#include <QFont>
+#include <QFontDatabase>
+#include <QKeySequence>
+#include <QPalette>
+#include <QSet>
+#include <QTabBar>
+
+namespace {
+
+QString tr_(const char *s) { return QtYabause::translate(QString::fromUtf8(s)); }
+
+QColor mixColors(const QColor &a, const QColor &b, double t)
+{
+	return QColor((int)(a.red() * t + b.red() * (1.0 - t)),
+	              (int)(a.green() * t + b.green() * (1.0 - t)),
+	              (int)(a.blue() * t + b.blue() * (1.0 - t)));
+}
+
+} // namespace
 
 UIDebugCPU::UIDebugCPU( PROCTYPE proc, YabauseThread *mYabauseThread, QWidget* p )
 	: QDialog( p )
@@ -42,6 +61,12 @@ UIDebugCPU::UIDebugCPU( PROCTYPE proc, YabauseThread *mYabauseThread, QWidget* p
 	pbReserved5->setVisible( false );
 	pbLoadCode->setVisible( false );
 
+	// The button was shown by every debugger but no slot was ever connected to
+	// it, so clicking it did nothing
+	pbTraceLogging->setVisible( false );
+	lProcBadge->setVisible( false );
+	lPcChip->setVisible( false );
+
 	pbAddCodeBreakpoint->setEnabled( false );
 	pbDelCodeBreakpoint->setEnabled( false );
 	pbAddMemoryBreakpoint->setEnabled( false );
@@ -55,6 +80,31 @@ UIDebugCPU::UIDebugCPU( PROCTYPE proc, YabauseThread *mYabauseThread, QWidget* p
 
 	connect( lwDisassembledCode, SIGNAL( toggleCodeBreakpoint(u32) ), this, SLOT( toggleCodeBreakpoint(u32) ) );
 
+	// Same keys as most debuggers (a hidden button never triggers its shortcut)
+	pbStepInto->setShortcut( QKeySequence( Qt::Key_F11 ) );
+	pbStepOver->setShortcut( QKeySequence( Qt::Key_F10 ) );
+	pbStepOut->setShortcut( QKeySequence( Qt::SHIFT + Qt::Key_F11 ) );
+	pbLoadCode->setShortcut( QKeySequence( Qt::CTRL + Qt::Key_G ) );
+
+	// Fixed pitch font for everything that shows registers and addresses
+	const QFont mono = QFontDatabase::systemFont( QFontDatabase::FixedFont );
+	lwRegisters->setFont( mono );
+	lwRegisters->setWordWrap( true );   // long lines (the SR decode) wrap instead of needing a scroll bar
+	lwRegisters->setHorizontalScrollBarPolicy( Qt::ScrollBarAlwaysOff );
+	lwBackTrace->setFont( mono );
+	lwCodeBreakpoints->setFont( mono );
+	lwMemoryBreakpoints->setFont( mono );
+	twTrackInfLoop->setFont( mono );
+	codeBrowser->setFont( mono );
+	leCodeBreakpoint->setFont( mono );
+	leMemoryBreakpoint->setFont( mono );
+	lPcChip->setFont( mono );
+
+	lStatus->setProperty( "dim", true );
+	codeTab->tabBar()->setDrawBase( false );   // no stray line above the tabs
+	tabOtherDebug->tabBar()->setDrawBase( false );
+	applyStyle();
+
 	this->context = proc;
 	this->mYabauseThread = mYabauseThread;
 
@@ -62,7 +112,115 @@ UIDebugCPU::UIDebugCPU( PROCTYPE proc, YabauseThread *mYabauseThread, QWidget* p
 	QtYabause::retranslateWidget( this );
 }
 
+void UIDebugCPU::applyStyle()
+{
+	// Only palette() colors are used, so the dialog follows light and dark themes
+	const QColor dim = mixColors( palette().color( QPalette::WindowText ), palette().color( QPalette::Window ), 0.6 );
+	setStyleSheet( QString::fromLatin1( "QLabel[dim=\"true\"] { color: %1; }" ).arg( dim.name() ) + QString::fromLatin1(
+		"QGroupBox { background: palette(base); border: 1px solid palette(mid); border-radius: 10px;"
+		"  margin-top: 22px; padding-top: 6px; }"
+		"QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 4px; font-weight: 600; }"
+		"QGroupBox QGroupBox { background: transparent; }"
+
+		"QLabel#lPcChip { border: 1px solid palette(mid); border-radius: 11px; padding: 3px 14px; font-weight: 600; }"
+
+		"QListWidget, QTextBrowser { background: transparent; alternate-background-color: palette(alternate-base); border: none; }"
+		"QListWidget::item { padding: 2px 4px; }"
+		"QTableWidget { background: transparent; alternate-background-color: palette(alternate-base); border: none; }"
+		"QHeaderView::section { background: transparent; border: none; border-bottom: 1px solid palette(mid);"
+		"  padding: 4px 8px; font-weight: 600; }"
+
+		"QTabWidget::pane { border: none; }"
+		"QTabBar::tab { padding: 6px 14px; border: none; border-bottom: 2px solid transparent; }"
+		"QTabBar::tab:selected { border-bottom: 2px solid palette(highlight); color: palette(highlight); }"
+
+		"QLineEdit { border: 1px solid palette(mid); border-radius: 6px; padding: 5px 8px; background: palette(base); }"
+		"QLineEdit:focus { border-color: palette(highlight); }"
+
+		"QPushButton { border: 1px solid palette(mid); border-radius: 8px; padding: 5px 14px; background: transparent; }"
+		"QPushButton:hover { border-color: palette(highlight); }"
+		"QPushButton:disabled { color: palette(mid); }"
+		"QPushButton#pbStepInto, QPushButton#pbStepOver, QPushButton#pbStepOut {"
+		"  background: palette(highlight); color: palette(highlighted-text); border: none; padding: 6px 20px; font-weight: 600; }"
+		"QPushButton#pbStepInto:disabled, QPushButton#pbStepOver:disabled, QPushButton#pbStepOut:disabled {"
+		"  background: palette(midlight); color: palette(mid); }"
+		"QPushButton#pbAddCodeBreakpoint, QPushButton#pbDelCodeBreakpoint,"
+		"QPushButton#pbAddMemoryBreakpoint, QPushButton#pbDelMemoryBreakpoint { padding: 4px 12px; border-radius: 6px; }" ) );
+}
+
+void UIDebugCPU::setProcBadge(const QString &text, const QColor &color)
+{
+	lProcBadge->setText( text );
+	lProcBadge->setVisible( !text.isEmpty() );
+	lProcBadge->setStyleSheet( QString::fromLatin1( "background: %1; color: white; border-radius: 11px;"
+		" padding: 3px 14px; font-weight: 700;" ).arg( color.name() ) );
+}
+
+void UIDebugCPU::setPcChip(u32 pc)
+{
+	lPcChip->setText( QString::fromLatin1( "PC  " ) + hex8( pc ) );
+	lPcChip->setVisible( true );
+}
+
+void UIDebugCPU::setStatus(const QString &text)
+{
+	lStatus->setText( text );
+}
+
+bool UIDebugCPU::parseHex(const QString &text, u32 *value)
+{
+	// toInt() cannot read anything above 0x7FFFFFFF: addresses such as the
+	// cache-through area (0xA0000000...) came out as 0 and the breakpoint was
+	// silently set on address 0 while the list showed the typed address.
+	QString t = text.trimmed();
+	if ( t.startsWith( QLatin1String( "0x" ), Qt::CaseInsensitive ) )
+		t = t.mid( 2 );
+	bool ok = false;
+	const u32 v = t.toUInt( &ok, 16 );
+	if ( ok && value )
+		*value = v;
+	return ok;
+}
+
+QString UIDebugCPU::hex8(u32 value)
+{
+	return QString( "%1" ).arg( value, 8, 16, QChar( '0' ) ).toUpper();
+}
+
+// The list can hold the same address written differently (typed by hand, or
+// added by a derived class), so compare the numbers and not the text
+QListWidgetItem *UIDebugCPU::findBreakpointItem(QListWidget *list, u32 addr) const
+{
+	for ( int i = 0; i < list->count(); i++ )
+	{
+		u32 v;
+		if ( parseHex( list->item( i )->text(), &v ) && v == addr )
+			return list->item( i );
+	}
+	return NULL;
+}
+
+void UIDebugCPU::updateBreakpointMarkers()
+{
+	QSet<u32> addresses;
+	for ( int i = 0; i < lwCodeBreakpoints->count(); i++ )
+	{
+		u32 v;
+		if ( parseHex( lwCodeBreakpoints->item( i )->text(), &v ) )
+			addresses.insert( v );
+	}
+	lwDisassembledCode->setBreakpoints( addresses );
+}
+
+void UIDebugCPU::on_lwCodeBreakpoints_itemDoubleClicked ( QListWidgetItem * item )
+{
+	u32 addr;
+	if ( item && parseHex( item->text(), &addr ) )
+		updateCodeList( addr );
+}
+
 int UIDebugCPU::exec() {
+	updateBreakpointMarkers();
 	ScspMuteAudio(SCSP_MUTE_SYSTEM);
 	return QDialog::exec();
 }
@@ -127,14 +285,35 @@ void UIDebugCPU::on_leMemoryBreakpoint_textChanged( const QString & text )
 
 void UIDebugCPU::on_lwCodeBreakpoints_itemSelectionChanged ()
 {
-	pbDelCodeBreakpoint->setEnabled(true);
+	pbDelCodeBreakpoint->setEnabled(!lwCodeBreakpoints->selectedItems().isEmpty());
 }
 
 void UIDebugCPU::on_pbAddCodeBreakpoint_clicked()
 {
+	u32 addr;
+	if (!parseHex(leCodeBreakpoint->text(), &addr))
+	{
+		setStatus(tr_("Invalid address."));
+		return;
+	}
+
+	const QString text = hex8(addr);
+	if (findBreakpointItem(lwCodeBreakpoints, addr))
+	{
+		setStatus(tr_("A breakpoint already exists at %1.").arg(text));
+		return;
+	}
+
 	// Only add breakpoint to list if all goes well with emulator
-	if (addCodeBreakpoint(leCodeBreakpoint->text().toInt(0, 16)))
-		lwCodeBreakpoints->addItem(leCodeBreakpoint->text());
+	if (addCodeBreakpoint(addr))
+	{
+		lwCodeBreakpoints->addItem(text);
+		leCodeBreakpoint->clear();
+		updateBreakpointMarkers();
+		setStatus(tr_("Breakpoint added at %1.").arg(text));
+	}
+	else
+		setStatus(tr_("Could not add a breakpoint at %1: the list is full or the address is not supported.").arg(text));
 }
 
 void UIDebugCPU::on_pbDelCodeBreakpoint_clicked()
@@ -143,16 +322,18 @@ void UIDebugCPU::on_pbDelCodeBreakpoint_clicked()
 	for (int i = 0; i < list.count(); i++)
 	{
 		QListWidgetItem *item=list.value(i);
-		u32 addr = item->text().toUInt(0, 16);
-		delCodeBreakpoint(addr);
+		u32 addr;
+		if (parseHex(item->text(), &addr))
+			delCodeBreakpoint(addr);
 	}
 	qDeleteAll(lwCodeBreakpoints->selectedItems ());
-	pbDelCodeBreakpoint->setEnabled(lwCodeBreakpoints->count() > 0);
+	pbDelCodeBreakpoint->setEnabled(!lwCodeBreakpoints->selectedItems().isEmpty());
+	updateBreakpointMarkers();
 }
 
 void UIDebugCPU::on_lwMemoryBreakpoints_itemSelectionChanged ()
 {
-	pbDelMemoryBreakpoint->setEnabled(true);
+	pbDelMemoryBreakpoint->setEnabled(!lwMemoryBreakpoints->selectedItems().isEmpty());
 
 	// Fix: the Read/Write/Byte/Word/Long checkboxes used to just keep
 	// whatever state they last had (or the .ui file's default on a fresh
@@ -213,9 +394,24 @@ void UIDebugCPU::on_pbAddMemoryBreakpoint_clicked()
 			flags |= BREAK_LONGWRITE;
 	}
 
+	u32 addr;
+	if (!parseHex(leMemoryBreakpoint->text(), &addr))
+	{
+		setStatus(tr_("Invalid address."));
+		return;
+	}
+
 	// Only add breakpoint to list if all goes well with emulator
-	if (addMemoryBreakpoint(leMemoryBreakpoint->text().toInt(0, 16), flags))
-		lwMemoryBreakpoints->addItem(leMemoryBreakpoint->text());
+	const QString text = hex8(addr);
+	if (addMemoryBreakpoint(addr, flags))
+	{
+		if (!findBreakpointItem(lwMemoryBreakpoints, addr))
+			lwMemoryBreakpoints->addItem(text);
+		leMemoryBreakpoint->clear();
+		setStatus(tr_("Memory breakpoint set at %1.").arg(text));
+	}
+	else
+		setStatus(tr_("Could not add a memory breakpoint at %1: the list is full or the address is not supported.").arg(text));
 }
 
 void UIDebugCPU::on_pbDelMemoryBreakpoint_clicked()
@@ -224,11 +420,12 @@ void UIDebugCPU::on_pbDelMemoryBreakpoint_clicked()
 	for (int i = 0; i < list.count(); i++)
 	{
 		QListWidgetItem *item=list.value(i);
-		u32 addr = item->text().toUInt(0, 16);
-		delMemoryBreakpoint(addr);
+		u32 addr;
+		if (parseHex(item->text(), &addr))
+			delMemoryBreakpoint(addr);
 	}
 	qDeleteAll(lwMemoryBreakpoints->selectedItems ());
-	pbDelMemoryBreakpoint->setEnabled(lwMemoryBreakpoints->count() > 0);
+	pbDelMemoryBreakpoint->setEnabled(!lwMemoryBreakpoints->selectedItems().isEmpty());
 }
 
 void UIDebugCPU::on_cbRead_toggled(bool enable)
@@ -362,23 +559,32 @@ bool UIDebugCPU::addCodeBreakpoint(u32 addr)
 
 void UIDebugCPU::toggleCodeBreakpoint(u32 addr)
 {
-	QString text;
-	text.sprintf("%08X", addr);
-	QList<QListWidgetItem *> list = lwCodeBreakpoints->findItems(text, Qt::MatchFixedString);
+	const QString text = hex8(addr);
 
-	if (list.count() >= 1)
+	// Compared by value: a breakpoint typed by hand ("6004000") used to be
+	// missed here, so toggling it added a duplicate instead of removing it
+	QListWidgetItem *item = findBreakpointItem(lwCodeBreakpoints, addr);
+
+	if (item)
 	{
 		// Remove breakpoint
-		QListWidgetItem *item=list.value(0);
 		delete item;
 		delCodeBreakpoint(addr);
+		setStatus(tr_("Breakpoint removed at %1.").arg(text));
 	}
 	else
 	{
 		// Add breakpoint
 		if (addCodeBreakpoint(addr))
+		{
 			lwCodeBreakpoints->addItem(text);
+			setStatus(tr_("Breakpoint added at %1.").arg(text));
+		}
+		else
+			setStatus(tr_("Could not add a breakpoint at %1: the list is full or the address is not supported.").arg(text));
 	}
+	pbDelCodeBreakpoint->setEnabled(!lwCodeBreakpoints->selectedItems().isEmpty());
+	updateBreakpointMarkers();
 }
 
 bool UIDebugCPU::delCodeBreakpoint(u32 addr)
