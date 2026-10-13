@@ -785,16 +785,31 @@ static void Vdp2CaptureBank(int bank) {
 
 /* Freeze physical bank 'bank' as the content the VDP2 displayed on lines
  * [fromLine, current line): called when the bank loses read access during
- * the active area. If a capture already starts inside that window it was
- * taken while the bank was still readable (Kronos#520 hand-back, CPU slot
- * change): its data is refreshed with the content in force at the end of
- * the window and it is closed there. */
+ * the active area.
+ *
+ * Captures may already start inside that window: they were taken while the
+ * bank was still readable -- in practice the Kronos#520 one that
+ * vdp2RamAccessCPUCheck() takes on line 1 of every frame, when the
+ * per-line cycle pattern refresh hands the banks back to the VDP2 after the
+ * V-blank. The first of them is extended down to fromLine and the last one
+ * is refreshed with the content in force at the end of the window and
+ * closed there. Reusing the last one while keeping its own start line, as
+ * before, left the window starting at line 1: a zone starting at line 0
+ * found no capture and read the VRAM as left at V-blank IN, i.e. the
+ * picture the game had written after the bank lost read access
+ * (Mechanical Violator Hakaider intro movie, VRAM-A, line 176). The entries
+ * keep their increasing line order, which Vdp2GetVramBankSnapshot() relies
+ * on: every entry before the first one moved has a line below fromLine. */
 static void Vdp2CaptureBankWindow(int bank, int fromLine) {
   const int slot = Vdp2VramCaptureSlot;
   int n = Vdp2VramSnapshotCount[slot][bank];
+  int k = 0;
   Vdp2VramBankSnapshot *snap;
 
-  if (n > 0 && Vdp2VramSnapshots[slot][bank][n - 1].line >= fromLine) {
+  while (k < n && Vdp2VramSnapshots[slot][bank][k].line < fromLine) k++;
+
+  if (k < n) {
+    Vdp2VramSnapshots[slot][bank][k].line = fromLine;
     snap = &Vdp2VramSnapshots[slot][bank][n - 1];
   } else {
     if (n >= VDP2_MAX_VRAM_SNAPSHOTS) return;
