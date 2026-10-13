@@ -513,6 +513,10 @@ static void SmpcINTBACKPeripheral(void) {
      // Request data from the Peripheral Interface
      port1 = &PORTDATA1;
      port2 = &PORTDATA2;
+     /* Keyboards send one Make/Break code per read (STTECH45): put the
+        next one in the port data before it is copied. */
+     PerKeyboardUpdate(&PORTDATA1);
+     PerKeyboardUpdate(&PORTDATA2);
      memcpy(&SmpcInternalVars->port1, port1, sizeof(PortData_struct));
      memcpy(&SmpcInternalVars->port2, port2, sizeof(PortData_struct));
      PerFlush(&PORTDATA1);
@@ -1380,7 +1384,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                         case PERGUN:
                         default:
                            SmpcRegs->PDR[1] = 0xA0;
-                           SMPCLOG("smpc\t: Peripheral TH Control Method not supported for peripherl id %02X\n", PORTDATA1.data[1]);
+                           SMPCLOG("smpc\t: Peripheral TH Control Method not supported for peripherl id %02X\n", PORTDATA2.data[1]);
                            break;
                      }
                      break;
