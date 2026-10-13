@@ -1306,18 +1306,12 @@ UIDebugSH2::UIDebugSH2(UIDebugCPU::PROCTYPE proc, YabauseThread *mYabauseThread,
 
 	if (!procBannerText.isEmpty())
 	{
-		// Coloured banner across the top of the window plus a matching
-		// frame around the whole dialog: both are visible even from a
+		// Coloured badge in the header of the window: visible even from a
 		// glance at two tiled windows, well before anyone reads a title.
-		QLabel *procBanner = new QLabel(procBannerText, this);
-		procBanner->setAlignment(Qt::AlignCenter);
-		procBanner->setToolTip(procTooltip);
-		procBanner->setStyleSheet(QString(
-			"QLabel { background-color: %1; color: white; font-weight: bold; padding: 4px; }"
-			).arg(accentColor));
-		if (verticalLayout_13)
-			verticalLayout_13->insertWidget(0, procBanner);
-		this->setStyleSheet(QString("QDialog#UIDebugCPU { border: 2px solid %1; }").arg(accentColor));
+		// (The shared dialog has its own stylesheet now, so the dialog
+		// border that used to be set here would have replaced it.)
+		setProcBadge(procBannerText, QColor(accentColor));
+		lProcBadge->setToolTip(procTooltip);
 	}
 
 	lwDisassembledCode->setContext(debugSH2);
@@ -1336,13 +1330,13 @@ UIDebugSH2::UIDebugSH2(UIDebugCPU::PROCTYPE proc, YabauseThread *mYabauseThread,
          QString text;
          if (cbp[i].addr != 0xFFFFFFFF)
          {
-            text.sprintf("%08X", (int)cbp[i].addr);
+            text = QString::asprintf("%08X", (int)cbp[i].addr);
             lwCodeBreakpoints->addItem(text);
          }
 
          if (mbp[i].addr != 0xFFFFFFFF)
          {
-            text.sprintf("%08X", (int)mbp[i].addr);
+            text = QString::asprintf("%08X", (int)mbp[i].addr);
             lwMemoryBreakpoints->addItem(text);
          }
       }
@@ -1350,6 +1344,7 @@ UIDebugSH2::UIDebugSH2(UIDebugCPU::PROCTYPE proc, YabauseThread *mYabauseThread,
       lwDisassembledCode->setDisassembleFunction((int (*)(void *, u32, char *))SH2Dis);
 			lwDisassembledCode->setEndAddress(0x06100000);
       lwDisassembledCode->setMinimumInstructionSize(2);
+      lwDisassembledCode->setFixedInstructionSize(true);   // every SH2 instruction is 16 bits
       gbBackTrace->setVisible( true );
 
       SH2SetBreakpointCallBack(debugSH2, (void (*)(void *, u32, void *))SH2BreakpointHandler, NULL);
@@ -1434,7 +1429,7 @@ void UIDebugSH2::updateRegList()
 
    for (i = 0; i < 16; i++)
    {
-      str.sprintf("R%02d =  %08X", i, (int)sh2regs.R[i]);
+      str = QString::asprintf("R%02d =  %08X", i, (int)sh2regs.R[i]);
       QString tip = (i == 15)
          ? QtYabause::translate(
               "General-purpose register R15.\n"
@@ -1453,7 +1448,7 @@ void UIDebugSH2::updateRegList()
    // SR - decoded inline so the flags that matter for a divide sequence
    // (Q/M), MAC saturation (S) or a comparison/carry (T) don't need to
    // be worked out by hand from the raw bit pattern.
-   str.sprintf("SR =   %08X", (int)sh2regs.SR.all);
+   str = QString::asprintf("SR =   %08X", (int)sh2regs.SR.all);
    str += QString("  T=%1 S=%2 Q=%3 M=%4 I=%5")
       .arg((int)sh2regs.SR.part.T)
       .arg((int)sh2regs.SR.part.S)
@@ -1472,7 +1467,7 @@ void UIDebugSH2::updateRegList()
       "at or below this priority are held pending."));
 
    // GBR
-   str.sprintf("GBR =  %08X", (int)sh2regs.GBR);
+   str = QString::asprintf("GBR =  %08X", (int)sh2regs.GBR);
    addReg(str, sh2regs.GBR, prevRegs.GBR, QtYabause::translate(
       "Global Base Register (GBR).\n"
       "Base address used by GBR-relative addressing: MOV.B/W/L "
@@ -1480,7 +1475,7 @@ void UIDebugSH2::updateRegList()
       "all compute their effective address from this register."));
 
    // VBR
-   str.sprintf("VBR =  %08X", (int)sh2regs.VBR);
+   str = QString::asprintf("VBR =  %08X", (int)sh2regs.VBR);
    addReg(str, sh2regs.VBR, prevRegs.VBR, QtYabause::translate(
       "Vector Base Register (VBR).\n"
       "Base address of the exception/interrupt vector table: vector n "
@@ -1488,7 +1483,7 @@ void UIDebugSH2::updateRegList()
       "once by the boot ROM/BIOS and left alone by game code."));
 
    // MACH
-   str.sprintf("MACH = %08X", (int)sh2regs.MACH);
+   str = QString::asprintf("MACH = %08X", (int)sh2regs.MACH);
    addReg(str, sh2regs.MACH, prevRegs.MACH, QtYabause::translate(
       "Multiply-and-Accumulate register, high 32 bits.\n"
       "Written together with MACL by the MAC.W/MAC.L instructions; the "
@@ -1496,14 +1491,14 @@ void UIDebugSH2::updateRegList()
       "wraps on overflow."));
 
    // MACL
-   str.sprintf("MACL = %08X", (int)sh2regs.MACL);
+   str = QString::asprintf("MACL = %08X", (int)sh2regs.MACL);
    addReg(str, sh2regs.MACL, prevRegs.MACL, QtYabause::translate(
       "Multiply-and-Accumulate register, low 32 bits.\n"
       "Also used as an ordinary 32-bit result register by MUL.L, "
       "DMULS.L and DMULU.L, which only ever write MACH:MACL."));
 
    // PR
-   str.sprintf("PR =   %08X", (int)sh2regs.PR);
+   str = QString::asprintf("PR =   %08X", (int)sh2regs.PR);
    addReg(str, sh2regs.PR, prevRegs.PR, QtYabause::translate(
       "Procedure Register (PR).\n"
       "Return address saved by BSR/BSRF/JSR; RTS jumps to whatever is "
@@ -1511,7 +1506,7 @@ void UIDebugSH2::updateRegList()
       "register."));
 
    // PC
-   str.sprintf("PC =   %08X", (int)sh2regs.PC);
+   str = QString::asprintf("PC =   %08X", (int)sh2regs.PC);
    addReg(str, sh2regs.PC, prevRegs.PC, QtYabause::translate(
       "Program Counter (PC).\n"
       "Address of the instruction about to execute (delay slots are "
@@ -1568,16 +1563,21 @@ void UIDebugSH2::loadCodeAddress()
   sh2regs_struct sh2regs;
   SH2GetRegisters(debugSH2, &sh2regs);
 
-  std::stringstream currentAddress;
-  currentAddress << std::hex << sh2regs.PC;
-
-	bool ok = false;
-  const std::string newAddress = QInputDialog::getText(this, tr("Input code address"),
-		tr("Address (hex):"), QLineEdit::Normal,
-    QString::fromStdString(currentAddress.str()), &ok).toStdString();
+  bool ok = false;
+  const QString newAddress = QInputDialog::getText(this, tr("Input code address"),
+		tr("Address (hex):"), QLineEdit::Normal, hex8(sh2regs.PC), &ok);
 
 	if (ok) {
-    const u32 addr = static_cast<uint32_t>(std::stoull(newAddress, nullptr, 16));
+    /* std::stoull() used to be called here: it throws std::invalid_argument
+     * on anything that is not a number (an empty field, a typo) and
+     * std::out_of_range on a too long one, and nothing caught it, so a wrong
+     * address closed the whole emulator. */
+    u32 addr;
+    if (!parseHex(newAddress, &addr))
+    {
+      setStatus(tr("Invalid address: %1").arg(newAddress));
+      return;
+    }
     /* Fix: this used to only call updateCodePage(), which looks up a
      * matching .elf file for source-level display (addr2line) -- useful
      * for homebrew builds, but for a commercial game ISO (no matching
@@ -1697,28 +1697,40 @@ void UIDebugSH2::updateCodePage(u32 evaluateAddress)
       const QString filename = match.captured(filenameGroup);
       const int line = match.captured(lineGroup).toInt(&ok, 10);
 
-      std::ifstream inputFile(filename.toStdString() , std::ios_base::in);
-      inputFile.seekg(0, std::ios_base::end);
-      const size_t fileSize = inputFile.tellg();
-      inputFile.seekg(0, std::ios_base::beg);
+      /* addr2line gives the path the program was built with, which often does
+       * not exist on this machine. The file used to be opened without any check:
+       * tellg() then returned -1, the size became huge and std::string(size)
+       * threw, taking the emulator down on every step. QFile also copes with
+       * non-ASCII paths, which std::ifstream(toStdString()) does not on Windows. */
+      QFile sourceFile(filename);
+      if (!sourceFile.open(QIODevice::ReadOnly))
+      {
+        codeTab->setTabText(1, "Source");
+        codeTab->setTabToolTip(1, filename);
+        codeBrowser->setText(QString("Source file not found on this machine:\n%1\n\n"
+                                     "addr2line reports it at line %2.").arg(filename).arg(line));
+        return;
+      }
+      const QByteArray fileData = sourceFile.readAll();
+      sourceFile.close();
 
-      std::string tmpString(fileSize, '\0');
-      inputFile.read(&tmpString[0], fileSize);
-
-      const QString tooltip = filename+ ":" + line;
+      const QString tooltip = filename + QLatin1Char(':') + QString::number(line);
 
       codeTab->setTabText(1, QFileInfo(filename).fileName());
       codeTab->setTabToolTip(1, tooltip);
-      codeBrowser->setText(QString::fromStdString(tmpString));
+      codeBrowser->setText(QString::fromUtf8(fileData));
 
-      QTextBlock lineBlock = codeBrowser->document()->findBlockByLineNumber(line - 1);
+      QTextBlock lineBlock = codeBrowser->document()->findBlockByLineNumber(line > 0 ? line - 1 : 0);
       codeBrowser->moveCursor(QTextCursor::End);
       codeBrowser->setTextCursor(QTextCursor(lineBlock));
 
+      /* Highlight with the theme colour (semi-transparent): the plain yellow
+       * used before made the text unreadable on a dark theme. */
       QTextBlockFormat highlightFormat;
-      highlightFormat.setBackground(Qt::yellow);
+      QColor highlight = codeBrowser->palette().color(QPalette::Highlight);
+      highlight.setAlpha(90);
+      highlightFormat.setBackground(highlight);
       highlightFormat.setNonBreakableLines(true);
-      highlightFormat.setPageBreakPolicy(QTextFormat::PageBreak_AlwaysBefore);
 
       QTextCursor newCursor(codeBrowser->textCursor());
       newCursor.setPosition(lineBlock.position());
@@ -1752,6 +1764,7 @@ void UIDebugSH2::updateAll()
          .arg(QtYabause::translate(debugSH2 == MSH2 ? "Debug Master SH2"
                                                    : "Debug Slave SH2"))
          .arg(QString("%1").arg(sh2regs.PC, 8, 16, QChar('0')).toUpper()));
+      setPcChip(sh2regs.PC);
       updateCodeList(sh2regs.PC);
       updateBackTrace();
       updateTrackInfLoop();
@@ -1816,7 +1829,7 @@ void UIDebugSH2::setRegister(int index, u32 value)
       switch(index)
       {
          case 16:
-            sh2regs.SR.all = value;
+            sh2regs.SR.all = value & 0x000003F3;   // M Q I3-I0 S T: the other bits are reserved
             break;
          case 17:
             sh2regs.GBR = value;
@@ -1835,6 +1848,7 @@ void UIDebugSH2::setRegister(int index, u32 value)
             break;
          case 22:
             sh2regs.PC = value;
+            setPcChip(sh2regs.PC);
             updateCodeList(sh2regs.PC);
             break;
       }
