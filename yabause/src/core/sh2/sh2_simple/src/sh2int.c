@@ -154,6 +154,18 @@ static INLINE void SH2HandleInterrupts(SH2_struct *context)
         context->regs.SR.part.I = context->interrupts[context->NumberOfInterrupts - 1].level;
       }
       context->regs.PC = SH2MappedMemoryReadLong(context,context->regs.VBR + (context->interrupts[context->NumberOfInterrupts - 1].vector << 2));
+      if (SH2Core->id == SH2CORE_DEBUGINTERPRETER) {
+        // Same as the Kronos debug interpreter: show the interrupt as a JSR
+        // from the interrupted address, otherwise the RTE that ends the
+        // handler pops a call that belongs to the interrupted code
+        u32 handlerpc = context->regs.PC;
+        context->regs.PC = oldpc;
+        context->instruction = 0x400B;
+        SH2HandleBackTrace(context);
+        context->regs.PC = handlerpc;
+        if (context->stepOverOut.enabled && context->stepOverOut.type == SH2ST_STEPOUT)
+          context->stepOverOut.levels++;
+      }
       //LOG("[%s] Exception %u, vecnum=%u, saved PC=0x%08x --- New PC=0x%08x\n", context->isslave?"SH2-S":"SH2-M", 9, context->interrupts[context->NumberOfInterrupts - 1].vector, oldpc, context->regs.PC);
       context->NumberOfInterrupts--;
       context->isSleeping = 0;
