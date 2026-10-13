@@ -25,6 +25,7 @@
 #include "debug.h"
 #include "peripheral.h"
 #include "ygl.h"
+#include <string.h>
 
 const char * PerPadNames[] =
 {
@@ -1735,6 +1736,295 @@ int PerGetId(void * peripheral)
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// Keyboard
+//
+// Data format, key codes and pad-compatible buttons: Saturn Technical
+// Bulletin #45 "Saturn Keyboard Data Format Ver.1.00" (STTECH45):
+//  - one Make or Break code per read, keys are sent one after the other
+//    on a roll over, and the Make code is repeated while the last key
+//    pressed is held ("Repeat function (on all keys)", a new key starts
+//    a new repeat cycle);
+//  - CapsLock/NumLock/ScrLock flags toggle on the Make of their key;
+//  - pad buttons: arrows = D-pad, ESC = Start, Z/X/C = A/B/C,
+//    A/S/D = X/Y/Z, Q/E = L/R. (The bulletin lists "Right: [ESC] key",
+//    a typo for Start: the button table and Mednafen both use Start.)
+//
+// Not given by the bulletin, taken from Mednafen (ss/smpc_iodevice.c,
+// IODevice_Keyboard), as allowed when the workspace docs are silent:
+//  - repeat delay TS = 400 ms and repeat interval TR = 33.3 ms;
+//  - the pad buttons and lock flags change only when the code of their
+//    key is actually sent (not when the host key moves), and pressing a
+//    direction releases the opposite one (Up/Down, Left/Right);
+//  - Pause has no Break of its own: Make and Break are both queued when
+//    the key goes down;
+//  - a 16 entries code FIFO; when it is full, new codes wait.
+// The "wraparound" (ghosting) wait of the real keyboard is not emulated.
+//
+// Threading: the host state (perkb_host_*) is only written by the port
+// (PerKeyboardHostKey*), the rest only by the emulation (SMPC side).
+//////////////////////////////////////////////////////////////////////////////
+
+#define PERKB_MAX          12   /* 2 ports x 6 multi-tap slots */
+#define PERKB_FIFO_SIZE    16
+#define PERKB_EV_MAKE      0x0800
+#define PERKB_EV_BREAK     0x0100
+#define PERKB_EV_REPEAT    0x1000 /* internal: repeated Make, doesn't toggle the locks */
+#define PERKB_CODE_PAUSE   0x82
+#define PERKB_REPEAT_DELAY 400000 /* us */
+#define PERKB_REPEAT_RATE  33333  /* us */
+
+/* 3rd data */
+#define PERKB_LOCK_SCROLL  0x10
+#define PERKB_LOCK_NUM     0x20
+#define PERKB_LOCK_CAPS    0x40
+#define PERKB_MAKE         0x08
+#define PERKB_BREAK        0x01
+#define PERKB_DATA3_ONES   0x06
+
+/* Pad-compatible buttons, as a 16 bit "pressed" mask laid out like the
+   1st (high byte) and 2nd (low byte, bits 7-3) data bytes. */
+#define PERKB_BTN_RIGHT 0x8000
+#define PERKB_BTN_LEFT  0x4000
+#define PERKB_BTN_DOWN  0x2000
+#define PERKB_BTN_UP    0x1000
+#define PERKB_BTN_START 0x0800
+#define PERKB_BTN_A     0x0400
+#define PERKB_BTN_C     0x0200
+#define PERKB_BTN_B     0x0100
+#define PERKB_BTN_R     0x0080
+#define PERKB_BTN_X     0x0040
+#define PERKB_BTN_Y     0x0020
+#define PERKB_BTN_Z     0x0010
+#define PERKB_BTN_L     0x0008
+
+typedef struct
+{
+   PerKeyboard_struct * kb;
+   u8 down[PERKB_NUM_CODES]; /* key state as already sent to the Saturn */
+   u8 seq[PERKB_NUM_CODES];  /* last perkb_host_seq[] value taken into account */
+   u16 fifo[PERKB_FIFO_SIZE];
+   u8 fifo_rdp, fifo_wrp, fifo_cnt;
+   int rep_code;             /* key being repeated, -1 = none */
+   s32 rep_us;               /* time left before the next repeated Make */
+   u32 last_frame;
+   u16 buttons;              /* PERKB_BTN_* currently reported as pressed */
+   u8 lock;                  /* PERKB_LOCK_* */
+   u8 last_code;
+} PerKeyboardState;
+
+static volatile u8 perkb_host_down[PERKB_NUM_CODES];
+static volatile u8 perkb_host_seq[PERKB_NUM_CODES]; /* +1 on each host press */
+static PerKeyboardState perkb[PERKB_MAX];
+static int perkb_count = 0;
+
+void PerKeyboardHostKeyDown(u8 code)
+{
+   if (code >= PERKB_NUM_CODES || perkb_host_down[code])
+      return;
+   perkb_host_down[code] = 1;
+   perkb_host_seq[code]++;
+}
+
+void PerKeyboardHostKeyUp(u8 code)
+{
+   if (code >= PERKB_NUM_CODES)
+      return;
+   perkb_host_down[code] = 0;
+}
+
+void PerKeyboardHostReleaseAll(void)
+{
+   int i;
+   for (i = 0; i < PERKB_NUM_CODES; i++)
+      perkb_host_down[i] = 0;
+}
+
+int PerKeyboardIsConnected(void)
+{
+   return perkb_count > 0;
+}
+
+static void PerKeyboardPush(PerKeyboardState * st, u16 ev)
+{
+   st->fifo[st->fifo_wrp] = ev;
+   st->fifo_wrp = (st->fifo_wrp + 1) % PERKB_FIFO_SIZE;
+   st->fifo_cnt++;
+}
+
+static void PerKeyboardMake(PerKeyboardState * st, int code)
+{
+   PerKeyboardPush(st, PERKB_EV_MAKE | code);
+   st->down[code] = 1;
+   st->rep_code = code;
+   st->rep_us = PERKB_REPEAT_DELAY;
+}
+
+static void PerKeyboardBreak(PerKeyboardState * st, int code)
+{
+   PerKeyboardPush(st, PERKB_EV_BREAK | code);
+   st->down[code] = 0;
+   if (st->rep_code == code)
+      st->rep_code = -1;
+}
+
+/* Turns the host key changes since the last call into Make/Break codes. */
+static void PerKeyboardScan(PerKeyboardState * st)
+{
+   int code;
+   s32 elapsed;
+   u32 frames = yabsys.frame_count - st->last_frame;
+
+   st->last_frame = yabsys.frame_count;
+   if (frames > 60) frames = 60;
+   elapsed = (s32)frames * (yabsys.IsPal ? 20000 : 16683);
+
+   /* Repeat of the last key pressed, before the new changes: a key that
+      goes down now restarts the cycle with the full TS delay. At most one
+      repeated Make per read, and only when nothing else is waiting, so
+      repeats never pile up in front of real key changes when the game
+      reads the keyboard less often than TR. No repeat once the host key
+      has gone up or down again: its Break / new Make comes next. */
+   if (st->rep_code >= 0)
+   {
+      st->rep_us -= elapsed;
+      if (st->rep_us <= 0)
+      {
+         if (st->fifo_cnt == 0 && perkb_host_down[st->rep_code] &&
+             perkb_host_seq[st->rep_code] == st->seq[st->rep_code])
+            PerKeyboardPush(st, PERKB_EV_MAKE | PERKB_EV_REPEAT | st->rep_code);
+         st->rep_us += PERKB_REPEAT_RATE;
+         if (st->rep_us <= 0)
+            st->rep_us = PERKB_REPEAT_RATE;
+      }
+   }
+
+   for (code = 0; code < PERKB_NUM_CODES; code++)
+   {
+      const u8 host_down = perkb_host_down[code];
+      const u8 host_seq = perkb_host_seq[code];
+      const int pressed = (host_seq != st->seq[code]); /* host press(es) not seen yet */
+      int need;
+
+      if (code == PERKB_CODE_PAUSE)
+      {
+         if (pressed)
+         {
+            if (st->fifo_cnt > PERKB_FIFO_SIZE - 2)
+               break;
+            PerKeyboardPush(st, PERKB_EV_MAKE | code);
+            PerKeyboardPush(st, PERKB_EV_BREAK | code);
+            st->seq[code] = host_seq;
+         }
+         continue;
+      }
+
+      /* Codes needed to bring the Saturn side up to date. A key pressed
+         and released between two reads still gives a Make and a Break. */
+      need = 0;
+      if (st->down[code] && (pressed || !host_down)) need++;          /* Break */
+      if ((!st->down[code] || pressed) && (pressed || host_down)) need++; /* Make */
+      if (pressed && !host_down) need++;                               /* Break */
+      if (need == 0)
+         continue;
+      if (st->fifo_cnt + need > PERKB_FIFO_SIZE)
+         break; /* FIFO full: the remaining changes are sent later */
+
+      if (st->down[code] && (pressed || !host_down))
+         PerKeyboardBreak(st, code);
+      if (!st->down[code] && (pressed || host_down))
+         PerKeyboardMake(st, code);
+      if (st->down[code] && !host_down)
+         PerKeyboardBreak(st, code);
+      st->seq[code] = host_seq;
+   }
+
+}
+
+static u16 PerKeyboardButton(int code)
+{
+   switch (code)
+   {
+      case 0x8D: return PERKB_BTN_RIGHT; /* -> */
+      case 0x86: return PERKB_BTN_LEFT;  /* <- */
+      case 0x8A: return PERKB_BTN_DOWN;  /* down arrow */
+      case 0x89: return PERKB_BTN_UP;    /* up arrow */
+      case 0x76: return PERKB_BTN_START; /* Esc */
+      case 0x1A: return PERKB_BTN_A;     /* Z */
+      case 0x22: return PERKB_BTN_B;     /* X */
+      case 0x21: return PERKB_BTN_C;     /* C */
+      case 0x1C: return PERKB_BTN_X;     /* A */
+      case 0x1B: return PERKB_BTN_Y;     /* S */
+      case 0x23: return PERKB_BTN_Z;     /* D */
+      case 0x15: return PERKB_BTN_L;     /* Q */
+      case 0x24: return PERKB_BTN_R;     /* E */
+      default: return 0;
+   }
+}
+
+/* Sends the next code (if any) and refreshes the 4 data bytes. */
+static void PerKeyboardOutput(PerKeyboardState * st)
+{
+   u8 mkbrk = 0;
+
+   if (st->fifo_cnt)
+   {
+      const u16 ev = st->fifo[st->fifo_rdp];
+      const int code = ev & 0xFF;
+      const int make = (ev & PERKB_EV_MAKE) != 0;
+      const u16 btn = PerKeyboardButton(code);
+
+      st->fifo_rdp = (st->fifo_rdp + 1) % PERKB_FIFO_SIZE;
+      st->fifo_cnt--;
+
+      if (btn)
+      {
+         if (make)
+         {
+            st->buttons |= btn;
+            if (btn == PERKB_BTN_UP)    st->buttons &= ~PERKB_BTN_DOWN;
+            if (btn == PERKB_BTN_DOWN)  st->buttons &= ~PERKB_BTN_UP;
+            if (btn == PERKB_BTN_LEFT)  st->buttons &= ~PERKB_BTN_RIGHT;
+            if (btn == PERKB_BTN_RIGHT) st->buttons &= ~PERKB_BTN_LEFT;
+         }
+         else
+            st->buttons &= ~btn;
+      }
+
+      if (make && !(ev & PERKB_EV_REPEAT))
+      {
+         if (code == 0x58) st->lock ^= PERKB_LOCK_CAPS;   /* CapsLock */
+         if (code == 0x77) st->lock ^= PERKB_LOCK_NUM;    /* NumLock */
+         if (code == 0x7E) st->lock ^= PERKB_LOCK_SCROLL; /* ScrLock */
+      }
+
+      mkbrk = make ? PERKB_MAKE : PERKB_BREAK;
+      st->last_code = code;
+   }
+
+   st->kb->kbbits[0] = ~(st->buttons >> 8) & 0xFF;
+   st->kb->kbbits[1] = (~st->buttons & 0xF8) | 0x00; /* KB TYPE 000 = Saturn keyboard */
+   st->kb->kbbits[2] = st->lock | mkbrk | PERKB_DATA3_ONES;
+   st->kb->kbbits[3] = st->last_code;
+}
+
+void PerKeyboardUpdate(PortData_struct * port)
+{
+   int i;
+
+   for (i = 0; i < perkb_count; i++)
+   {
+      PerKeyboardState * st = &perkb[i];
+      const u8 * p = (const u8 *)st->kb;
+
+      if (p < port->data || p >= port->data + sizeof(port->data))
+         continue;
+
+      PerKeyboardScan(st);
+      PerKeyboardOutput(st);
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
 
 void PerFlush(PortData_struct * port)
 {
@@ -1871,6 +2161,10 @@ void PerPortReset(void)
           MJPORT[i] = 0xFF;
         mj_mux_data = 0;
 
+        /* Keyboards are plugged in again by the port (PerKeyboardAdd). The
+           host key state is kept: keys still held are sent again as Make. */
+        perkb_count = 0;
+
 	perkeyconfigsize = 0;
         if (perkeyconfig)
            free(perkeyconfig);
@@ -1951,6 +2245,34 @@ PerAnalog_struct * PerTwinSticksAdd(PortData_struct * port)
 PerGun_struct * PerGunAdd(PortData_struct * port)
 {
    return (PerGun_struct *) PerAddPeripheral(port, PERGUN);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+PerKeyboard_struct * PerKeyboardAdd(PortData_struct * port)
+{
+   PerKeyboard_struct * kb;
+   PerKeyboardState * st;
+   int i;
+
+   if (perkb_count >= PERKB_MAX)
+      return NULL;
+
+   kb = (PerKeyboard_struct *) PerAddPeripheral(port, PERKEYBOARD);
+   if (kb == NULL)
+      return NULL;
+
+   st = &perkb[perkb_count++];
+   memset(st, 0, sizeof(*st));
+   st->kb = kb;
+   st->rep_code = -1;
+   st->last_frame = yabsys.frame_count;
+   /* Keys already held when the keyboard is plugged in are sent as Make
+      on the first read (down[] = 0, host_down = 1), not twice. */
+   for (i = 0; i < PERKB_NUM_CODES; i++)
+      st->seq[i] = perkb_host_seq[i];
+
+   return kb;
 }
 
 PerCab_struct * PerCabAdd(PortData_struct * port)
