@@ -52,10 +52,12 @@ public:
          return Invalid;
 
       // Make sure it's in range
-      bool *result = new bool;
-      unsigned int val = input.toUInt(result, 16);
+      // A local variable: the bool allocated here with new was never freed,
+      // which leaked one byte per keystroke in every hex field
+      bool ok = false;
+      unsigned int val = input.toUInt(&ok, 16);
 
-      if ((*result == true) && (val >= t) && (val <= b))
+      if (ok && (val >= t) && (val <= b))
          return Acceptable;
       return Invalid;
    }
