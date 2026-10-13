@@ -61,7 +61,7 @@ UIPortManager::UIPortManager( QWidget* parent )
       cb->addItem(QtYabause::translate("Double Mission Stick"), PERTWINSTICKS);
       cb->addItem( QtYabause::translate( "3D Control Pad" ), PER3DPAD );
       cb->addItem( QtYabause::translate( "Gun" ), PERGUN );
-      //cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD );
+      cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD ); // no bindings: the whole host keyboard, by key position
 		cb->addItem( QtYabause::translate( "Mouse" ), PERMOUSE );
                 cb->addItem( QtYabause::translate( "ST-V Cabinet" ), PERCABINET );
                 cb->addItem( QtYabause::translate( "Hopper Cabinet" ), PERCABINET_HOPPER ); // same peripheral as ST-V Cabinet, opens patocar/skychal/supgoal/techbowl/micrombc's dedicated dialog directly
@@ -441,12 +441,19 @@ void UIPortManager::tbClearJoystick_clicked()
 	const QString group = QString( "Input/Port/%1/Id/%2" ).arg( mPort ).arg( controllerId );
 	Settings* settings = QtYabause::settings();
 	uint type = settings->value( QString( mSettingsType ).arg( mPort ).arg( controllerId ), 0 ).toUInt();
+	// HopperCabinetUI / MahjongPanelUI live in the same group: keep them,
+	// or the dropdown falls back from "Hopper Cabinet" / "Mahjong Panel"
+	// to "ST-V Cabinet" on the next loadSettings().
+	const bool isHopperUI = settings->value( QString( mSettingsHopperUI ).arg( mPort ).arg( controllerId ), false ).toBool();
+	const bool isMahjongUI = settings->value( QString( mSettingsMahjongUI ).arg( mPort ).arg( controllerId ), false ).toBool();
 
 	settings->remove( group );
 
 	if ( type > 0 )
 	{
 		settings->setValue( QString( mSettingsType ).arg( mPort ).arg( controllerId ), type );
+		settings->setValue( QString( mSettingsHopperUI ).arg( mPort ).arg( controllerId ), isHopperUI );
+		settings->setValue( QString( mSettingsMahjongUI ).arg( mPort ).arg( controllerId ), isMahjongUI );
 	}
 }
 
