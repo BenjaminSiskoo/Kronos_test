@@ -161,6 +161,9 @@ int M68KDelCodeBreakpoint(u32 addr);
 m68kcodebreakpoint_struct *M68KGetBreakpointList(void);
 void M68KClearCodeBreakpoints(void);
 
+int scsp_debug_instrument_count(void);
+int scsp_debug_instrument_capacity(void);
+u32 scsp_debug_get_slot_sa(int chan);
 void scsp_debug_instrument_get_data(int i, u32 * sa, int * is_muted);
 void scsp_debug_instrument_set_mute(u32 sa, int mute);
 void scsp_debug_instrument_clear();
