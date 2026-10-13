@@ -160,14 +160,18 @@ void YabauseGL::updateView( const QSize& s )
         }
 }
 
+/* Key events of this window already reach UIYabause::keyPressEvent()/
+   keyReleaseEvent() through its event filter (UIYabause installs it on
+   this window). Forwarding them here as well delivered every key twice
+   to the peripherals, so they are only accepted here. */
 void YabauseGL::keyPressEvent( QKeyEvent* e )
 {
-  PerKeyDown( e->key() );
+  e->accept();
 }
 
 void YabauseGL::keyReleaseEvent( QKeyEvent* e )
 {
-  PerKeyUp( e->key() );
+  e->accept();
 }
 
 
