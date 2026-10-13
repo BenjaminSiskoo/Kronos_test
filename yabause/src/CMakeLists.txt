@@ -90,6 +90,8 @@ set(kronos_HEADERS
 	sys/scu/include/scu.h
 	sys/scsp/include/scsp.h
 	sys/scsp/include/scspdsp.h
+	sys/scsp/include/adsp2181.h
+	sys/scsp/include/rax.h
   sys/scsp/include/m68kd.h
 	sys/smpc/include/smpc.h
 	sys/memory/include/memory.h
@@ -153,6 +155,8 @@ set(kronos_SOURCES
 	sys/scu/src/scu.c
 	sys/scsp/src/scsp.c
 	sys/scsp/src/scspdsp.c
+	sys/scsp/src/adsp2181.c
+	sys/scsp/src/rax.c
   sys/scsp/src/m68kd.c
 	sys/smpc/src/smpc.c
 	sys/memory/src/memory.c
