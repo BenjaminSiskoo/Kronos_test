@@ -4312,11 +4312,12 @@ void SH2HandleBackTrace(SH2_struct *context)
       (inst & 0xF0FF) == 0x0003 || // BSRF
       (inst & 0xF0FF) == 0x400B)   // JSR
    {
-      if (context->bt.numbacktrace < sizeof(context->bt.addr)/sizeof(u32))
-      {
+      // Keep counting once the table is full, only the first entries are
+      // stored: otherwise the returns of a call chain deeper than the table
+      // popped entries that were never pushed and the list drifted.
+      if (context->bt.numbacktrace < (int)(sizeof(context->bt.addr)/sizeof(u32)))
          context->bt.addr[context->bt.numbacktrace] = context->regs.PC;
-         context->bt.numbacktrace++;
-      }
+      context->bt.numbacktrace++;
    }
    else if ((inst == 0x000B) || // RTS
             (inst == 0x002B)) //RTE
@@ -4330,6 +4331,7 @@ void SH2HandleBackTrace(SH2_struct *context)
 
 u32 *SH2GetBacktraceList(SH2_struct *context, int *size)
 {
-   *size = context->bt.numbacktrace;
+   const int max = (int)(sizeof(context->bt.addr)/sizeof(u32));
+   *size = (context->bt.numbacktrace > max) ? max : context->bt.numbacktrace;
    return context->bt.addr;
 }
