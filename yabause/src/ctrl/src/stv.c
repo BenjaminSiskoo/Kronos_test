@@ -22,6 +22,7 @@
 #include "eeprom.h"
 #include "decrypt.h"
 #include "zlib.h"
+#include "rax.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -113,6 +114,16 @@ void init_decathlt(void) {
   decathlt5838Reset();
 }
 
+/* MAME stv.cpp init_batmanfr / batmanfr machine config: Acclaim RAX sound
+   board, fed by writes to 0x04800000 (see ROMSTVCs1Write* in cs0.c). */
+void init_batmanfr(void) {
+  /* MAME: ROM_REGION32_BE(0x3000000, "cart", ROMREGION_ERASEFF). The ROMs
+     end at 0x2000000; the rest of the cart, including the sound latch
+     address 0x04800000, reads back 0xFF there, not 0x00. */
+  memset(&CartridgeArea->rom[0x2000000], 0xFF, 0x1000000);
+  RaxEnable();
+}
+
 
 Bios BiosList =
 {
@@ -194,7 +205,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_EU | STV_REGION_US | STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_batmanfr,
     NULL,
     {
         HEADER_BLOB,    "350-mpa1.u19", 0x0000000, 0x0100000, 0x2a5a8c3a,
@@ -208,6 +219,11 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "gfx4.u12",     0x1400000, 0x0400000, 0x52d95242,
         GAME_WORD_BLOB, "gfx5.u15",     0x1800000, 0x0400000, 0xe201f830,
         GAME_WORD_BLOB, "gfx6.u18",     0x1c00000, 0x0400000, 0xc6b381a3,
+        RAX_BLOB,       "350snda1.u52", 0x000000,  0x080000,  0x9027e7a0,
+        RAX_BLOB,       "snd0.u48",     0x400000,  0x200000,  0x02b1927c,
+        RAX_BLOB,       "snd1.u49",     0x600000,  0x200000,  0x58b18eda,
+        RAX_BLOB,       "snd2.u50",     0x800000,  0x200000,  0x51d626d6,
+        RAX_BLOB,       "snd3.u51",     0xa00000,  0x200000,  0x31af26ae,
         GAME_END, "", 0, 0, 0
     },
     BATMANFR,
@@ -2938,7 +2954,11 @@ int copyFile(JZFile *zip, void* id) {
     i=0;
     dataAvailable = 0;
     while(availableGames[gameId].entry->blobs[i].type != GAME_END) {
-      if (strncmp(availableGames[gameId].entry->blobs[i].filename, filename, MAX_LENGTH_FILENAME) == 0) {
+      /* Sound ROMs are also matched by CRC, in case a romset names them
+         differently: without them the RAX board stays off and is silent. */
+      if ((strncmp(availableGames[gameId].entry->blobs[i].filename, filename, MAX_LENGTH_FILENAME) == 0) ||
+          ((availableGames[gameId].entry->blobs[i].type == RAX_BLOB) &&
+           (availableGames[gameId].entry->blobs[i].crc32 == header.crc32))) {
         LOGSTV("copyFile %s\n", filename);
         if (dataAvailable == 0) {
           dataAvailable = (jzReadData(zip, &header, data) == Z_OK);
@@ -2975,6 +2995,11 @@ int copyFile(JZFile *zip, void* id) {
             case EEPROM_BLOB:
               eeprom_start(data);
               hasEeprom = 1;
+              break;
+            case RAX_BLOB:
+              RaxLoadRom(availableGames[gameId].entry->blobs[i].offset, data,
+                         (header.uncompressedSize < availableGames[gameId].entry->blobs[i].length) ?
+                         header.uncompressedSize : availableGames[gameId].entry->blobs[i].length);
               break;
           }
         } else LOGSTV("Error : No data read from %s\n", filename);
@@ -3073,7 +3098,7 @@ char * updateGameList(const char* file, int *nbGames){
       if (GameList[i].blobs[j].type == BIOS_BLOB) {
         isBiosFound |= fileFound[i][j];
       } else {
-        if (GameList[i].blobs[j].type != EEPROM_BLOB)
+        if (GameList[i].blobs[j].type != EEPROM_BLOB && GameList[i].blobs[j].type != RAX_BLOB)
           isBlobFound &= fileFound[i][j];
       }
       j++;
@@ -3171,6 +3196,13 @@ int loadGame(const char *romset){
   LOGSTV("Loading game[%d] %s from %s\n", gameId, availableGames[gameId].entry->name, availableGames[gameId].path);
   memset(fileFound, 0x0, NB_STV_GAMES*MAX_GAME_FILES);
 
+  /* Per-game hardware is off unless this game's init turns it on: no RAX
+     board, no 315-5838 chip. decathleteProtEnabled used to stay set after
+     Decathlete, so the next game loaded through YabauseRefreshInit kept
+     the 0x7FFFF0-0x7FFFF8 CS0 interception. */
+  RaxShutdown();
+  decathleteProtEnabled = 0;
+
   if(!(fp = fopen(availableGames[gameId].path, "rb"))) {
         LOGSTV("Couldn't open \"%s\"!\n", availableGames[gameId].path);
         return -1;
@@ -3191,7 +3223,8 @@ int loadGame(const char *romset){
     if (availableGames[gameId].entry->blobs[i].type == BIOS_BLOB) {
       isBiosFound |= fileFound[gameId][i];
     } else {
-      if (availableGames[gameId].entry->blobs[i].type != EEPROM_BLOB)
+      if (availableGames[gameId].entry->blobs[i].type != EEPROM_BLOB &&
+          availableGames[gameId].entry->blobs[i].type != RAX_BLOB)
         isBlobFound &= fileFound[gameId][i];
     }
     i++;
@@ -3421,6 +3454,8 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
 
 int STVDeInit(){
   if (CartridgeArea == NULL || CartridgeArea->carttype != CART_ROMSTV) return 0;
+  RaxShutdown();
+  decathleteProtEnabled = 0;
   eeprom_deinit();
   yabsys.isSTV = 0;
   return 0;

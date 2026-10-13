@@ -47,6 +47,10 @@ typedef enum{
   GAME_BYTE_BLOB,
   GAME_WORD_BLOB,
   EEPROM_BLOB,
+  /* Sound ROM of the Acclaim RAX board (Batman Forever), loaded into its
+     own 16 MB region at `offset` (MAME ROM_REGION "rax"). Optional: the
+     game still boots without it, only the RAX audio is missing. */
+  RAX_BLOB,
   GAME_END
 } blobType;
 
