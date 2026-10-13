@@ -139,9 +139,19 @@ void SH2HandleInterrupts(SH2_struct *context)
     // force the next PC (or PC+2?) to be decodeWithInterrupt so that next interrupt is evaluated when back from IT
     context->regs.PC = SH2MappedMemoryReadLong(context,context->regs.VBR + (context->intVector << 2));
     if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER) {
-      //Show the interrupt as a JSR
+      //Show the interrupt as a JSR, located where the interrupted code was.
+      //regs.PC already holds the handler address here, so it used to be the
+      //handler that got pushed (twice with the current PC) while the
+      //interrupted address, oldpc, was computed and never used.
+      u32 handlerpc = context->regs.PC;
+      context->regs.PC = oldpc;
       context->instruction = 0x400B;
       SH2HandleBackTrace(context);
+      context->regs.PC = handlerpc;
+      //RTE leaves the handler like RTS leaves a call: count it as one more
+      //level for Step Out, or the RTE ends the step one level too early
+      if (context->stepOverOut.enabled && context->stepOverOut.type == SH2ST_STEPOUT)
+        context->stepOverOut.levels++;
     }
     context->isSleeping = 0;
   }
@@ -1029,6 +1039,10 @@ void SH2KronosWriteNotify(SH2_struct *context, u32 start, u32 length){
   } else if (id == 0x6) {
     //Data Array access
     notify(context, start, length);
+  } else if (id == 0x4) {
+    /* 80000000-9FFFFFFF : miroir du tableau de donnees (memory.c). Le code
+       qui y est decode l'est sous son adresse C0000000 (cacheId 7). */
+    notify(context, (start & 0x1FFFFFFF) | 0xC0000000, length);
   }
 }
 
