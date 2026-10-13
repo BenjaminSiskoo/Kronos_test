@@ -39,6 +39,7 @@
 #include "../YabauseGL.h"
 #include "../QtYabause.h"
 #include "../CommonDialogs.h"
+#include "../KeyboardQt.h"
 
 #include <QKeyEvent>
 #include <QTextEdit>
@@ -243,16 +244,38 @@ void UIYabause::closeEvent( QCloseEvent* e )
 
 void UIYabause::keyPressEvent( QKeyEvent* e )
 {
+	// Host auto-repeat: a held key is already "down" for the peripherals
+	// (the Saturn keyboard makes its own repeat). On X11 auto-repeat also
+	// sends fake releases, ignored as well in keyReleaseEvent().
+	if ( e->isAutoRepeat() )
+		return;
 	if (emulateMouse && mouseCaptured && e->key() == Qt::Key_Escape) {
 		mouseCaptured = false;
 		this->setCursor(Qt::ArrowCursor);
 	}
-	else
+	else {
 		PerKeyDown( e->key() );
+		// Sega Saturn keyboard (no-op when none is plugged in)
+		KeyboardQt::keyPress( e );
+	}
 }
 
 void UIYabause::keyReleaseEvent( QKeyEvent* e )
-{ PerKeyUp( e->key() ); }
+{
+	if ( e->isAutoRepeat() )
+		return;
+	PerKeyUp( e->key() );
+	KeyboardQt::keyRelease( e );
+}
+
+void UIYabause::changeEvent( QEvent* e )
+{
+	// The key releases go to the new active window: don't leave keys of
+	// the emulated Saturn keyboard stuck down (and repeating).
+	if ( e->type() == QEvent::ActivationChange && !isActiveWindow() )
+		KeyboardQt::releaseAll();
+	QMainWindow::changeEvent( e );
+}
 
 void UIYabause::leaveEvent( QEvent* e )
 {

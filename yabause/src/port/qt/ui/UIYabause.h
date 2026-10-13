@@ -146,6 +146,7 @@ protected:
 	virtual void closeEvent( QCloseEvent* event );
 	virtual void keyPressEvent( QKeyEvent* event );
 	virtual void keyReleaseEvent( QKeyEvent* event );
+	virtual void changeEvent( QEvent* event ) override;
 	virtual void leaveEvent(QEvent * event);
 	virtual void mousePressEvent( QMouseEvent* event );
 	virtual void mouseReleaseEvent( QMouseEvent* event );
