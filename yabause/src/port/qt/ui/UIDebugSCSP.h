@@ -21,42 +21,52 @@
 
 #include "ui_UIDebugSCSP.h"
 #include "../QtYabause.h"
+#include <QVector>
 
 #ifdef HAVE_QT_MULTIMEDIA
 #include <QAudioOutput>
+#include <QAudioDeviceInfo>
 #endif
 
 class YabauseThread;
+class QPushButton;
+class QTimer;
 
 class UIDebugSCSP : public QDialog, public Ui::UIDebugSCSP
 {
 	Q_OBJECT
 private:
-	// Necessaire pour ouvrir UIDebugSCSPDSP/UIDebugCPU (constructeur exige
-	// un YabauseThread*) et pour le verrouiller le temps d'ouvrir cette
-	// fenetre, comme les autres boutons de navigation inter-debuggers.
+	// Needed to open UIDebugSCSPDSP (its constructor requires a YabauseThread*)
 	YabauseThread *mYabauseThread;
 
+	QPushButton *slotButtons[32];
+	bool emulationReady;
+
 #ifdef HAVE_QT_MULTIMEDIA
-	QTimer *audioBufferTimer = nullptr;
-
+	QTimer *audioBufferTimer;
 	QAudioDeviceInfo audioDeviceInfo;
-	// Defauts explicites : on_sbSlotNumber_valueChanged() (auto-connecte
-	// par setupUi(), donc potentiellement declenche par les
-	// sbSlotNumber->setValue(...) tout au debut du constructeur, avant
-	// qu'initAudio() n'ait tourne) lit audioOutput/isPlaying pour savoir
-	// s'il doit redemarrer la lecture sur le nouveau slot. Sans ces
-	// initialisateurs, ce sont des pointeurs/bool non initialises a ce
-	// moment-la -- un member par defaut garantit un etat sur, avant meme
-	// le corps du constructeur.
-	QAudioOutput *audioOutput = nullptr;
-	QIODevice *outputDevice = nullptr;
+	QAudioOutput *audioOutput;
+	QIODevice *outputDevice;
 	QAudioFormat audioFormat;
-	bool isPlaying = true;
 
-	u32 *slot_workbuf = nullptr;
-	s16 *slot_buf = nullptr;
+	bool playing;        // true while a slot is being previewed
+	bool audioUsable;    // false when the device cannot do 44.1 kHz stereo 16-bit
+	u32 chunkFrames;     // stereo frames generated per call to ScspSlotDebugAudio()
+
+	// ScspSlotDebugAudio() needs 2 * frames u32 of work space and writes
+	// 2 * frames s16 (interleaved stereo)
+	QVector<u32> workBuf;
+	QVector<s16> slotBuf;
 #endif
+
+	void setupSlotGrid();
+	void applyStyle();
+	void refreshSlot(int slot);
+	void refreshCommon();
+	void updateSlotButtons();
+	void fillSlotInfo(const QString &text);
+	void fillCommonInfo(const QString &text);
+	void applyFilter();
 
 public:
 	UIDebugSCSP( YabauseThread *mYabauseThread, QWidget* parent = 0 );
@@ -65,21 +75,19 @@ public:
 #ifdef HAVE_QT_MULTIMEDIA
 protected:
 	void initAudio();
-	// Factorise le (re)demarrage de la lecture, utilise par
-	// on_pbPlaySlot_clicked() et par le changement de slot pendant la
-	// lecture (voir on_sbSlotNumber_valueChanged).
 	void startPlayingSlot(int slot);
+	void stopPlayback(const QString &status);
 #endif
 
 protected slots:
    void on_sbSlotNumber_valueChanged ( int i );
+   void on_leFilter_textChanged ( const QString &text );
    void on_pbSaveAsWav_clicked ();
    void on_pbSaveSlotRegisters_clicked ();
    void on_pbOpenDSPDebugger_clicked ();
    void on_pbOpenChannelViewer_clicked ();
 #ifdef HAVE_QT_MULTIMEDIA
 	void on_pbPlaySlot_clicked ();
-	void notified();
 	void audioBufferRefill();
 	void stateChanged(QAudio::State state);
 #endif
