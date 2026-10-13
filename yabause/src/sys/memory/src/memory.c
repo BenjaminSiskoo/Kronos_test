@@ -885,7 +885,6 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
         return ReadByteList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
-      case 0x4:
       {
          /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
@@ -907,6 +906,16 @@ CACHE_LOG("rb %x %x\n", addr, addr >> 29);
       }
       case 0x2:
          return 0xFF;
+      case 0x4:
+         /* A31-A29 = 100 (80000000-9FFFFFFF) : zone reservee (SH7604 Hardware
+            Manual, Table 7.3), miroir non documente du tableau de donnees du
+            cache (A30 n'est pas decode) comme pour Mednafen (ss/sh7095.inc,
+            MemRead/MemWrite, case 4) et Ymir (sh2.cpp, MemRead/MemWrite,
+            case 0b100). Elle etait traitee comme la zone cache (000), donc
+            comme la Work RAM. Whizz (Europe/Japon) lit travail+MACL apres un
+            appel au serveur STM qui laisse MACL = 7FFFF800 : 860503C8 doit
+            tomber dans le tableau de donnees, pas en 060503C8 ("pal\0"),
+            sinon sa boucle de prechargement PCM (06047E72) ne sort jamais. */
       case 0x6:
          // Data Array
        LOG("DAta Byte R %x\n", addr);
@@ -965,7 +974,6 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr, int isFetch)
         return ReadWordList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0: //0x0 cache
-      case 0x4:
       /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
          externe. Cache actif : seuls les defauts le sont (CacheFetch()).
          Sans emulation du cache : lectures traitees comme des succes. */
@@ -984,6 +992,9 @@ static u16 SH2ReadWordRaw(SH2_struct *context, u32 addr, int isFetch)
       case 0x2:
       case 0x5:
          return 0xFFFF;
+      case 0x4:
+         /* 80000000-9FFFFFFF : miroir du tableau de donnees, voir
+            SH2MappedMemoryReadByte(). */
       case 0x6:
          // Data Array
        CACHE_LOG("DAta Word R %x\n", addr);
@@ -1287,6 +1298,32 @@ u16 FASTCALL SH2FetchWord(SH2_struct *context, u32 addr)
          if (ReadWordList[page] == HighWramMemoryReadWord) {
             if ((id == 0x1) || yabsys.usecache) SH2DMABusPenaltyFast(context);
             SH2ABusAccessFast(context, 1);
+            /* Cache emule : un fetch en Work RAM-H hors cache (cache-through,
+               ou CCR.CE = 0) est un acces externe a la SDRAM. Mednafen
+               (ss/sh7095.inc, SH7095_BSC_BusRead, CS3) le compte 7 cycles ;
+               Kronos n'en comptait qu'un (plus 2 a un changement de rangee
+               DRAM, HighWramMemoryReadWord()). On ajoute les 6 manquants.
+
+               Virtua Fighter (Europe, MK_8100550, emulation du cache forcee
+               par SH2CacheDBList, db.c) : chaque travail de l'esclave
+               (0601B124) commence par vider son cache (0607AD70 : CCR.CE = 0,
+               puis 256 ecritures du tableau d'adresses en environ 800
+               instructions, lues hors cache). Il ecrit ensuite 4.0 et 7.0
+               dans les variables 0609EA40 / 0609EA44, partagees avec le
+               maitre, et les relit 6 instructions plus loin pour calculer
+               l'echelle du sol du ring (0601B388-0601B396, division
+               060069B8). La purge durait ~800 cycles au lieu de ~5600 :
+               l'esclave arrivait a cette sequence au moment ou le maitre
+               ecrit 0609EA40 (06028234). Sa relecture, qui manque le cache
+               vide, lisait la valeur du maitre (C0H, C55H, CE0H... au lieu
+               de 40000H) : echelle aberrante, sol projete hors de l'ecran,
+               ring absent 1 a 4 images pendant les coups.
+
+               Limite au cache emule (yabsys.usecache) : sans emulation, le
+               modele a etiquettes et les temps actuels sont gardes (Space
+               Jam et Zero Divide dependent de ces temps, SH2LegacyFetchDBList
+               dans db.c). */
+            if (yabsys.usecache) context->cycles += 6;
             return HighWramMemoryReadWord(context, *(MemoryBuffer[page]), addr);
          }
          if (ReadWordList[page] == LowWramMemoryReadWord) {
@@ -1324,7 +1361,6 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
         return ReadLongList[(addr >> 16) & 0xFFF](context, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
       }
       case 0x0:
-      case 0x4:
       {
          /* Cache emule mais desactive (CE = 0) : chaque lecture est un acces
             externe. Cache actif : seuls les defauts le sont (CacheFetch()).
@@ -1352,6 +1388,9 @@ u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
          // Address Array
          return AddressArrayReadLong(context, addr);
       }
+      case 0x4:
+         /* 80000000-9FFFFFFF : miroir du tableau de donnees, voir
+            SH2MappedMemoryReadByte(). */
       case 0x6:
          // Data Array
        CACHE_LOG("Data Long R %x\n", addr);
@@ -1397,7 +1436,7 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
    SH2WriteNotify(context, addr, 1);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+   if ((id == 0x0) || (id == 0x1)) {
      SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
@@ -1410,7 +1449,6 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
         return;
       }
       case 0x0:
-      case 0x4:
       {
         CACHE_LOG("wb %x %x\n", addr, addr >> 29);
         SH2UnemulatedCacheWrite(context, addr);   /* LRU sur succes (8.4.5) */
@@ -1431,6 +1469,9 @@ void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
          return;
       }
 
+      case 0x4:
+         /* 80000000-9FFFFFFF : miroir du tableau de donnees, voir
+            SH2MappedMemoryReadByte(). */
       case 0x6:
          // Data Array
          DataArrayWriteByte(context, addr, val);
@@ -1480,7 +1521,7 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
    SH2WriteNotify(context, addr, 2);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+   if ((id == 0x0) || (id == 0x1)) {
      SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
@@ -1493,7 +1534,6 @@ void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
         return;
       }
       case 0x0:
-      case 0x4:
       {
 CACHE_LOG("ww %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
@@ -1515,6 +1555,9 @@ CACHE_LOG("ww %x %x\n", addr, addr >> 29);
          return;
       }
 
+      case 0x4:
+         /* 80000000-9FFFFFFF : miroir du tableau de donnees, voir
+            SH2MappedMemoryReadByte(). */
       case 0x6:
          // Data Array
 
@@ -1565,7 +1608,7 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
    SH2WriteNotify(context, addr, 4);
    /* Ecriture en zone cache (write-through) ou cache-through : acces au bus
       externe (vol de cycles DMAC, voir SH2DMABusPenalty()). */
-   if ((id == 0x0) || (id == 0x1) || (id == 0x4)) {
+   if ((id == 0x0) || (id == 0x1)) {
      SH2DMABusPenaltyFast(context);
      SH2WaitScuDmaOnABBus(context, addr);
    }
@@ -1578,7 +1621,6 @@ void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
         return;
       }
       case 0x0:
-      case 0x4:
       {
 CACHE_LOG("wl %x %x\n", addr, addr >> 29);
          // Cache/Non-Cached
@@ -1604,6 +1646,9 @@ CACHE_LOG("wl %x %x\n", addr, addr >> 29);
          AddressArrayWriteLong(context, addr, val);
          return;
       }
+      case 0x4:
+         /* 80000000-9FFFFFFF : miroir du tableau de donnees, voir
+            SH2MappedMemoryReadByte(). */
       case 0x6:
 
          // Data Array

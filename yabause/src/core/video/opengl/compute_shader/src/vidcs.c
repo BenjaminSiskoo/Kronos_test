@@ -5704,7 +5704,12 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
       mapid = ctrl->info.mapwh * mapy + mapx;
       if (mapid != premapid) {
         if (ctrl->info.PlaneAddr == 0) {
-          exit(-1);
+          /* Was exit(-1): Kronos closed with no message at all. A layer
+             with no plane address function is a setup bug, not a reason
+             to quit: report it once and skip the layer. */
+          static int warned = 0;
+          if (!warned) { warned = 1; YuiMsg("[VIDCS] Vdp2DrawMapPerLine: PlaneAddr is NULL, layer skipped\n"); }
+          return;
         }
         ctrl->info.PlaneAddr(&ctrl->info, mapid, ctrl->regs);
         premapid = mapid;
@@ -5917,7 +5922,10 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
       charx = dot_on_pagex & page_mask;
 
       if (ctrl->info.PlaneAddr == 0) {
-        exit(-1);
+        /* Was exit(-1), see Vdp2DrawMapPerLine. */
+        static int warned = 0;
+        if (!warned) { warned = 1; YuiMsg("[VIDCS] Vdp2DrawMapTest: PlaneAddr is NULL, layer skipped\n"); }
+        return;
       }
       ctrl->info.PlaneAddr(&ctrl->info, ctrl->info.mapwh * mapy + mapx, ctrl->regs);
       if (Vdp2PatternAddrPos(ctrl, planex, pagex, planey, pagey) != 0) {

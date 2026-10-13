@@ -56,7 +56,15 @@ static int ckchg_reset_done = 0;       /* CKCHG : VDP1/VDP2/SCU deja remis a zer
 static int ckchg_start_pending = 0;    /* CKCHG ecrit dans COMREG : remise a zero a faire au prochain SmpcExec */
 static int intback_sf_clear_pending = 0; /* INTBACK abandonne au V-Blank IN : SF retombe une ligne plus tard */
 static int intback_sf_clear_line = 0;
+/* Acquisition du statut d'un INTBACK en cours (~300 us, ST-169-R1 p.17) :
+   elle ne fait pas partie de la lecture des manettes et n'est pas
+   abandonnee au V-Blank IN (SmpcINTBACKEnd). */
+static int intback_status_pending = 0;
+#define SMPC_INTBACK_STATUS_TIME 300   /* us, ST-169-R1 p.17 */
 static u8 bustmp = 0;
+static u16 m_pmode;           /* defini plus bas (SmpcINTBACKPeripheral) */
+static u8 m_pdr2_readback;    /* definis plus bas (SmpcReadByte) */
+static u8 m_pdr1_readback;
 static const char *smpcfilename = NULL;
 
 // #define SMPCLOG printf
@@ -177,6 +185,27 @@ void SmpcReset(void) {
    SmpcInternalVars->firstPeri=0;
 
    SmpcInternalVars->timing=0;
+
+   /* Etat interne de smpc.c, hors de SmpcRegs/SmpcInternalVars : il doit
+      repartir de zero lui aussi. SmpcReset() n'est appele que par
+      YabauseResetNoLoad(), au demarrage et a chaque changement de jeu.
+      Avant, un INTBACK ou un CKCHG en cours dans le jeu precedent restait
+      en attente (intback_wait_for_vblankout, intback_sf_clear_pending,
+      ckchg_start_pending) et se terminait pendant le BIOS ou le demarrage
+      du jeu suivant : SF, OREG et une interruption SMPC arrivaient sans
+      commande. Lancer Batman Forever (Saturn) apres Space Jam sans fermer
+      Kronos affichait "NO PAD IN PORT 1". */
+   intback_wait_for_vblankout = 0;
+   vblankout_wait_frame = 0;
+   ckchg_reset_done = 0;
+   ckchg_start_pending = 0;
+   intback_sf_clear_pending = 0;
+   intback_sf_clear_line = 0;
+   intback_status_pending = 0;
+   bustmp = 0;
+   m_pmode = 0;
+   m_pdr1_readback = 0;
+   m_pdr2_readback = 0;
 
    memset((void *)&SmpcInternalVars->port1, 0, sizeof(PortData_struct));
    memset((void *)&SmpcInternalVars->port2, 0, sizeof(PortData_struct));
@@ -541,6 +570,7 @@ static void SmpcINTBACKPeripheral(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 static void SmpcINTBACK(void) {
+  intback_status_pending = 0;   /* l'acquisition du statut se termine ici */
   if (SmpcInternalVars->firstPeri == 1) {
      //in a continous mode.
       SMPCLOG("Continue on command SF %d\n", SmpcRegs->SF);
@@ -730,13 +760,38 @@ static void processCommand(void) {
  * only when SF = 0, i.e. when no report is still coming. The pad report
  * must then land in slot 1, the one its parser (0602E1C8) reads; with SF
  * already 0, the index was reset and the pad report went to slot 0: the
- * parser kept reading a stale slot and no button ever registered. */
+ * parser kept reading a stale slot and no button ever registered.
+ *
+ * SMPC User's Manual (ST-169-R1) : "The INTBACK command begins collecting
+ * peripheral data at V-BLANK-OUT" (p.17) et "The INTBACK command terminates
+ * at the time peripheral data collection is finished" (p.56) ; la duree
+ * "varies depending on the type and number of peripherals" (p.56) et n'est
+ * pas chiffree (INTBACK : "minimum TBD to maximum TBD", p.42-43). SF (OREG31)
+ * vaut 1 tant que la commande s'execute (p.35). Le manuel confirme donc que
+ * SF reste a 1 apres le V-Blank OUT ; la duree de ~355 us vient de Mednafen.
+ * Un port vide est reconnu a son octet d'etat F0H : multitap ID FH ("not
+ * connected at all") et 0 connecteur ("Not connected"), Tables 3.5 et 3.6.
+ *
+ * Exception : les jeux de SmpcLegacyIntbackDBList (utils/src/db.c) gardent
+ * l'ancienne fin (premiere etape SMPC de la ligne qui suit le V-Blank OUT).
+ * Voir SmpcSetLegacyIntbackTiming(). */
+static int SmpcLegacyIntbackTiming = 0;
+
+/* Appele au chargement de chaque jeu (yabause.c) avec le resultat de
+ * DBLookupLegacySmpcIntbackTiming(). */
+void SmpcSetLegacyIntbackTiming(int on)
+{
+   SmpcLegacyIntbackTiming = on;
+}
+
 static s32 SmpcPeripheralAcquireTime(void)
 {
    const s32 port_base = 380 + 2 * 50;           /* port start + ID read */
    const s32 pad_data = 2 * 50 + 30 + 8 * 21;    /* digital pad data */
    const s32 empty_data = 2 * 21;                /* "no peripheral" */
    s32 clocks = 120;
+   if (SmpcLegacyIntbackTiming)
+      return 1;   /* SmpcLegacyIntbackDBList : fin a la ligne suivante */
    clocks += port_base + ((PORTDATA1.data[0] == 0xF0) ? empty_data : pad_data);
    clocks += port_base + ((PORTDATA2.data[0] == 0xF0) ? empty_data : pad_data);
    return (clocks + 3) / 4;                      /* 4 SMPC clocks per us */
@@ -800,6 +855,13 @@ void SmpcExec(s32 t) {
    (ss/smpc.c, PendingVB -> AbortJR) et Ymir (SMPC::TriggerVBlankIN). */
 void SmpcINTBACKEnd(void) {
   if (SmpcRegs->COMREG != 0x10) return;
+  /* Acquisition du statut en cours : elle se termine normalement. Seule la
+     lecture des manettes est abandonnee au V-Blank IN (ci-dessous). Avec
+     l'ancienne duree de 18 us, un statut ne pouvait presque jamais etre en
+     cours au V-Blank IN ; avec les ~300 us du manuel, un INTBACK ecrit dans
+     les 5 dernieres lignes avant le V-Blank IN aurait ete abandonne sans
+     resultat ni interruption. */
+  if (intback_status_pending) return;
   if ((SmpcRegs->SF != 0) || (SmpcInternalVars->timing>0) || (intback_wait_for_vblankout != 0)) {
       SMPCLOG("Intback Abort %d\n", SmpcInternalVars->timing);
       /* End command without interrupt - not enough time.
@@ -947,7 +1009,6 @@ static void SmpcSetTiming(void) {
          SmpcInternalVars->timing = 0;
          SmpcRegs->SF = 1;
          return;
-         return;
       case 0x10:
           if (SmpcInternalVars->firstPeri == 1) {
             //Continue
@@ -963,17 +1024,28 @@ static void SmpcSetTiming(void) {
           } else {
             // Calculate timing based on what data is being retrieved
 
+            /* Acquisition du statut. SMPC User's Manual (ST-169-R1) p.17 :
+               "SMPC status acquisition ends approximately 300 us after
+               INTBACK command issue, and a SMPC interrupt request is sent".
+               timing est en microsecondes (colonne SMPC de cycles[],
+               yabause.c : ~64 par ligne de 64 us). L'ancienne valeur, 18
+               ("4.5ms => 18" dans le commentaire), valait donc 18 us, environ
+               16 fois trop peu. La lecture des manettes qui suit le statut
+               (IREG1.PEN = 1) commence plus tard, au V-Blank OUT, apres la
+               demande "continuer" du SH-2 (p.17 et p.56).
+               Le statut n'est pas abandonne au V-Blank IN : voir
+               intback_status_pending et SmpcINTBACKEnd(). */
             if ((SmpcRegs->IREG[0] == 0x01) && (SmpcRegs->IREG[1] & 0x8))
             {
                //status followed by peripheral data
-               // A voir s'il faut attendre Vblankout
-               SmpcInternalVars->timing = 18; //4.5ms => 18
+               SmpcInternalVars->timing = SMPC_INTBACK_STATUS_TIME;
+               intback_status_pending = 1;
             }
             else if ((SmpcRegs->IREG[0] == 0x01) && ((SmpcRegs->IREG[1] & 0x8) == 0))
             {
                //status only
-               //Pas de lecture des periph, peut se faire tout le temps
-               SmpcInternalVars->timing = 18;
+               SmpcInternalVars->timing = SMPC_INTBACK_STATUS_TIME;
+               intback_status_pending = 1;
             }
             else if ((SmpcRegs->IREG[0] == 0) && (SmpcRegs->IREG[1] & 0x8))
             {
@@ -1112,6 +1184,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
          }
          return;
       case 0x1F:
+         intback_status_pending = 0;     /* remis a 1 par SmpcSetTiming() si c'est un statut */
          intback_sf_clear_pending = 0;   /* nouvelle commande : ne pas effacer son SF */
          SmpcSetTiming();
          return;

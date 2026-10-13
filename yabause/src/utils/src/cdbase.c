@@ -1979,7 +1979,7 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
       const int window = 8 * 2352;            /* +/- 8 sectors */
       long base = (long)currentTrack->file_offset;
       long from = base - window; long to = base + window;
-      u8 *buf; long span; long found = -1; long i;
+      u8 *buf; long span; long syncpos = -1; long i;
 
       currentTrack->sync_checked = 1;
 
@@ -1992,32 +1992,41 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
          fseek(currentTrack->fp, from, SEEK_SET);
          span = (long)fread(buf, 1, (size_t)span, currentTrack->fp);
 
-         /* Prefer the candidate closest to the computed offset. */
+         /* Prefer the candidate closest to the computed offset. A candidate
+            only counts when the NEXT sector starts with the sync pattern
+            too (when it is inside the window): the 12-byte pattern can also
+            occur inside user data, and taking such a spot for a sector
+            boundary would shift every sector of the track. */
          for (i = 0; i + 12 <= span; i++)
             if (memcmp(buf + i, sync, 12) == 0)
-               if (found < 0 || labs((from + i) - base) < labs(found - base))
-                  found = from + i;
+            {
+               long next = i + (long)currentTrack->sector_size;
+               if (next + 12 <= span && memcmp(buf + next, sync, 12) != 0)
+                  continue;
+               if (syncpos < 0 || labs((from + i) - base) < labs(syncpos - base))
+                  syncpos = from + i;
+            }
          free(buf);
       }
 
-      if (found >= 0 && found != base)
+      if (syncpos >= 0 && syncpos != base)
       {
          YuiMsg("[CD] track FAD %d..%d: start offset %d is NOT a sector boundary; "
                 "real one found at %d (%+d bytes, %+d sectors) - corrected\n",
-                currentTrack->fad_start, currentTrack->fad_end, (int)base, (int)found,
-                (int)(found - base), (int)((found - base) / (long)currentTrack->sector_size));
-         currentTrack->file_offset = (u32)found;
+                currentTrack->fad_start, currentTrack->fad_end, (int)base, (int)syncpos,
+                (int)(syncpos - base), (int)((syncpos - base) / (long)currentTrack->sector_size));
+         currentTrack->file_offset = (u32)syncpos;
          offset = (int)currentTrack->file_offset + ((int)FAD - (int)currentTrack->fad_start) * (int)currentTrack->sector_size;
          if (offset < 0) offset = 0;
       }
 
       /* Scrambled or not? Test the sector head as stored, then unscrambled. */
-      if (found >= 0)
+      if (syncpos >= 0)
       {
          u8 head[24];
          long keep = ftell(currentTrack->fp);
 
-         fseek(currentTrack->fp, found, SEEK_SET);
+         fseek(currentTrack->fp, syncpos, SEEK_SET);
          if (fread(head, 1, 24, currentTrack->fp) == 24 && !CDSectorHeadLooksValid(head))
          {
             const u8 *tbl = CDScramblerTable();

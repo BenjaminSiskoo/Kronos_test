@@ -104,6 +104,7 @@ void SmpcExec(s32 t);
 void SmpcINTBACKEnd(void);
 void SmpcCKCHG320(void);
 void SmpcCKCHG352(void);
+void SmpcSetLegacyIntbackTiming(int on);
 
 u8 FASTCALL	SmpcReadByte(SH2_struct *context, u8*, u32);
 u16 FASTCALL	SmpcReadWord(SH2_struct *context, u8*, u32);

@@ -1367,6 +1367,7 @@ int isRGBthird = 0;\n \
 int isRGBfourth = 0;\n \
 int use_lncl = 0;\n \
 int mesh = 0;\n \
+int meshSecond = 0;\n \
 vec3 meshCol = vec3(0.0);\n \
 vec3 offset_color = vec3(0.0);\n \
 float alphatop = 1.0;\n \
@@ -1490,6 +1491,7 @@ for (int i = 7; i>0; i--) { \n \
             isRGBsecond = 1;\n \
             use_lncl = 1;\n \
             foundColor2 = 1; \n \
+            if ((mesh == 0) && (FBMesh == 1)) meshSecond = 1;\n \
           }\n \
           colortop = prio.Color; \n \
           colortop.rgb *= alpha; \n \
@@ -1522,6 +1524,12 @@ for (int i = 7; i>0; i--) { \n \
           } else { \n \
             if (processShadow && prio.normalShadow) alpha = 0.5; \n \
           } \n \
+          /* Improved mesh: the mesh is mixed into the second image only when \n \
+             it lies between the top image and this layer in priority order \n \
+             (same rule as for the top image: a layer of priority <= the mesh \n \
+             priority is under it). A layer above the mesh hides it, even when \n \
+             it is seen through the color calculation of the top image. */ \n \
+          if ((mesh == 0) && (FBMesh == 1) && ((prio.isSprite == 1) || (i <= FBMeshPrio))) meshSecond = 1;\n \
           colorthird = colorsecond;\n \
           alphathird = alphasecond;\n \
           modethird = modesecond;\n \
@@ -1670,9 +1678,18 @@ if ((FBMesh == 1) && (foundColor1 == 0)) {\n \
   mesh = 1;\n \
   meshCol = FBShadow.rgb;\n \
 }\n \
+/* Top image above the mesh and no second layer: the second image is the \n \
+   back screen, which is under the mesh. */ \n \
+if ((FBMesh == 1) && (mesh == 0) && (foundColor1 == 1) && (foundColor2 == 0)) meshSecond = 1;\n \
 "
+/* Improved mesh, top image above the mesh: the mesh only shows through the
+   color calculation of the top image when it is above the second image
+   (meshSecond, set in COMMON_GET_PRIORITY_SCREEN_FB / FB_MESH). It used to be
+   mixed into the second image whatever the priorities: in Skeleton Warriors
+   the shadow (mesh, sprite priority) appeared on a pole (NBG, higher
+   priority) seen through the fog (NBG1, priority 7, color calculation). */
 #define FB_COMPUTE_MESH "\
-if ((mesh == 0) && (FBMesh == 1)) {\n \
+if ((mesh == 0) && (meshSecond == 1)) {\n \
   meshCol = FBShadow.rgb;\n \
   secondImage.rgb = secondImage.rgb * 0.5 + meshCol.rgb * 0.5;\n \
 }\n \

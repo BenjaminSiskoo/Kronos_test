@@ -33,9 +33,9 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { "T-1248G", 0, CART_DRAM32MBIT, NULL }, // Final Fight Revenge
    { "T-20109G", 0, CART_DRAM32MBIT, NULL }, // Friends: Seishun no Kagayaki
    { "T-14411G", 0, CART_DRAM32MBIT, NULL }, // Groove On Fight: Gouketsuji Ichizoku 3
-   { "T-7032H-50VV1.000", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
+   { "T-7032H-50", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes (Europe)
    { "T-1214H", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
-   { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes
+   { "T-1215G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes (Japan)
    { "T-1238G", 0, CART_DRAM32MBIT, NULL }, // Marvel Super Heroes vs. Street Fighter
    { "T-22205G", 0, CART_DRAM32MBIT, NULL }, // Noël 3
    { "T-20114G", 0, CART_DRAM32MBIT, NULL }, // Pia Carrot e Youkoso!! 2
@@ -63,13 +63,39 @@ static GameDB GameDBList[NB_GAMES_DB] = {
 
    Sources :
    - verifie dans Kronos : Tennis Arena ;
+   - Mednafen (ss/db.c, liste des modes de cache, CPUCACHE_EMUMODE_FULL,
+     "Fixes graphical glitches") : Virtua Fighter et Virtua Fighter Remix,
+     toutes regions.
 
+   Virtua Fighter (Europe), MK_8100550, analyse dans Kronos : le maitre et
+   l'esclave se servent tous deux des variables 0609EA40 / 0609EA44 (adresse
+   cache) comme brouillon. L'esclave, dans la fonction du sol du ring
+   (0601B380-0601B568), y ecrit 4.0 et 7.0, empile quatre registres, puis les
+   relit pour calculer par division en virgule fixe (060069B8) l'echelle X/Z
+   du sol, 1.75. Le maitre ecrit les memes variables (0603420A, 06034136).
+   Sur la console, chaque SH-2 relit sa propre ligne de cache (ecriture
+   immediate qui met a jour la ligne presente) et les durees relatives
+   maitre/esclave sont celles du cache reel ; Mednafen n'affiche le jeu
+   correctement qu'avec l'emulation complete du cache. Sans elle, dans
+   Kronos, la relecture de l'esclave voit l'ecriture du maitre : le diviseur devient quelconque (12D2H, 2759H,
+   B385H... au lieu de 40000H), l'echelle vaut -16.25, -20.5 ou 0.024,
+   le sol est projete hors de l'ecran et ses polygones sont tous rejetes
+   (table 060D0000 vide) : le ring disparait une a trois images pendant
+   les coups.
 
    Seul Tennis Arena a ete teste dans Kronos. Un jeu de cette liste qui
    regresserait avec le cache emule doit en etre retire. */
 static const char * const SH2CacheDBList[] = {
    // verifie dans Kronos
    "T-17703G",   // Tennis Arena (Japan) -- ecran noir apres le BIOS
+   // Mednafen CPUCACHE_EMUMODE_FULL
+   "GS-9001",    // Virtua Fighter (Japan)
+   "MK-81005",   // Virtua Fighter (USA)
+   "MK_8100550", // Virtua Fighter (Europe) -- sol du ring qui disparait
+   "GS-9039",    // Virtua Fighter Remix (Japan)
+   "MK-81023",   // Virtua Fighter Remix (USA)
+   "MK-8102350", // Virtua Fighter Remix (Europe)
+   "SG-7103",    // Virtua Fighter Remix (SegaNet)
    NULL
 };
 
@@ -148,6 +174,62 @@ int DBLookupMpegCard(const char *game_code)
       if (strcmp(MpegCardDBList[i], game_code) == 0) return 1;
    }
    return 0;
+}
+
+/* Jeux qui gardent l'ancienne fin de l'INTBACK (smpc.c,
+   SmpcPeripheralAcquireTime()) : SF retombe a la premiere etape SMPC de la
+   ligne qui suit le V-Blank OUT, au lieu de rester a 1 le temps de lire les
+   ports (~355 us pour une manette et un port vide, valeur de Mednafen,
+   0ccf380). Le comportement general suit le SMPC User's Manual (ST-169-R1,
+   p.17 et p.56 : la lecture des ports commence au V-Blank OUT et l'INTBACK
+   ne se termine qu'a sa fin) ; c'est ce jeu qui fait exception.
+
+   Space Jam : avec SF a 1 environ 5 lignes de plus apres le V-Blank OUT, le
+   maitre s'arrete en entrant en jeu (erreur d'adresse, lecture longue en
+   00000001 a 0602054E, pointeur encore nul dans une structure que l'esclave
+   remplit). Verifie dans Kronos : le jeu fonctionne au commit d0f7e33 avec
+   seulement 0ccf380 annule. C'est la meme fragilite que celle de
+   SH2LegacyFetchDBList : son ordonnanceur calcule le temps de chaque image
+   a partir de VCNT lu juste apres le V-Blank OUT, et la course entre le
+   maitre et l'esclave depend des durees que Kronos ne facture pas encore
+   (acces aux registres SCU, B-Bus, SMPC ; entree en interruption).
+
+   A retirer avec SH2LegacyFetchDBList, quand ces couts seront modelises. */
+static const char * const SmpcLegacyIntbackDBList[] = {
+   "T-8119G",    // Space Jam (Japan)
+   "T-8125H",    // Space Jam (USA)
+   "T-8125H-50", // Space Jam (Europe)
+   NULL
+};
+
+/* Retourne 1 si 'game_code' figure dans la liste 'list' (terminee par NULL). */
+static int DBListHasCode(const char * const *list, const char *game_code)
+{
+   int i;
+   if (game_code == NULL) return 0;
+   for (i = 0; list[i] != NULL; i++) {
+      if (strcmp(list[i], game_code) == 0) return 1;
+   }
+   return 0;
+}
+
+/* Retourne 1 si 'game_code' figure dans SmpcLegacyIntbackDBList. */
+int DBLookupLegacySmpcIntbackTimingForCode(const char *game_code)
+{
+   return DBListHasCode(SmpcLegacyIntbackDBList, game_code);
+}
+
+/* Retourne 1 si le jeu en cours figure dans SmpcLegacyIntbackDBList. */
+int DBLookupLegacySmpcIntbackTiming(void)
+{
+   Cs2GetIP(0);
+   return DBLookupLegacySmpcIntbackTimingForCode(Cs2GetCurrentGmaecode());
+}
+
+/* Retourne 1 si 'game_code' figure dans SH2LegacyFetchDBList. */
+int DBLookupLegacySH2FetchTimingForCode(const char *game_code)
+{
+   return DBListHasCode(SH2LegacyFetchDBList, game_code);
 }
 
 /* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
