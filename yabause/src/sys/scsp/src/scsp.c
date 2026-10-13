@@ -685,12 +685,15 @@ static u32 scsp_noise_lfsr = 1;
 // sont aussi en SSCTL = 2 ; ils jouaient le tampon audio en 00000 a 32 fois
 // sa vitesse (fragment qui se repete par-dessus la musique) et saturaient le
 // son au lancement du jeu depuis le menu.
-void op3(struct Slot * slot)
+// The noise generator state is passed in so that the slot preview of the
+// debugger (ScspSlotDebugAudio) can run op3 on its own copy without touching
+// the one of the running sound chip.
+static void op3_lfsr(struct Slot * slot, u32 * noise_lfsr)
 {
    u32 addr = (slot->state.address_pointer);
-   u32 lfsr = scsp_noise_lfsr;
+   u32 lfsr = *noise_lfsr;
 
-   scsp_noise_lfsr = (lfsr >> 1) | ((((lfsr >> 5) ^ lfsr) & 1) << 16);
+   *noise_lfsr = (lfsr >> 1) | ((((lfsr >> 5) ^ lfsr) & 1) << 16);
 
    if (slot_is_stopped(slot))
       return;
@@ -721,6 +724,11 @@ void op3(struct Slot * slot)
       slot->state.wave ^= 0x8000;
 
    slot->state.output = slot->state.wave;
+}
+
+void op3(struct Slot * slot)
+{
+   op3_lfsr(slot, &scsp_noise_lfsr);
 }
 
 void change_envelope_state(struct Slot * slot, enum EnvelopeStates new_state)
@@ -931,16 +939,27 @@ struct DebugInstrument
    int is_muted;
 };
 
-#define NUM_DEBUG_INSTRUMENTS 24
+// 24 entries were used up by the first few sound effects and the music of a
+// game: every sample keyed on after that could not be listed nor muted.
+#define NUM_DEBUG_INSTRUMENTS 256
 
-struct DebugInstrument debug_instruments[NUM_DEBUG_INSTRUMENTS] = { 0 };
-int debug_instrument_pos = 0;
+// Entries are appended by the thread that runs the sound chip and read by the
+// debugger window: an entry is filled before the count that publishes it is
+// incremented (volatile keeps the compiler from reordering the two stores),
+// otherwise the window could pick up an entry whose address was not written
+// yet and list a bogus 0x00000 sample.
+static volatile struct DebugInstrument debug_instruments[NUM_DEBUG_INSTRUMENTS];
+static volatile int debug_instrument_pos = 0;
 
 void scsp_debug_search_instruments(const u32 sa, int* found, int * offset)
 {
    int i = 0;
    *found = 0;
-   for (i = 0; i < NUM_DEBUG_INSTRUMENTS; i++)
+   // Only the entries that were actually registered are searched. The table is
+   // zero-filled, so searching all of it made sa == 0 (an empty entry) always
+   // "found": muting that empty entry muted the next instrument registered and
+   // a real instrument at address 0 could never be added.
+   for (i = 0; i < debug_instrument_pos; i++)
    {
       if (debug_instruments[i].sa == sa)
       {
@@ -954,16 +973,21 @@ void scsp_debug_search_instruments(const u32 sa, int* found, int * offset)
 
 void scsp_debug_add_instrument(u32 sa)
 {
-   int i = 0, found = 0, offset = 0;
+   int found = 0, offset = 0;
+   int pos = debug_instrument_pos;
 
-   if (debug_instrument_pos >= NUM_DEBUG_INSTRUMENTS)
+   if (pos >= NUM_DEBUG_INSTRUMENTS)
       return;
 
    scsp_debug_search_instruments(sa, &found, &offset);
 
    //new instrument discovered
    if (!found)
-      debug_instruments[debug_instrument_pos++].sa = sa;
+   {
+      debug_instruments[pos].sa = sa;
+      debug_instruments[pos].is_muted = 0;
+      debug_instrument_pos = pos + 1;
+   }
 }
 
 void scsp_debug_instrument_set_mute(u32 sa, int mute)
@@ -992,9 +1016,19 @@ int scsp_debug_instrument_check_is_muted(u32 sa)
    return 0;
 }
 
+int scsp_debug_instrument_count(void)
+{
+   return debug_instrument_pos;
+}
+
+int scsp_debug_instrument_capacity(void)
+{
+   return NUM_DEBUG_INSTRUMENTS;
+}
+
 void scsp_debug_instrument_get_data(int i, u32 * sa, int * is_muted)
 {
-   if(i >= NUM_DEBUG_INSTRUMENTS)
+   if(i < 0 || i >= NUM_DEBUG_INSTRUMENTS)
       return;
 
    *sa = debug_instruments[i].sa;
@@ -1003,19 +1037,53 @@ void scsp_debug_instrument_get_data(int i, u32 * sa, int * is_muted)
 
 void scsp_debug_set_mode(int mode)
 {
+   int i;
+
+   // Samples are recorded at key on. A sound that was already playing when the
+   // debugger got turned on (the music loop, typically) would only show up at
+   // its next key on, which may never come: record the slots sounding now.
+   if (mode && !new_scsp.debug_mode)
+   {
+      for (i = 0; i < 32; i++)
+      {
+         if (new_scsp.slots[i].state.keyed && !slot_is_stopped(&new_scsp.slots[i]))
+            scsp_debug_add_instrument(new_scsp.slots[i].regs.sa);
+      }
+   }
+
    new_scsp.debug_mode = mode;
 }
 
 void scsp_debug_instrument_clear()
 {
+   int i;
+
    debug_instrument_pos = 0;
-   memset(debug_instruments, 0, sizeof(struct DebugInstrument) * NUM_DEBUG_INSTRUMENTS);
+   for (i = 0; i < NUM_DEBUG_INSTRUMENTS; i++)
+   {
+      debug_instruments[i].sa = 0;
+      debug_instruments[i].is_muted = 0;
+   }
 }
 
 void scsp_debug_get_envelope(int chan, int * env, int * state)
 {
+   if (chan < 0 || chan > 31)
+   {
+      *env = 0x3FF;
+      *state = 0;
+      return;
+   }
    *env = new_scsp.slots[chan].state.attenuation;
    *state = new_scsp.slots[chan].state.envelope;
+}
+
+// Start address of the sample a slot plays, as used to identify instruments
+u32 scsp_debug_get_slot_sa(int chan)
+{
+   if (chan < 0 || chan > 31)
+      return 0;
+   return new_scsp.slots[chan].regs.sa;
 }
 
 
@@ -1031,20 +1099,27 @@ void scsp_debug_get_envelope(int chan, int * env, int * state)
 // started any other sound. The SEGA driver leaves KYONB set on its one-shots:
 // Defcon 5's gunshot (slots 18/19, 8-bit, no loop) played again each time
 // another sound was keyed on, three or four times per shot.
+// Internal state of a slot at key on. Shared with ScspSlotResetDebug() so that
+// the slot preview of the debugger starts exactly like the real key on.
+static void slot_keyon_state(struct Slot * slot)
+{
+   slot->state.keyed = 1;
+   change_envelope_state(slot, ATTACK);
+   slot->state.attenuation = 0x280;
+   slot->state.sample_counter = 0;
+   slot->state.sample_offset = 0;
+   slot->state.envelope_steps_taken = 0;
+
+   if ( !slot->regs.pcm8b && (slot->regs.sa&0x01) ) {
+     slot->regs.sa &= 0xFFFFFE ;
+   }
+}
+
 void keyon(struct Slot * slot)
 {
    if (!slot->state.keyed)
    {
-      slot->state.keyed = 1;
-     change_envelope_state(slot, ATTACK);
-      slot->state.attenuation = 0x280;
-      slot->state.sample_counter = 0;
-      slot->state.sample_offset = 0;
-      slot->state.envelope_steps_taken = 0;
-
-      if ( !slot->regs.pcm8b && (slot->regs.sa&0x01) ) {
-        slot->regs.sa &= 0xFFFFFE ;
-      }
+      slot_keyon_state(slot);
 
 #if 0
       LOG("kx:%d kb:%d sbctl:%d ssctl:%d lpctl:%d pcm8b:%d"
@@ -4944,15 +5019,28 @@ scu_interrupt_handler (void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Adressage de la RAM son, commun aux acces octet, mot et mot long, que
+   l'acces vienne du SH-2, du 68000 ou du SCSP :
+   - 00000-7FFFF : RAM son (4 Mbit, 512 Ko) ;
+   - MEM4MB (bit 9 de 100400h) = 0 : seul 1 Mbit (128 Ko) est accessible et la
+     RAM se repete tous les 128 Ko ; MEM4MB = 1 : les 4 Mbit ;
+   - 80000-FFFFF (MEM4MB = 1) : non cable, lecture a FF (FFFF, FFFFFFFF),
+     ecriture ignoree.
+   Les acces octet masquaient sur 7FFFF : une lecture au-dela de 512 Ko
+   revenait au debut de la RAM au lieu de rendre FF comme SoundRamReadWord /
+   SoundRamReadLong, et une ecriture d'octet y modifiait la RAM alors que
+   SoundRamWriteWord / SoundRamWriteLong l'ignorent. */
 u8 FASTCALL
 SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
 {
-  addr &= 0x7FFFF;
+  addr &= 0xFFFFF;
   u8 val = 0;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return 0xFF;
 
   val = T2ReadByte(mem, addr);
   return val;
@@ -4996,11 +5084,13 @@ static INLINE void SoundRamSh2WriteCost(SH2_struct *context, u32 cycles)
 void FASTCALL
 SoundRamWriteByte (SH2_struct *context, u8* mem, u32 addr, u8 val)
 {
-  addr &= 0x7FFFF;
+  addr &= 0xFFFFF;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return;
 
   T2WriteByte (mem, addr, val);
   M68K->WriteNotify (addr, 1);
@@ -5028,10 +5118,12 @@ u8 FASTCALL SoundRamTestAndSetByte(SH2_struct *context, u32 addr)
   u8 *p;
   u8 old;
 
-  addr &= 0x7FFFF;
-  // If mem4b is set, mirror ram every 256k
+  addr &= 0xFFFFF;
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
+  else if (addr > 0x7FFFF)
+    return 0xFF;   /* non cable : lu a FF, ecriture ignoree */
 
 #ifdef WORDS_BIGENDIAN
   p = &SoundRam[addr];
@@ -5092,7 +5184,7 @@ SoundRamWriteWord (SH2_struct *context, u8* mem, u32 addr, u16 val)
 {
   addr &= 0xFFFFF;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF)
@@ -5113,7 +5205,7 @@ SoundRamReadLong (SH2_struct *context, u8* mem, u32 addr)
   u32 val;
   u32 pre_cycle = m68kcycle;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF) {
@@ -5139,7 +5231,7 @@ SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
   addr &= 0xFFFFF;
   //u32 pre_cycle = m68kcycle;
 
-  // If mem4b is set, mirror ram every 256k
+  // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF)
@@ -6797,9 +6889,16 @@ AddSoundPan (char *outstring, u16 pan)
     {
       AddString(outstring, "Left = -0 dB, Right = -MAX dB\r\n");
     }
+  else if (pan & 0x10)
+    {
+      // Same decoding as get_panning(): bit 4 picks the attenuated side and
+      // bits 0-3 the amount (3 dB per step). The right side used to be shown
+      // as (pan >> 4) * 3, i.e. 0 or 3 dB whatever the real value.
+      AddString(outstring, "Left = -0 dB, Right = -%d dB\r\n", (pan & 0xF) * 3);
+    }
   else
     {
-      AddString(outstring, "Left = -%d dB, Right = -%d dB\r\n", (pan & 0xF) * 3, (pan >> 4) * 3);
+      AddString(outstring, "Left = -%d dB, Right = -0 dB\r\n", (pan & 0xF) * 3);
     }
 
   return outstring;
@@ -6824,10 +6923,54 @@ AddSoundLevel (char *outstring, u16 level)
 
 //////////////////////////////////////////////////////////////////////////////
 
+// The slot registers are decoded into new_scsp only: scsp_w_b/scsp_w_w no
+// longer call scsp_slot_set_b/w, so the legacy scsp.slot[] copy that the debug
+// functions below read (stats, slot preview, WAV export) was never updated and
+// showed zeros or stale values. Rebuild it here from the raw register image,
+// which is always current, replaying the registers in the same order as the
+// savestate loader so derived values (rates, increments...) come out right.
+static void
+ScspSlotDebugSync (u8 slotnum)
+{
+  slot_t *slot = &(scsp.slot[slotnum]);
+  u32 base = (u32)slotnum << 5;
+  int off;
+
+  for (off = 0x1E; off >= 0; off -= 2)
+    {
+      u16 d = *(u16 *)&scsp_isr[(base + off) ^ 2];
+
+      // KYONEX would run key on/off for every legacy slot, which is not wanted
+      if (off == 0)
+        d &= ~0x1000;
+
+      scsp_slot_set_w (slotnum, base + off, d);
+    }
+
+  // Point the slot at its samples (what scsp_slot_keyon() does, without the
+  // phase update that scsp_slot_update_keyon() also performs)
+  if (slot->pcm8b)
+    {
+      slot->buf8 = (s8*)&(scsp.scsp_ram[slot->sa]);
+      if ((slot->sa + (slot->lea >> SCSP_FREQ_LB)) > SCSP_RAM_MASK)
+        slot->lea = (SCSP_RAM_MASK - slot->sa) << SCSP_FREQ_LB;
+    }
+  else
+    {
+      slot->buf16 = (s16*)&(scsp.scsp_ram[slot->sa & ~1]);
+      if ((slot->sa + (slot->lea >> (SCSP_FREQ_LB - 1))) > SCSP_RAM_MASK)
+        slot->lea = (SCSP_RAM_MASK - slot->sa) << (SCSP_FREQ_LB - 1);
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void
 ScspSlotDebugStats (u8 slotnum, char *outstring)
 {
   u32 slotoffset = slotnum * 0x20;
+
+  ScspSlotDebugSync (slotnum);
 
   AddString (outstring, "Sound Source = ");
   switch (scsp.slot[slotnum].ssctl)
@@ -6916,7 +7059,11 @@ ScspSlotDebugStats (u8 slotnum, char *outstring)
   if (scsp.slot[slotnum].sdir)
     AddString (outstring, "Sound Direct Enabled\r\n");
 
-  AddString (outstring, "Total Level = %ld\r\n", (unsigned long)scsp.slot[slotnum].tl);
+  {
+    // slot.tl holds the linear gain (1024 = 0 dB), not the register value
+    int tl = scsp_r_w(NULL, NULL, slotoffset + 0xC) & 0xFF;
+    AddString (outstring, "Total Level = %d (-%.2f dB)\r\n", tl, tl * 0.375);
+  }
 
   AddString (outstring, "Modulation Level = %d\r\n", scsp.slot[slotnum].mdl);
   AddString (outstring, "Modulation Input X = %d\r\n", scsp.slot[slotnum].mdx);
@@ -7025,49 +7172,89 @@ ScspSlotDebugSaveRegisters (u8 slotnum, const char *filename)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static slot_t debugslot;
+// Slot preview of the debugger (Play Slot, Save as WAV).
+//
+// It used to replay the slot with the old sound generator (scsp.slot[],
+// scsp_slot_update_*), which the emulation no longer uses and which does not
+// sound like it: no SBCTL, no reverse or alternating loop, LEA = 0 (a 64K
+// sample buffer) gave silence, the noise generator was not supported, and the
+// old envelope and pitch tables differ. The preview now runs the very same
+// operations as generate_sample() (op1-op7) on a private copy of the slot, so
+// what is heard is what the game plays, minus the other slots.
+//
+// Nothing of the running sound chip is modified: the slot, the sound stack and
+// the noise generator are copies. Modulation (MDL) reads the sound stack as it
+// was when the preview started, since the other slots do not run here.
+static struct Slot debug_preview_slot;
+static struct Scsp debug_preview_scsp;   // only its sound_stack is used
+static u32 debug_preview_lfsr = 1;
 
 u32
 ScspSlotDebugAudio (u32 *workbuf, s16 *buf, u32 len)
 {
-  u32 *bufL, *bufR;
+  struct Slot *slot = &debug_preview_slot;
+  int shift, pan, pan_l = 0, pan_r = 0;
+  u32 i, k;
 
-  bufL = workbuf;
-  bufR = workbuf+len;
-  scsp_bufL = (s32 *)bufL;
-  scsp_bufR = (s32 *)bufR;
+  (void)workbuf;   // kept for the API, the new generator does not need it
 
-  if (debugslot.ecnt >= SCSP_ENV_DE)
+  if (slot_is_stopped(slot) || slot->regs.ssctl >= 2)
     {
-      // envelope null...
+      // envelope over, or SSCTL = 2/3 (the slot reads zeros: nothing to hear)
       memset (buf, 0, sizeof(s16) * 2 * len);
       return 0;
     }
 
-  if (debugslot.ssctl)
+  // Output level: the direct send (DISDL/DIPAN) as generate_sample() mixes it.
+  // A slot that only feeds the DSP (DISDL = 0) is played at its effect send
+  // level (EFSDL/EFPAN) instead, and at full level when both are 0, so that
+  // there is something to hear: the DSP program is not run here.
+  if (slot->regs.disdl)
     {
-      memset (buf, 0, sizeof(s16) * 2 * len);
-      return 0; // not yet supported!
+      shift = get_sdl_shift(slot->regs.disdl);
+      pan = slot->regs.dipan;
     }
-
-  scsp_buf_len = len;
-  scsp_buf_pos = 0;
-
-  // take effect sound volume if no direct sound volume...
-  if ((debugslot.disll == 31) && (debugslot.dislr == 31))
+  else if (slot->regs.efsdl)
     {
-      debugslot.disll = debugslot.efsll;
-      debugslot.dislr = debugslot.efslr;
+      shift = get_sdl_shift(slot->regs.efsdl);
+      pan = slot->regs.efpan;
     }
+  else
+    {
+      shift = 0;
+      pan = 0;
+    }
+  get_panning(pan, &pan_l, &pan_r);
 
-  memset (bufL, 0, sizeof(u32) * len);
-  memset (bufR, 0, sizeof(u32) * len);
-  scsp_slot_update_p[(debugslot.lfofms == 31)?0:1]
-                    [(debugslot.lfoems == 31)?0:1]
-                    [(debugslot.pcm8b == 0)?1:0]
-                    [(debugslot.disll == 31)?0:1]
-                    [(debugslot.dislr == 31)?0:1](&debugslot);
-  ScspConvert32uto16s ((s32 *)bufL, (s32 *)bufR, (s16 *)buf, len);
+  for (i = 0; i < len; i++)
+    {
+      s16 out;
+
+      if (slot_is_stopped(slot))
+        {
+          // Ended within this chunk: the rest is silence, the next call returns 0
+          memset (&buf[i * 2], 0, sizeof(s16) * 2 * (len - i));
+          break;
+        }
+
+      op1(slot);
+      op2(slot, &debug_preview_scsp);
+      op3_lfsr(slot, &debug_preview_lfsr);
+      op4(slot);
+      op5(slot);
+      op6(slot);
+      op7(slot, &debug_preview_scsp);
+
+      // The noise generator steps once per slot, 32 times per sample: a slot
+      // only sees every 32nd value of the sequence
+      for (k = 1; k < 32; k++)
+        debug_preview_lfsr = (debug_preview_lfsr >> 1) |
+                             ((((debug_preview_lfsr >> 5) ^ debug_preview_lfsr) & 1) << 16);
+
+      out = (s16)(slot->state.output >> shift);
+      buf[i * 2]     = (s16)(out >> pan_l);
+      buf[i * 2 + 1] = (s16)(out >> pan_r);
+    }
 
   return len;
 }
@@ -7102,15 +7289,27 @@ typedef struct
 void
 ScspSlotResetDebug(u8 slotnum)
 {
-  memcpy (&debugslot, &scsp.slot[slotnum], sizeof(slot_t));
+  struct Slot *slot = &debug_preview_slot;
 
-  // Clear out the phase counter, etc.
-  debugslot.fcnt = 0;
-  debugslot.ecnt = SCSP_ENV_AS;
-  debugslot.einc = &debugslot.einca;
-  debugslot.ecmp = SCSP_ENV_AE;
-  debugslot.ecurp = SCSP_ENV_ATTACK;
-  debugslot.enxt = scsp_attack_next;
+  slotnum &= 0x1F;
+
+  // Registers of the slot as the game set them, internal state of a fresh key on
+  memcpy (slot, &new_scsp.slots[slotnum], sizeof(struct Slot));
+  memset (&slot->state, 0, sizeof(slot->state));
+  slot->state.num = slotnum;
+  slot->state.envelope = RELEASE;   // so that change_envelope_state() resets step_count
+  slot_keyon_state(slot);
+
+  memcpy (debug_preview_scsp.sound_stack, new_scsp.sound_stack, sizeof(debug_preview_scsp.sound_stack));
+  debug_preview_lfsr = 1;
+}
+
+// Key off of the slot preview: the envelope goes to its release phase
+static void
+ScspSlotDebugKeyOff(void)
+{
+  debug_preview_slot.state.keyed = 0;
+  change_envelope_state(&debug_preview_slot, RELEASE);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -7128,8 +7327,14 @@ ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
   long length;
   IOCheck_struct check = { 0, 0 };
 
-  if (scsp.slot[slotnum].lea == 0)
-    return 0;
+  int released = 0;
+
+  // Nothing to save: report it instead of returning 0, which made callers
+  // believe a file had been written when none was created.
+  // (LEA = 0 is not "no sample": it is a 64K sample buffer, see slot_loop_end.)
+  ScspSlotResetDebug(slotnum);
+  if (ScspSlotDebugAudio (workbuf, buf, 1) == 0)
+    return -2;
 
   if ((fp = fopen (filename, "wb")) == NULL)
     return -1;
@@ -7158,7 +7363,10 @@ ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
 
   ScspSlotResetDebug(slotnum);
 
-  // Mix the audio, and then write it to the file
+  // Mix the audio, and then write it to the file.
+  // A looped sample, or one whose envelope never decays, would play forever:
+  // after 10 seconds the slot is keyed off and its release is recorded, for 2
+  // seconds at most (a release rate of 0 never ends either).
   for (;;)
     {
       if (ScspSlotDebugAudio (workbuf, buf, 512) == 0)
@@ -7166,20 +7374,32 @@ ScspSlotDebugAudioSaveWav (u8 slotnum, const char *filename)
 
       counter += 512;
       ywrite (&check, (void *)buf, 2, 512 * 2, fp);
-      if (debugslot.lpctl != 0 && counter >= (44100 * 2 * 5))
+
+      if (!released && counter >= 44100 * 10)
+        {
+          ScspSlotDebugKeyOff();
+          released = 1;
+        }
+      if (counter >= 44100 * 12)
         break;
     }
 
   length = ftell (fp);
 
-  // Let's fix the riff chunk size and the data chunk size
-  fseek (fp, sizeof(waveheader_struct)-0x8, SEEK_SET);
-  length -= 0x4;
-  ywrite (&check, (void *)&length, 1, 4, fp);
+  // Let's fix the riff chunk size and the data chunk size.
+  // RIFF size = file size - 8 (the "RIFF" id and the size field itself) and
+  // data size = file size - (RIFF header + fmt chunk + data chunk header).
+  // Both used to be 4 bytes too large, so players saw a truncated file.
+  {
+    u32 riffsize = (u32)length - 0x8;
+    u32 datasize = (u32)length - (u32)(sizeof(waveheader_struct) + sizeof(fmt_struct) + sizeof(chunk_struct));
 
-  fseek (fp, sizeof(waveheader_struct) + sizeof(fmt_struct) + 0x4, SEEK_SET);
-  length -= sizeof(waveheader_struct) + sizeof(fmt_struct);
-  ywrite (&check, (void *)&length, 1, 4, fp);
+    fseek (fp, sizeof(waveheader_struct)-0x8, SEEK_SET);
+    ywrite (&check, (void *)&riffsize, 1, 4, fp);
+
+    fseek (fp, sizeof(waveheader_struct) + sizeof(fmt_struct) + 0x4, SEEK_SET);
+    ywrite (&check, (void *)&datasize, 1, 4, fp);
+  }
   fclose (fp);
 
   return 0;
