@@ -76,6 +76,7 @@ set( kronos_qt_HEADERS
 	QtYabause.h
 	CommonDialogs.h
 	PerQt.h
+	KeyboardQt.h
 	Arguments.h )
 
 # C headers needing moc
@@ -128,6 +129,7 @@ set( kronos_qt_SOURCES
 	QtYabause.cpp
 	CommonDialogs.cpp
 	PerQt.c
+	KeyboardQt.cpp
 	ui/UIYabause.cpp
 	ui/UISettings.cpp
 	ui/UIAbout.cpp
