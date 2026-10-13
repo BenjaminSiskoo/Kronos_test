@@ -106,6 +106,7 @@
 #include "threads.h"
 #include "vdp2.h"
 #include "mpegcard.h"
+#include "rax.h"
 #include "yui.h"
 
 #ifndef max
@@ -5471,6 +5472,7 @@ void
 ScspReset (void)
 {
   scsp_reset();
+  RaxReset();
   ScspUnLockThread();
 }
 
@@ -5537,6 +5539,8 @@ void new_scsp_run_sample()
    s16 cd_in_l = 0;
    s16 cd_in_r = 0;
 
+   s32 mix_l, mix_r;
+
    if ((s32)cdda_out_left > 0)
    {
       cd_in_l = (s16)((buf[1] << 8) | buf[0]);
@@ -5548,10 +5552,20 @@ void new_scsp_run_sample()
    scsp_update_timer(1);
    generate_sample(&new_scsp, scsp.rbp, scsp.rbl, &out_l, &out_r, scsp.mvol, cd_in_l, cd_in_r);
 
+   /* Batman Forever (ST-V): the Acclaim RAX board runs in step with the
+      SCSP, one output sample at a time, and its DACs are summed with the
+      SCSP output like MAME's speaker routing. It runs even on a buffer
+      overrun so that it keeps time. The 16-bit clamp is done later
+      (ScspConvert32uto16s / sound cores), as for the Video CD card.
+      No-op for every other game. */
+   mix_l = out_l;
+   mix_r = out_r;
+   RaxRunSample(&mix_l, &mix_r);
+
    if (new_scsp_outbuf_pos < 900)
    {
-      new_scsp_outbuf_l[new_scsp_outbuf_pos] = out_l;
-      new_scsp_outbuf_r[new_scsp_outbuf_pos] = out_r;
+      new_scsp_outbuf_l[new_scsp_outbuf_pos] = mix_l;
+      new_scsp_outbuf_r[new_scsp_outbuf_pos] = mix_r;
    }
    else
    {
