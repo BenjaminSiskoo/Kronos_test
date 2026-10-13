@@ -19,9 +19,17 @@
 #ifndef UIDISASM_H
 #define UIDISASM_H
 
-#include <QScrollArea>
+#include <QAbstractScrollArea>
+#include <QSet>
 #include "../QtYabause.h"
 
+// Scrollable disassembly listing shared by every CPU debugger.
+//
+// The scroll bar value is the address of the first visible instruction. Each
+// row has a left margin that shows the code breakpoints (red dot, click it to
+// toggle) and the current PC (arrow). Lines that look like the SH2 disassembler
+// output ("0x06004000: mov.l @r15+, r14 ; comment") are drawn in columns and
+// colored by kind of instruction; any other text is drawn as is.
 class UIDisasm : public QAbstractScrollArea
 {
 	Q_OBJECT
@@ -35,10 +43,24 @@ public:
    void goToAddress(u32 address, bool vCenter=true);
    void setPC(u32 address);
    void setMinimumInstructionSize(int instructionSize);
+
+   // When every instruction has the same size, going to an address that is not
+   // on screen puts it about a third from the top, with some context above.
+   // With variable-size instructions it is put on the first row, since
+   // decoding cannot safely start in the middle of an unknown instruction.
+   void setFixedInstructionSize(bool fixed);
+
+   // Addresses drawn with a breakpoint marker
+   void setBreakpoints(const QSet<u32> &addresses);
+
 private:
    void adjustSettings();
+   int  visibleRows() const;
+   u32  topAddress() const;
+   u32  addressAtY(int y) const;
+   void drawRow(QPainter &painter, int y, const QString &text, bool isPC);
 
-   int fontWidth, fontHeight;
+   int fontWidth, fontHeight, rowHeight;
    QColor selectionColor;
    void *context;
 
@@ -48,10 +70,16 @@ private:
    u32 endAddress;
    u32 pc;
    int instructionSize;
+   bool fixedSize;
+   QSet<u32> breakpoints;
 
 protected:
    void mouseDoubleClickEvent( QMouseEvent * event );
+   void mousePressEvent( QMouseEvent * event );
+   void contextMenuEvent( QContextMenuEvent * event );
    void paintEvent(QPaintEvent *event);
+   void changeEvent(QEvent *event);
+   void resizeEvent(QResizeEvent *event);
 protected slots:
 
 signals:
