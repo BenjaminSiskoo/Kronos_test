@@ -282,8 +282,13 @@ void YabauseThread::reloadControllers()
 					break;
 				}
 				case PERKEYBOARD:
-					QtYabause::appendLog( "Keyboard controller type is not yet supported" );
+				{
+					// No key bindings: the host keyboard is fed as a whole by
+					// KeyboardQt (UIYabause key events), by key position.
+					if ( !PerKeyboardAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 ) )
+						QtYabause::appendLog( "Can't plug in the keyboard" );
 					break;
+				}
 				case PERMOUSE:
 				{
 					PerMouse_struct* mousebits = PerMouseAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 );
