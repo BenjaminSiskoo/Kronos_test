@@ -30,6 +30,7 @@
 #include "netlink.h"
 #include "decrypt.h"
 #include "yui.h"
+#include "rax.h"
 
 cartridge_struct *CartridgeArea;
 
@@ -1257,9 +1258,14 @@ static u32 FASTCALL ROMSTVCs0ReadLong(SH2_struct *context, UNUSED u8* memory, u3
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* The ST-V cartridge is ROM: MAME maps 0x02000000-0x04FFFFFF with
+   .rom().region("abus") and no write handler, so a write that is not
+   claimed by a protection/sound chip below is lost. Writing into
+   CartridgeArea->rom made the ROM writable: a later read returned the
+   written value instead of the ROM data. */
 static void FASTCALL ROMSTVCs0WriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
 {
-   T1WriteByte(CartridgeArea->rom, addr & 0x1FFFFFF, val);
+   (void)context; (void)addr; (void)val;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1275,7 +1281,7 @@ static void FASTCALL ROMSTVCs0WriteWord(SH2_struct *context, UNUSED u8* memory, 
       if (offs == 0x7FFFF4) { decathlt5838SetTableUploadMode(val); return; }
       if (offs == 0x7FFFF6) { decathlt5838UploadTableData(val); return; }
    }
-   T1WriteWord(CartridgeArea->rom, addr & 0x1FFFFFF, val);
+   /* ROM: write lost (see ROMSTVCs0WriteByte) */
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1294,7 +1300,7 @@ static void FASTCALL ROMSTVCs0WriteLong(SH2_struct *context, UNUSED u8* memory, 
          return;
       }
    }
-   T1WriteLong(CartridgeArea->rom, addr & 0x1FFFFFF, val);
+   /* ROM: write lost (see ROMSTVCs0WriteByte) */
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1373,16 +1379,52 @@ static u32 FASTCALL ROMSTVCs1ReadLong(SH2_struct *context, UNUSED u8* memory, u3
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Batman Forever: sound latch of the Acclaim RAX board at 0x04800000-3
+   (MAME stv.cpp init_batmanfr / batmanfr_sound_comms_w). Only the upper
+   16 bits of the 32-bit register reach the board (data_w(data >> 16));
+   the lower half is only logged by MAME. Reads are left to the cart ROM,
+   MAME installs a write handler only. */
+#define RAX_LATCH_ADDR 0x800000
+
+static INLINE int STVRaxLatchAddr(u32 addr)
+{
+  return RaxIsEnabled() && (addr & 0xFFFFFC) == RAX_LATCH_ADDR;
+}
+
 static void FASTCALL ROMSTVCs1WriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr,val);
-  u8 decryptCmd = addr & 0xF;
-  if (decryptCmd == 0x1)
+  if (STVRaxLatchAddr(addr))
   {
-    decryptOn = val&0x1;
+    /* bits 31-24 / 23-16 of the big-endian long; MAME passes the whole
+       upper word with the other byte lane at 0 */
+    if ((addr & 3) == 0) RaxHostWrite((u16)val << 8);
+    else if ((addr & 3) == 1) RaxHostWrite(val);
     return;
   }
-  T1WriteByte(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
+  if (STVAddrInProtWindow(addr))
+  {
+    u8 decryptCmd = addr & 0xF;
+    /* Byte lanes of the 32-bit enable register (MAME common_prot_w,
+       COMBINE_DATA on m_abus_protenable): 0xFFFFF0 = bits 31-24,
+       0xFFFFF1 = bits 23-16, which holds the enable bit 16. The test used
+       to apply to every CS1 address ending in 1, so any byte write there
+       was swallowed and toggled decryptOn. */
+    if (decryptCmd == 0x0)
+    {
+      protRegEnable = (u16)((protRegEnable & 0x00FF) | ((u16)val << 8));
+      return;
+    }
+    if (decryptCmd == 0x1)
+    {
+      protRegEnable = (u16)((protRegEnable & 0xFF00) | val);
+      decryptOn = val & 0x1;
+      return;
+    }
+    /* bus echo of the other window registers, as before */
+    T1WriteByte(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
+  }
+  /* outside the window: ROM, write lost (see ROMSTVCs0WriteByte) */
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1390,6 +1432,12 @@ static void FASTCALL ROMSTVCs1WriteByte(SH2_struct *context, UNUSED u8* memory, 
 static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
+
+  if (STVRaxLatchAddr(addr))
+  {
+    if ((addr & 2) == 0) RaxHostWrite(val);   /* upper word */
+    return;
+  }
 
   if (STVAddrInProtWindow(addr))
   {
@@ -1425,13 +1473,23 @@ static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, 
       protRegSubkey = val;
       return;
     }
+    /* Other window offsets: kept as a bus echo, MAME common_prot_r returns
+       m_a_bus[] (the last value written) there. This 16-byte window is
+       the only part of the cart that still takes writes. */
+    T1WriteWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
   }
-  T1WriteWord(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
+  /* outside the window: ROM, write lost (see ROMSTVCs0WriteByte) */
 }
 //////////////////////////////////////////////////////////////////////////////
 static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
 {
   LOGSTV("%s %x=%x\n", __FUNCTION__, addr, val);
+
+  if (STVRaxLatchAddr(addr))
+  {
+    RaxHostWrite((u16)(val >> 16));
+    return;
+  }
 
   if (STVAddrInProtWindow(addr))
   {
@@ -1460,8 +1518,10 @@ static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, 
       protRegSubkey = (u16)(val >> 16);
       return;
     }
+    /* bus echo, see ROMSTVCs1WriteWord */
+    T1WriteLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
   }
-  T1WriteLong(&CartridgeArea->rom[0x2000000], addr & 0xFFFFFF, val);
+  /* outside the window: ROM, write lost (see ROMSTVCs0WriteByte) */
 }
 
 //////////////////////////////////////////////////////////////////////////////
