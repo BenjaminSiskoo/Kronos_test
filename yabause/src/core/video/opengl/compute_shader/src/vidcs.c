@@ -300,6 +300,40 @@ static u32 Vdp2ColorRamGetLineColorOffset(u32 colorindex, int alpha, int offset)
 static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl);
 static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int height);
 static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl);
+
+/* ---------------------------------------------------------------------------
+ * Ligne d'ecran (rendu) de la ligne d'affichage 'line', pour borner une zone.
+ *
+ * yabsys.VBlankLineCount vaut le nombre de lignes affichees PLUS UN : le
+ * V-blank IN tombe sur la ligne qui suit la derniere ligne affichee
+ * (Vdp2VBlankLine(), vdp2.c), soit 225 pour 224 lignes. Les zones etaient
+ * placees par rheight * line / VBlankLineCount, donc a l'echelle 224/225 :
+ * une zone commencant a la ligne 18 demarrait a la ligne d'ecran 17, a 176
+ * a la ligne 175. Le chemin line scroll bitmap y dessinait pourtant la ligne
+ * d'affichage startLine + i : toute la zone remontait d'une ligne, et
+ * seulement sur les trames qui comptent plusieurs zones.
+ *
+ * Mechanical Violator Hakaider, video d'intro : les trames ou le jeu coupe
+ * la lecture de VRAM-A (ligne 176) ou de VRAM-B0 (jusqu'a la ligne 17-19)
+ * ont deux zones NBG0, les autres une seule : l'image sautait d'une ligne
+ * plusieurs fois par seconde.
+ *
+ * En entrelace double densite rheight vaut deux fois le nombre de lignes de
+ * champ, le rapport reste exact.
+ * ------------------------------------------------------------------------- */
+static INLINE int Vdp2DisplayLinesForZones(void)
+{
+  const int disp = yabsys.VBlankLineCount - 1;
+  return (disp > 0) ? disp : 1;
+}
+
+static INLINE int Vdp2ZoneScreenY(int line)
+{
+  int y = (_Ygl->rheight * line) / Vdp2DisplayLinesForZones();
+  if (y < 0) y = 0;
+  if (y > _Ygl->rheight) y = _Ygl->rheight;
+  return y;
+}
 static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed);
 static int Vdp2CheckCharAccessPenalty(int char_access, int ptn_access, int char_size_2x2);
 static int sameVDP2Reg(int id, Vdp2 *a, Vdp2 *b);
@@ -1873,8 +1907,8 @@ static void Vdp2DrawNBG0(Vdp2* varVdp2Regs, int startLine, int endLine)
   /* Precompute the screen pixel rows for this zone. All bitmap and
    * linescroll paths below must draw only within [screenY1, screenY2)
    * so zones don't overwrite each other. */
-  const int screenY1 = (_Ygl->rheight * ctrl.info.startLine) / yabsys.VBlankLineCount;
-  const int screenY2 = (_Ygl->rheight * ctrl.info.endLine)   / yabsys.VBlankLineCount;
+  const int screenY1 = Vdp2ZoneScreenY(ctrl.info.startLine);
+  const int screenY2 = Vdp2ZoneScreenY(ctrl.info.endLine);
  
   if (ctrl.info.isbitmap)
   {
@@ -2380,8 +2414,8 @@ static void Vdp2DrawNBG1(Vdp2* varVdp2Regs, int startLine, int endLine)
   }
   else ctrl.info.isverticalscroll = 0;
 
-  const int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
-  const int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+  const int screenY1 = Vdp2ZoneScreenY(startLine);
+  const int screenY2 = Vdp2ZoneScreenY(endLine);
 
   if (ctrl.info.isbitmap)
   {
@@ -2723,8 +2757,8 @@ static void Vdp2DrawNBG2(Vdp2* varVdp2Regs, int startLine, int endLine)
   ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
 
    {
-     int screenY1 = (_Ygl->rheight * startLine) / yabsys.VBlankLineCount;
-     int screenY2 = (_Ygl->rheight * endLine)   / yabsys.VBlankLineCount;
+     int screenY1 = Vdp2ZoneScreenY(startLine);
+     int screenY2 = Vdp2ZoneScreenY(endLine);
      ctrl.info.x = ctrl.regs->SCXN2 & 0x7FF;
      ctrl.info.y = Vdp2Nbg23LineScrollY[0][startLine] & 0x7FF;
      Vdp2DrawMapTest(&ctrl, delayed);
@@ -4971,7 +5005,11 @@ static void FASTCALL Vdp2DrawBitmapLineScroll(Vdp2Ctrl *ctrl, int width, int hei
   int shift = 0;
   if (_Ygl->interlace == DOUBLE_INTERLACE) shift = 1;
 
-  const int zone_start = ctrl->info.startLine;
+  /* Premiere ligne d'AFFICHAGE de la zone, la meme que celle du quad pose
+   * par l'appelant. startLine est une ligne de champ : en double densite elle
+   * vaut la moitie de la ligne d'affichage, alors que lineinfo[] et
+   * alpha_per_line[absline >> shift] sont indexes en lignes d'affichage. */
+  const int zone_start = Vdp2ZoneScreenY(ctrl->info.startLine);
 
   /* Etendue capturee de la table VCS et retard d'acces : invariants sur la
    * zone, donc hisses hors des boucles comme dans le chemin cellule. */
@@ -5155,8 +5193,8 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
   int incv = (int)(incv_f + 0.5f);
   int inch_base = (int)(inch_f + 0.5f);
  
-  int screenY1 = (_Ygl->rheight * ctrl->info.startLine) / yabsys.VBlankLineCount;
-  int screenY2 = (_Ygl->rheight * ctrl->info.endLine)   / yabsys.VBlankLineCount;
+  int screenY1 = Vdp2ZoneScreenY(ctrl->info.startLine);
+  int screenY2 = Vdp2ZoneScreenY(ctrl->info.endLine);
   if (screenY1 < 0) screenY1 = 0;
   if (screenY2 > _Ygl->rheight) screenY2 = _Ygl->rheight;
  
@@ -5525,8 +5563,8 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl) {
    * pas comparee dans sameVDP2RegNBG0/NBG1, ce chemin n'en voyait qu'une.
    * v reste une ligne d'ecran ABSOLUE : lineinfo[v], la coordonnee
    * verticale (v * incv) et cell_scroll_data[v >> fieldShift] en dependent. */
-  const int screenY1 = (_Ygl->rheight * ctrl->info.startLine) / yabsys.VBlankLineCount;
-  int screenY2       = (_Ygl->rheight * ctrl->info.endLine)   / yabsys.VBlankLineCount;
+  const int screenY1 = Vdp2ZoneScreenY(ctrl->info.startLine);
+  int screenY2       = Vdp2ZoneScreenY(ctrl->info.endLine);
   if (screenY2 > screenH) screenY2 = screenH;
 
   /* Etendue de la table de vertical cell scroll, en longwords. Calculee sur
@@ -5871,7 +5909,9 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
    *
    * Quand une seule zone couvre la trame, zoned est faux et rien ne change. */
   const int vscale  = (_Ygl->interlace == DOUBLE_INTERLACE) ? 2 : 1;
-  const int vbl     = (yabsys.VBlankLineCount > 0) ? yabsys.VBlankLineCount : 1;
+  /* Lignes affichees, pas VBlankLineCount (= affichees + 1) : voir
+   * Vdp2ZoneScreenY(). */
+  const int vbl     = Vdp2DisplayLinesForZones();
   const int zoneY1  = (_Ygl->rheight * ctrl->info.startLine * vscale) / vbl;
   const int zoneY2  = (_Ygl->rheight * ctrl->info.endLine   * vscale) / vbl;
   const int zoned   = (ctrl->info.endLine > ctrl->info.startLine)
