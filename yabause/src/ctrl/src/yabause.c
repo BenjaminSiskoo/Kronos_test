@@ -1077,6 +1077,10 @@ int YabauseEmulate(void) {
       PROFILE_START("vblankin");
       // VBlankIN
       SmpcINTBACKEnd();
+      /* Once per frame: medal/ticket hopper sensor pulses and digital
+         trackball nudge (no-op unless a PATOCAR/MICROMBC game is loaded). */
+      PerHopperExec();
+      PerTrackballExec();
       Vdp2VBlankIN_It();
       Vdp1VBlankIN_It();
       PROFILE_STOP("vblankin");
