@@ -367,6 +367,57 @@ void PerGunStartReleased(PerGun_struct * gun);
 
 void PerGunMove(PerGun_struct * gun, s32 dispx, s32 dispy);
 
+/* Keyboard
+ *
+ * Sega Saturn keyboard (peripheral ID 34h), data format from
+ * Saturn Technical Bulletin #45 "Saturn Keyboard Data Format Ver.1.00":
+ *
+ *   1st data : Right Left Down Up | Start A C B        (0 = pressed)
+ *   2nd data : R X Y Z | L KBTYPE2 KBTYPE1 KBTYPE0     (KBTYPE 000 = Saturn keyboard)
+ *   3rd data : 0 CapsLock NumLock ScrLock | Make 1 1 Break
+ *   4th data : key code (valid only when Make or Break is 1)
+ *
+ * Unlike the other peripherals, the keyboard is not driven by per-button
+ * bindings: the port feeds the state of the host keys directly, already
+ * translated to Saturn key codes, with PerKeyboardHostKeyDown()/Up().
+ * The core turns that state into the Make/Break code stream (one code
+ * per INTBACK read, key repeat on the last key pressed) and derives the
+ * pad-compatible buttons and the lock flags from it.
+ */
+
+#define PERKB_NUM_CODES 0x90 /* key codes 00h-8Fh (STTECH45 "Meaning of Key Codes") */
+
+typedef struct
+{
+   u8 perid;
+   u8 kbbits[4];
+} PerKeyboard_struct;
+
+/** @brief Adds a keyboard to one of the controller ports.
+ *
+ * @param port can be either &PORTDATA1 or &PORTDATA2
+ * @return pointer to a PerKeyboard_struct or NULL if it fails
+ * */
+PerKeyboard_struct * PerKeyboardAdd(PortData_struct * port);
+
+/** @brief Host side: a key translated to Saturn key code @p code went down / up.
+ *
+ * Safe to call repeatedly with the same state (duplicates are ignored).
+ * Ignored when @p code is not a valid key code. */
+void PerKeyboardHostKeyDown(u8 code);
+void PerKeyboardHostKeyUp(u8 code);
+/** @brief Host side: releases every key (window lost the focus...). */
+void PerKeyboardHostReleaseAll(void);
+/** @brief Returns non-zero when at least one keyboard is plugged in. */
+int PerKeyboardIsConnected(void);
+
+/** @brief Refreshes the keyboards connected to @p port.
+ *
+ * Called by the SMPC right before it takes a new copy of the port data
+ * for an INTBACK: emits the next Make/Break code (if any) into the
+ * keyboard data. */
+void PerKeyboardUpdate(PortData_struct * port);
+
 
 #define PERJAMMA_COIN1 29
 #define PERJAMMA_COIN2 30
