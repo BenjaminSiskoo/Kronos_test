@@ -102,8 +102,8 @@ const Items mVideoFilterMode = Items()
 	<< Item("0", "None")
 	<< Item("1", "Bilinear")
 	<< Item("2", "BiCubic")
-	<< Item("3", "Deinterlacing Adaptative")
-	<< Item("4", "Deinterlacing Debug Adaptative")
+	<< Item("3", "Deinterlacing Adaptive")
+	<< Item("4", "Deinterlacing Debug Adaptive")
 	<< Item("5", "Deinterlacing Bob")
 	<< Item("6", "Scanline")
 	<< Item("7", "Lanczos3")
@@ -193,7 +193,8 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 
 void UISettings::setCurrentOpenedTab(int idx)
 {
-	twPages->setCurrentIndex(3);
+	if ( idx >= 0 && idx < twPages->count() )
+		twPages->setCurrentIndex( idx );
 }
 
 int UISettings::exec()
@@ -317,12 +318,16 @@ void UISettings::tbBrowse_clicked()
 		requestNewFile( QtYabause::translate("Choose a file to store bios settings"), leBiosSettings);
 	else if ( tb == tbCdRom )
 	{
-		if ( cbCdRom->currentText().contains( "dummy", Qt::CaseInsensitive ) )
+		// Test the core id stored with the item, not its label: the label is
+		// translated (e.g. "Dummy CD Drive" -> "Lecteur CD factice"), so a
+		// text match on "dummy"/"iso" only worked with the English UI.
+		const int cdCore = cbCdRom->itemData( cbCdRom->currentIndex() ).toInt();
+		if ( cdCore == CDCORE_DUMMY )
 		{
 			CommonDialogs::error( QtYabause::translate( "The dummies cores don't need configuration." ) );
 			return;
 		}
-		else if ( cbCdRom->currentText().contains( "iso", Qt::CaseInsensitive ) )
+		else if ( cdCore == CDCORE_ISO )
 			requestFile( QtYabause::translate( "Select your iso/cue/bin/zip file" ), leCdRom, QtYabause::translate( "CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)" ) );
 		else
 			requestFolder( QtYabause::translate( "Choose a cdrom drive/mount point" ), leCdRom );
@@ -624,7 +629,7 @@ void UISettings::populateShortcutsView()
 	twShortcuts->setRowCount(actionsList.count());
 	foreach ( QAction* action, actionsList )
 	{
-		QString text = QtYabause::translate(action->text());
+		QString text = QtYabause::translate(QtYabause::sourceText(action));
 		text = text.remove('&');
 		QTableWidgetItem *tblItem = new QTableWidgetItem(text);
 		tblItem->setFlags(tblItem->flags() ^ Qt::ItemIsEditable);
@@ -761,7 +766,9 @@ void UISettings::loadSettings()
 			if (action->text().isEmpty() || !action->isShortcutVisibleInContextMenu())
 				continue;
 
-			auto const var = s->value(action->text());
+			// same key as saveSettings(): the group was missing and the
+			// translated text was used, so nothing was ever found here
+			auto const var = s->value(QString("Shortcuts/") + QtYabause::sourceText(action));
 			if(!var.isValid() || var.isNull() )
 			{
 				continue;
@@ -872,7 +879,8 @@ void UISettings::saveSettings()
 		if (action->text().isEmpty() || !action->isShortcutVisibleInContextMenu())
 			continue;
 
-		s->setValue(action->text(), action->shortcut().toString());
+		// English text as key, whatever the UI language (see QtYabause::sourceText)
+		s->setValue(QtYabause::sourceText(action), action->shortcut().toString());
 	}
 	s->endGroup();
 
