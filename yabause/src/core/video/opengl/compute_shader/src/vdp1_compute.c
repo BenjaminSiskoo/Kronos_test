@@ -701,14 +701,51 @@ static int generateComputeBuffer(int w, int h) {
   return 0;
 }
 
-static int computeBresenhamLinePoints(int x1, int y1, int x2, int y2, point **data) {
+/* Tampons de travail reutilises d'une commande a l'autre.
+ *
+ * drawQuad() faisait trois allocations par commande (deux bords en
+ * Bresenham et le tableau des lignes, en calloc) et drawLine() une, soit des
+ * milliers de malloc/free par image dans une scene 3D. Les tampons ne font
+ * que grandir ; leur contenu est entierement reecrit avant chaque usage
+ * (memes valeurs qu'avant : cmd_poly est rempli champ par champ par un
+ * litteral compose, qui met a zero les champs non cites comme le faisait
+ * calloc). */
+static point *bresenhamBuf[2] = { NULL, NULL };
+static int bresenhamCap[2] = { 0, 0 };
+static cmd_poly *cmdPolyBuf = NULL;
+static int cmdPolyCap = 0;
+
+static point *bresenhamReserve(int which, int n) {
+	if (n > bresenhamCap[which]) {
+		int cap = (n < 1024) ? 1024 : n;
+		point *p = (point*)realloc(bresenhamBuf[which], (size_t)cap * sizeof(point));
+		if (p == NULL) return NULL;
+		bresenhamBuf[which] = p;
+		bresenhamCap[which] = cap;
+	}
+	return bresenhamBuf[which];
+}
+
+static cmd_poly *cmdPolyReserve(int n) {
+	if (n > cmdPolyCap) {
+		int cap = (n < 1024) ? 1024 : n;
+		cmd_poly *p = (cmd_poly*)realloc(cmdPolyBuf, (size_t)cap * sizeof(cmd_poly));
+		if (p == NULL) return NULL;
+		cmdPolyBuf = p;
+		cmdPolyCap = cap;
+	}
+	return cmdPolyBuf;
+}
+
+static int computeBresenhamLinePoints(int x1, int y1, int x2, int y2, point **data, int which) {
 	//Need to handle upscale smoothing
 	int dx =  abs (x2 - x1), sx = x1 < x2 ? 1 : -1;
   int dy = -abs (y2 - y1), sy = y1 < y2 ? 1 : -1;
 	int val = 0;
   int err = dx + dy, e2; /* error value e_xy */
 	int nbMaxPoint = MAX(abs(dx), abs(dy))+ 1;
-	*data = (point*)malloc(nbMaxPoint*sizeof(point));
+	*data = bresenhamReserve(which, nbMaxPoint);
+	if (*data == NULL) return 0;
 	int i = 0;
   for (;;){  /* loop */
 		(*data)[i++] = (point){.x=x1, .y=y1};
@@ -730,10 +767,11 @@ static int computeBresenhamLinePoints(int x1, int y1, int x2, int y2, point **da
 static void drawQuad(vdp1cmd_struct* cmd) {
 	point *dataL, *dataR;
 	// printf("Quad\n");
-	int li = computeBresenhamLinePoints(cmd->CMDXA, cmd->CMDYA, cmd->CMDXD, cmd->CMDYD, &dataL);
-	int ri = computeBresenhamLinePoints(cmd->CMDXB, cmd->CMDYB, cmd->CMDXC, cmd->CMDYC, &dataR);
+	int li = computeBresenhamLinePoints(cmd->CMDXA, cmd->CMDYA, cmd->CMDXD, cmd->CMDYD, &dataL, 0);
+	int ri = computeBresenhamLinePoints(cmd->CMDXB, cmd->CMDYB, cmd->CMDXC, cmd->CMDYC, &dataR, 1);
 	int nbCmd = MAX(li,ri);
-	cmd_poly *cmd_pol = (cmd_poly*)calloc(nbCmd, sizeof(cmd_poly));
+	cmd_poly *cmd_pol = cmdPolyReserve(nbCmd);
+	if ((li == 0) || (ri == 0) || (cmd_pol == NULL)) return;
 	int idl = 0;
 	int idr = 0;
 	int a = 0;
@@ -858,16 +896,14 @@ static void drawQuad(vdp1cmd_struct* cmd) {
 		.y= MAX(cmd->CMDYA, MAX(cmd->CMDYB, MAX(cmd->CMDYC, cmd->CMDYD)))
 	};
 	drawPolygonLine(cmd_pol, i, add,cmd->type, li!=ri, A, B);
-	free(cmd_pol);
-	free(dataL);
-	free(dataR);
 }
 
 void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 	int dx = abs(B.x - A.x);
 	int dy = abs(B.y - A.y);
-	cmd_poly *cmd_pol = (cmd_poly*)calloc(1, sizeof(cmd_poly));
+	cmd_poly *cmd_pol = cmdPolyReserve(1);
 	float dl = 0.5;
+	if (cmd_pol == NULL) return;
 	float dr = 0.5;
 	int rx = (dx < dy)?0:(((B.x<A.x)?1:-1) + 2)&0x3;
 	int ry = (dx < dy)?0:(((B.y<A.y)?1:-1) + 2)&0x3;
@@ -905,7 +941,6 @@ void drawLine(vdp1cmd_struct* cmd, point A, point B) {
 	cmd_pol[0].G[4] = MIX(cmd->G[4], cmd->G[7], dr);
 	cmd_pol[0].G[5] = MIX(cmd->G[5], cmd->G[8], dr);
 	drawPolygonLine(cmd_pol, 1, 1,cmd->type,0,A,B);
-	free(cmd_pol);
 }
 
 int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
