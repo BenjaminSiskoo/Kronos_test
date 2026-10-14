@@ -3810,7 +3810,7 @@ int ScuSaveState(void ** stream)
 {
    int offset;
 
-   offset = MemStateWriteHeader(stream, "SCU ", 5);
+   offset = MemStateWriteHeader(stream, "SCU ", 6);
 
    // Write registers and internal variables
    MemStateWrite((void *)ScuRegs, sizeof(Scu), 1, stream);
@@ -3819,6 +3819,14 @@ int ScuSaveState(void ** stream)
    MemStateWrite((void *)ScuDsp, sizeof(scudspregs_struct), 1, stream);
 
    MemStateWrite(incFlg, sizeof(int), 4, stream);
+
+   /* Version 6 : fin de DMA immediat deja realisee mais dont l'interruption
+    * est encore differee (ScuDmaEndPending). Hors etat, un etat sauve dans
+    * cette fenetre perdait l'interruption de fin de DMA : le jeu qui
+    * l'attend (cas decrit au-dessus de ScuDmaImmediate) restait bloque. */
+   MemStateWrite(ScuDmaImmediate, sizeof(u8), 4, stream);
+   MemStateWrite(ScuDmaImmediateDelay, sizeof(s32), 4, stream);
+   MemStateWrite(ScuDmaEndPending, sizeof(s32), 4, stream);
 
 
    return MemStateFinishHeader(stream, offset);
@@ -3893,7 +3901,47 @@ int ScuLoadState(const void * stream, UNUSED int version, int size)
    if (version >= 2) {
      MemStateRead(incFlg, sizeof(int), 4, stream);
    }
+
+   if (version >= 6) {
+     MemStateRead(ScuDmaImmediate, sizeof(u8), 4, stream);
+     MemStateRead(ScuDmaImmediateDelay, sizeof(s32), 4, stream);
+     MemStateRead(ScuDmaEndPending, sizeof(s32), 4, stream);
+   }
    return size;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Appele par YabLoadStateStream() apres le chargement de TOUS les blocs.
+ *
+ * currentInterrupt (source verrouillee presentee au maitre), needEvaluate,
+ * accessCPUBus et accessVdp1Ram sont des statiques hors de l'etat : ils
+ * gardaient les valeurs de la session precedente. Un verrou residuel
+ * masquait toutes les sources de priorite inferieure (ScuTestInterruptMask
+ * sort sur "currentInterrupt <= i") et les demandes en attente dans
+ * ITEdge n'etaient plus presentees au SH-2, dont l'etat d'interruption a ete
+ * remis a zero par SH2LoadState(). Les blocages du CPU (A-Bus) et du VDP1
+ * dus aux DMA SCU en cours sont recalcules a partir des DMA charges. */
+void ScuPostLoadState(void)
+{
+   if (ScuRegs == NULL)
+      return;
+
+   currentInterrupt = 0xFF;
+   needEvaluate = 1;
+
+   accessCPUBus = 0;
+   accessVdp1Ram = 0;
+   setupBusConcurrency(&ScuRegs->dma0);
+   setupBusConcurrency(&ScuRegs->dma1);
+   setupBusConcurrency(&ScuRegs->dma2);
+   setupVdp1Concurrency(&ScuRegs->dma0);
+   setupVdp1Concurrency(&ScuRegs->dma1);
+   setupVdp1Concurrency(&ScuRegs->dma2);
+   if (accessVdp1Ram == 0)
+      Vdp1ClearDMAConcurrency();
+
+   ScuTestAllInterrupt();
 }
 
 //////////////////////////////////////////////////////////////////////////////
