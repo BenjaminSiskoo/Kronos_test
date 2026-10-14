@@ -100,6 +100,11 @@ extern void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUS
  * real hopper behaviour. No-op for games that don't use a hopper.
  */
 void PerHopperExec(void);
+u32 PerGetCoinCounter(int index); /* ST-V PORT-D coin counter 0/1 (bookkeeping) */
+void PerSetCoinCounters(u32 coin1, u32 coin2); /* restore saved bookkeeping */
+int PerGetCoinLockout(int index); /* ST-V PORT-D coin lockout 0/1 active */
+void PerIogaSaveState(void ** stream); /* ST-V IOGA registers, PORT-G counters, hopper (CART chunk) */
+int PerIogaLoadState(const void * stream, int size); /* 0 = applied */
 
 /**
  * @brief Init a peripheral core
