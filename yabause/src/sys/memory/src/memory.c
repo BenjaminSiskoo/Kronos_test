@@ -548,10 +548,29 @@ static u8 FASTCALL BupRamMemoryReadByte(SH2_struct *context, UNUSED u8* memory, 
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* RAM de sauvegarde interne (ST-097 SCU User's Manual, 1.2 Fig. 1.3 :
+ * "Backup-RAM Region 64 Kbyte", 00180000H-0018FFFFH, sur le CPU-Bus).
+ *
+ * Cablage (Sega Service Manual Saturn PAL 01301, schema Main C.B 4/6) :
+ * IC8 = SRAM uPD43257B 32K x 8 ; ses broches A0-A14 vont sur ECA1-ECA15 et
+ * I/O1-I/O8 sur ECD0-ECD7. Les tampons 74LS245 IC30/IC29 relient CA1-CA16 a
+ * ECA1-ECA16 et IC27 CD0-CD7 a ECD0-ECD7, sans permutation. Donc :
+ *  - l'octet de RAM n = (adresse >> 1) & 0x7FFF (A0 du CPU non decode) :
+ *    32 Ko de SRAM occupent les 64 Ko de la region ;
+ *  - la donnee est sur D7-D0 du bus, c'est-a-dire l'octet d'adresse IMPAIRE
+ *    (SH-2 big-endian : sur un acces 16 bits a l'adresse paire A, D15-D8 est
+ *    l'octet A et D7-D0 l'octet A+1) ;
+ *  - D15-D8 (ECD8-ECD15) n'est relie a rien et est tire a VCC par le reseau
+ *    de resistances RA2 (10 k x 8) : il se lit 0xFF ; ECD0-ECD7 ont aussi
+ *    leurs resistances de rappel (RA1). Un octet pair se lit donc 0xFF.
+ *
+ * Le code placait la donnee sur D15-D8 en lecture 16/32 bits et ecrivait
+ * l'octet fort de la valeur, soit l'inverse. Un acces 32 bits est fait de
+ * deux cycles 16 bits : l'octet de A+1 sur D23-D16, celui de A+3 sur D7-D0. */
 static u16 FASTCALL BupRamMemoryReadWord(SH2_struct *context, UNUSED u8* memory, USED_IF_DEBUG u32 addr)
 {
    // LOG("bup\t: BackupRam read word - %08X\n", addr);
-   return (BupRamMemoryReadByte(context, memory, addr | 0x1) << 8);
+   return (u16)(0xFF00 | BupRamMemoryReadByte(context, memory, (addr & ~0x1) | 0x1));
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -559,7 +578,10 @@ static u16 FASTCALL BupRamMemoryReadWord(SH2_struct *context, UNUSED u8* memory,
 static u32 FASTCALL BupRamMemoryReadLong(SH2_struct *context, UNUSED u8* memory, USED_IF_DEBUG u32 addr)
 {
    // LOG("bup\t: BackupRam read long - %08X\n", addr);
-   return ((BupRamMemoryReadByte(context, memory, addr | 0x1) << 8) | (BupRamMemoryReadByte(context, memory, addr | 0x3) << 16));
+   addr &= ~0x3;
+   return 0xFF00FF00 |
+          ((u32)BupRamMemoryReadByte(context, memory, addr | 0x1) << 16) |
+           (u32)BupRamMemoryReadByte(context, memory, addr | 0x3);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -585,6 +607,10 @@ static void FASTCALL BupRamMemoryWriteByte(SH2_struct *context, UNUSED u8* memor
   addr = addr & ((backup_file_size<<1) - 1);
   if (addr & 0x1) {
     T1WriteByte(memory, addr>>1, val);
+    /* Le drapeau documente plus haut n'etait plus jamais leve (l'affectation
+     * etait restee dans le bloc #if 0) : un portage qui s'en sert pour la
+     * sauvegarde automatique ne voyait aucune ecriture. */
+    BupRamWritten = 1;
   }
 }
 
@@ -593,7 +619,7 @@ static void FASTCALL BupRamMemoryWriteByte(SH2_struct *context, UNUSED u8* memor
 static void FASTCALL BupRamMemoryWriteWord(SH2_struct *context, UNUSED u8* memory, USED_IF_DEBUG u32 addr, UNUSED u16 val)
 {
    // LOG("bup\t: BackupRam write word - %08X %x\n", addr, val);
-   BupRamMemoryWriteByte(context, memory, addr | 0x1, (val>>8) & 0xFF);
+   BupRamMemoryWriteByte(context, memory, (addr & ~0x1) | 0x1, val & 0xFF);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -601,8 +627,9 @@ static void FASTCALL BupRamMemoryWriteWord(SH2_struct *context, UNUSED u8* memor
 static void FASTCALL BupRamMemoryWriteLong(SH2_struct *context, UNUSED u8* memory, USED_IF_DEBUG u32 addr, UNUSED u32 val)
 {
    // LOG("bup\t: BackupRam write long - %08X %x\n", addr, val);
-   BupRamMemoryWriteByte(context, memory, addr | 0x1, (val>>8) & 0xFF);
-   BupRamMemoryWriteByte(context, memory, addr | 0x3, (val>>24) & 0xFF);
+   addr &= ~0x3;
+   BupRamMemoryWriteByte(context, memory, addr | 0x1, (val>>16) & 0xFF);
+   BupRamMemoryWriteByte(context, memory, addr | 0x3, val & 0xFF);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -793,6 +820,26 @@ void MappedMemoryInit()
      &BupRamMemoryWriteWord,
      &BupRamMemoryWriteLong,
      &BupRam);
+}
+
+/* Recable la zone CS0 (cartouche) sans toucher au reste de la carte memoire.
+ * MappedMemoryInit() memorise les fonctions Cs0* de la cartouche ET l'adresse
+ * &CartridgeArea->rom : quand CartLoadState() remplace la cartouche
+ * (CartDeInit() + CartInit()), ces entrees pointent sur la structure liberee
+ * (utilisation apres liberation) et sur les accesseurs de l'ancienne
+ * cartouche. CS1/CS2 passent par CartridgeArea a chaque acces et n'ont pas
+ * ce probleme. */
+void MappedMemoryRemapCs0(void)
+{
+   if (CartridgeArea == NULL)
+      return;
+   FillMemoryArea(0x200, 0x3FF, CartridgeArea->Cs0ReadByte,
+                                CartridgeArea->Cs0ReadWord,
+                                CartridgeArea->Cs0ReadLong,
+                                CartridgeArea->Cs0WriteByte,
+                                CartridgeArea->Cs0WriteWord,
+                                CartridgeArea->Cs0WriteLong,
+                                &CartridgeArea->rom);
 }
 
 void switchFB16bit()
@@ -2001,8 +2048,11 @@ int YabSaveStateBuffer(void ** buffer, size_t * size)
 {
    int status;
 
+   if ((buffer == NULL) || (size == NULL))
+      return -1;
+
    // Reset buffer & size if needed
-   if (buffer != NULL) *buffer = NULL;
+   *buffer = NULL;
    *size = 0;
 
    // Get size
@@ -2013,17 +2063,35 @@ int YabSaveStateBuffer(void ** buffer, size_t * size)
    *size = MemStateGetOffset();
 
    // Allocate buffer
+   /* FIX : le test portait sur 'buffer' (le pointeur de pointeur, jamais
+    * NULL ici) au lieu de '*buffer' : un echec de malloc n'etait pas vu et
+    * YabSaveStateStream() ecrivait ensuite a l'adresse NULL. */
    *buffer = (void *)malloc(*size);
-   if (buffer == NULL) {
+   if (*buffer == NULL) {
+      *size = 0;
       return -1;
    }
 
    // Fill buffer
    status = YabSaveStateStream(buffer);
    if (status != 0) {
+      free(*buffer);
+      *buffer = NULL;
+      *size = 0;
       return status;
    }
 
+   /* Les deux passes doivent produire exactement la meme taille : la
+    * premiere sert a dimensionner le tampon que la seconde remplit. */
+   if ((size_t)MemStateGetOffset() != *size) {
+      YuiMsg("Save state size changed between passes (%d / %d)\n", MemStateGetOffset(), (int)*size);
+      free(*buffer);
+      *buffer = NULL;
+      *size = 0;
+      return -1;
+   }
+
+   OSDPushMessage(OSDMSG_STATUS, 150, "STATE SAVED");
    return 0;
 }
 
@@ -2033,41 +2101,42 @@ int YabSaveState(const char *filename)
 {
    FILE *fp;
    int status;
+   void *buffer = NULL;
+   size_t size = 0;
 
    // use a second set of savestates for movies
    filename = MakeMovieStateName(filename);
    if (!filename)
       return -1;
 
-   // stop if we can't open file
-   if ((fp = fopen(filename, "wb")) == NULL)
-      return -1;
-
-   // retrieve savestate buffer and its size
-   void *buffer;
-   size_t size;
+   /* Le tampon est construit AVANT d'ouvrir le fichier : en cas d'echec,
+    * l'ancien fichier n'est plus tronque a 0 octet. */
    status = YabSaveStateBuffer(&buffer, &size);
-
-   // if retrieval failed, cleanup and stop
    if (status != 0) {
-      fclose(fp);
-      if(buffer)
+      if (buffer)
          free(buffer);
       return status;
+   }
+
+   // stop if we can't open file
+   if ((fp = fopen(filename, "wb")) == NULL) {
+      free(buffer);
+      return -1;
    }
 
    // if writing fails (out of space ?), cleanup and stop
    if (fwrite(buffer, 1, size, fp) != size) {
       fclose(fp);
-      if(buffer)
-         free(buffer);
+      free(buffer);
       return -1;
    }
 
    // cleanup
-   fclose(fp);
-   if(buffer)
+   if (fclose(fp) != 0) {
       free(buffer);
+      return -1;
+   }
+   free(buffer);
 
    return 0;
 }
@@ -2160,28 +2229,42 @@ int YabSaveStateStream(void ** stream)
    MemStateWrite((void *)&yabsys.IsPal, sizeof(int), 1, stream);
 
    VIDCore->GetGlSize(&outputwidth, &outputheight);
-
-   totalsize=outputwidth * outputheight * sizeof(u32);
-
-   if ((buf = (u8 *)malloc(totalsize)) == NULL)
-   {
-      return -2;
+   if ((outputwidth < 0) || (outputheight < 0)) {
+      outputwidth = 0;
+      outputheight = 0;
    }
 
-   //YuiSwapBuffers();
-   #ifdef USE_OPENGL
-   glPixelZoom(1,1);
-   glReadBuffer(GL_BACK);
-   glReadPixels(0, 0, outputwidth, outputheight, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-   #else
-   //memcpy(buf, dispbuffer, totalsize);
-   #endif
-   //YuiSwapBuffers();
+   totalsize=outputwidth * outputheight * sizeof(u32);
 
    MemStateWrite((void *)&outputwidth, sizeof(outputwidth), 1, stream);
    MemStateWrite((void *)&outputheight, sizeof(outputheight), 1, stream);
 
-   MemStateWrite((void *)buf, totalsize, 1, stream);
+   if (stream == NULL) {
+      /* Passe de dimensionnement : seule la taille compte. On ne lit plus
+       * le frame buffer OpenGL ni n'alloue l'image pour rien. */
+      MemStateWrite(NULL, totalsize, 1, NULL);
+   }
+   else {
+      if ((buf = (u8 *)calloc(1, (totalsize > 0) ? totalsize : 1)) == NULL)
+      {
+         return -2;
+      }
+
+      //YuiSwapBuffers();
+#ifdef USE_OPENGL
+      if (totalsize > 0) {
+         glPixelZoom(1,1);
+         glReadBuffer(GL_BACK);
+         glReadPixels(0, 0, outputwidth, outputheight, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+      }
+#else
+      //memcpy(buf, dispbuffer, totalsize);
+#endif
+      //YuiSwapBuffers();
+
+      MemStateWrite((void *)buf, totalsize, 1, stream);
+      free(buf);
+   }
 
    movieposition=MemStateGetOffset();
 
@@ -2194,9 +2277,6 @@ int YabSaveStateStream(void ** stream)
    MemStateWriteOffset((void *)&i, sizeof(i), 1, stream, 8);
    MemStateWriteOffset((void *)&movieposition, sizeof(movieposition), 1, stream, 16);
 
-   free(buf);
-
-   OSDPushMessage(OSDMSG_STATUS, 150, "STATE SAVED");
    return 0;
 }
 
@@ -2205,6 +2285,9 @@ int YabSaveStateStream(void ** stream)
 int YabLoadStateBuffer(const void * buffer, size_t size)
 {
    int status;
+
+   if (buffer == NULL)
+      return -1;
 
    status = YabLoadStateStream(buffer, size);
 
@@ -2217,6 +2300,9 @@ int YabLoadState(const char *filename)
 {
    FILE *fp;
    int status;
+   long fsize;
+   size_t size;
+   void *buffer;
 
    filename = MakeMovieStateName(filename);
    if (!filename)
@@ -2226,47 +2312,127 @@ int YabLoadState(const char *filename)
       return -1;
 
    // retrieve filesize
-   fseek(fp, 0, SEEK_END);
-   size_t size = ftell(fp);
+   /* FIX : ftell() peut renvoyer -1 et fread() lire moins que demande
+    * (fichier tronque) : aucun des deux n'etait verifie. */
+   if (fseek(fp, 0, SEEK_END) != 0) {
+      fclose(fp);
+      return -1;
+   }
+   fsize = ftell(fp);
+   if (fsize <= 0) {
+      fclose(fp);
+      return -1;
+   }
+   size = (size_t)fsize;
    fseek(fp, 0L, SEEK_SET);
 
    // prepare buffer
-   void *buffer = (void *)malloc(size);
+   buffer = (void *)malloc(size);
    if (buffer == NULL) {
       fclose(fp);
       return -1;
    }
-   fread(buffer, 1, size, fp);
+   if (fread(buffer, 1, size, fp) != size) {
+      fclose(fp);
+      free(buffer);
+      return -1;
+   }
 
    fclose(fp);
 
    status = YabLoadStateBuffer(buffer, size);
 
-   if(buffer)
-      free(buffer);
+   free(buffer);
 
    return status;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Ordre des blocs ecrits par YabSaveStateStream(). */
+static const char * const YabStateChunkNames[] = {
+   "CART", "CS2 ", "MSH2", "SSH2", "SCSP", "SCU ", "SMPC", "VDP1", "VDP2", "OTHR"
+};
+#define YAB_STATE_CHUNK_COUNT ((int)(sizeof(YabStateChunkNames) / sizeof(YabStateChunkNames[0])))
+
+/* Verifie TOUTE la structure du fichier avant d'en appliquer quoi que ce
+ * soit. Avant, un bloc absent, de taille fausse ou mal relu (version
+ * differente) etait detecte au milieu du chargement, apres que CART, CS2,
+ * les SH2... avaient deja ete ecrases : l'emulation repartait sur un etat
+ * moitie ancien moitie nouveau. Les tailles des blocs sont aussi bornees par
+ * la taille du tampon pour qu'aucune lecture ne sorte du fichier. */
+static int YabLoadStateCheckChunks(const u8 * stream, size_t size_stream, int start)
+{
+   size_t offset = (size_t)start;
+   int i;
+
+   for (i = 0; i < YAB_STATE_CHUNK_COUNT; i++)
+   {
+      int chunksize;
+
+      if ((offset + 12) > size_stream) {
+         YuiMsg("Save state truncated before %s\n", YabStateChunkNames[i]);
+         return -2;
+      }
+      if (memcmp(stream + offset, YabStateChunkNames[i], 4) != 0) {
+         YuiMsg("Save state: %s chunk not found\n", YabStateChunkNames[i]);
+         return -3;
+      }
+      memcpy(&chunksize, stream + offset + 8, sizeof(int));
+      if ((chunksize < 0) || ((offset + 12 + (size_t)chunksize) > size_stream)) {
+         YuiMsg("Save state: bad size for %s chunk (%d)\n", YabStateChunkNames[i], chunksize);
+         return -2;
+      }
+      offset += 12 + (size_t)chunksize;
+   }
+   return 0;
+}
+
+/* Lit l'en-tete du bloc attendu et renvoie la position de fin du bloc.
+ * Apres l'appel du chargeur du module, YabLoadStateNextChunk() replace le
+ * curseur sur cette fin : un chargeur qui lit trop ou pas assez (ancien
+ * format, champ ajoute...) ne decale plus tous les blocs suivants. */
+static int YabLoadStateOpenChunk(const void * stream, const char * name, int * version, int * chunksize, int * chunkend)
+{
+   if (MemStateCheckRetrieveHeader(stream, name, version, chunksize) != 0)
+   {
+      YuiMsg("Can not load %s (Ver %d)\n", name, *version);
+      return -3;
+   }
+   *chunkend = MemStateGetOffset() + *chunksize;
+   return 0;
+}
+
+static void YabLoadStateNextChunk(const char * name, int chunkend)
+{
+   if (MemStateGetOffset() != chunkend) {
+      YuiMsg("Save state: %s chunk loader stopped at offset %d instead of %d, resynchronised\n",
+             name, MemStateGetOffset(), chunkend);
+      MemStateSetOffset(chunkend);
+   }
+}
+
 int YabLoadStateStream(const void * stream, size_t size_stream)
 {
    char id[3];
    u8 endian;
-   int headerversion, version, size, chunksize, headersize;
+   int headerversion, version, size, chunksize, headersize, chunkend;
    u8* buf;
    int totalsize;
    int outputwidth;
    int outputheight;
    int curroutputwidth;
    int curroutputheight;
-   int movieposition;
+   int movieposition = 0;
    int temp;
    u32 temp32;
    int test_endian;
+   int status;
 
    headersize = 0xC;
+
+   if ((stream == NULL) || (size_stream < 0xC))
+      return -2;
 
    // Set buffer position to 0
    MemStateSetOffset(0);
@@ -2293,8 +2459,9 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
       case 2:
       case 3:
          /* version 2 adds video recording */
+         if (size_stream < 0x14)
+            return -2;
          MemStateRead((void *)&framecounter, 4, 1, stream);
-         movieposition=MemStateGetOffset(); // yabause was doing this, why ? it's replaced right after
          MemStateRead((void *)&movieposition, 4, 1, stream);
          headersize = 0x14;
          break;
@@ -2319,89 +2486,56 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
    }
 
    // Make sure size variable matches actual size minus header
-   if (size != (size_stream - headersize))
+   /* Des octets en trop a la fin sont toleres : libretro remplit de zeros
+    * la fin du tampon quand l'etat est plus petit que retro_serialize_size()
+    * (la taille depend de la capture d'ecran). On ne travaille que sur la
+    * partie annoncee par l'en-tete. */
+   if ((size < 0) || ((size_t)size > (size_stream - headersize)))
       return -2;
+   size_stream = (size_t)headersize + (size_t)size;
 
-   // Verify version here
+   // Verify the whole structure before touching the emulated machine
+   status = YabLoadStateCheckChunks((const u8 *)stream, size_stream, headersize);
+   if (status != 0)
+      return status;
 
-   if (MemStateCheckRetrieveHeader(stream, "CART", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "CART", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "CART", &version, &chunksize, &chunkend) != 0) return -3;
    CartLoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("CART", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "CS2 ", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "CS2", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "CS2 ", &version, &chunksize, &chunkend) != 0) return -3;
    Cs2LoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("CS2", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "MSH2", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "MSH2", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "MSH2", &version, &chunksize, &chunkend) != 0) return -3;
    SH2LoadState(MSH2, stream, version, chunksize);
+   YabLoadStateNextChunk("MSH2", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "SSH2", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "SSH2", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "SSH2", &version, &chunksize, &chunkend) != 0) return -3;
    SH2LoadState(SSH2, stream, version, chunksize);
+   YabLoadStateNextChunk("SSH2", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "SCSP", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "SCSP", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "SCSP", &version, &chunksize, &chunkend) != 0) return -3;
    SoundLoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("SCSP", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "SCU ", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "SCU", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "SCU ", &version, &chunksize, &chunkend) != 0) return -3;
    ScuLoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("SCU", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "SMPC", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "SMPC", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "SMPC", &version, &chunksize, &chunkend) != 0) return -3;
    SmpcLoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("SMPC", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "VDP1", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "VDP1", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "VDP1", &version, &chunksize, &chunkend) != 0) return -3;
    Vdp1LoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("VDP1", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "VDP2", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "VDP2", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "VDP2", &version, &chunksize, &chunkend) != 0) return -3;
    Vdp2LoadState(stream, version, chunksize);
+   YabLoadStateNextChunk("VDP2", chunkend);
 
-   if (MemStateCheckRetrieveHeader(stream, "OTHR", &version, &chunksize) != 0)
-   {
-      // Revert back to old state here
-      YuiMsg("Can not load %s (Ver %d)\n", "OTHR", version);
-      return -3;
-   }
+   if (YabLoadStateOpenChunk(stream, "OTHR", &version, &chunksize, &chunkend) != 0) return -3;
    // Other data
    //MemStateRead((void *)BupRam, 0x8000, 1, stream);
    MemStateRead((void *)HighWram, 0x100000, 1, stream);
@@ -2424,28 +2558,42 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
       MemStateRead((void *)&outputwidth, sizeof(outputwidth), 1, stream);
       MemStateRead((void *)&outputheight, sizeof(outputheight), 1, stream);
 
-      totalsize=outputwidth * outputheight * sizeof(u32);
-
-      if ((buf = (u8 *)malloc(totalsize)) == NULL)
+      /* Dimensions lues dans le fichier : bornees par la fin du bloc avant
+       * toute allocation (un fichier corrompu demandait un malloc geant ou
+       * faisait lire hors du tampon). */
+      if ((outputwidth > 0) && (outputheight > 0) &&
+          ((s64)outputwidth * (s64)outputheight * 4 <= (s64)(chunkend - MemStateGetOffset())))
       {
-         return -2;
+         totalsize=outputwidth * outputheight * sizeof(u32);
+
+         if ((buf = (u8 *)malloc(totalsize)) != NULL)
+         {
+            MemStateRead((void *)buf, totalsize, 1, stream);
+
+            YuiTimedSwapBuffers();
+
+            VIDCore->GetGlSize(&curroutputwidth, &curroutputheight);
+#ifdef USE_OPENGL
+            glPixelZoom((float)curroutputwidth / (float)outputwidth, ((float)curroutputheight / (float)outputheight));
+            glDrawPixels(outputwidth, outputheight, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+#endif
+            YuiTimedSwapBuffers();
+            free(buf);
+         }
       }
 
-      MemStateRead((void *)buf, totalsize, 1, stream);
-
-      YuiTimedSwapBuffers();
-
-      VIDCore->GetGlSize(&curroutputwidth, &curroutputheight);
-#ifdef USE_OPENGL
-      glPixelZoom((float)curroutputwidth / (float)outputwidth, ((float)curroutputheight / (float)outputheight));
-      glDrawPixels(outputwidth, outputheight, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-#endif
-      YuiTimedSwapBuffers();
-      free(buf);
-
-      MemStateSetOffset(movieposition);
-      MovieReadState(stream);
+      if ((movieposition > 0) && (movieposition <= chunkend)) {
+         MemStateSetOffset(movieposition);
+         MovieReadState(stream);
+      }
    }
+
+   /* Etat interne non serialise, a remettre en coherence avec la memoire et
+    * les registres qui viennent d'etre charges (cache de decodage SH-2,
+    * crochets BUP, latch d'interruption du SCU, etc.). */
+   SH2PostLoadState(MSH2);
+   SH2PostLoadState(SSH2);
+   ScuPostLoadState();
 
    OSDPushMessage(OSDMSG_STATUS, 150, "STATE LOADED");
    return 0;
@@ -2457,15 +2605,19 @@ int YabSaveStateSlot(const char *dirpath, u8 slot)
 {
   int rtn;
    char filename[512];
+   int n;
 
-   if (cdip == NULL)
+   if ((cdip == NULL) || (dirpath == NULL))
       return -1;
 
+   /* snprintf : un chemin long debordait le tampon de 512 octets. */
 #ifdef WIN32
-   sprintf(filename, "%s\\%s_%03d.yss", dirpath, cdip->itemnum, slot);
+   n = snprintf(filename, sizeof(filename), "%s\\%s_%03d.yss", dirpath, cdip->itemnum, slot);
 #else
-   sprintf(filename, "%s/%s_%03d.yss", dirpath, cdip->itemnum, slot);
+   n = snprintf(filename, sizeof(filename), "%s/%s_%03d.yss", dirpath, cdip->itemnum, slot);
 #endif
+   if ((n < 0) || ((size_t)n >= sizeof(filename)))
+      return -1;
 
    rtn = YabSaveState(filename);
 
@@ -2478,15 +2630,18 @@ int YabLoadStateSlot(const char *dirpath, u8 slot)
 {
    int rtn;
    char filename[512];
+   int n;
 
-   if (cdip == NULL)
+   if ((cdip == NULL) || (dirpath == NULL))
       return -1;
 
 #ifdef WIN32
-   sprintf(filename, "%s\\%s_%03d.yss", dirpath, cdip->itemnum, slot);
+   n = snprintf(filename, sizeof(filename), "%s\\%s_%03d.yss", dirpath, cdip->itemnum, slot);
 #else
-   sprintf(filename, "%s/%s_%03d.yss", dirpath, cdip->itemnum, slot);
+   n = snprintf(filename, sizeof(filename), "%s/%s_%03d.yss", dirpath, cdip->itemnum, slot);
 #endif
+   if ((n < 0) || ((size_t)n >= sizeof(filename)))
+      return -1;
 
    rtn = YabLoadState(filename);
 
