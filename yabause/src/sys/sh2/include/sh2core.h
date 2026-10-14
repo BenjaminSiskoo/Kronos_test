@@ -753,6 +753,8 @@ void FASTCALL SSH2InputCaptureWriteLong(SH2_struct *context, u8* mem, u32 addr, 
 
 int SH2SaveState(SH2_struct *context, void ** stream);
 int SH2LoadState(SH2_struct *context, const void * stream, int version, int size);
+/* A appeler apres le chargement complet d'un etat (YabLoadStateStream). */
+void SH2PostLoadState(SH2_struct *context);
 
 extern SH2Interface_struct SH2Dyn;
 extern SH2Interface_struct SH2DynDebug;
