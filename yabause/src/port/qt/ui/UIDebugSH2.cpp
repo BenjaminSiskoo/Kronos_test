@@ -1564,8 +1564,8 @@ void UIDebugSH2::loadCodeAddress()
   SH2GetRegisters(debugSH2, &sh2regs);
 
   bool ok = false;
-  const QString newAddress = QInputDialog::getText(this, tr("Input code address"),
-		tr("Address (hex):"), QLineEdit::Normal, hex8(sh2regs.PC), &ok);
+  const QString newAddress = QInputDialog::getText(this, QtYabause::translate("Input code address"),
+		QtYabause::translate("Address (hex):"), QLineEdit::Normal, hex8(sh2regs.PC), &ok);
 
 	if (ok) {
     /* std::stoull() used to be called here: it throws std::invalid_argument
@@ -1575,7 +1575,7 @@ void UIDebugSH2::loadCodeAddress()
     u32 addr;
     if (!parseHex(newAddress, &addr))
     {
-      setStatus(tr("Invalid address: %1").arg(newAddress));
+      setStatus(QtYabause::translate("Invalid address: %1").arg(newAddress));
       return;
     }
     /* Fix: this used to only call updateCodePage(), which looks up a
@@ -1705,9 +1705,9 @@ void UIDebugSH2::updateCodePage(u32 evaluateAddress)
       QFile sourceFile(filename);
       if (!sourceFile.open(QIODevice::ReadOnly))
       {
-        codeTab->setTabText(1, "Source");
+        codeTab->setTabText(1, QtYabause::translate("Source"));
         codeTab->setTabToolTip(1, filename);
-        codeBrowser->setText(QString("Source file not found on this machine:\n%1\n\n"
+        codeBrowser->setText(QtYabause::translate("Source file not found on this machine:\n%1\n\n"
                                      "addr2line reports it at line %2.").arg(filename).arg(line));
         return;
       }
@@ -1739,11 +1739,11 @@ void UIDebugSH2::updateCodePage(u32 evaluateAddress)
     }
     else
     {
-      codeTab->setTabText(1, "Source");
+      codeTab->setTabText(1, QtYabause::translate("Source"));
       if (addr2line.isEmpty())
-        codeBrowser->setText("addr2line utility is not configured properly, source not available.");
+        codeBrowser->setText(QtYabause::translate("addr2line utility is not configured properly, source not available."));
       else
-        codeBrowser->setText("Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n");
+        codeBrowser->setText(QtYabause::translate("Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n"));
     }
   }
 }
