@@ -27,8 +27,28 @@
 #include <QLabel>
 #include <QGroupBox>
 #include <QTreeWidget>
+#include <QTableWidget>
+#include <QComboBox>
+#include <QTabWidget>
+#include <QToolBox>
+#include <QMenu>
+#include <QMenuBar>
+#include <QAction>
+#include <QAbstractButton>
+#include <QLineEdit>
+#include <QTextEdit>
+#include <QPlainTextEdit>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QSignalBlocker>
 #include <QPointer>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QLocale>
+#include <QCoreApplication>
+#include <QTranslator>
+#include <QLibraryInfo>
 
 #ifndef ARCH_IS_WINDOWS
 #include <sys/time.h>
@@ -316,57 +336,203 @@ VolatileSettings* QtYabause::volatileSettings( bool create )
 	return mVolatileSettings;
 }
 
+// ------------------------------------------------------------------------
+//  Translations (mini18n .yts files)
+// ------------------------------------------------------------------------
+
+/* Folder holding the .yts files. On Windows YTSDIR is the relative path
+   "trans": it used to be resolved against the current working directory, so
+   the translations were not found when Kronos was started from a shortcut or
+   a launcher with another working directory. A relative YTSDIR is now
+   resolved against the folder of the executable. */
+QString QtYabause::translationDirectory()
+{
+	const QString dir = QString::fromUtf8( YTSDIR );
+	if ( QDir::isAbsolutePath( dir ) )
+		return QDir::cleanPath( dir );
+	return QDir::cleanPath( QDir( QCoreApplication::applicationDirPath() ).filePath( dir ) );
+}
+
 QList <translation_struct> QtYabause::getTranslationList()
 {
 	QList <translation_struct> translations;
 #ifdef HAVE_LIBMINI18N
-	QDir transDir=QDir(YTSDIR, "*.yts");
+	const QDir transDir( translationDirectory(), "*.yts", QDir::Name, QDir::Files );
 
-	foreach(QString file, transDir.entryList())
+	foreach ( const QString& file, transDir.entryList() )
 	{
-		if (!file.endsWith(".yts"))
+		// skip the files written by the "log untranslated strings" option
+		if ( file.endsWith( "_log.yts" ) )
 			continue;
-		translation_struct trans;
-		trans.file = QString(YTSDIR) + QString("/") + file;
 
-		// Let's get it down just to language code
-		QStringList string = file.remove(".yts").split("_");
-		if (file.startsWith("yabause_"))
-			string.removeFirst();
-		QString localeStr = string.join("_");
-		// Find the locale
-		QLocale locale = QLocale(localeStr);
-		// Now we should be good for the language name
-#if QT_VERSION < 0x040800
-		trans.name = locale.name();
-#else
-		trans.name = locale.nativeLanguageName();
-#endif
-		translations.append(trans);
+		translation_struct trans;
+		trans.file = transDir.filePath( file );
+
+		/* Reduce the file name to a locale code. Installed files are named
+		   "fr.yts", "pt_BR.yts"..., but a build tree or a manual copy uses the
+		   source names "kronos_fr.yts" (and older packages "yabause_fr.yts").
+		   QString::remove() works in place: the previous code tested the
+		   prefix on the already modified name and only knew "yabause_", so
+		   "kronos_pt_BR" became an invalid locale and was listed as "C". */
+		QString localeStr = QFileInfo( file ).completeBaseName();
+		if ( localeStr.startsWith( "kronos_" ) )
+			localeStr.remove( 0, 7 );
+		else if ( localeStr.startsWith( "yabause_" ) )
+			localeStr.remove( 0, 8 );
+		if ( localeStr == "default" )
+			continue; // template with empty values, not a translation
+
+		const QLocale locale( localeStr );
+		if ( locale.language() == QLocale::C )
+		{
+			trans.name = localeStr;
+		}
+		else
+		{
+			trans.name = locale.nativeLanguageName();
+			if ( trans.name.isEmpty() )
+				trans.name = QLocale::languageToString( locale.language() );
+			// pt / pt_BR, zh_CN / zh_TW: show the country so both can be told apart
+			if ( localeStr.contains( '_' ) )
+			{
+				QString country = locale.nativeCountryName();
+				if ( country.isEmpty() )
+					country = QLocale::countryToString( locale.country() );
+				trans.name += QString( " (%1)" ).arg( country );
+			}
+			if ( !trans.name.isEmpty() )
+				trans.name = trans.name.left( 1 ).toUpper() + trans.name.mid( 1 );
+		}
+		translations.append( trans );
 	}
 #endif
 	return translations;
 }
 
+#ifdef HAVE_LIBMINI18N
+static bool loadTranslationFile( const QString& path )
+{
+	if ( path.isEmpty() || !QFileInfo( path ).isFile() )
+		return false;
+	const QByteArray encoded = QFile::encodeName( path );
+	return mini18n_set_locale( encoded.constData() ) == 0;
+}
+
+// "kronos_pt_BR.yts" / "pt_BR.yts" -> "pt_BR"
+static QString localeOfTranslationFile( const QString& path )
+{
+	QString name = QFileInfo( path ).completeBaseName();
+	if ( name.startsWith( "kronos_" ) )
+		name.remove( 0, 7 );
+	else if ( name.startsWith( "yabause_" ) )
+		name.remove( 0, 8 );
+	return name;
+}
+
+/* The .yts files only cover Kronos' own strings. The texts drawn by Qt itself
+   (QMessageBox / QDialogButtonBox buttons "Yes", "No", "Cancel", "Abort",
+   "Ignore", the Qt file and input dialogs...) need Qt's own catalog, which was
+   never loaded: those buttons stayed in English in every language. Load
+   qtbase_<lang>.qm from the Qt installation or from a "translations" folder
+   next to the executable (where windeployqt puts it). An empty locale
+   removes it (English). */
+static void setQtTranslator( const QString& locale )
+{
+	static QTranslator* qtTranslator = NULL;
+	if ( qtTranslator )
+	{
+		QCoreApplication::removeTranslator( qtTranslator );
+		delete qtTranslator;
+		qtTranslator = NULL;
+	}
+	if ( locale.isEmpty() || locale.startsWith( "en" ) )
+		return;
+
+	const QStringList dirs = QStringList()
+		<< QDir( QCoreApplication::applicationDirPath() ).filePath( "translations" )
+		<< QLibraryInfo::location( QLibraryInfo::TranslationsPath );
+	QStringList names;
+	names << "qtbase_" + locale << "qtbase_" + locale.section( '_', 0, 0 )
+		<< "qt_" + locale << "qt_" + locale.section( '_', 0, 0 );
+
+	QTranslator* t = new QTranslator;
+	foreach ( const QString& name, names )
+		foreach ( const QString& dir, dirs )
+			if ( t->load( name, dir ) )
+			{
+				QCoreApplication::installTranslator( t );
+				qtTranslator = t;
+				return;
+			}
+	delete t;
+}
+#endif
+
 int QtYabause::setTranslationFile()
 {
 #ifdef HAVE_LIBMINI18N
 	const QString s = settings()->value( "General/Translation" ).toString();
-	if ( ! s.isEmpty() )
+	if ( s == "#" )
 	{
-		if (s == "#") return 0; // magic value for "no translation" (aka english)
+		setQtTranslator( QString() );
+		return 0; // magic value for "no translation" (aka english)
+	}
 
-		const char* filePath = qstrdup( s.toLocal8Bit().constData() );
-		if ( mini18n_set_locale( filePath ) == 0 )
+	bool loaded = false;
+	QString locale;
+	if ( !s.isEmpty() )
+	{
+		/* The setting stores the full path chosen in the settings dialog. If
+		   Kronos was moved or reinstalled elsewhere, look for the same file
+		   name in the current translation folder instead of silently falling
+		   back to the system language. */
+		loaded = loadTranslationFile( s ) ||
+			loadTranslationFile( QDir( translationDirectory() ).filePath( QFileInfo( s ).fileName() ) );
+		if ( loaded )
+			locale = localeOfTranslationFile( s );
+	}
+
+	if ( !loaded )
+	{
+		/* "Use System Locale": take the language from Qt rather than from
+		   mini18n_set_domain(). mini18n only reads $LANG on Unix (LC_ALL and
+		   LC_MESSAGES are ignored) and builds wrong codes on Windows from the
+		   3-letter abbreviations ("JPN" -> "jp", "CHS" -> "ch"), so Japanese
+		   and Chinese were never picked up there. */
+		const QDir dir( translationDirectory() );
+		QStringList candidates;
+		foreach ( const QString& ui, QLocale::system().uiLanguages() )
 		{
-			QtYabause::retranslateApplication();
-			if ( logTranslation() != 0 )
-				qWarning( "Can't log translation !" );
-			return 0;
+			const QString name = QLocale( ui ).name(); // "pt_BR", "zh_TW", "fr_FR"...
+			candidates << name << name.section( '_', 0, 0 );
+		}
+		candidates << QLocale::system().name() << QLocale::system().name().section( '_', 0, 0 );
+		candidates.removeDuplicates();
+		foreach ( const QString& c, candidates )
+		{
+			if ( c.isEmpty() || c == "C" || c.startsWith( "en" ) )
+				continue;
+			if ( loadTranslationFile( dir.filePath( c + ".yts" ) ) ||
+				loadTranslationFile( dir.filePath( "kronos_" + c + ".yts" ) ) )
+			{
+				loaded = true;
+				locale = c;
+				break;
+			}
+		}
+		// last resort: mini18n's own lookup
+		if ( !loaded )
+		{
+			const QByteArray encoded = QFile::encodeName( translationDirectory() );
+			loaded = mini18n_set_domain( encoded.constData() ) == 0;
+			if ( loaded )
+				locale = QLocale::system().name();
 		}
 	}
 
-	if ( mini18n_set_domain( YTSDIR ) == 0 )
+	setQtTranslator( loaded ? locale : QString() );
+
+	if ( loaded )
 	{
 		QtYabause::retranslateApplication();
 		if ( logTranslation() != 0 )
@@ -382,11 +548,12 @@ int QtYabause::logTranslation()
 #ifdef HAVE_LIBMINI18N
 	if (settings()->value( "General/LogUntranslated", false ).toBool())
 	{
-		const QString s = settings()->value( "General/Translation" ).toString().replace( ".yts", "_log.yts" );
-		if ( s.isEmpty() )
+		const QString s = settings()->value( "General/Translation" ).toString();
+		if ( s.isEmpty() || s == "#" )
 			return 0;
-		const char* filePath = qstrdup( s.toLocal8Bit().constData() );
-		return mini18n_set_log( filePath );
+		const QString logPath = QString( s ).replace( ".yts", "_log.yts" );
+		const QByteArray encoded = QFile::encodeName( logPath );
+		return mini18n_set_log( encoded.constData() );
 	}
 #endif
 	return 0;
@@ -402,103 +569,280 @@ void QtYabause::closeTranslation()
 QString QtYabause::translate( const QString& string )
 {
 #ifdef HAVE_LIBMINI18N
-	return QString::fromUtf8( _( string.toUtf8().constData() ) );
+	if ( string.isEmpty() )
+		return string;
+	const QByteArray key = string.toUtf8();
+	return QString::fromUtf8( _( key.constData() ) );
 #else
 	return string;
+#endif
+}
+
+#ifdef HAVE_LIBMINI18N
+namespace {
+
+/* Every translated text is remembered on its object as two dynamic
+   properties: the source (English) string and the translation that was
+   applied. This is what makes the retranslation work:
+   - calling it twice is harmless (the second pass translates the same source
+     again instead of looking up an already translated text);
+   - switching language at run time works: the source is translated again
+     with the new file, whereas the previous code looked up the French text
+     in the German file, found nothing and left the dialog in French;
+   - a text replaced by code since the last pass (it no longer matches the
+     stored translation) is taken as the new source.
+   'slot' tells apart several texts of one object (text, toolTip, item 3...). */
+QString retranslated( QObject* o, const QString& slot, const QString& current )
+{
+	if ( current.isEmpty() )
+		return current;
+	const QByteArray srcName = QByteArray( "_yts_src_" ) + slot.toLatin1();
+	const QByteArray trName = QByteArray( "_yts_tr_" ) + slot.toLatin1();
+	const QVariant lastSrc = o->property( srcName.constData() );
+	const QVariant lastTr = o->property( trName.constData() );
+	QString source = current;
+	if ( lastSrc.isValid() && lastTr.isValid() && lastTr.toString() == current )
+		source = lastSrc.toString();
+	const QString t = QtYabause::translate( source );
+	// only touch the properties when they change (each setProperty() sends a
+	// QDynamicPropertyChangeEvent, and some debug windows retranslate often)
+	if ( !lastSrc.isValid() || lastSrc.toString() != source )
+		o->setProperty( srcName.constData(), source );
+	if ( !lastTr.isValid() || lastTr.toString() != t )
+		o->setProperty( trName.constData(), t );
+	return t;
+}
+
+// Text Qt derives from an action's text when no tooltip/icon text is set.
+QString strippedActionText( QString s )
+{
+	s.remove( QString::fromLatin1( "..." ) );
+	s.remove( QChar( 0x2026 ) );
+	QString out;
+	for ( int i = 0; i < s.size(); i++ )
+	{
+		if ( s.at( i ) == QLatin1Char( '&' ) )
+		{
+			if ( i + 1 < s.size() && s.at( i + 1 ) == QLatin1Char( '&' ) )
+				out += s.at( ++i );
+			continue;
+		}
+		out += s.at( i );
+	}
+	return out.trimmed();
+}
+
+#define YTS_SET( obj, slot, getter, setter ) \
+	do { \
+		const QString cur_ = (getter); \
+		const QString new_ = retranslated( (obj), (slot), cur_ ); \
+		if ( new_ != cur_ ) \
+			setter; \
+	} while ( 0 )
+
+void retranslateAction( QAction* a )
+{
+	if ( !a || a->isSeparator() )
+		return;
+	// a submenu's action carries the menu title, handled with the QMenu itself
+	if ( a->menu() )
+		return;
+
+	YTS_SET( a, "text", a->text(), a->setText( new_ ) );
+	YTS_SET( a, "statusTip", a->statusTip(), a->setStatusTip( new_ ) );
+	YTS_SET( a, "whatsThis", a->whatsThis(), a->setWhatsThis( new_ ) );
+	// Leave implicit values alone: Qt derives them from the text, setting them
+	// would freeze them to the current language.
+	if ( a->toolTip() != strippedActionText( a->text() ) )
+		YTS_SET( a, "toolTip", a->toolTip(), a->setToolTip( new_ ) );
+	if ( a->iconText() != strippedActionText( a->text() ) )
+		YTS_SET( a, "iconText", a->iconText(), a->setIconText( new_ ) );
+}
+
+void retranslateWidgetProperties( QWidget* w )
+{
+	YTS_SET( w, "accessibleDescription", w->accessibleDescription(), w->setAccessibleDescription( new_ ) );
+	YTS_SET( w, "accessibleName", w->accessibleName(), w->setAccessibleName( new_ ) );
+	YTS_SET( w, "statusTip", w->statusTip(), w->setStatusTip( new_ ) );
+	YTS_SET( w, "toolTip", w->toolTip(), w->setToolTip( new_ ) );
+	YTS_SET( w, "whatsThis", w->whatsThis(), w->setWhatsThis( new_ ) );
+	YTS_SET( w, "windowIconText", w->windowIconText(), w->setWindowIconText( new_ ) );
+	YTS_SET( w, "windowTitle", w->windowTitle(), w->setWindowTitle( new_ ) );
+}
+
+void retranslateTreeHeader( QTreeWidget* tw )
+{
+	QTreeWidgetItem* h = tw->headerItem();
+	if ( !h )
+		return;
+	for ( int i = 0; i < h->columnCount(); i++ )
+	{
+		const QString n = QString::number( i );
+		YTS_SET( tw, "hdrText" + n, h->text( i ), h->setText( i, new_ ) );
+		YTS_SET( tw, "hdrToolTip" + n, h->toolTip( i ), h->setToolTip( i, new_ ) );
+		YTS_SET( tw, "hdrStatusTip" + n, h->statusTip( i ), h->setStatusTip( i, new_ ) );
+		YTS_SET( tw, "hdrWhatsThis" + n, h->whatsThis( i ), h->setWhatsThis( i, new_ ) );
+	}
+}
+
+void retranslateTableHeaders( QTableWidget* tw )
+{
+	for ( int i = 0; i < tw->columnCount(); i++ )
+	{
+		QTableWidgetItem* it = tw->horizontalHeaderItem( i );
+		if ( it )
+		{
+			const QString n = QString::number( i );
+			YTS_SET( tw, "hHdrText" + n, it->text(), it->setText( new_ ) );
+			YTS_SET( tw, "hHdrToolTip" + n, it->toolTip(), it->setToolTip( new_ ) );
+		}
+	}
+	for ( int i = 0; i < tw->rowCount(); i++ )
+	{
+		QTableWidgetItem* it = tw->verticalHeaderItem( i );
+		if ( it )
+			YTS_SET( tw, "vHdrText" + QString::number( i ), it->text(), it->setText( new_ ) );
+	}
+}
+
+void retranslateWidgetTree( QWidget* widget, bool recursive )
+{
+	if ( !widget )
+		return;
+
+	retranslateWidgetProperties( widget );
+
+	/* qobject_cast instead of comparing metaObject()->className(): the old
+	   test missed every subclass (UIPortManager is a QGroupBox,
+	   UIShortcutManager a QTreeWidget...), whose texts stayed in English. */
+	if ( QLabel* l = qobject_cast<QLabel*>( widget ) )
+		YTS_SET( l, "text", l->text(), l->setText( new_ ) );
+	else if ( QAbstractButton* ab = qobject_cast<QAbstractButton*>( widget ) )
+		YTS_SET( ab, "text", ab->text(), ab->setText( new_ ) );
+	else if ( QGroupBox* gb = qobject_cast<QGroupBox*>( widget ) )
+		YTS_SET( gb, "title", gb->title(), gb->setTitle( new_ ) );
+	else if ( QMenu* m = qobject_cast<QMenu*>( widget ) )
+		YTS_SET( m, "title", m->title(), m->setTitle( new_ ) );
+	else if ( QLineEdit* le = qobject_cast<QLineEdit*>( widget ) )
+		YTS_SET( le, "placeholderText", le->placeholderText(), le->setPlaceholderText( new_ ) );
+	else if ( QPlainTextEdit* pte = qobject_cast<QPlainTextEdit*>( widget ) )
+		YTS_SET( pte, "placeholderText", pte->placeholderText(), pte->setPlaceholderText( new_ ) );
+	else if ( QTextEdit* te = qobject_cast<QTextEdit*>( widget ) )
+		YTS_SET( te, "placeholderText", te->placeholderText(), te->setPlaceholderText( new_ ) );
+	else if ( QSpinBox* sb = qobject_cast<QSpinBox*>( widget ) )
+	{
+		YTS_SET( sb, "prefix", sb->prefix(), sb->setPrefix( new_ ) );
+		YTS_SET( sb, "suffix", sb->suffix(), sb->setSuffix( new_ ) );
+		YTS_SET( sb, "specialValueText", sb->specialValueText(), sb->setSpecialValueText( new_ ) );
+	}
+	else if ( QDoubleSpinBox* dsb = qobject_cast<QDoubleSpinBox*>( widget ) )
+	{
+		YTS_SET( dsb, "prefix", dsb->prefix(), dsb->setPrefix( new_ ) );
+		YTS_SET( dsb, "suffix", dsb->suffix(), dsb->setSuffix( new_ ) );
+		YTS_SET( dsb, "specialValueText", dsb->specialValueText(), dsb->setSpecialValueText( new_ ) );
+	}
+	else if ( QComboBox* cb = qobject_cast<QComboBox*>( widget ) )
+	{
+		/* Items written in a .ui file are not covered by the widget
+		   properties. Editable combos are skipped (their items are user
+		   input), and signals are blocked so that renaming the current item
+		   does not look like a selection change. */
+		if ( !cb->isEditable() )
+		{
+			const QSignalBlocker blocker( cb );
+			for ( int i = 0; i < cb->count(); i++ )
+				YTS_SET( cb, "item" + QString::number( i ), cb->itemText( i ), cb->setItemText( i, new_ ) );
+		}
+	}
+	else if ( QTabWidget* tw = qobject_cast<QTabWidget*>( widget ) )
+	{
+		for ( int i = 0; i < tw->count(); i++ )
+		{
+			const QString n = QString::number( i );
+			YTS_SET( tw, "tabText" + n, tw->tabText( i ), tw->setTabText( i, new_ ) );
+			YTS_SET( tw, "tabToolTip" + n, tw->tabToolTip( i ), tw->setTabToolTip( i, new_ ) );
+		}
+	}
+	else if ( QToolBox* tb = qobject_cast<QToolBox*>( widget ) )
+	{
+		for ( int i = 0; i < tb->count(); i++ )
+			YTS_SET( tb, "itemText" + QString::number( i ), tb->itemText( i ), tb->setItemText( i, new_ ) );
+	}
+	else if ( QTreeWidget* trw = qobject_cast<QTreeWidget*>( widget ) )
+		retranslateTreeHeader( trw );
+	else if ( QTableWidget* tbw = qobject_cast<QTableWidget*>( widget ) )
+		retranslateTableHeaders( tbw );
+
+	/* Actions: those shown by this widget (menus, toolbars, tool buttons) and
+	   those it owns without showing them (actions declared in a .ui file but
+	   only reachable through a shortcut, such as Save0..Save9 / Load0..Load9,
+	   which are listed in the shortcut settings). The old code only handled
+	   the actions of QMenu / QMenuBar. */
+	foreach ( QAction* a, widget->actions() )
+	{
+		retranslateAction( a );
+		// a menu reachable only through an action (no widget parent)
+		if ( recursive && a->menu() && !a->menu()->parentWidget() )
+			retranslateWidgetTree( a->menu(), true );
+	}
+	foreach ( QAction* a, widget->findChildren<QAction*>( QString(), Qt::FindDirectChildrenOnly ) )
+		retranslateAction( a );
+
+	if ( !recursive )
+		return;
+
+	/* Direct children only: the old code walked findChildren() (all the
+	   descendants) and then recursed into each of them, so a widget N levels
+	   deep was translated N times. */
+	foreach ( QWidget* w, widget->findChildren<QWidget*>( QString(), Qt::FindDirectChildrenOnly ) )
+		retranslateWidgetTree( w, true );
+}
+
+#undef YTS_SET
+
+} // namespace
+#endif
+
+QString QtYabause::sourceText( const QAction* action )
+{
+#ifdef HAVE_LIBMINI18N
+	if ( !action )
+		return QString();
+	/* English text of an action even when the UI is translated. Used as the
+	   key of the "Shortcuts/" settings, which used to be the displayed text:
+	   shortcuts saved from a translated UI were stored under the translated
+	   name and not found again at the next start (shortcuts are loaded before
+	   the UI is translated). */
+	const QVariant src = action->property( "_yts_src_text" );
+	const QVariant tr = action->property( "_yts_tr_text" );
+	if ( src.isValid() && tr.isValid() && tr.toString() == action->text() )
+		return src.toString();
+	return action->text();
+#else
+	return action ? action->text() : QString();
 #endif
 }
 
 void QtYabause::retranslateWidgetOnly( QWidget* widget )
 {
 #ifdef HAVE_LIBMINI18N
-	if ( !widget )
-		return;
-	widget->setAccessibleDescription( translate( widget->accessibleDescription() ) );
-	widget->setAccessibleName( translate( widget->accessibleName() ) );
-	widget->setStatusTip( translate( widget->statusTip() ) );
-	widget->setStyleSheet( translate( widget->styleSheet() ) );
-	widget->setToolTip( translate( widget->toolTip() ) );
-	widget->setWhatsThis( translate( widget->whatsThis() ) );
-	widget->setWindowIconText( translate( widget->windowIconText() ) );
-	widget->setWindowTitle( translate( widget->windowTitle() ) );
+	if ( widget )
+		retranslateWidgetProperties( widget );
 #endif
 }
 
 void QtYabause::retranslateWidget( QWidget* widget )
 {
 #ifdef HAVE_LIBMINI18N
-	if ( !widget )
-		return;
-	// translate all widget based members
-	retranslateWidgetOnly( widget );
-	// get class name
-	const QString className = widget->metaObject()->className();
-	if ( className == "QWidget" )
-		return;
-	else if ( className == "QLabel" )
-	{
-		QLabel* l = qobject_cast<QLabel*>( widget );
-		l->setText( translate( l->text() ) );
-	}
-	else if ( className == "QAbstractButton" || widget->inherits( "QAbstractButton" ) )
-	{
-		QAbstractButton* ab = qobject_cast<QAbstractButton*>( widget );
-		ab->setText( translate( ab->text() ) );
-	}
-	else if ( className == "QGroupBox" )
-	{
-		QGroupBox* gb = qobject_cast<QGroupBox*>( widget );
-		gb->setTitle( translate( gb->title() ) );
-	}
-	else if ( className == "QMenu" || className == "QMenuBar" )
-	{
-		QList<QMenu*> menus;
-		if ( className == "QMenuBar" )
-			menus = qobject_cast<QMenuBar*>( widget )->findChildren<QMenu*>();
-		else
-			menus << qobject_cast<QMenu*>( widget );
-		foreach ( QMenu* m, menus )
-		{
-			m->setTitle( translate( m->title() ) );
-			// retranslate menu actions
-			foreach ( QAction* a, m->actions() )
-			{
-				a->setIconText( translate( a->iconText() ) );
-				a->setStatusTip( translate( a->statusTip() ) );
-				a->setText( translate( a->text() ) );
-				a->setToolTip( translate( a->toolTip() ) );
-				a->setWhatsThis( translate( a->whatsThis() ) );
-			}
-		}
-	}
-	else if ( className == "QTreeWidget" )
-	{
-		QTreeWidget* tw = qobject_cast<QTreeWidget*>( widget );
-		QTreeWidgetItem* twi = tw->headerItem();
-		for ( int i = 0; i < twi->columnCount(); i++ )
-		{
-			twi->setStatusTip( i, translate( twi->statusTip( i ) ) );
-			twi->setText( i, translate( twi->text( i ) ) );
-			twi->setToolTip( i, translate( twi->toolTip( i ) ) );
-			twi->setWhatsThis( i, translate( twi->whatsThis( i ) ) );
-		}
-	}
-	else if ( className == "QTabWidget" )
-	{
-		QTabWidget* tw = qobject_cast<QTabWidget*>( widget );
-		for ( int i = 0; i < tw->count(); i++ )
-			tw->setTabText( i, translate( tw->tabText( i ) ) );
-	}
-	// translate children
-	foreach ( QWidget* w, widget->findChildren<QWidget*>() )
-		retranslateWidget( w );
+	retranslateWidgetTree( widget, true );
 #endif
 }
 
 void QtYabause::retranslateApplication()
 {
 #ifdef HAVE_LIBMINI18N
-	foreach ( QWidget* widget, QApplication::allWidgets() )
+	// every widget is a descendant of a top-level widget
+	foreach ( QWidget* widget, QApplication::topLevelWidgets() )
 		retranslateWidget( widget );
 #endif
 }
