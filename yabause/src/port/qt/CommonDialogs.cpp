@@ -20,10 +20,10 @@
 #include "QtYabause.h"
 
 bool CommonDialogs::question( const QString& m, const QString& c )
-{ return QMessageBox::question( QApplication::activeWindow(), c, m, QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) == QMessageBox::Yes; }
+{ return QMessageBox::question( QApplication::activeWindow(), QtYabause::translate( c ), m, QMessageBox::Yes | QMessageBox::No, QMessageBox::No ) == QMessageBox::Yes; }
 
 void CommonDialogs::warning( const QString& m, const QString& c )
-{ QMessageBox::warning( QApplication::activeWindow(), c, m ); }
+{ QMessageBox::warning( QApplication::activeWindow(), QtYabause::translate( c ), m ); }
 
 bool CommonDialogs::error( const QString& m, const QString& c )
 { return QMessageBox::question( QApplication::activeWindow(), QtYabause::translate( c ), m, QMessageBox::Ok | QMessageBox::Abort, QMessageBox::Ok ) == QMessageBox::Ok; }
@@ -35,15 +35,15 @@ bool CommonDialogs::information( const QString& m, const QString& c )
 QString CommonDialogs::getItem( const QStringList i, const QString& l, const QString& c )
 {
 	bool b;
-	const QString s = QInputDialog::getItem( QApplication::activeWindow(), c, l, i, 0, false, &b );
+	const QString s = QInputDialog::getItem( QApplication::activeWindow(), QtYabause::translate( c ), l, i, 0, false, &b );
 	return b ? s : QString();
 }
 
 QString CommonDialogs::getSaveFileName( const QString& d, const QString& c, const QString& f )
-{ return QFileDialog::getSaveFileName( QApplication::activeWindow(), c, d, f ); }
+{ return QFileDialog::getSaveFileName( QApplication::activeWindow(), QtYabause::translate( c ), d, f ); }
 
 QString CommonDialogs::getOpenFileName( const QString& d, const QString& c, const QString& f )
-{ return QFileDialog::getOpenFileName( QApplication::activeWindow(), c, d, f ); }
+{ return QFileDialog::getOpenFileName( QApplication::activeWindow(), QtYabause::translate( c ), d, f ); }
 
 QString CommonDialogs::getExistingDirectory( const QString& d, const QString& c, QFileDialog::Options o )
-{ return QFileDialog::getExistingDirectory( QApplication::activeWindow(), c, d, o ); }
+{ return QFileDialog::getExistingDirectory( QApplication::activeWindow(), QtYabause::translate( c ), d, o ); }
