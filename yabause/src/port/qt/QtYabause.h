@@ -76,6 +76,7 @@ class UIYabause;
 class Settings;
 class VolatileSettings;
 class QWidget;
+class QAction;
 
 typedef struct
 {
@@ -112,7 +113,9 @@ namespace QtYabause
 	int setTranslationFile();
 	int logTranslation();
 	void closeTranslation();
+	QString translationDirectory();
 	QString translate( const QString& string );
+	QString sourceText( const QAction* action );
 	void retranslateWidgetOnly( QWidget* widget );
 	void retranslateWidget( QWidget* widget );
 	void retranslateApplication();
