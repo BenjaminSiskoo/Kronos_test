@@ -1680,17 +1680,26 @@ int YglQuadRbg0(RBGDrawInfo * rbg, YglTexture * output, YglCache * c, int rbg_ty
     program->currentQuad += 12;
 
     tmp[0].s = 0 + ATLAS_BIAS;
-    tmp[0].t = (rbg->vres * rbg->ctrl.info.startLine)/yabsys.VBlankLineCount + ATLAS_BIAS;
-    tmp[1].s = rbg->hres - ATLAS_BIAS;
-    tmp[1].t = (rbg->vres * rbg->ctrl.info.startLine)/yabsys.VBlankLineCount + ATLAS_BIAS;
-    tmp[2].s = rbg->hres - ATLAS_BIAS;
-    tmp[2].t = (rbg->vres * rbg->ctrl.info.endLine)/yabsys.VBlankLineCount - ATLAS_BIAS;
-    tmp[3].s = 0 + ATLAS_BIAS;
-    tmp[3].t = (rbg->vres * rbg->ctrl.info.startLine)/yabsys.VBlankLineCount + ATLAS_BIAS;
-    tmp[4].s = rbg->hres - ATLAS_BIAS;
-    tmp[4].t = (rbg->vres * rbg->ctrl.info.endLine)/yabsys.VBlankLineCount - ATLAS_BIAS;
-    tmp[5].s = 0 + ATLAS_BIAS;
-    tmp[5].t = (rbg->vres * rbg->ctrl.info.endLine)/yabsys.VBlankLineCount - ATLAS_BIAS;
+    /* Zone bounds in displayed lines (VBlankLineCount - 1, Vdp2ZoneLineCount()
+     * in vdp2.c), the same scale as the quad vertices set in vidcs.c. */
+    {
+      const int zl = Vdp2ZoneLineCount();
+      int ty0 = (rbg->vres * rbg->ctrl.info.startLine) / zl;
+      int ty1 = (rbg->vres * rbg->ctrl.info.endLine)   / zl;
+      if (ty0 > rbg->vres) ty0 = rbg->vres;
+      if (ty1 > rbg->vres) ty1 = rbg->vres;
+      tmp[0].t = ty0 + ATLAS_BIAS;
+      tmp[1].s = rbg->hres - ATLAS_BIAS;
+      tmp[1].t = ty0 + ATLAS_BIAS;
+      tmp[2].s = rbg->hres - ATLAS_BIAS;
+      tmp[2].t = ty1 - ATLAS_BIAS;
+      tmp[3].s = 0 + ATLAS_BIAS;
+      tmp[3].t = ty0 + ATLAS_BIAS;
+      tmp[4].s = rbg->hres - ATLAS_BIAS;
+      tmp[4].t = ty1 - ATLAS_BIAS;
+      tmp[5].s = 0 + ATLAS_BIAS;
+      tmp[5].t = ty1 - ATLAS_BIAS;
+    }
 
     // glActiveTexture(GL_TEXTURE0);
     // glBindTexture(GL_TEXTURE_2D, RBGGenerator_getTexture(program->interuput_texture));
