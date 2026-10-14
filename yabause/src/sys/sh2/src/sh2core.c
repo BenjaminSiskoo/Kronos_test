@@ -3586,10 +3586,10 @@ int SH2SaveState(SH2_struct *context, void ** stream)
 
    // Write header
    if (context->isslave == 0)
-      offset = MemStateWriteHeader(stream, "MSH2", 3);
+      offset = MemStateWriteHeader(stream, "MSH2", 4);
    else
    {
-      offset = MemStateWriteHeader(stream, "SSH2", 3);
+      offset = MemStateWriteHeader(stream, "SSH2", 4);
       MemStateWrite((void *)&yabsys.IsSSH2Running, 1, 1, stream);
    }
 
@@ -3622,6 +3622,11 @@ int SH2SaveState(SH2_struct *context, void ** stream)
    MemStateWrite((void *)&context->dma_ch0.copy_clock, sizeof(u32), 1, stream);
    MemStateWrite((void *)&context->dma_ch1.copy_clock, sizeof(u32), 1, stream);
 
+   /* Version 4 : adresse de la table de la bibliotheque BUP relevee par
+    * BUPDetectInit() (coeur Kronos). Necessaire pour reposer les crochets
+    * BUP apres un chargement (voir SH2KronosInterpreterPostLoadState()). */
+   MemStateWrite((void *)&context->BUPTableAddr, sizeof(u32), 1, stream);
+
    return MemStateFinishHeader(stream, offset);
 }
 
@@ -3632,6 +3637,23 @@ int SH2LoadState(SH2_struct *context, const void * stream, UNUSED int version, i
    sh2regs_struct regs;
 
    SH2Reset(context);
+
+   /* Etat d'interruption et de blocage de la session precedente : ni dans
+    * l'etat, ni remis a zero par SH2Reset(). Un intPriority encore arme
+    * empechait meme SH2EvaluateInterrupt() de reevaluer (retour immediat) et
+    * l'ancienne interruption etait servie apres le chargement ; un
+    * blockingMask residuel laissait le CPU bloque sur l'A-Bus. Le SCU
+    * represente ses demandes en attente (ScuPostLoadState()). */
+   context->intc.nmi = 0;
+   context->intc.irl = 0;
+   context->intc.d = 0;
+   context->intPriority = 0;
+   context->intVector = 0xFF;
+   context->blockingMask = 0;
+   context->isBlocked = 0;
+   context->isAccessingCPUBUS = 0;
+   context->isAccessingVram = 0;
+   context->SH2InterruptibleExec = SH2StandardExec;
 
    if (context->isslave == 1)
       MemStateRead((void *)&yabsys.IsSSH2Running, 1, 1, stream);
@@ -3646,6 +3668,19 @@ int SH2LoadState(SH2_struct *context, const void * stream, UNUSED int version, i
    }else {
      MemStateRead((void *)&context->onchip, sizeof(Onchip_struct), 1, stream);
    }
+
+   /* cacheOn n'est mis a jour que par une ecriture de CCR
+    * (enableCache()/disableCache()). Apres SH2Reset() + relecture de CCR il
+    * restait a la valeur de la session precedente : cache actif alors que
+    * CCR.CE = 0 dans l'etat, ou l'inverse (temps d'acces et chemin des
+    * lectures faux). Les etiquettes et le LRU ne sont pas serialises : le
+    * cache repart vide (SH2Reset() -> InvalidateCache()), ce qui est sans
+    * effet sur les donnees puisque le cache du SH-2 est en ecriture
+    * immediate ; DataArray (RAM de 2 Ko en mode 2 voies) est relu plus bas. */
+   if (context->onchip.CCR & 0x01)
+      enableCache(context);
+   else
+      disableCache(context);
 
    // Read internal variables
    MemStateRead((void *)&context->frc, sizeof(context->frc), 1, stream);
@@ -3667,7 +3702,34 @@ int SH2LoadState(SH2_struct *context, const void * stream, UNUSED int version, i
      MemStateRead((void *)&context->dma_ch1.copy_clock, sizeof(u32), 1, stream);
    }
 
+   /* v4 : table BUP. Etats plus anciens : on garde la valeur de la session
+    * courante (comportement precedent). */
+   if (version >= 4) {
+     MemStateRead((void *)&context->BUPTableAddr, sizeof(u32), 1, stream);
+   }
+
    return size;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+/* Appele par YabLoadStateStream() une fois TOUS les blocs charges (la Work
+ * RAM, lue en dernier dans le bloc OTHR, doit deja etre en place pour relire
+ * la table BUP). */
+void SH2PostLoadState(SH2_struct *context)
+{
+   if (context == NULL)
+      return;
+
+   if ((SH2Core != NULL) &&
+       ((SH2Core->id == SH2CORE_KRONOS_INTERPRETER) ||
+        (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER)))
+      SH2KronosInterpreterPostLoadState(context);
+
+   /* Les interruptions internes (FRT, DMAC, DIVU, WDT, SCI) se deduisent des
+    * registres relus : on les reevalue, ce qui repose aussi le point
+    * d'entree decodeInt efface ci-dessus. */
+   SH2EvaluateInterrupt(context);
 }
 
 
