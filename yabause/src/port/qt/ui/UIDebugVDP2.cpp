@@ -73,16 +73,16 @@ void UIDebugVDP2::updateScreenInfos()
         // une fois le VDP2 désinitialisé.
         viewer->clearItems();
         pbViewer->setEnabled(false);
-        pbViewer->setToolTip(tr("VDP2 non initialisé"));
-        setWindowTitle(tr("VDP2 Debug — inactif"));
+        pbViewer->setToolTip(QtYabause::translate("VDP2 not initialised."));
+        setWindowTitle(QtYabause::translate("VDP2 Debug — inactive"));
         QtYabause::retranslateWidget(this);
         return;
     }
 
     // VDP2 actif : restaurer l'état des boutons
     pbViewer->setEnabled(true);
-    pbViewer->setToolTip(tr("Ouvrir le visualiseur VDP2"));
-    setWindowTitle(tr("VDP2 Debug"));
+    pbViewer->setToolTip(QtYabause::translate("Open the VDP2 viewer"));
+    setWindowTitle(QtYabause::translate("VDP2 Debug"));
 
     int activeCount = 0;
     viewer->clearItems();
@@ -134,7 +134,7 @@ bool UIDebugVDP2::updateInfoDisplay(void (*debugStats)(char *, int *),
         cb->setStyleSheet("QGroupBox { font-weight: bold; }");
     } else {
         cb->setVisible(false);
-        cb->setToolTip(tr("Couche inactive"));
+        cb->setToolTip(QtYabause::translate("Layer inactive"));
         cb->setStyleSheet("");
         // Vider le texte si la couche est désactivée pour ne pas afficher de données obsolètes
         if (!pte->toPlainText().isEmpty())
