@@ -42,7 +42,7 @@ int SNDWavMidiOut(u8 data);
 
 SoundInterface_struct SNDWave = {
 SNDCORE_WAV,
-"Wave File Ouput Interface",
+"Wave File Output Interface",
 SNDWavInit,
 SNDWavDeInit,
 SNDWavReset,
