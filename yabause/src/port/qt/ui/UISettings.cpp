@@ -82,11 +82,15 @@ const Items mCartridgeTypes = Items()
 	<< Item( "5", "32 Mbit Backup Ram", true, true )
 	<< Item( "6", "8 Mbit Dram", false, false )
 	<< Item( "7", "32 Mbit Dram", false, false )
-	<< Item( "8", "128 Mbit Dram", false, false )
-	<< Item( "9", "STV Rom game", true, false, false, true )
-	<< Item( "10", "Netlink", false, false, true )
-	<< Item( "11", "Japanese Modem", false, false, true )
-	<< Item( "12", "16 Mbit ROM", true, false )
+	// The id is the CART_* value of cs0.h that is saved in "Cartridge/Type"
+	// and handed to the core: it must never change. Only the position in
+	// this list (the display order) is free; the code below always goes
+	// through the id (cartridgeItem()), never through the combo index.
+	<< Item( "12", "128 Mbit Dram", false, false )
+	<< Item( "11", "STV Rom game", true, false, false, true )
+	<< Item( "8", "Netlink", false, false, true )
+	<< Item( "10", "Japanese Modem", false, false, true )
+	<< Item( "9", "16 Mbit ROM", true, false )
 	<< Item( "13", "Development Extension", false, false )
 	// CART_MPEGCARD (see cs0.h). Like the Netlink/Dram entries above, no
 	// path is needed here: the Video CD Card has nothing memory-mapped on
@@ -97,6 +101,18 @@ const Items mCartridgeTypes = Items()
 	// port free for a RAM/backup cart, like on real hardware where the card
 	// goes in the rear MPEG slot. See Cs2IsMpegCardPresent().
 	<< Item( "14", "Video CD Card (MPEG Card)", false, false );
+
+// Item of mCartridgeTypes whose id is the CART_* value cartId (first item,
+// "None", when unknown). The combo index, the position in mCartridgeTypes
+// and the CART_* value are three different things since the list is no
+// longer in CART_* order.
+static const Item& cartridgeItem( int cartId )
+{
+	for ( int i = 0; i < mCartridgeTypes.size(); i++ )
+		if ( mCartridgeTypes[i].id.toInt() == cartId )
+			return mCartridgeTypes[i];
+	return mCartridgeTypes[0];
+}
 
 const Items mVideoFilterMode = Items()
 	<< Item("0", "None")
@@ -340,30 +356,31 @@ void UISettings::tbBrowse_clicked()
 	}
 	else if ( tb == tbCartridge )
 	{
+		const Item& cart = cartridgeItem( cbCartridge->itemData( cbCartridge->currentIndex() ).toInt() );
 		auto pathProposal = leCartridge->text();
 		if (leCartridge->text().isEmpty())
 		{
 			auto path = QtYabause::DefaultPaths::Cartridge();
-			if (mCartridgeTypes[cbCartridge->currentIndex()].saveFlag)
+			if (cart.saveFlag)
 			{
-				auto suggestedName = mCartridgeTypes[cbCartridge->currentIndex()].Name;
+				auto suggestedName = cart.Name;
 				suggestedName = suggestedName.remove(' ');
 				path = path.append("/").append(suggestedName).append(".ramfile");
 			}
-			else if (mCartridgeTypes[cbCartridge->currentIndex()].enableFlag)
+			else if (cart.enableFlag)
 			{
 				path = path.append("/");
 			}
 			pathProposal = path;
 		}
-		if (mCartridgeTypes[cbCartridge->currentIndex()].pathFlag) {
+		if (cart.pathFlag) {
             requestSTVFolder( QtYabause::translate( "Choose a STV cartridge folder" ), leCartridge, pathProposal);
         }
-		else if (mCartridgeTypes[cbCartridge->currentIndex()].saveFlag)
+		else if (cart.saveFlag)
 		{
 			requestNewFile( QtYabause::translate( "Choose a cartridge file" ), leCartridge, QString(), pathProposal);
 		}
-		else if(mCartridgeTypes[cbCartridge->currentIndex()].enableFlag)
+		else if(cart.enableFlag)
 		{
 			requestFile( QtYabause::translate( "Open a cartridge file" ), leCartridge, QString(), pathProposal);
 		}
@@ -454,18 +471,21 @@ void UISettings::changeUpscaleMode(int id)
     if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_UPSCALMODE, (mUpscaleFilterMode.at(id).id).toInt());
 }
 
-void UISettings::on_cbCartridge_currentIndexChanged( int id )
+void UISettings::on_cbCartridge_currentIndexChanged( int index )
 {
-	if (id < 0) return;
+	if (index < 0) return;
+	// index is the combo position; id is the CART_* value (see cartridgeItem)
+	int const id = cbCartridge->itemData( index ).toInt();
+	const Item& cart = cartridgeItem( id );
 	Settings const* const s = QtYabause::settings();
 	auto const path = s->value(getCartridgePathSettingsKey(id)).toString();
 
-	if (mCartridgeTypes[id].enableFlag)
+	if (cart.enableFlag)
 	{
 		auto const prevSelectedCartridgeType = selectedCartridgeType;
 		if(prevSelectedCartridgeType != id || leCartridge->text().isEmpty())
 		{
-			if((mCartridgeTypes[id].pathFlag && QDir().exists(path)) || (QFile::exists(path)))
+			if((cart.pathFlag && QDir().exists(path)) || (QFile::exists(path)))
 			{
 				leCartridge->setText(path);
 			}
@@ -481,20 +501,20 @@ void UISettings::on_cbCartridge_currentIndexChanged( int id )
 		leCartridge->clear();
 	}
 
-	leCartridge->setVisible(mCartridgeTypes[id].enableFlag);
-	tbCartridge->setVisible(mCartridgeTypes[id].enableFlag);
+	leCartridge->setVisible(cart.enableFlag);
+	tbCartridge->setVisible(cart.enableFlag);
 	if (id == CART_ROMSTV) {
-		lCartridgeSTVPath->setVisible(mCartridgeTypes[id].enableFlag);
+		lCartridgeSTVPath->setVisible(cart.enableFlag);
 		lCartridgePath->setVisible(false);
 	} else {
 		lCartridgeSTVPath->setVisible(false);
-		lCartridgePath->setVisible(mCartridgeTypes[id].enableFlag);
+		lCartridgePath->setVisible(cart.enableFlag);
 	}
-	lCartridgeModemIP->setVisible(mCartridgeTypes[id].ipFlag);
-	leCartridgeModemIP->setVisible(mCartridgeTypes[id].ipFlag);
-	lCartridgeModemPort->setVisible(mCartridgeTypes[id].ipFlag);
-	leCartridgeModemPort->setVisible(mCartridgeTypes[id].ipFlag);
-	if (mCartridgeTypes[id].pathFlag) {
+	lCartridgeModemIP->setVisible(cart.ipFlag);
+	leCartridgeModemIP->setVisible(cart.ipFlag);
+	lCartridgeModemPort->setVisible(cart.ipFlag);
+	leCartridgeModemPort->setVisible(cart.ipFlag);
+	if (cart.pathFlag) {
 		QString const & str = leCartridge->text();
 		int const nbGames = STVGetRomList(str.toStdString().c_str(), 0);
 		cbSTVGame->clear();
@@ -506,9 +526,9 @@ void UISettings::on_cbCartridge_currentIndexChanged( int id )
 		int curGame = cbSTVGame->findData( vs->value( "Cartridge/STVGame" ).toString());
 		cbSTVGame->setCurrentIndex( curGame );
 	}
-	cbSTVGame->setVisible(mCartridgeTypes[id].pathFlag);
-	lRegion->setVisible(mCartridgeTypes[id].pathFlag);
-	cbRegion->setVisible(mCartridgeTypes[id].pathFlag);
+	cbSTVGame->setVisible(cart.pathFlag);
+	lRegion->setVisible(cart.pathFlag);
+	cbRegion->setVisible(cart.pathFlag);
 	selectedCartridgeType = id;
 }
 
@@ -735,7 +755,7 @@ void UISettings::loadSettings()
 
 	// cartridge/memory
 	tbCartridge->setEnabled(false);
-	cbCartridge->setCurrentIndex( cbCartridge->findData( s->value( "Cartridge/Type", mCartridgeTypes.at( 7 ).id ).toInt() ) );
+	cbCartridge->setCurrentIndex( cbCartridge->findData( s->value( "Cartridge/Type", CART_DRAM32MBIT ).toInt() ) );
 	tbCartridge->setEnabled(true);
 	leCartridge->setText( s->value(getCartridgePathSettingsKey()).toString() );
 	leCartridgeModemIP->setText( s->value( "Cartridge/ModemIP", QString("127.0.0.1") ).toString() );
@@ -897,10 +917,11 @@ void UISettings::accept()
 
 QString UISettings::getCartridgePathSettingsKey(int cartridgeType) const
 {
-	auto name = mCartridgeTypes[selectedCartridgeType].Name;
+	// selectedCartridgeType and cartridgeType are CART_* values, not combo indexes
+	auto name = cartridgeItem(selectedCartridgeType).Name;
 	if (cartridgeType != -1)
 	{
-		name = mCartridgeTypes[cartridgeType].Name;
+		name = cartridgeItem(cartridgeType).Name;
 	}
 	name = name.remove(' ');
 	return "Cartridge/Path/" + name;
