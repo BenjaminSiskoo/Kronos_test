@@ -656,23 +656,99 @@ static const char vdp1_draw_poly_test[] =
 "  }\n"
 "  return false;\n"
 "}\n"
+/* Recherche des lignes candidates, par groupe de travail.
+ *
+ * Chaque pixel du rectangle englobant parcourait les nbLineDraw lignes du
+ * lot (jusqu'a NB_LINE_MAX_PER_DRAW = 512), en chargeant la structure
+ * complete de chaque ligne avant de l'ecarter par son rectangle. Pour un
+ * polygone L x H trace en H lignes, le cout etait L x H x H : c'est ce qui
+ * dominait le temps GPU des scenes 3D.
+ *
+ * Le groupe de travail parcourt maintenant une seule fois les lignes du lot
+ * (chaque invocation en prend une sur 64) et note, pour chacune de ses
+ * rangees de pixels, l'intervalle [rowLo, rowHiP1 - 1] des lignes dont le
+ * rectangle touche cette rangee et la bande de colonnes du groupe. Un pixel
+ * ne parcourt ensuite que cet intervalle, toujours de la derniere ligne a la
+ * premiere. Les lignes sautees sont exactement des lignes que le test de
+ * rectangle (inchange, en tete de boucle) ecartait par "continue", sans
+ * autre effet : le premier succes, donc la valeur ecrite, est le meme.
+ *
+ * Table des end codes : elle etait calculee par CHAQUE groupe de travail pour
+ * toutes les rangees de la texture (texSize.y + 1 balayages de texSize.x
+ * texels). Seules les rangees que ce groupe peut lire sont maintenant
+ * calculees : la rangee de texture lue par getColor() ne depend que de
+ * l'indice de la ligne touchee (uv.y = (idx + 0.5) / nbLines), de facon
+ * monotone ; celles des lignes de l'intervalle du groupe sont donc entre
+ * celles de ses deux extremites. Une rangee de marge de chaque cote couvre
+ * un eventuel ecart d'arrondi entre ce calcul et celui de getColor(). Les
+ * valeurs calculees sont les memes (meme getEndIndex()).
+ *
+ * Tableaux dimensionnes a 32 : WORKSIZE_P (vdp1_compute.c) vaut 8, et une
+ * taille litterale evite de dependre de gl_WorkGroupSize comme taille de
+ * tableau sur d'anciens pilotes. */
+"shared uint rowLo[32];\n"
+"shared uint rowHiP1[32];\n"
+"uint lineTexRow(int k, int texH) {\n"
+"  uint y = min(uint(floor(((float(cmd[k].idx)+0.5)/float(nbLines))*float(texH))), uint(texH)-1u);\n"
+"  if ((cmd[k].misc & 0x2) == 0x2) y = uint(texH-1) - y;\n"
+"  return y;\n"
+"}\n"
 "void main()\n"
 "{\n"
-" if ((cmd[0].CMDPMOD & 0x80u) == 0u) {\n"
-"  uint index = gl_LocalInvocationID.y*gl_WorkGroupSize.x+gl_LocalInvocationID.x;\n"
-"  ivec2 texSize = ivec2(((cmd[0].CMDSIZE >> 8) & 0x3Fu)<<3,cmd[0].CMDSIZE & 0xFFu );\n"
-"  while (index <= uint(texSize.y)) {\n"
-"   endIndex[index] = getEndIndex(cmd[0], index);\n"
-"   index += gl_WorkGroupSize.x*gl_WorkGroupSize.y;\n"
+" uint lid = gl_LocalInvocationID.y*gl_WorkGroupSize.x+gl_LocalInvocationID.x;\n"
+" uint nThreads = gl_WorkGroupSize.x*gl_WorkGroupSize.y;\n"
+" ivec2 wgOrigin = ivec2(gl_WorkGroupID.xy*gl_WorkGroupSize.xy) + bound;\n"
+" int wgW = int(gl_WorkGroupSize.x);\n"
+" int wgH = int(gl_WorkGroupSize.y);\n"
+" if (lid < gl_WorkGroupSize.y) { rowLo[lid] = 0xFFFFFFFFu; rowHiP1[lid] = 0u; }\n"
+" memoryBarrierShared();\n"
+" barrier();\n"
+" for (uint k = lid; k < uint(nbLineDraw); k += nThreads) {\n"
+"  int lx0 = min(cmd[k].CMDXA, cmd[k].CMDXB);\n"
+"  int lx1 = max(cmd[k].CMDXA, cmd[k].CMDXB);\n"
+"  if ((lx1 < wgOrigin.x) || (lx0 > wgOrigin.x + wgW - 1)) continue;\n"
+"  int r0 = max(min(cmd[k].CMDYA, cmd[k].CMDYB) - wgOrigin.y, 0);\n"
+"  int r1 = min(max(cmd[k].CMDYA, cmd[k].CMDYB) - wgOrigin.y, wgH - 1);\n"
+"  for (int r = r0; r <= r1; r++) {\n"
+"   atomicMin(rowLo[r], k);\n"
+"   atomicMax(rowHiP1[r], k + 1u);\n"
 "  }\n"
-"  memoryBarrierShared();"
+" }\n"
+" memoryBarrierShared();\n"
+" barrier();\n"
+" if ((cmd[0].CMDPMOD & 0x80u) == 0u) {\n"
+"  ivec2 texSize = ivec2(((cmd[0].CMDSIZE >> 8) & 0x3Fu)<<3,cmd[0].CMDSIZE & 0xFFu );\n"
+"  uint lo = 0xFFFFFFFFu;\n"
+"  uint hi = 0u;\n"
+"  for (int r = 0; r < wgH; r++) {\n"
+"   if (rowHiP1[r] != 0u) { lo = min(lo, rowLo[r]); hi = max(hi, rowHiP1[r] - 1u); }\n"
+"  }\n"
+"  if (lo <= hi) {\n"
+"   uint ya = lineTexRow(int(lo), texSize.y);\n"
+"   uint yb = lineTexRow(int(hi), texSize.y);\n"
+"   uint first = min(ya, yb);\n"
+"   uint last = min(max(ya, yb) + 1u, uint(texSize.y));\n"
+"   first = (first > 0u) ? (first - 1u) : 0u;\n"
+"   uint index = first + lid;\n"
+"   while (index <= last) {\n"
+"    endIndex[index] = getEndIndex(cmd[0], index);\n"
+"    index += nThreads;\n"
+"   }\n"
+"  }\n"
+"  memoryBarrierShared();\n"
 "  barrier();\n"
 " }\n"
 " ivec2 P = ivec2(gl_GlobalInvocationID.xy)+bound;\n"
 " bool valid = clip(P,usrClip, sysClip, cmd[0].CMDPMOD);\n"
 " if (!valid) return;\n"
-" for (int l = 0; l < nbLineDraw; l++) {"
-"  int idx = nbLineDraw-1 - l;\n"
+" uint row = gl_LocalInvocationID.y;\n"
+" if (rowHiP1[row] == 0u) return;\n"
+" int idxLo = int(rowLo[row]);\n"
+" for (int idx = int(rowHiP1[row]) - 1; idx >= idxLo; idx--) {\n"
+"  if (P.x < min(cmd[idx].CMDXA,cmd[idx].CMDXB)) continue;\n"
+"  if (P.x > max(cmd[idx].CMDXA,cmd[idx].CMDXB)) continue;\n"
+"  if (P.y < min(cmd[idx].CMDYA,cmd[idx].CMDYB)) continue;\n"
+"  if (P.y > max(cmd[idx].CMDYA,cmd[idx].CMDYB)) continue;\n"
 "  cmdparameter_struct pixcmd = cmd[idx];\n"
 "  ivec2 P0 = ivec2(pixcmd.CMDXA, pixcmd.CMDYA);\n"
 "  ivec2 P1 = ivec2(pixcmd.CMDXB, pixcmd.CMDYB);\n"
@@ -682,7 +758,6 @@ static const char vdp1_draw_poly_test[] =
 "  ivec2 line = ivec2(pixcmd.CMDXB, pixcmd.CMDYB) - ivec2(pixcmd.CMDXA, pixcmd.CMDYA);\n"
 "  float orientation = (abs(line.x) >= abs(line.y))?1.0:0.0;\n"
 "  mat2 trans = mat2(orientation, 1.0-orientation, 1.0-orientation, orientation);\n"
-"  mat2 transrev = trans;\n"
 "  P0 = ivec2(trans*vec2(P0));\n"
 "  P1 = ivec2(trans*vec2(P1));\n"
 "  ivec2 Pn = ivec2(trans*vec2(P));\n"
@@ -692,10 +767,6 @@ static const char vdp1_draw_poly_test[] =
 "  int veclong = P1.x-P0.x+a.x;\n"
 "  bool pixelOnLine = (P1.x == P0.x);\n"
 "  float slope = 1.0;\n"
-"  if (P.x < min(pixcmd.CMDXA,pixcmd.CMDXB)) continue;\n"
-"  if (P.x > max(pixcmd.CMDXA,pixcmd.CMDXB)) continue;\n"
-"  if (P.y < min(pixcmd.CMDYA,pixcmd.CMDYB)) continue;\n"
-"  if (P.y > max(pixcmd.CMDYA,pixcmd.CMDYB)) continue;\n"
 "  if (!pixelOnLine) {\n"
 "    slope = float(P1.y-P0.y)/float(P1.x-P0.x);\n"
 "    pixelOnLine = isOnLine(Pn, P0, slope);\n"

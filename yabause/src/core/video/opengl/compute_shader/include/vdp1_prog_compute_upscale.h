@@ -250,6 +250,20 @@ SHADER_VERSION_COMPUTE
 "layout(location = 9) uniform ivec4 usrClip;\n"
 "layout(location = 10) uniform ivec2 tl;\n"
 "shared uint endIndex[256];\n"
+/* Etat partage par groupe de travail (voir main()) :
+ *  - ecRow* : rangees de texture que les pixels du groupe peuvent lire
+ *    (sprites QUAD), pour ne calculer que ces rangees de endIndex ;
+ *  - stAB / stLo / stHiP1 : extremites A et B de chaque pas de
+ *    isOnAQuadLine() (sprites deformes, polygones) et, par rangee de pixels
+ *    du groupe, l'intervalle des pas qui peuvent la toucher.
+ * Tableaux par rangee dimensionnes a 32 (local_size_y = 8, vdp1_compute.c). */
+"#define UPS_STEP_MAX 512u\n"
+"shared uint ecRowMin;\n"
+"shared uint ecRowMax;\n"
+"shared vec4 stAB[UPS_STEP_MAX];\n"
+"shared uint stLo[32];\n"
+"shared uint stHiP1[32];\n"
+"bool useStepHull = false;\n"
 
 //===================================================================
 "vec3 antiAliasedPoint( vec2 P,  vec2 P0, vec2 P1 )\n"
@@ -300,7 +314,39 @@ SHADER_VERSION_COMPUTE
 "  return 0u;\n"
 "}\n"
 
+/* Avec useStepHull, les extremites de chaque pas viennent de stAB[] (memes
+ * additions successives que A += sA / B += sB ci-dessous, faites une fois
+ * par groupe dans main()) et seuls les pas de l'intervalle de la rangee sont
+ * parcourus, dans le meme ordre croissant. Un pas hors de l'intervalle ne
+ * peut satisfaire aucun des deux tests de la boucle : le premier pas
+ * retenu, donc uv, est le meme. */
+"uint isOnAQuadLineHull( vec2 P, vec2 V0, vec2 V1, vec2 V2, vec2 V3, uint step, out vec2 uv){\n"
+"  uint r = gl_LocalInvocationID.y;\n"
+"  uint iEnd = stHiP1[r];\n"
+"  for (uint i=stLo[r]; i<iEnd; i++) {\n"
+"    vec2 A = stAB[i].xy;\n"
+"    vec2 B = stAB[i].zw;\n"
+"    if ((floor(P.x/upscale.x) == 0.0) && (A.x == 0)) {\n"
+"      uv.x = 0.0;\n"
+"      if (any(notEqual(upscale, vec2(1.0)))) uv.y = length(P - V0)/(length(V3 - V0) + length(floor(upscale/2.0)*2.0));\n"
+"      else uv.y = (float(i)+0.5)/float(step+1);\n"
+"      return 1u;\n"
+"    }\n"
+"    vec3 d = antiAliasedPoint(P+vec2(0.5), A+upscale/2.0, B+upscale/2.0);\n"
+"    if(((distance(d.xy, P+vec2(0.5))) < (length(upscale/2.0)+0.25)) && (d.z>=0.0) && (d.z<=1.0) ){\n"
+"      vec2 PTop = V0 + d.z*(V1 - V0);\n"
+"      vec2 PDown = V3 + d.z*(V2 - V3);\n"
+"      uv.x = d.z;\n"
+"      if (any(notEqual(upscale, vec2(1.0)))) uv.y = length(P - PTop)/(length(PDown - PTop) + length(floor(upscale/2.0)*2.0));\n"
+"      else uv.y = (float(i)+0.5)/float(step+1);\n"
+"      return 1u;\n"
+"    }\n"
+"  }\n"
+"  return 0u;\n"
+"}\n"
+
 "uint isOnAQuadLine( vec2 P, vec2 V0, vec2 V1, vec2 V2, vec2 V3, vec2 sA, vec2 sB, uint step, out vec2 uv){\n"
+"  if (useStepHull) return isOnAQuadLineHull(P, V0, V1, V2, V3, step, uv);\n"
 "  uint ret = 0u;\n"
 "  vec2 A = V0;\n"
 "  vec2 B = V1;\n"
@@ -638,18 +684,79 @@ SHADER_VERSION_COMPUTE
 " return hflip ? 0u : 1024u;\n"
 "}\n"
 
+/* Table des end codes (endIndex) : seuls les sprites (DISTORTED, QUAD) la
+ * lisent, dans ReadSpriteColor(). Elle etait recalculee en entier
+ * (texSize.y + 1 rangees de texSize.x texels) par chaque groupe de travail,
+ * et pour toute commande ; en 4x, un sprite de 64 x 64 occupe 1024 groupes.
+ *
+ * Chaque invocation determine maintenant d'abord si son pixel est trace et
+ * sa coordonnee de texture (memes calculs, dans le meme ordre ; les
+ * "return" anticipes sont remplaces par l'indicateur alive, rien n'etant
+ * ecrit avant), puis note la rangee de texture que ReadSpriteColor() lira,
+ * avec la meme expression. Le groupe ne calcule ensuite que les rangees
+ * [min - 1, max + 1] (marge contre un ecart d'arrondi), avec le meme
+ * getEndIndex() : chaque pixel lit la meme valeur qu'avant. Les autres
+ * types de commande ne lisent jamais la table : elle n'est plus calculee. */
 "void main()\n"
 "{\n"
-" if ((cmd[0].CMDPMOD & 0x80u) == 0) {\n"
-"  uint index = gl_LocalInvocationID.y*gl_WorkGroupSize.x+gl_LocalInvocationID.x;\n"
-"  ivec2 texSize = ivec2(((cmd[0].CMDSIZE >> 8) & 0x3F)<<3,cmd[0].CMDSIZE & 0xFF );\n"
-"  while (index <= texSize.y) {\n"
-"   endIndex[index] = getEndIndex(cmd[0], index);\n"
-"   index += gl_WorkGroupSize.x*gl_WorkGroupSize.y;\n"
+" uint lid = gl_LocalInvocationID.y*gl_WorkGroupSize.x+gl_LocalInvocationID.x;\n"
+" uint nThreads = gl_WorkGroupSize.x*gl_WorkGroupSize.y;\n"
+" ivec2 wgOrigin = ivec2(gl_WorkGroupID.xy*gl_WorkGroupSize.xy)+tl;\n"
+" int wgW = int(gl_WorkGroupSize.x);\n"
+" int wgH = int(gl_WorkGroupSize.y);\n"
+" bool needEC = ((cmd[0].CMDPMOD & 0x80u) == 0) && ((cmd[0].type == "Stringify(DISTORTED)") || (cmd[0].type == "Stringify(QUAD)"));\n"
+" if (lid == 0u) { ecRowMin = 0xFFFFFFFFu; ecRowMax = 0u; }\n"
+/* Pas candidats de isOnAQuadLine() (DISTORTED, POLYGON).
+ * Un pas i est retenu par un pixel P si (a) P est dans la colonne de
+ * pixels 0 et A.x == 0, ou (b) la projection de P + 0.5 sur le segment
+ * [A + upscale/2, B + upscale/2] tombe dans le segment (0 <= d.z <= 1) a
+ * une distance < length(upscale/2) + 0.25 de P + 0.5 : P + 0.5 est alors
+ * dans le rectangle du segment elargi de ce rayon. On garde, par rangee du
+ * groupe, l'intervalle des pas dont ce rectangle (elargi d'un pixel de plus
+ * par securite) touche la rangee et les colonnes du groupe, plus ceux du
+ * cas (a). Au-dela de UPS_STEP_MAX pas, la boucle d'origine est utilisee. */
+" if (((cmd[0].type == "Stringify(DISTORTED)") || (cmd[0].type == "Stringify(POLYGON)")) && (uint(float(cmd[0].nbStep)) < UPS_STEP_MAX)) {\n"
+"  uint step = uint(float(cmd[0].nbStep));\n"
+"  if (lid == 0u) {\n"
+"   vec2 A = vec2(cmd[0].CMDXA,cmd[0].CMDYA)*upscale;\n"
+"   vec2 B = vec2(cmd[0].CMDXB,cmd[0].CMDYB)*upscale;\n"
+"   vec2 sA = vec2(cmd[0].uAstepx, cmd[0].uAstepy)*upscale;\n"
+"   vec2 sB = vec2(cmd[0].uBstepx, cmd[0].uBstepy)*upscale;\n"
+"   for (uint i=0u; i<=step; i++) {\n"
+"    stAB[i] = vec4(A, B);\n"
+"    A += sA;\n"
+"    B += sB;\n"
+"   }\n"
 "  }\n"
-"  memoryBarrierShared();"
+"  if (lid < gl_WorkGroupSize.y) { stLo[lid] = 0xFFFFFFFFu; stHiP1[lid] = 0u; }\n"
+"  memoryBarrierShared();\n"
 "  barrier();\n"
+"  float rad = length(upscale/2.0) + 0.25 + 1.0;\n"
+"  float gx0 = float(wgOrigin.x) + 0.5;\n"
+"  float gx1 = float(wgOrigin.x + wgW - 1) + 0.5;\n"
+"  bool col0 = (float(wgOrigin.x) < upscale.x + 1.0) && (wgOrigin.x + wgW > -1);\n"
+"  for (uint i = lid; i <= step; i += nThreads) {\n"
+"   vec2 A2 = stAB[i].xy + upscale/2.0;\n"
+"   vec2 B2 = stAB[i].zw + upscale/2.0;\n"
+"   vec2 lo = min(A2, B2) - vec2(rad);\n"
+"   vec2 hi = max(A2, B2) + vec2(rad);\n"
+"   int r0 = 0;\n"
+"   int r1 = -1;\n"
+"   if (col0 && (stAB[i].x == 0.0)) {\n"
+"    r1 = wgH - 1;\n"
+"   } else if ((hi.x >= gx0) && (lo.x <= gx1)) {\n"
+"    r0 = max(int(floor(lo.y - 0.5)) - wgOrigin.y, 0);\n"
+"    r1 = min(int(ceil(hi.y - 0.5)) - wgOrigin.y, wgH - 1);\n"
+"   }\n"
+"   for (int r = r0; r <= r1; r++) {\n"
+"    atomicMin(stLo[r], i);\n"
+"    atomicMax(stHiP1[r], i + 1u);\n"
+"   }\n"
+"  }\n"
+"  useStepHull = true;\n"
 " }\n"
+" memoryBarrierShared();\n"
+" barrier();\n"
 "  vec4 finalColor = vec4(0.0);\n"
 "  vec4 meshColor = vec4(0.0);\n"
 "  vec4 newColor = vec4(0.0);\n"
@@ -662,7 +769,7 @@ SHADER_VERSION_COMPUTE
 "  vec2 gouraudcoord = vec2(0.0);\n"
 "  ivec2 size = imageSize(outSurface);\n"
 "  ivec2 pos = ivec2(gl_GlobalInvocationID.xy)+tl;\n"
-"  if (pos.x >= size.x || pos.y >= size.y ) return;\n"
+"  bool alive = !(pos.x >= size.x || pos.y >= size.y);\n"
 "  vec2 texel = vec2(float(pos.x),float(-pos.y));\n"
 "  texel.y = -texel.y;\n"
 
@@ -672,23 +779,45 @@ SHADER_VERSION_COMPUTE
 "  newColor = vec4(0.0);\n"
 "  outColor = vec4(0.0);\n"
 "  texel = OriginTexel;\n"
-"  if (pixIsInside(texel, uv, pixFB) == 0) return;\n"
+"  if (alive) alive = (pixIsInside(texel, uv, pixFB) != 0);\n"
 "  pixcmd = cmd[0];\n"
-"  if (any(greaterThan(pos,sysClip*upscale))) { \n"
-"    return;\n"
+"  if (alive && any(greaterThan(pos,sysClip*upscale))) { \n"
+"    alive = false;\n"
 "  }"
-"  if (((pixcmd.CMDPMOD >> 9) & 0x3u) == 2u) {\n"
+"  if (alive && (((pixcmd.CMDPMOD >> 9) & 0x3u) == 2u)) {\n"
 "//Draw inside\n"
-"    if (any(lessThan(pos,usrClip.xy*upscale)) || any(greaterThan(pos,usrClip.zw*upscale))) return;\n"
+"    if (any(lessThan(pos,usrClip.xy*upscale)) || any(greaterThan(pos,usrClip.zw*upscale))) alive = false;\n"
 "  }\n"
-"  if (((pixcmd.CMDPMOD >> 9) & 0x3u) == 3u) {\n"
+"  if (alive && (((pixcmd.CMDPMOD >> 9) & 0x3u) == 3u)) {\n"
 "//Draw outside\n"
-"    if (all(greaterThanEqual(pos,usrClip.xy*upscale)) && all(lessThanEqual(pos,usrClip.zw*upscale))) return;\n"
+"    if (all(greaterThanEqual(pos,usrClip.xy*upscale)) && all(lessThanEqual(pos,usrClip.zw*upscale))) alive = false;\n"
 "  }\n"
 "  texcoord = uv;\n"
 "  gouraudcoord = texcoord;\n"
 "  if ((pixcmd.flip & 0x1u) == 0x1u) texcoord.x = 1.0 - texcoord.x;\n" //invert horizontally
 "  if ((pixcmd.flip & 0x2u) == 0x2u) texcoord.y = 1.0 - texcoord.y - 1.0f/float(pixcmd.h);\n" //invert vertically
+"  if (needEC) {\n"
+"   if (alive) {\n"
+"    uint ty = min(uint(floor((pixcmd.h)*texcoord.y)), pixcmd.h-1u);\n"
+"    atomicMin(ecRowMin, ty);\n"
+"    atomicMax(ecRowMax, ty);\n"
+"   }\n"
+"   memoryBarrierShared();\n"
+"   barrier();\n"
+"   if (ecRowMin <= ecRowMax) {\n"
+"    ivec2 texSize = ivec2(((cmd[0].CMDSIZE >> 8) & 0x3F)<<3,cmd[0].CMDSIZE & 0xFF );\n"
+"    uint first = (ecRowMin > 0u) ? (ecRowMin - 1u) : 0u;\n"
+"    uint last = min(ecRowMax + 1u, uint(texSize.y));\n"
+"    uint index = first + lid;\n"
+"    while (index <= last) {\n"
+"     endIndex[index] = getEndIndex(cmd[0], index);\n"
+"     index += nThreads;\n"
+"    }\n"
+"   }\n"
+"   memoryBarrierShared();\n"
+"   barrier();\n"
+"  }\n"
+"  if (!alive) return;\n"
 "  if (pixcmd.type <= "Stringify(LINE)") {\n"
 "    newColor = extractPolygonColor(pixcmd);\n"
 "  } else if (pixcmd.type <= "Stringify(QUAD)") {\n"
