@@ -12,5 +12,9 @@ extern SH2Interface_struct SH2KronosInterpreter;
 extern fetchfunc krfetchlist[0x1000];
 extern opcode_func opcodeTable[0x10000];
 
+/* Apres YabLoadStateStream() : invalide le cache de decodage et repose les
+ * crochets (BUP, retour d'interruption) qui ne sont pas dans l'etat. */
+void SH2KronosInterpreterPostLoadState(SH2_struct *context);
+
 
 #endif
