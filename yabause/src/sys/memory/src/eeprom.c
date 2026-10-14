@@ -15,7 +15,11 @@ static u8 d_o = 0;
 
 static u8 reg[64*2*2];
 static u32 input; 
-static u8 di_index = 0;
+/* Bit position of the next DI bit in the 26-bit frame (25..0), -1 once the
+   frame is complete. It was a u8: the "di_index >= 0" test below was always
+   true, the index wrapped to 255 after bit 0 and "1<<di_index" shifted by
+   255 (undefined behaviour) on every extra clock while CS stayed high. */
+static int di_index = 0;
 
 static u8 EW = 0;
 static u8 cmd = -1;
@@ -89,12 +93,17 @@ void eeprom_set_clk(u8 state) {
     if (state == 1) {
       //Rising edge
       if (di_index >= 0) {
-        u32 mask = ~(1<<di_index);
+        u32 mask = ~(1u<<di_index);
         input &= mask;
-        input |= (di<<di_index);
+        input |= ((u32)di<<di_index);
         EEPROM_LOG("Exec data[%d] = %d, addr=%x\n", di_index, di, input);
         executeCmd();
         di_index -= 1;
+      } else {
+        /* Clocks past the end of the frame: no command bit any more. DO
+           stays high (ready), which is what executeCmd() gave them before
+           with the wrapped index. */
+        d_o = 1;
       }
     }
   }
@@ -159,4 +168,50 @@ void eeprom_start(const u8* table) {
     }
     EEPROM_CMD_LOG("\n");
   }
+}
+
+/* Save states ("EEPR" block of the CART chunk, see cs0.c): serial
+   interface state and the EEPROM contents, like MAME's eeprom device
+   (the contents are part of the machine state; they reach the .nv file
+   at the next eeprom_deinit). */
+#define EEPROM_STATE_VERSION 1
+#define EEPROM_STATE_SIZE (4 + 4 + sizeof(reg) + 4 + 4 + 2 + 2)
+
+void eeprom_save_state(void ** stream) {
+  u32 version = EEPROM_STATE_VERSION;
+  s32 index = di_index;
+  u8 pins[4];
+  u8 c[2];
+  pins[0] = cs; pins[1] = clk; pins[2] = di; pins[3] = d_o;
+  c[0] = EW; c[1] = cmd;
+  MemStateWrite(&version, 4, 1, stream);
+  MemStateWrite(pins, 1, 4, stream);
+  MemStateWrite(reg, 1, sizeof(reg), stream);
+  MemStateWrite(&input, 4, 1, stream);
+  MemStateWrite(&index, 4, 1, stream);
+  MemStateWrite(c, 1, 2, stream);
+  MemStateWrite(&ext_data, 2, 1, stream);
+}
+
+int eeprom_load_state(const void * stream, int size) {
+  u32 version;
+  s32 index;
+  u8 pins[4];
+  u8 c[2];
+  if (size < (int)EEPROM_STATE_SIZE)
+    return -1;
+  MemStateRead(&version, 4, 1, stream);
+  if (version != EEPROM_STATE_VERSION)
+    return -1;
+  MemStateRead(pins, 1, 4, stream);
+  MemStateRead(reg, 1, sizeof(reg), stream);
+  MemStateRead(&input, 4, 1, stream);
+  MemStateRead(&index, 4, 1, stream);
+  MemStateRead(c, 1, 2, stream);
+  MemStateRead(&ext_data, 2, 1, stream);
+  cs = pins[0] & 1; clk = pins[1] & 1; di = pins[2] & 1; d_o = pins[3] & 1;
+  di_index = (index >= -1 && index <= 25) ? index : -1;
+  EW = c[0] ? 1 : 0;
+  cmd = c[1];
+  return 0;
 }
