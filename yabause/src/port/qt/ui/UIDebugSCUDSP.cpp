@@ -109,8 +109,8 @@ UIDebugSCUDSP::UIDebugSCUDSP(YabauseThread *mYabauseThread, QWidget *p)
 
     m_tabExtra->addTab(m_pteDMA,    "DMA");
     m_tabExtra->addTab(m_pteIRQ,    "IRQ / IMS");
-    m_tabExtra->addTab(m_pteMD,     "Data RAM");
-    m_tabExtra->addTab(m_pteTimers, "Timers / Misc");
+    m_tabExtra->addTab(m_pteMD,     QtYabause::translate("Data RAM"));
+    m_tabExtra->addTab(m_pteTimers, QtYabause::translate("Timers / Misc"));
 
     // Insérer l'onglet extra dans le layout principal
     // (UIDebugCPU expose son QVBoxLayout principal ou on l'ajoute à la fin)
