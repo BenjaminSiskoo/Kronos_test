@@ -99,7 +99,7 @@ std::string buildInfoLabel(Vdp1CommandsCount& cmdCount)
 void UIDebugVDP1::updateVdp1Registers()
 {
     if (!Vdp1Regs) {
-        pteVdp1Regs->setPlainText("VDP1 not initialised");
+        pteVdp1Regs->setPlainText(QtYabause::translate("VDP1 not initialised."));
         return;
     }
 
@@ -401,6 +401,9 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     gvTexture->viewport()->setMouseTracking(true);
 
     fillCommandList();
+
+    // was missing: the dialog stayed in English whatever the language
+    QtYabause::retranslateWidget(this);
 }
 
 UIDebugVDP1::~UIDebugVDP1()
@@ -502,18 +505,18 @@ bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
                 px < currentTextureImage.width() && py < currentTextureImage.height())
             {
                 QColor c = currentTextureImage.pixelColor(px, py);
-                lTexturePixelInfo->setText(tr("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
+                lTexturePixelInfo->setText(QtYabause::translate("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
                     .arg(px).arg(py)
                     .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
             }
             else
             {
-                lTexturePixelInfo->setText(tr("Move the mouse over the texture to inspect a pixel."));
+                lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
             }
         }
         else if (event->type() == QEvent::Leave)
         {
-            lTexturePixelInfo->setText(tr("Move the mouse over the texture to inspect a pixel."));
+            lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
         }
     }
     return QDialog::eventFilter(watched, event);
