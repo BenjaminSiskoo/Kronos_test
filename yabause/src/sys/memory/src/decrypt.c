@@ -486,6 +486,17 @@ void cryptoReset()
 	buffer_pos = 0;
 	line_buffer_pos = 0;
 	line_buffer_size = 0;
+
+  /* These were left over from the previous game/session: block_* and
+     done_compression are only rewritten by cryptoStart(), buffer2a by
+     get_compressed_bit(), and cryptoStart() reads buffer2a when
+     bufferBit2 < 14. */
+  done_compression = 0;
+  block_pos = 0;
+  block_size = 0;
+  block_numlines = 0;
+  buffer2a = 0;
+  buffer2[0] = buffer2[1] = 0;
 }
 
 void cryptoSetKey(u32 privKey)
@@ -820,45 +831,89 @@ u16 cryptoDecrypt()
 }
 
 /*============================================================================
- * 315-5838 / 317-0229 compression+encryption device (Decathlete).
- * Ported verbatim from MAME's 315-5838_317-0229_comp.cpp where the algorithm
- * itself is concerned (decipher() bit-shuffle, Huffman-style tree walk).
- * The tree and dictionary are NOT hardcoded here either - the game uploads
- * them itself at boot via decathlt5838WriteTableData(), exactly like on
- * real hardware / in MAME.
+ * 315-5838 / 317-0229 / 317-0230 / 317-0231 compression+encryption device.
+ * Ported from MAME's 315-5838_317-0229_comp.cpp (David Haywood, Samuel
+ * Neves, Peter Wilhelmsen, Morten Shearman Kirkegaard).
+ *
+ * Each cartridge word goes through a fixed word substitution (four 3-bit
+ * lanes through 8-entry S-boxes + four affine output bits), then a
+ * programmable prefix decompression whose tree/dictionary the game uploads
+ * itself. The substitution is NOT identical on every chip: routing, S-boxes
+ * and affine masks depend on the variant (see d5838Ciphers below):
+ *   315-5838: DecAthlete
+ *   317-0229: Name Club 1/2
+ *   317-0230: Print Club Pooh 2/3, Nightmare Before Christmas
+ *   317-0231: Print Club Love Love 1/2, Sony Creative 5/6
  *============================================================================*/
 
 typedef struct {
-  u8  len;      /* in bits */
-  u8  idx;      /* in the dictionary */
-  u16 pattern;  /* of the first node */
-} decathlt5838TreeNode;
+  u8 routing[4];
+  u8 sboxes[4][8];
+  u8 affine[4];
+} d5838Cipher;
+
+static const d5838Cipher d5838Ciphers[4] =
+{
+  { /* 315-5838 */
+    { 0, 1, 2, 3 },
+    { { 6, 7, 2, 0, 5, 1, 3, 4 }, { 5, 3, 7, 2, 1, 6, 4, 0 },
+      { 2, 0, 6, 1, 3, 7, 4, 5 }, { 6, 5, 7, 4, 1, 3, 0, 2 } },
+    { 0x14, 0x18, 0x02, 0x15 }
+  },
+  { /* 317-0229 */
+    { 3, 2, 0, 1 },
+    { { 6, 0, 5, 4, 7, 2, 1, 3 }, { 5, 6, 1, 3, 7, 0, 4, 2 },
+      { 2, 6, 0, 1, 3, 4, 7, 5 }, { 6, 5, 7, 4, 1, 3, 0, 2 } },
+    { 0x12, 0x11, 0x04, 0x1a }
+  },
+  { /* 317-0230 */
+    { 2, 3, 1, 0 },
+    { { 6, 2, 7, 0, 5, 3, 1, 4 }, { 5, 3, 7, 2, 1, 6, 4, 0 },
+      { 2, 1, 3, 5, 6, 0, 4, 7 }, { 6, 1, 3, 5, 7, 0, 2, 4 } },
+    { 0x14, 0x18, 0x02, 0x15 }
+  },
+  { /* 317-0231 */
+    { 1, 0, 3, 2 },
+    { { 6, 0, 5, 4, 7, 2, 1, 3 }, { 5, 1, 6, 3, 7, 4, 0, 2 },
+      { 2, 1, 3, 5, 6, 0, 4, 7 }, { 6, 3, 1, 5, 7, 2, 0, 4 } },
+    { 0x12, 0x11, 0x04, 0x1a }
+  }
+};
 
 static struct {
-  u32 srcoffset;
-  u32 srcstart;
+  u8  variant;        /* index in d5838Ciphers, set before Reset */
+  u32 source;         /* word index inside the selected 8MB bank */
   int abort_;
-  u8  bank;       /* 0, 1 or 2 - selects which 8MB window of cart ROM the
-                     source address/reads are relative to (see decathlt_
-                     prot_srcaddr_w / m_protbankval in MAME) */
-
-  u16 mode;
-  decathlt5838TreeNode tree[13];
-  int it2;
+  u8  bank;           /* 0, 1 or 2 - which 8MB window of cart ROM */
+  u16 control;        /* register at 0x4200000: bit 1 set = decoder output,
+                         clear = plain ROM reads (Name Club uses both) */
+  u16 tree[24];
   u8  dictionary[256];
-  int id;
-
-  int num_bits_compressed;
-  u16 val_compressed;
-  int num_bits;
-  u16 val;
+  int tree_words;
+  int dictionary_bytes;
+  int upload_dictionary;
+  u16 word;
+  int bits;
 } d5838;
 
-/* Called on EVERY write into the 24MB decathlete protection window
- * (regardless of which sub-register), mirroring how MAME recomputes
- * m_protbankval unconditionally in decathlt_prot_srcaddr_w before
- * dispatching to the specific register handler. addr here is the
- * CS0-relative address (0-0x1FFFFFF), same convention as cs0.c. */
+void decathlt5838SetVariant(int variant)
+{
+  d5838.variant = (u8)((variant >= 0 && variant < 4) ? variant : 0);
+}
+
+void decathlt5838SetControl(u16 val)
+{
+  d5838.control = val;
+}
+
+int decathlt5838DecoderEnabled(void)
+{
+  return (d5838.control & 2) != 0;
+}
+
+/* Called on EVERY write into the 24MB protection window (regardless of
+ * which sub-register), like MAME's sega5838_w() recomputing m_5838_bank.
+ * addr is the CS0-relative address (0-0x1FFFFFF). */
 void decathlt5838SetBank(u32 addr)
 {
   d5838.bank = (u8)((addr >> 23) & 0x3);
@@ -866,176 +921,298 @@ void decathlt5838SetBank(u32 addr)
 
 void decathlt5838Reset(void)
 {
-  d5838.srcoffset = 0;
-  d5838.srcstart = 0;
+  d5838.source = 0;
   d5838.abort_ = 0;
   d5838.bank = 0;
-  d5838.mode = 0;
-  d5838.it2 = 0;
-  d5838.id = 0;
-  d5838.num_bits_compressed = 0;
-  d5838.val_compressed = 0;
-  d5838.num_bits = 0;
-  d5838.val = 0;
+  d5838.control = 2; /* DecAthlete starts decoding without writing it */
   memset(d5838.tree, 0, sizeof(d5838.tree));
   memset(d5838.dictionary, 0, sizeof(d5838.dictionary));
+  d5838.tree_words = 0;
+  d5838.dictionary_bytes = 0;
+  d5838.upload_dictionary = 0;
+  d5838.word = 0;
+  d5838.bits = 0;
 }
 
-/* Fixed bit-permutation network, identical on every 315-5838/317-0229 chip
- * regardless of game - not a per-game key, so ported as-is. */
 static u16 decathlt5838Decipher(u16 c)
 {
-  u16 p = 0;
-  u16 x[16];
-  int b;
+  static const u8 OUTPUT_BITS[4][3] = { { 0, 1, 7 }, { 2, 5, 9 }, { 4, 10, 13 }, { 6, 11, 15 } };
+  static const u8 AFFINE_BITS[4] = { 3, 8, 12, 14 };
+  const d5838Cipher *cipher = &d5838Ciphers[d5838.variant];
+#define X5838(b) (((c) >> (b)) & 1)
+  u8 lanes[4];
+  u8 affine;
+  u16 result = 0;
+  int group, bit;
 
-  for (b = 0; b < 16; ++b)
-    x[b] = (c >> b) & 1;
+  lanes[0] = (u8)((X5838(5) ^ X5838(12)) | ((X5838(7) ^ X5838(9)) << 1) | (X5838(14) << 2));
+  lanes[1] = (u8)(X5838(6) | (X5838(8) << 1) | (X5838(15) << 2));
+  lanes[2] = (u8)((X5838(1) ^ X5838(8)) | (X5838(7) << 1) | (X5838(12) << 2));
+  lanes[3] = (u8)(X5838(3) | (X5838(4) << 1) | (X5838(10) << 2));
+  affine = (u8)(X5838(0) | ((X5838(0) ^ X5838(2)) << 1) | ((X5838(11) ^ X5838(14)) << 2) |
+                ((X5838(4) ^ X5838(13)) << 3) | 16);
+#undef X5838
 
-  p |= (x[7] ^ x[9] ^ x[14] ? 0 : x[5] ^ x[12]) ^ x[14];
-  p |= (((x[7] ^ x[9])&(x[12] ^ x[14] ^ x[5])) ^ x[14] ^ 1) << 1;
-  p |= ((x[6] & x[8]) ^ (x[6] & x[15]) ^ (x[8] & x[15]) ^ 1) << 2;
-  p |= (x[11] ^ x[14] ^ 1) << 3;
-  p |= ((x[7] & (x[1] ^ x[8] ^ x[12])) ^ x[12]) << 4;
-  p |= ((x[6] | x[8]) ^ (x[8] & x[15])) << 5;
-  p |= (x[4] ^ (x[3] | x[10])) << 6;
-  p |= ((x[14] & (x[5] ^ x[12])) ^ x[7] ^ x[9] ^ 1) << 7;
-  p |= (x[4] ^ x[13] ^ 1) << 8;
-  p |= (x[6] ^ (x[8] | (x[15] ^ 1))) << 9;
-  p |= (x[7] ^ (x[12] | (x[1] ^ x[8] ^ x[7] ^ 1))) << 10;
-  p |= (x[3] ^ x[10] ^ 1) << 11;
-  p |= (x[0] ^ x[2]) << 12;
-  p |= (x[8] ^ x[1] ? x[12] : x[7]) << 13;
-  p |= (x[0] ^ x[11] ^ x[14] ^ 1) << 14;
-  p |= (x[10] ^ 1) << 15;
+  for (group = 0; group < 4; group++)
+  {
+    u8 value = cipher->sboxes[group][lanes[cipher->routing[group]]];
+    u8 parity;
+    for (bit = 0; bit < 3; bit++)
+      result |= ((value >> bit) & 1) << OUTPUT_BITS[group][bit];
 
-  return p;
+    parity = affine & cipher->affine[group];
+    parity ^= parity >> 4;
+    parity ^= parity >> 2;
+    parity ^= parity >> 1;
+    result |= (parity & 1) << AFFINE_BITS[group];
+  }
+  return result;
 }
 
-/* Reads the next compressed word straight from cartridge ROM.
- * NOTE: unlike MAME's source_word_r() (which XORs the byte offset with 2 to
- * compensate for a MAME-internal ROM region addressing quirk), Kronos'
- * T1ReadWord() already returns the correctly byte-swapped 16-bit word for
- * CartridgeArea->rom, the same accessor every other (working) tile/sprite
- * fetch in this codebase relies on - so no extra swizzle is applied here. */
+/* Next encrypted word straight from cartridge ROM. Like MAME's
+ * sega5838_source_r() the word offset is confined to the selected 8MB bank.
+ * T1ReadWord() already yields the correctly swapped 16-bit word. */
 static u16 decathlt5838SourceWordRead(void)
 {
-  u32 base = (u32)d5838.bank * 0x800000;
-  u16 tempdata = T1ReadWord(CartridgeArea->rom, (base + d5838.srcoffset * 2) & 0x1FFFFFF);
-
-  d5838.srcoffset++;
-  d5838.srcoffset &= 0x007FFFFF;
-
-  if (d5838.srcoffset == d5838.srcstart) /* wrapped around: something's wrong, bail */
-    d5838.abort_ = 1;
-
-  return tempdata;
+  u32 address = ((u32)d5838.bank << 23) | ((d5838.source * 2) & 0x007FFFFF);
+  return T1ReadWord(CartridgeArea->rom, address & 0x1FFFFFF);
 }
 
-static u8 decathlt5838GetDecompressedByte(void)
+static u8 decathlt5838DecompressByte(void)
 {
-  for (;;)
+  u16 code = 0;
+  unsigned length;
+
+  if (d5838.abort_ || d5838.tree_words != 24 || d5838.dictionary_bytes != 256)
+    return 0xFF;
+
+  for (length = 1; length <= 12; length++)
   {
-    int i;
+    unsigned entry;
 
-    if (d5838.abort_)
-      return 0xFF;
-
-    if (d5838.num_bits_compressed == 0)
+    if (!d5838.bits)
     {
-      d5838.val_compressed = decathlt5838Decipher(decathlt5838SourceWordRead());
-      d5838.num_bits_compressed = 16;
+      d5838.word = decathlt5838Decipher(decathlt5838SourceWordRead());
+      d5838.source = (d5838.source + 1) & 0x007FFFFF;
+      d5838.bits = 16;
     }
+    code = (u16)((code << 1) | ((d5838.word >> --d5838.bits) & 1));
 
-    d5838.num_bits_compressed--;
-    d5838.val <<= 1;
-    d5838.val |= 1 & (d5838.val_compressed >> d5838.num_bits_compressed);
-    d5838.num_bits++;
-
-    for (i = 0; i < 12; i++)
+    for (entry = 0; entry < 24; entry += 2)
     {
-      int j;
+      u16 first, limit;
+      unsigned next;
 
-      if (d5838.num_bits != d5838.tree[i].len) continue;
-      if (d5838.val < (d5838.tree[i].pattern >> (12 - d5838.num_bits))) continue;
-      if ((d5838.num_bits < 12) &&
-          (d5838.val >= (d5838.tree[i + 1].pattern >> (12 - d5838.num_bits))))
+      if ((d5838.tree[entry] >> 8) != length)
         continue;
 
-      j = d5838.tree[i].idx + d5838.val - (d5838.tree[i].pattern >> (12 - d5838.num_bits));
+      first = d5838.tree[entry + 1] >> (12 - length);
+      limit = (u16)(1U << length);
+      /* The range ends at the next DISTINCT pattern: repeated final
+         descriptors must not terminate it (several variants finish before
+         length 12). */
+      for (next = entry + 2; next < 24; next += 2)
+      {
+        if (d5838.tree[next + 1] != d5838.tree[entry + 1])
+        {
+          limit = d5838.tree[next + 1] >> (12 - length);
+          break;
+        }
+      }
 
-      d5838.val = 0;
-      d5838.num_bits = 0;
-
-      return d5838.dictionary[j];
+      if (code >= first && code < limit)
+      {
+        unsigned index = (d5838.tree[entry] & 0xFF) + code - first;
+        if (index < 256)
+          return d5838.dictionary[index];
+      }
     }
   }
+
+  /* Invalid tables or data must not loop forever. */
+  d5838.abort_ = 1;
+  return 0xFF;
 }
 
 u16 decathlt5838DataRead(void)
 {
-  u8 b0 = decathlt5838GetDecompressedByte();
-  u8 b1 = decathlt5838GetDecompressedByte();
-  return (b0 << 8) | b1;
+  u8 b0 = decathlt5838DecompressByte();
+  u8 b1 = decathlt5838DecompressByte();
+  return (u16)((b0 << 8) | b1);
 }
 
-/* srcaddr_w equivalent. mem_mask mirrors MAME's COMBINE_DATA: 0xFFFFFFFF for
- * a full 32-bit write, 0xFFFF0000/0x0000FFFF for a 16-bit write to the
- * upper/lower half only - the untouched half is preserved. */
+/* source_w equivalent. mem_mask mirrors MAME's COMBINE_DATA: 0xFFFFFFFF for
+ * a 32-bit write, 0xFFFF0000/0x0000FFFF for one half only. */
 void decathlt5838SetSrcAddr(u32 val, u32 mem_mask)
 {
-  d5838.srcoffset = (d5838.srcoffset & ~mem_mask) | (val & mem_mask);
-  d5838.srcoffset &= 0x007FFFFF;
-  d5838.srcstart = d5838.srcoffset;
+  d5838.source = (d5838.source & ~mem_mask) | (val & mem_mask);
+  d5838.source &= 0x007FFFFF;
+  d5838.word = 0;
+  d5838.bits = 0;
   d5838.abort_ = 0;
-
-  d5838.num_bits_compressed = 0;
-  d5838.val_compressed = 0;
-  d5838.num_bits = 0;
-  d5838.val = 0;
 }
 
-/* Upper 16 bits of the 32-bit data register (byte offset 0x7FFFF4/5 within
- * a bank window). Rarely written: switches between "upload tree" (mode bit
- * 0x80 clear) and "upload dictionary" (mode bit 0x80 set), and resets the
- * corresponding cursor. Must NOT be called again between data writes or
- * the cursor gets reset and the upload never completes. */
+/* Upper half of the data register: mode select. Bit 7 set = dictionary
+ * upload, clear = tree upload; either restarts the matching cursor. */
 void decathlt5838SetTableUploadMode(u16 val)
 {
-  d5838.mode = val;
-  if (!(d5838.mode & 0x80))
-    d5838.it2 = 0;
+  d5838.upload_dictionary = (val & 0x80) != 0;
+  if (d5838.upload_dictionary)
+    d5838.dictionary_bytes = 0;
   else
-    d5838.id = 0;
+    d5838.tree_words = 0;
 }
 
-/* Lower 16 bits of the 32-bit data register (byte offset 0x7FFFF6/7 within
- * a bank window). Written repeatedly, once per payload word, without
- * resetting anything - the cursor auto-increments. */
+/* Lower half of the data register: payload, cursor auto-increments. */
 void decathlt5838UploadTableData(u16 val)
 {
-  if (!(d5838.mode & 0x80))
+  if (d5838.upload_dictionary)
   {
-    if (d5838.it2 / 2 < 12)
+    if (d5838.dictionary_bytes < 256)
     {
-      if ((d5838.it2 & 1) == 0)
-      {
-        d5838.tree[d5838.it2 / 2].len = (u8)((0xFF00 & val) >> 8);
-        d5838.tree[d5838.it2 / 2].idx = (u8)(0x00FF & val);
-      }
-      else
-      {
-        d5838.tree[d5838.it2 / 2].pattern = val;
-      }
-      d5838.it2++;
+      d5838.dictionary[d5838.dictionary_bytes++] = (u8)(val >> 8);
+      d5838.dictionary[d5838.dictionary_bytes++] = (u8)(val & 0xFF);
     }
   }
-  else
+  else if (d5838.tree_words < 24)
   {
-    if (d5838.id < 255)
-    {
-      d5838.dictionary[d5838.id++] = (u8)((0xFF00 & val) >> 8);
-      d5838.dictionary[d5838.id++] = (u8)(0x00FF & val);
-    }
+    d5838.tree[d5838.tree_words++] = val;
   }
+}
+
+/*============================================================================
+ * Save states (CART chunk, ST-V block - see CartSaveState() in cs0.c).
+ * Every field is written with a fixed size so the layout does not depend on
+ * the compiler's struct padding. The game configuration (cryptoKey from the
+ * game list, d5838.variant from the game init) is not saved: it is set again
+ * when the game is loaded and the state belongs to that game.
+ *============================================================================*/
+
+static void DecStateW8(u8 v, void ** stream)   { MemStateWrite(&v, 1, 1, stream); }
+static void DecStateW16(u16 v, void ** stream) { MemStateWrite(&v, 2, 1, stream); }
+static void DecStateW32(u32 v, void ** stream) { MemStateWrite(&v, 4, 1, stream); }
+static u8  DecStateR8(const void * stream)  { u8 v;  MemStateRead(&v, 1, 1, stream); return v; }
+static u16 DecStateR16(const void * stream) { u16 v; MemStateRead(&v, 2, 1, stream); return v; }
+static u32 DecStateR32(const void * stream) { u32 v; MemStateRead(&v, 4, 1, stream); return v; }
+
+#define CRYPTO_STATE_VERSION 1
+#define CRYPTO_STATE_SIZE (4 + 4*2 + 1 + 4*2 + 2 + 4 + 4*3 + 1 + 4*3 + 2 + 2 + BUFFER_SIZE + 2*LINE_SIZE)
+
+/* 315-5881: position inside the current block, so a state saved in the
+   middle of a decompressed transfer resumes on the same word. */
+void cryptoSaveState(void ** stream)
+{
+  DecStateW32(CRYPTO_STATE_VERSION, stream);
+  DecStateW32(cryptoSubKey, stream);
+  DecStateW32(cryptoAddr, stream);
+  DecStateW8(cryptoReady, stream);
+  DecStateW32((u32)bufferBit, stream);
+  DecStateW32((u32)bufferBit2, stream);
+  DecStateW16(dec_hist, stream);
+  DecStateW32(dec_header, stream);
+  DecStateW32(buffer_pos, stream);
+  DecStateW32(line_buffer_pos, stream);
+  DecStateW32(line_buffer_size, stream);
+  DecStateW8(done_compression, stream);
+  DecStateW32(block_pos, stream);
+  DecStateW32(block_size, stream);
+  DecStateW32(block_numlines, stream);
+  DecStateW16(buffer2a, stream);
+  MemStateWrite(buffer2, 1, 2, stream);
+  MemStateWrite(buffer, 1, BUFFER_SIZE, stream);
+  MemStateWrite(line_buffer, 1, LINE_SIZE, stream);
+  MemStateWrite(line_buffer_prev, 1, LINE_SIZE, stream);
+}
+
+int cryptoLoadState(const void * stream, int size)
+{
+  u32 version;
+  int bb, bb2;
+
+  if (size < CRYPTO_STATE_SIZE)
+    return -1;
+  version = DecStateR32(stream);
+  if (version != CRYPTO_STATE_VERSION)
+    return -1;
+
+  cryptoSubKey = DecStateR32(stream);
+  cryptoAddr = DecStateR32(stream);
+  cryptoReady = DecStateR8(stream);
+  bb = (int)DecStateR32(stream);
+  bb2 = (int)DecStateR32(stream);
+  dec_hist = DecStateR16(stream);
+  dec_header = DecStateR32(stream);
+  buffer_pos = DecStateR32(stream);
+  line_buffer_pos = DecStateR32(stream);
+  line_buffer_size = DecStateR32(stream);
+  done_compression = DecStateR8(stream);
+  block_pos = DecStateR32(stream);
+  block_size = DecStateR32(stream);
+  block_numlines = DecStateR32(stream);
+  buffer2a = DecStateR16(stream);
+  MemStateRead(buffer2, 1, 2, stream);
+  MemStateRead(buffer, 1, BUFFER_SIZE, stream);
+  MemStateRead(line_buffer, 1, LINE_SIZE, stream);
+  MemStateRead(line_buffer_prev, 1, LINE_SIZE, stream);
+
+  /* A damaged state must not index outside the buffers. */
+  bufferBit = (bb >= 0 && bb <= 7) ? bb : 7;
+  bufferBit2 = (bb2 >= 0 && bb2 <= 15) ? bb2 : 15;
+  if (buffer_pos > BUFFER_SIZE) buffer_pos = BUFFER_SIZE;
+  if (line_buffer_size > LINE_SIZE) line_buffer_size = LINE_SIZE;
+  if (line_buffer_pos > line_buffer_size) line_buffer_pos = line_buffer_size;
+  return 0;
+}
+
+#define D5838_STATE_VERSION 1
+#define D5838_STATE_SIZE (4 + 4 + 4 + 1 + 2 + 24*2 + 256 + 4*3 + 2 + 4)
+
+/* 315-5838 family: uploaded tree/dictionary and the decoder position. */
+void decathlt5838SaveState(void ** stream)
+{
+  int i;
+  DecStateW32(D5838_STATE_VERSION, stream);
+  DecStateW32(d5838.source, stream);
+  DecStateW32((u32)d5838.abort_, stream);
+  DecStateW8(d5838.bank, stream);
+  DecStateW16(d5838.control, stream);
+  for (i = 0; i < 24; i++)
+    DecStateW16(d5838.tree[i], stream);
+  MemStateWrite(d5838.dictionary, 1, 256, stream);
+  DecStateW32((u32)d5838.tree_words, stream);
+  DecStateW32((u32)d5838.dictionary_bytes, stream);
+  DecStateW32((u32)d5838.upload_dictionary, stream);
+  DecStateW16(d5838.word, stream);
+  DecStateW32((u32)d5838.bits, stream);
+}
+
+int decathlt5838LoadState(const void * stream, int size)
+{
+  u32 version;
+  int i, tw, db, bits;
+
+  if (size < D5838_STATE_SIZE)
+    return -1;
+  version = DecStateR32(stream);
+  if (version != D5838_STATE_VERSION)
+    return -1;
+
+  d5838.source = DecStateR32(stream) & 0x007FFFFF;
+  d5838.abort_ = DecStateR32(stream) ? 1 : 0;
+  d5838.bank = DecStateR8(stream) & 0x3;
+  d5838.control = DecStateR16(stream);
+  for (i = 0; i < 24; i++)
+    d5838.tree[i] = DecStateR16(stream);
+  MemStateRead(d5838.dictionary, 1, 256, stream);
+  tw = (int)DecStateR32(stream);
+  db = (int)DecStateR32(stream);
+  d5838.upload_dictionary = DecStateR32(stream) ? 1 : 0;
+  d5838.word = DecStateR16(stream);
+  bits = (int)DecStateR32(stream);
+
+  /* Cursors bounded like the upload code keeps them. */
+  d5838.tree_words = (tw >= 0 && tw <= 24) ? tw : 0;
+  d5838.dictionary_bytes = (db >= 0 && db <= 256) ? (db & ~1) : 0;
+  d5838.bits = (bits >= 0 && bits <= 16) ? bits : 0;
+  return 0;
 }
