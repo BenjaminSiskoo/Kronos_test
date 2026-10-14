@@ -323,8 +323,17 @@ static void Vdp2DrawMapPerLine(Vdp2Ctrl *ctrl);
  * ------------------------------------------------------------------------- */
 static INLINE int Vdp2DisplayLinesForZones(void)
 {
-  const int disp = yabsys.VBlankLineCount - 1;
-  return (disp > 0) ? disp : 1;
+  return Vdp2ZoneLineCount();   /* vdp2.c : VBlankLineCount - 1 */
+}
+
+/* Meme mise a l'echelle pour une hauteur 'h' quelconque (rotation : vres,
+ * qui inclut le facteur de rendu heightRatio). */
+static INLINE int Vdp2ZoneScaledY(int h, int line)
+{
+  int y = (h * line) / Vdp2DisplayLinesForZones();
+  if (y < 0) y = 0;
+  if (y > h) y = h;
+  return y;
 }
 
 static INLINE int Vdp2ZoneScreenY(int line)
@@ -819,7 +828,10 @@ static void Vdp2DrawRotation_in_sync(RBGDrawInfo * rbg)
     rbg->paraB.over_pattern_name = rbg->ctrl.regs->OVPNRB;
 
     rbg->ctrl.info.cellw = rbg->hres;
-    rbg->ctrl.info.cellh = (rbg->vres * (info->endLine - info->startLine)) / yabsys.VBlankLineCount;
+    /* Hauteur de la zone = difference des deux bornes deja arrondies, comme
+     * les coordonnees de texture de YglQuadRbg0() (commongl.c). */
+    rbg->ctrl.info.cellh = Vdp2ZoneScaledY(rbg->vres, info->endLine)
+                         - Vdp2ZoneScaledY(rbg->vres, info->startLine);
 
     if (info->isbitmap) {
         rbg->ctrl.info.cellw = cellw;
@@ -855,13 +867,15 @@ static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg)
 
     RBGGenerator_init(_Ygl->width, _Ygl->height);
     info->vertices[0] = 0;
-    info->vertices[1] = (screenHeight * info->startLine)/yabsys.VBlankLineCount;
+    /* Bornes de zone en lignes affichees (VBlankLineCount - 1), comme les
+     * couches NBG : voir Vdp2ZoneScreenY(). */
+    info->vertices[1] = Vdp2ZoneScaledY(screenHeight, info->startLine);
     info->vertices[2] = screenWidth;
-    info->vertices[3] = (screenHeight * info->startLine)/yabsys.VBlankLineCount;
+    info->vertices[3] = Vdp2ZoneScaledY(screenHeight, info->startLine);
     info->vertices[4] = screenWidth;
-    info->vertices[5] = (screenHeight * info->endLine)/yabsys.VBlankLineCount;
+    info->vertices[5] = Vdp2ZoneScaledY(screenHeight, info->endLine);
     info->vertices[6] = 0;
-    info->vertices[7] = (screenHeight * info->endLine)/yabsys.VBlankLineCount;
+    info->vertices[7] = Vdp2ZoneScaledY(screenHeight, info->endLine);
     info->flipfunction = 0;
     info->cor = 0x00;
     info->cog = 0x00;
