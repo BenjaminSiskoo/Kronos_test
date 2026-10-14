@@ -29,9 +29,9 @@ UIAbout::UIAbout( QWidget* p )
 	if ( p && !p->isFullScreen() )
 		setWindowFlags( Qt::Sheet );
 
-	/* here we don't use QtYabause::retranslateWidget because it would search for the
-	string with the current value of VERSION instead of the string with %1 in it... */
-	//lInformations->setText( QtYabause::translate( lInformations->text() ).arg( VERSION ));
-
-	QtYabause::retranslateWidgetOnly( this );
+	/* The whole dialog is translated now: retranslateWidgetOnly() only handled
+	the window title, so "Youtube Channel", "Discord Channel", "Ok" and the
+	information text stayed in English. The %1/VERSION concern of the old
+	comment no longer applies: lInformations has no %1 in UIAbout.ui. */
+	QtYabause::retranslateWidget( this );
 }
