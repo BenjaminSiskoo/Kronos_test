@@ -96,6 +96,77 @@ static int Vdp2BankReadSince[4] = { 0, 0, 0, 0 };
  * bank loses read access, see Vdp2CaptureBankWindow()) use this value. */
 #define VDP2_SNAPSHOT_OPEN_END 0x7FFFFFFF
 
+/* ---------------------------------------------------------------------------
+ * Deferred bank captures.
+ *
+ * vdp2RamAccessCPUCheck() captures a bank each time it goes from CPU-owned
+ * to VDP2-owned in the active area. The V-blank hands every bank to the
+ * CPU, so on line 1 of every frame each bank without a CPU slot is captured:
+ * up to 4 x 128 KB of memcpy per frame, in every game, while the copy only
+ * differs from the VRAM the frame is composed from if the bank is written
+ * again before the V-blank IN.
+ *
+ * Outside double-density those captures are now taken lazily: the entry is
+ * recorded with its line, and its 128 KB are copied only right before the
+ * first write to that bank (Vdp2RamWrite*), at which point the bank still
+ * holds the captured content. When the frame is drawn without any such
+ * write, the entry is marked as never copied and the lookups return NULL:
+ * the renderer then reads the compose VRAM (V-blank IN), identical to the
+ * content at the capture line.
+ *
+ * Double-density keeps the eager copies: a field's captures are also read
+ * when the next frame draws the other field, after further writes.
+ * ------------------------------------------------------------------------- */
+static int Vdp2LazyCount[4] = { 0, 0, 0, 0 };
+
+static void Vdp2SnapshotMaterialize(int bank) {
+  const int slot = Vdp2VramCaptureSlot;
+  int i;
+  for (i = 0; i < Vdp2VramSnapshotCount[slot][bank]; i++) {
+    Vdp2VramBankSnapshot *snap = &Vdp2VramSnapshots[slot][bank][i];
+    if (snap->lazy == 1) {
+      memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+      snap->lazy = 0;
+    }
+  }
+  Vdp2LazyCount[bank] = 0;
+}
+
+/* Fill 'snap' with the current content of 'bank' (eager copy). */
+static void Vdp2SnapshotFill(int bank, Vdp2VramBankSnapshot *snap) {
+  if (snap->lazy == 1 && Vdp2LazyCount[bank] > 0) Vdp2LazyCount[bank]--;
+  snap->lazy = 0;
+  memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+}
+
+/* Record 'snap' as a deferred capture of 'bank'. */
+static void Vdp2SnapshotDefer(int bank, Vdp2VramBankSnapshot *snap) {
+  snap->lazy = 1;
+  Vdp2LazyCount[bank]++;
+}
+
+/* Called before every VDP2 VRAM write. */
+static INLINE void Vdp2SnapshotBeforeWrite(u32 addr) {
+  if (Vdp2Regs->VRSIZE & 0x8000) return;    /* captures not used in 8 Mbit */
+  {
+    const int bank = (int)((addr >> 17) & 3);
+    if (Vdp2LazyCount[bank]) Vdp2SnapshotMaterialize(bank);
+  }
+}
+
+/* The frame has been drawn: deferred captures still not copied are no
+ * longer needed, the compose VRAM taken just before holds their content. */
+static void Vdp2SnapshotDropDeferred(void) {
+  const int slot = Vdp2VramCaptureSlot;
+  int bank, i;
+  for (bank = 0; bank < 4; bank++) {
+    for (i = 0; i < Vdp2VramSnapshotCount[slot][bank]; i++)
+      if (Vdp2VramSnapshots[slot][bank][i].lazy == 1)
+        Vdp2VramSnapshots[slot][bank][i].lazy = 2;
+    Vdp2LazyCount[bank] = 0;
+  }
+}
+
 const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine) {
   const Vdp2VramBankSnapshot *best = NULL;
   /* Called from VIDCSVdp2Draw(), at V-blank IN of the frame being drawn:
@@ -117,6 +188,10 @@ const u8 * Vdp2GetVramBankSnapshot(int bank, int atLine) {
   /* A capture taken when the bank lost read access no longer applies past
    * that line: the VDP2 does not read the bank there (ST-058-R2 p.33). */
   if (best == NULL || atLine >= best->endLine) return NULL;
+  /* Deferred capture never copied: the bank was not written between its
+   * line and the V-blank IN, so the compose VRAM read by the caller holds
+   * exactly that content. */
+  if (best->lazy) return NULL;
   return best->data;
 }
 
@@ -135,7 +210,8 @@ const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame) {
     return NULL;
   for (i = 0; i < Vdp2VramSnapshotCount[slot][bank]; i++) {
     if (Vdp2VramSnapshots[slot][bank][i].line > atLine) break;
-    best = (atLine < Vdp2VramSnapshots[slot][bank][i].endLine)
+    best = ((atLine < Vdp2VramSnapshots[slot][bank][i].endLine) &&
+            !Vdp2VramSnapshots[slot][bank][i].lazy)
          ? Vdp2VramSnapshots[slot][bank][i].data : NULL;
   }
   return best;
@@ -372,7 +448,13 @@ static void vdp2RamAccessCPUCheck(int bank){
           Vdp2VramBankSnapshot *snap = &Vdp2VramSnapshots[slot][bank][Vdp2VramSnapshotCount[slot][bank]++];
           snap->line = yabsys.LineCount;
           snap->endLine = VDP2_SNAPSHOT_OPEN_END;
-          memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+          snap->lazy = 0;
+          /* Deferred outside double-density and 8 Mbit (see
+           * Vdp2SnapshotDefer()). */
+          if (((Vdp2Regs->TVMD & 0xC0) != 0xC0) && !(Vdp2Regs->VRSIZE & 0x8000))
+            Vdp2SnapshotDefer(bank, snap);
+          else
+            Vdp2SnapshotFill(bank, snap);
         }
       } else {
         SH2ClearCPUConcurrency(MSH2, VDP2_RAM_A0_LOCK << bank);
@@ -455,6 +537,7 @@ void FASTCALL Vdp2RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
   }
  
  
+  Vdp2SnapshotBeforeWrite(addr);
   Vdp2Ram_Updated = 1;
   T1WriteByte(mem, addr, val);
 }
@@ -473,6 +556,7 @@ void FASTCALL Vdp2RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
   }
  
  
+  Vdp2SnapshotBeforeWrite(addr);
   Vdp2Ram_Updated = 1;
   T1WriteWord(mem, addr, val);
 }
@@ -491,6 +575,7 @@ void FASTCALL Vdp2RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) 
   }
  
  
+  Vdp2SnapshotBeforeWrite(addr);
   Vdp2Ram_Updated = 1;
   T1WriteLong(mem, addr, val);
 }
@@ -730,6 +815,7 @@ void Vdp2Reset(void) {
    Vdp2VramSlotOddFrame[0] = -1;
    Vdp2VramSlotOddFrame[1] = -1;
    Vdp2VramDrawPending = 0;
+   memset(Vdp2LazyCount, 0, sizeof(Vdp2LazyCount));
    memset(Vdp2BankHadReadAccess, 0, sizeof(Vdp2BankHadReadAccess));
    memset(Vdp2BankReadSince, 0, sizeof(Vdp2BankReadSince));
 }
@@ -777,10 +863,11 @@ static void Vdp2CaptureBank(int bank) {
     if (n >= VDP2_MAX_VRAM_SNAPSHOTS) return;
     snap = &Vdp2VramSnapshots[slot][bank][n];
     Vdp2VramSnapshotCount[slot][bank] = n + 1;
+    snap->lazy = 0;   /* fresh entry: drop the flag left by an older frame */
   }
   snap->line = yabsys.LineCount;
   snap->endLine = VDP2_SNAPSHOT_OPEN_END;
-  memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+  Vdp2SnapshotFill(bank, snap);
 }
 
 /* Freeze physical bank 'bank' as the content the VDP2 displayed on lines
@@ -816,9 +903,10 @@ static void Vdp2CaptureBankWindow(int bank, int fromLine) {
     snap = &Vdp2VramSnapshots[slot][bank][n];
     Vdp2VramSnapshotCount[slot][bank] = n + 1;
     snap->line = fromLine;
+    snap->lazy = 0;
   }
   snap->endLine = yabsys.LineCount;
-  memcpy(snap->data, Vdp2Ram + bank * VDP2_VRAM_BANK_SIZE, VDP2_VRAM_BANK_SIZE);
+  Vdp2SnapshotFill(bank, snap);
 }
 
 /* See vdp2.h. True Pinball, in game, per field: NBG0 bitmap 1024x256 with a
@@ -981,6 +1069,7 @@ void Vdp2VBlankIN(void) {
      /* The frame just drawn read the current capture slot: switch to the
       * other one at V-blank OUT (see Vdp2VramSnapshotSwap()). */
      Vdp2VramDrawPending = 1;
+     Vdp2SnapshotDropDeferred();
      isSkipped = 0;
    }
    // Video CD Card (EXPERIMENTAL, see mpegcard.h): let the decoder take its
@@ -1337,6 +1426,12 @@ static int Vdp2DisplayLineCount(void)
  *     transient one during a mode change -- would let the H-blank capture
  *     run 42 entries past the end of both arrays, which sit adjacent in BSS.
  *     The old `> 256` clamp masked this by being narrower than 270. */
+int Vdp2ZoneLineCount(void)
+{
+  const int disp = (int)yabsys.VBlankLineCount - 1;
+  return (disp > 0) ? disp : 1;
+}
+
 static int Vdp2VBlankLine(void)
 {
   int v = Vdp2DisplayLineCount() + 1;
@@ -1375,6 +1470,7 @@ void Vdp2VBlankOUT(void) {
    Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][1] = 0;
    Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][2] = 0;
    Vdp2VramSnapshotCount[Vdp2VramCaptureSlot][3] = 0;
+   memset(Vdp2LazyCount, 0, sizeof(Vdp2LazyCount));
    /* Read access windows restart with the frame. */
    {
      int b;
@@ -2044,6 +2140,9 @@ int Vdp2LoadState(const void * stream, UNUSED int version, int size)
 
    // Read VDP2 ram
    MemStateRead((void *)Vdp2Ram, 0x100000, 1, stream);
+   /* The VRAM just changed under the deferred captures: they can no longer
+    * be copied with the content of their line. */
+   Vdp2SnapshotDropDeferred();
 
    // Read CRAM
    MemStateRead((void *)Vdp2ColorRam, 0x1000, 1, stream);
