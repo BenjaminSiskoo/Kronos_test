@@ -354,6 +354,7 @@ extern "C" {
   }
 
   void MappedMemoryInit(void);
+  void MappedMemoryRemapCs0(void);
   void switchFB8bit();
   void switchFB16bit();
 
