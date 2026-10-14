@@ -108,8 +108,8 @@ static QColor cramColor(int idx) {
 void UIDebugVDP2Viewer::updateVdp2Registers()
 {
     if (!Vdp2Regs) {
-        pteRawRegs->setPlainText("VDP2 not initialised");
-        pteDecodedRegs->setPlainText("VDP2 not initialised");
+        pteRawRegs->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        pteDecodedRegs->setPlainText(QtYabause::translate("VDP2 not initialised."));
         return;
     }
     const Vdp2 &r = *Vdp2Regs;
@@ -679,7 +679,7 @@ void UIDebugVDP2Viewer::wheelEvent(QWheelEvent *event)
 // ============================================================
 void UIDebugVDP2Viewer::updateStats()
 {
-    if (!Vdp2Regs) { pteStats->setPlainText("VDP2 not initialised"); return; }
+    if (!Vdp2Regs) { pteStats->setPlainText(QtYabause::translate("VDP2 not initialised.")); return; }
     std::ostringstream out;
     struct Layer { const char *name; void (*fn)(char*,int*); };
     static Layer layers[] = {
@@ -714,7 +714,7 @@ void UIDebugVDP2Viewer::updateColorRam()
     pteColorRamHex->clear();
 
     if (!Vdp2ColorRam || !Vdp2Regs) {
-        lCramInfo->setText("Color RAM not available");
+        lCramInfo->setText(QtYabause::translate("Color RAM not available"));
         return;
     }
 
@@ -725,7 +725,7 @@ void UIDebugVDP2Viewer::updateColorRam()
     //   1=RGB555 banked (2048 entries x 2 bytes, banked access)
     //   2=RGB888 (1024 entries x 4 bytes)
     //   3=(rsvd)
-    lCramInfo->setText(QString("Color RAM mode %1  —  %2 entries  (%3 bytes each)")
+    lCramInfo->setText(QtYabause::translate("Color RAM mode %1  —  %2 entries  (%3 bytes each)")
         .arg(mode).arg(total).arg(mode<=1?2:4));
 
     const int SW=10, SH=10, COLS=64;
@@ -793,7 +793,7 @@ void UIDebugVDP2Viewer::vramBankRange(u32 *base, u32 *size) const
 void UIDebugVDP2Viewer::updateVramHex()
 {
     pteVramHex->clear();
-    if (!Vdp2Ram) { pteVramHex->setPlainText("VDP2 RAM not available"); return; }
+    if (!Vdp2Ram) { pteVramHex->setPlainText(QtYabause::translate("VDP2 RAM not available.")); return; }
 
     // VRAM layout (Saturn HW Manual §3.2 / VRSIZE) :
     //   Total VRAM = 512KB (0x80000 octets) — toujours présent
@@ -913,7 +913,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         gvScreen->scene()->clear();
         currentImage = QImage();
         pbSaveAsBitmap->setEnabled(false);
-        pteScreenInfo->setPlainText(tr("VDP2 not initialised."));
+        pteScreenInfo->setPlainText(QtYabause::translate("VDP2 not initialised."));
         return;
     }
     int idx = cbScreen->itemData(cbScreen->currentIndex()).toInt();
@@ -959,7 +959,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         currentImage = QImage();
         gvScreen->scene()->clear();
         QGraphicsTextItem *msg = gvScreen->scene()->addText(
-            tr("This layer isn't producing any output right now.\n"
+            QtYabause::translate("This layer isn't producing any output right now.\n"
                "Most likely its BGON enable bit is off -- see the\n"
                "Registers tab (BGON) or the main VDP2 Debug window."));
         msg->setDefaultTextColor(Qt::gray);
@@ -967,7 +967,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         pbSaveAsBitmap->setEnabled(false);
     }
     updateLayerInfo(idx);
-    lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+    lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
 }
 
 // ============================================================
@@ -981,7 +981,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
 void UIDebugVDP2Viewer::updateLayerInfo(int screenId)
 {
     if (!Vdp2Regs) {
-        pteScreenInfo->setPlainText(tr("VDP2 not initialised."));
+        pteScreenInfo->setPlainText(QtYabause::translate("VDP2 not initialised."));
         return;
     }
 
@@ -1007,7 +1007,7 @@ void UIDebugVDP2Viewer::updateLayerInfo(int screenId)
 
     QString text = isEnabled
         ? QString::fromUtf8(buf)
-        : tr("(layer disabled -- BGON bit off)\n");
+        : QtYabause::translate("(layer disabled -- BGON bit off)\n");
     pteScreenInfo->setPlainText(text);
 }
 
@@ -1096,18 +1096,18 @@ bool UIDebugVDP2Viewer::eventFilter(QObject *watched, QEvent *event)
                 px < currentImage.width() && py < currentImage.height())
             {
                 QColor c = currentImage.pixelColor(px, py);
-                lPixelInfo->setText(tr("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
+                lPixelInfo->setText(QtYabause::translate("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
                     .arg(px).arg(py)
                     .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
             }
             else
             {
-                lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+                lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
             }
         }
         else if (event->type() == QEvent::Leave)
         {
-            lPixelInfo->setText(tr("Move the mouse over the image to inspect a pixel."));
+            lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
         }
     }
     return QDialog::eventFilter(watched, event);
