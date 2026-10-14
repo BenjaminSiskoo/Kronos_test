@@ -1687,3 +1687,157 @@ void Adsp2181Execute(Adsp2181 *a, int cycles)
       a->icount--;
    }
 }
+
+/*---------------------------------------------------------------------------
+   Save states (RAX block of the CART chunk, see rax.c)
+
+   Every register is written with its own size, so the layout does not
+   depend on struct padding. Not written: the board callbacks, pram (saved
+   by the board), the operand maps (they point into `core`, rebuilt by
+   Init) and the data pages (set again by the board). lmask/base are
+   recomputed from I and L.
+---------------------------------------------------------------------------*/
+
+#define ADSP_STATE_VERSION 1
+
+static void adsp_w16(u16 v, void **stream) { MemStateWrite(&v, 2, 1, stream); }
+static void adsp_w32(u32 v, void **stream) { MemStateWrite(&v, 4, 1, stream); }
+static u16 adsp_r16(const void *stream) { u16 v; MemStateRead(&v, 2, 1, stream); return v; }
+static u32 adsp_r32(const void *stream) { u32 v; MemStateRead(&v, 4, 1, stream); return v; }
+
+static void adsp_core_save(const AdspCore *c, void **stream)
+{
+   adsp_w16(c->ax0.u, stream); adsp_w16(c->ax1.u, stream);
+   adsp_w16(c->ay0.u, stream); adsp_w16(c->ay1.u, stream);
+   adsp_w16(c->ar.u, stream);  adsp_w16(c->af.u, stream);
+   adsp_w16(c->mx0.u, stream); adsp_w16(c->mx1.u, stream);
+   adsp_w16(c->my0.u, stream); adsp_w16(c->my1.u, stream);
+   adsp_w16(c->mf.u, stream);
+   MemStateWrite((void *)&c->mr.mr, 8, 1, stream);
+   adsp_w16(c->si.u, stream);  adsp_w16(c->se.u, stream);
+   adsp_w16(c->sb.u, stream);
+   adsp_w32(c->sr.sr, stream);
+}
+
+static void adsp_core_load(AdspCore *c, const void *stream)
+{
+   c->ax0.u = adsp_r16(stream); c->ax1.u = adsp_r16(stream);
+   c->ay0.u = adsp_r16(stream); c->ay1.u = adsp_r16(stream);
+   c->ar.u = adsp_r16(stream);  c->af.u = adsp_r16(stream);
+   c->mx0.u = adsp_r16(stream); c->mx1.u = adsp_r16(stream);
+   c->my0.u = adsp_r16(stream); c->my1.u = adsp_r16(stream);
+   c->mf.u = adsp_r16(stream);
+   MemStateRead(&c->mr.mr, 8, 1, stream);
+   c->si.u = adsp_r16(stream);  c->se.u = adsp_r16(stream);
+   c->sb.u = adsp_r16(stream);
+   c->sr.sr = adsp_r32(stream);
+   c->zero.u = 0;
+}
+
+#define ADSP_CORE_STATE_SIZE (11*2 + 8 + 3*2 + 4)
+#define ADSP_STATE_SIZE (4 + 11*4 + 2*ADSP_CORE_STATE_SIZE + 8*4*3 + 1 + 2*4 + \
+                         (4+4+16)*4 + 4*3*2 + 4*4 + 5 + 2 + 1 + 1 + 2 + \
+                         2*ADSP2181_NUM_IRQ + 4)
+
+int Adsp2181StateSize(void)
+{
+   return ADSP_STATE_SIZE;
+}
+
+void Adsp2181SaveState(const Adsp2181 *a, void **stream)
+{
+   int k;
+   u8 b[5];
+
+   adsp_w32(ADSP_STATE_VERSION, stream);
+   adsp_w32(a->pc, stream); adsp_w32(a->ppc, stream); adsp_w32(a->loop, stream);
+   adsp_w32(a->loop_condition, stream); adsp_w32(a->cntr, stream);
+   adsp_w32(a->astat, stream); adsp_w32(a->sstat, stream); adsp_w32(a->mstat, stream);
+   adsp_w32(a->mstat_prev, stream); adsp_w32(a->astat_clear, stream); adsp_w32(a->idle, stream);
+   adsp_core_save(&a->core, stream);
+   adsp_core_save(&a->alt, stream);
+   for (k = 0; k < 8; k++) adsp_w32(a->i[k], stream);
+   for (k = 0; k < 8; k++) adsp_w32((u32)a->m[k], stream);
+   for (k = 0; k < 8; k++) adsp_w32(a->l[k], stream);
+   MemStateWrite((void *)&a->px, 1, 1, stream);
+   adsp_w32(a->pmovlay, stream); adsp_w32(a->dmovlay, stream);
+   for (k = 0; k < 4; k++) adsp_w32(a->loop_stack[k], stream);
+   for (k = 0; k < 4; k++) adsp_w32(a->cntr_stack[k], stream);
+   for (k = 0; k < 16; k++) adsp_w32(a->pc_stack[k], stream);
+   for (k = 0; k < 4; k++)
+   {
+      adsp_w16(a->stat_stack[k][0], stream);
+      adsp_w16(a->stat_stack[k][1], stream);
+      adsp_w16(a->stat_stack[k][2], stream);
+   }
+   adsp_w32((u32)a->pc_sp, stream); adsp_w32((u32)a->cntr_sp, stream);
+   adsp_w32((u32)a->stat_sp, stream); adsp_w32((u32)a->loop_sp, stream);
+   b[0] = a->flagout; b[1] = a->flagin; b[2] = a->fl0; b[3] = a->fl1; b[4] = a->fl2;
+   MemStateWrite(b, 1, 5, stream);
+   adsp_w16(a->imask, stream);
+   MemStateWrite((void *)&a->icntl, 1, 1, stream);
+   MemStateWrite((void *)&a->ints_enabled, 1, 1, stream);
+   adsp_w16(a->ifc, stream);
+   MemStateWrite((void *)a->irq_state, 1, ADSP2181_NUM_IRQ, stream);
+   MemStateWrite((void *)a->irq_latch, 1, ADSP2181_NUM_IRQ, stream);
+   adsp_w32((u32)a->icount, stream);
+}
+
+static s32 adsp_clamp_sp(s32 v, s32 depth)
+{
+   return (v < 0) ? 0 : (v > depth) ? depth : v;
+}
+
+/* `a` must have been through Adsp2181Init (callbacks and pram set). */
+int Adsp2181LoadState(Adsp2181 *a, const void *stream, int size)
+{
+   int k;
+   u8 b[5];
+
+   if (size < ADSP_STATE_SIZE)
+      return -1;
+   if (adsp_r32(stream) != ADSP_STATE_VERSION)
+      return -1;
+
+   a->pc = adsp_r32(stream) & 0x3fff; a->ppc = adsp_r32(stream) & 0x3fff;
+   a->loop = adsp_r32(stream); a->loop_condition = adsp_r32(stream) & 15;
+   a->cntr = adsp_r32(stream);
+   a->astat = adsp_r32(stream) & 0xff;   /* index of condition_table */
+   a->sstat = adsp_r32(stream); a->mstat = adsp_r32(stream);
+   a->mstat_prev = adsp_r32(stream); a->astat_clear = adsp_r32(stream);
+   a->idle = adsp_r32(stream);
+   /* core/alt are saved already swapped for the current MSTAT bank */
+   adsp_core_load(&a->core, stream);
+   adsp_core_load(&a->alt, stream);
+   for (k = 0; k < 8; k++) a->i[k] = adsp_r32(stream) & 0x3fff;
+   for (k = 0; k < 8; k++) a->m[k] = (s32)adsp_r32(stream);
+   for (k = 0; k < 8; k++) a->l[k] = adsp_r32(stream) & 0x3fff;
+   MemStateRead(&a->px, 1, 1, stream);
+   a->pmovlay = adsp_r32(stream); a->dmovlay = adsp_r32(stream);
+   for (k = 0; k < 4; k++) a->loop_stack[k] = adsp_r32(stream);
+   for (k = 0; k < 4; k++) a->cntr_stack[k] = adsp_r32(stream);
+   for (k = 0; k < 16; k++) a->pc_stack[k] = adsp_r32(stream) & 0x3fff;
+   for (k = 0; k < 4; k++)
+   {
+      a->stat_stack[k][0] = adsp_r16(stream);
+      a->stat_stack[k][1] = adsp_r16(stream);
+      a->stat_stack[k][2] = adsp_r16(stream) & 0xff;
+   }
+   a->pc_sp = adsp_clamp_sp((s32)adsp_r32(stream), PC_STACK_DEPTH);
+   a->cntr_sp = adsp_clamp_sp((s32)adsp_r32(stream), CNTR_STACK_DEPTH);
+   a->stat_sp = adsp_clamp_sp((s32)adsp_r32(stream), STAT_STACK_DEPTH);
+   a->loop_sp = adsp_clamp_sp((s32)adsp_r32(stream), LOOP_STACK_DEPTH);
+   MemStateRead(b, 1, 5, stream);
+   a->flagout = b[0]; a->flagin = b[1]; a->fl0 = b[2]; a->fl1 = b[3]; a->fl2 = b[4];
+   a->imask = adsp_r16(stream);
+   MemStateRead(&a->icntl, 1, 1, stream);
+   MemStateRead(&a->ints_enabled, 1, 1, stream);
+   a->ifc = adsp_r16(stream);
+   MemStateRead(a->irq_state, 1, ADSP2181_NUM_IRQ, stream);
+   MemStateRead(a->irq_latch, 1, ADSP2181_NUM_IRQ, stream);
+   a->icount = (int)adsp_r32(stream);
+
+   for (k = 0; k < 8; k++)
+      update_l(a, k);   /* lmask and base */
+   return 0;
+}
