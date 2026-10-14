@@ -254,10 +254,10 @@ void UIDisasm::contextMenuEvent( QContextMenuEvent * event )
    disassembleFunction(context, addr, text);
 
    QMenu menu(this);
-   QAction *toggle = menu.addAction(breakpoints.contains(addr) ? tr("Remove breakpoint") : tr("Add breakpoint"));
+   QAction *toggle = menu.addAction(breakpoints.contains(addr) ? QtYabause::translate("Remove breakpoint") : QtYabause::translate("Add breakpoint"));
    menu.addSeparator();
-   QAction *copyAddr = menu.addAction(tr("Copy address"));
-   QAction *copyLine = menu.addAction(tr("Copy line"));
+   QAction *copyAddr = menu.addAction(QtYabause::translate("Copy address"));
+   QAction *copyLine = menu.addAction(QtYabause::translate("Copy line"));
 
    QAction *chosen = menu.exec(event->globalPos());
    if (chosen == toggle)
