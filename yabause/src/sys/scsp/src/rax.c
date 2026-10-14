@@ -497,10 +497,13 @@ static void fetch_frame(void)
    Reset
 ---------------------------------------------------------------------------*/
 
-static void rax_do_reset(void)
+/* First use of the CPU (reset or save state load): callbacks and pram. */
+static void rax_init_cpu(void)
 {
-   int i;
    Adsp2181Callbacks cb;
+
+   if (rax->cpu.pram != NULL)
+      return;
 
    cb.user = NULL;
    cb.data_read = rax_data_read;
@@ -509,10 +512,15 @@ static void rax_do_reset(void)
    cb.io_write = rax_io_write;
    cb.sport_tx = rax_sport_tx;
    cb.dmovlay = rax_dmovlay;
+   Adsp2181Init(&rax->cpu, rax->pram, &cb);
+}
+
+static void rax_do_reset(void)
+{
+   int i;
 
    /* keep the CPU registers/RAM across resets once initialised */
-   if (rax->cpu.pram == NULL)
-      Adsp2181Init(&rax->cpu, rax->pram, &cb);
+   rax_init_cpu();
 
    /* acclaim_rax_device::device_reset: boot 32 program words (96 bytes)
       from the start of the ROM, as the 2181 BDMA boot does */
@@ -725,4 +733,171 @@ void RaxRunSample(s32 *l, s32 *r)
    }
 
    YabThreadUnLock(rax_mtx);
+}
+
+/*---------------------------------------------------------------------------
+   Save states ("RAX " block of the CART chunk, see cs0.c)
+
+   The board is part of the Batman Forever cartridge. Saved: program RAM,
+   the five data RAM banks, internal RAM, control registers, banking, the
+   host latch and the queue of SH-2 writes not yet handed to the ADSP, the
+   BDMA timer, the SPORT0 autobuffer/DAC state, the sample clock fraction
+   and the ADSP-2181 registers. The ROM is not saved (loaded with the
+   game). Called on the main thread; the sound thread runs RaxRunSample
+   under the same mutex, so the board is never caught mid-sample.
+---------------------------------------------------------------------------*/
+
+#define RAX_STATE_VERSION 1
+
+static void rax_w16(u16 v, void **stream) { MemStateWrite(&v, 2, 1, stream); }
+static void rax_w32(u32 v, void **stream) { MemStateWrite(&v, 4, 1, stream); }
+static u16 rax_r16(const void *stream) { u16 v; MemStateRead(&v, 2, 1, stream); return v; }
+static u32 rax_r32(const void *stream) { u32 v; MemStateRead(&v, 4, 1, stream); return v; }
+
+#define RAX_STATE_SIZE (4 + 4 + 0x4000*4 + 5*0x2000*2 + 0x1fe0*2 + 32*2 + 3*4 + \
+                        2*2 + 2*4 + 4 + RAX_HOST_FIFO*2 + 2*4 + 3*4 + 2*4 + 2*4 + \
+                        3*2 + 2*4 + 4*2 + 4)
+
+void RaxSaveState(void **stream)
+{
+   int k;
+   int present;
+
+   rax_ensure_mutex();
+   YabThreadLock(rax_mtx);
+   present = (rax_enabled && rax != NULL) ? 1 : 0;
+
+   rax_w32(RAX_STATE_VERSION, stream);
+   rax_w32((u32)present, stream);
+   if (present)
+   {
+      /* A reset still waiting for the sound thread is done now, so the
+         saved board is the one that will run. */
+      if (rax_reset_pending)
+      {
+         rax_reset_pending = 0;
+         rax_do_reset();
+      }
+
+      MemStateWrite(rax->pram, 4, 0x4000, stream);
+      MemStateWrite(rax->banked_ram, 2, 5 * 0x2000, stream);
+      MemStateWrite(rax->int_ram, 2, 0x1fe0, stream);
+      MemStateWrite(rax->control_regs, 2, 32, stream);
+      rax_w32(rax->data_bank, stream);
+      rax_w32(rax->rom_bank, stream);
+      rax_w32(rax->dmovlay_val, stream);
+
+      rax_w16(rax->data_in, stream);
+      rax_w16(rax->data_out, stream);
+      rax_w32((u32)rax->latch_full, stream);
+      rax_w32((u32)rax->latch_age, stream);
+      rax_w32(rax->snd_pf0, stream);
+      MemStateWrite(rax->fifo, 2, RAX_HOST_FIFO, stream);
+      rax_w32((u32)rax->fifo_head, stream);
+      rax_w32((u32)rax->fifo_tail, stream);
+
+      rax_w32((u32)rax->bdma_pending, stream);
+      rax_w32((u32)rax->bdma_countdown, stream);
+      rax_w32(rax->bdma_param, stream);
+
+      for (k = 0; k < 2; k++)
+         rax_w32((u32)rax->dac_enabled[k], stream);
+      rax_w32((u32)rax->ab_active, stream);
+      rax_w32((u32)rax->ab_ireg, stream);
+      rax_w16(rax->ab_incs, stream);
+      rax_w16(rax->ab_size, stream);
+      rax_w16(rax->ab_base, stream);
+      rax_w32((u32)rax->frame_period, stream);
+      rax_w32((u32)rax->frame_count, stream);
+      rax_w16((u16)rax->prev_l, stream);
+      rax_w16((u16)rax->prev_r, stream);
+      rax_w16((u16)rax->cur_l, stream);
+      rax_w16((u16)rax->cur_r, stream);
+      rax_w32(rax->cyc_frac, stream);
+
+      Adsp2181SaveState(&rax->cpu, stream);
+   }
+   YabThreadUnLock(rax_mtx);
+}
+
+int RaxLoadState(const void *stream, int size)
+{
+   int k, status = 0;
+   s32 v;
+
+   if (size < 8)
+      return -1;
+   if (rax_r32(stream) != RAX_STATE_VERSION)
+      return -1;
+   if (rax_r32(stream) == 0)
+      return 0;                      /* saved without the board */
+   if (size < RAX_STATE_SIZE + Adsp2181StateSize())
+      return -1;
+
+   rax_ensure_mutex();
+   YabThreadLock(rax_mtx);
+   if (!rax_enabled || rax == NULL)
+   {
+      /* board absent here (sound ROMs missing): nothing to restore */
+      YabThreadUnLock(rax_mtx);
+      return -1;
+   }
+
+   rax_reset_pending = 0;            /* the state replaces a pending reset */
+   rax_init_cpu();
+
+   MemStateRead(rax->pram, 4, 0x4000, stream);
+   for (k = 0; k < 0x4000; k++)
+      rax->pram[k] &= 0xffffff;
+   MemStateRead(rax->banked_ram, 2, 5 * 0x2000, stream);
+   MemStateRead(rax->int_ram, 2, 0x1fe0, stream);
+   MemStateRead(rax->control_regs, 2, 32, stream);
+   rax->data_bank = rax_r32(stream) & 3;
+   rax->rom_bank = rax_r32(stream);
+   rax->dmovlay_val = rax_r32(stream) ? 1 : 0;
+
+   rax->data_in = rax_r16(stream);
+   rax->data_out = rax_r16(stream);
+   rax->latch_full = rax_r32(stream) ? 1 : 0;
+   rax->latch_age = (int)rax_r32(stream);
+   rax->snd_pf0 = rax_r32(stream);
+   MemStateRead(rax->fifo, 2, RAX_HOST_FIFO, stream);
+   v = (s32)rax_r32(stream);
+   rax->fifo_head = (v >= 0 && v < RAX_HOST_FIFO) ? v : 0;
+   v = (s32)rax_r32(stream);
+   rax->fifo_tail = (v >= 0 && v < RAX_HOST_FIFO) ? v : rax->fifo_head;
+
+   rax->bdma_pending = rax_r32(stream) ? 1 : 0;
+   rax->bdma_countdown = (int)rax_r32(stream);
+   rax->bdma_param = rax_r32(stream);
+
+   for (k = 0; k < 2; k++)
+      rax->dac_enabled[k] = rax_r32(stream) ? 1 : 0;
+   rax->ab_active = rax_r32(stream) ? 1 : 0;
+   rax->ab_ireg = (int)(rax_r32(stream) & 7);
+   rax->ab_incs = rax_r16(stream);
+   rax->ab_size = rax_r16(stream);
+   rax->ab_base = rax_r16(stream);
+   v = (s32)rax_r32(stream);
+   rax->frame_period = (v > 0) ? v : 16;   /* divisor of the interpolation */
+   rax->frame_count = (int)rax_r32(stream);
+   if (rax->frame_count > rax->frame_period)
+      rax->frame_count = rax->frame_period;
+   rax->prev_l = (s16)rax_r16(stream);
+   rax->prev_r = (s16)rax_r16(stream);
+   rax->cur_l = (s16)rax_r16(stream);
+   rax->cur_r = (s16)rax_r16(stream);
+   rax->cyc_frac = rax_r32(stream) % RAX_OUT_RATE;
+
+   if (Adsp2181LoadState(&rax->cpu, stream, size - RAX_STATE_SIZE) != 0)
+   {
+      /* Board RAM restored but not the CPU: restart it like a reset
+         rather than run code from another context. */
+      YuiMsg("RAX: ADSP-2181 state not loaded, board reset\n");
+      rax_reset_pending = 1;
+      status = -1;
+   }
+   update_data_pages();
+   YabThreadUnLock(rax_mtx);
+   return status;
 }
