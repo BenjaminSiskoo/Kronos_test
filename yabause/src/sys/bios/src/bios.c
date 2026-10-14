@@ -447,6 +447,23 @@ static void FASTCALL BiosCheckMPEGCard(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Codes de retour de la bibliotheque de sauvegarde : sega_bup.h de la SGL
+ * (Copyright(c) 1994 SEGA, "Machine state", Ver.1.00 du 1994-07-29).
+ * ST-162 (Saturn System Library User's Guide, 2.4) dit quelle fonction rend
+ * quel code. Le HLE ecrivait jusqu'ici des nombres en dur. */
+#define BUP_NON                 1   /* peripherique non connecte */
+#define BUP_UNFORMAT            2   /* non formate */
+#define BUP_WRITE_PROTECT       3   /* protege en ecriture */
+#define BUP_NOT_ENOUGH_MEMORY   4   /* place insuffisante */
+#define BUP_NOT_FOUND           5   /* fichier absent */
+#define BUP_FOUND               6   /* un fichier du meme nom existe */
+#define BUP_NO_MATCH            7   /* BUP_Verify : donnees differentes */
+#define BUP_BROKEN              8   /* fichier endommage */
+
+/* Les listes de blocs d'une sauvegarde sont en 16 bits (2 octets par bloc,
+ * voir BiosBUPWrite) : un numero de bloc ne depasse pas 0xFFFF. */
+#define BUP_MAX_BLOCKS          0x10000
+
 static u32 GetDeviceStats(u32 device, u32 *size, u32 *addr, u32 *blocksize)
 {
    switch(device)
@@ -455,6 +472,16 @@ static u32 GetDeviceStats(u32 device, u32 *size, u32 *addr, u32 *blocksize)
           *addr = backup_file_addr;
           *size = backup_file_size;
           *blocksize = 0x40;
+          /* FIX : en mode "extended backup" (8 Mo, blocs de 64 octets) le
+           * peripherique comptait 0x20000 blocs, mais les numeros de bloc
+           * sont stockes sur 16 bits : GetFreeBlocks() tronquait (u16)i et
+           * une sauvegarde allouee au-dela du bloc 0xFFFF pointait sur un
+           * autre bloc (ecrasement de donnees). On n'expose que les 0x10000
+           * premiers blocs (4 Mo) ; la memoire interne standard (32 Ko, ST-162
+           * 1.2.3 "The built-in backup memory is 32 Kbyte") n'est pas
+           * concernee. */
+          if ((*size / *blocksize) > BUP_MAX_BLOCKS)
+             *size = BUP_MAX_BLOCKS * *blocksize;
         return 0;
       case 1:
          if ((CartridgeArea->cartid & 0xF0) == 0x20)
@@ -469,22 +496,53 @@ static u32 GetDeviceStats(u32 device, u32 *size, u32 *addr, u32 *blocksize)
             return 0;
          }
          else
-            return 1;
+            return BUP_NON;
       default:
          *addr = 0;
          *size = 0;
          *blocksize = 0;
-         return 1;
+         return BUP_NON;
    }
 
-   return 1;
+   return BUP_NON;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-static int CheckHeader(UNUSED u32 device)
+/* Verifie que le peripherique est formate.
+ * FIX : la fonction rendait toujours 0, si bien que BUP_Stat ne renvoyait
+ * jamais BUP_UNFORMAT. ST-162 1.3 (exemple de programme) : un jeu fait
+ *    if (BUP_Stat(0, &sttb) == BUP_UNFORMAT) BUP_Format(0);
+ * Sur une memoire non formatee il ecrivait donc dans une structure vide.
+ * Le format est celui ecrit par FormatBackupRam() (memory.c) : l'en-tete
+ * "BackUpRam Format" (16 octets) repete 4 fois au debut de la memoire, sur
+ * les octets impairs du bus (SRAM sur D7-D0, voir BupRamMemoryReadByte).
+ * Rend 0 si formate, BUP_UNFORMAT sinon (BUP_NON si non connecte). */
+static int CheckHeader(u32 device)
 {
+   static const char header[16] = {
+      'B', 'a', 'c', 'k', 'U', 'p', 'R', 'a', 'm', ' ', 'F', 'o', 'r', 'm', 'a', 't' };
+   u32 size, addr, blocksize;
+   int i;
+
+   if (GetDeviceStats(device, &size, &addr, &blocksize) != 0)
+      return BUP_NON;
+
+   for (i = 0; i < 16; i++)
+      if (DMAMappedMemoryReadByte(addr + (i << 1) + 1) != (u8)header[i])
+         return BUP_UNFORMAT;
+
    return 0;
+}
+
+/* Erreur commune des fonctions BUP : non connecte (BUP_NON) ou non formate
+ * (BUP_UNFORMAT), 0 si le peripherique est utilisable. */
+static u32 BupCheckDevice(u32 device, u32 *size, u32 *addr, u32 *blocksize)
+{
+   u32 ret = GetDeviceStats(device, size, addr, blocksize);
+   if (ret != 0)
+      return ret;
+   return (u32)CheckHeader(device);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -564,7 +622,29 @@ static u32 GetFreeSpace(UNUSED u32 device, u32 size, u32 addr, u32 blocksize)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static u32 FindSave(SH2_struct *context, UNUSED u32 device, u32 stringaddr, u32 blockoffset, u32 size, u32 addr, u32 blocksize)
+/* Comparaison du nom de fichier.
+ * ST-162 (Saturn System Library User's Guide, BUP_Read / BUP_Delete /
+ * BUP_Verify) : "file name (11 characters are required in ASCII)" ; seul
+ * BUP_Dir fait une recherche "forward" (par prefixe). L'ancien code faisait
+ * la recherche par prefixe pour TOUTES les fonctions : un BUP_Write("SAVE")
+ * trouvait et ECRASAIT (DeleteSave) un fichier "SAVE_OPTION" existant, et
+ * BUP_Read/BUP_Delete/BUP_Verify pouvaient agir sur le mauvais fichier.
+ * prefix = 1 : recherche par prefixe (BUP_Dir) ; 0 : nom exact (un NUL dans
+ * le nom demande doit correspondre a un NUL sur le support). */
+static int BupNameMatch(u8 wanted, u8 stored, int i3, int prefix, int *done)
+{
+   *done = 0;
+   if (stored != wanted)
+   {
+      if ((wanted == 0) && prefix) { *done = 1; return 1; }
+      *done = 1;
+      return 0;
+   }
+   if ((i3 == 10) || (wanted == 0)) { *done = 1; return 1; }
+   return 0;
+}
+
+static u32 FindSave(SH2_struct *context, UNUSED u32 device, u32 stringaddr, u32 blockoffset, u32 size, u32 addr, u32 blocksize, int prefix)
 {
    u32 i;
 
@@ -579,23 +659,14 @@ static u32 FindSave(SH2_struct *context, UNUSED u32 device, u32 stringaddr, u32 
          // the data over
          for (i3 = 0; i3 < 11; i3++)
          {
+            int done;
             u8 data = SH2MappedMemoryReadByte(context, stringaddr+i3);
+            u8 stored = SH2MappedMemoryReadByte(context, addr+i+0x9+(i3*2));
 
-            if (SH2MappedMemoryReadByte(context, addr+i+0x9+(i3*2)) != data)
-            {
-               if (data == 0)
-                  // There's no string to match
-                  return ((i / blocksize) >> 1);
-               else
-                  // No Match, move onto the next block
-                  i3 = 12;
-            }
-            else
-            {
-               // Match
-               if (i3 == 10 || data == 0)
-                  return ((i / blocksize) >> 1);
-            }
+            if (BupNameMatch(data, stored, i3, prefix, &done))
+               return ((i / blocksize) >> 1);
+            if (done)
+               break; // No Match, move onto the next block
          }
       }
    }
@@ -621,25 +692,17 @@ static u32 FindSave2(UNUSED u32 device, const char *string, u32 blockoffset, u32
          // the data over
          for (i3 = 0; i3 < 11; i3++)
          {
+            int done;
             // Compare as unsigned bytes: Japanese file names use half-width
             // katakana (0xA1-0xDF) which are negative when char is signed
             u8 data = (u8)string[i3];
+            u8 stored = DMAMappedMemoryReadByte(addr+i+0x9+(i3*2));
 
-            if (DMAMappedMemoryReadByte(addr+i+0x9+(i3*2)) != data)
-            {
-               if (data == 0)
-                  // There's no string to match
-                  return ((i / blocksize) >> 1);
-               else
-                  // No Match, move onto the next block
-                  i3 = 12;
-            }
-            else
-            {
-               // Match
-               if (i3 == 10 || data == 0)
-                  return ((i / blocksize) >> 1);
-            }
+            // Exact name (used by the frontend: delete/export/import)
+            if (BupNameMatch(data, stored, i3, 0, &done))
+               return ((i / blocksize) >> 1);
+            if (done)
+               break; // No Match, move onto the next block
          }
       }
    }
@@ -715,15 +778,24 @@ static u16 *GetFreeBlocks(u32 addr, u32 blocksize, u32 numblocks, u32 size)
 
 //////////////////////////////////////////////////////////////////////////////
 
-static u16 *ReadBlockTable(u32 addr, u32 *tableaddr, int block, int blocksize, int *numblocks, int *blocksread)
+/* Lit la liste des blocs d'une sauvegarde (meme chainage que CalcSaveSize).
+ * FIX : aucune borne n'etait verifiee. Sur un support abime (ou un fichier de
+ * sauvegarde corrompu) un numero de bloc hors limites faisait lire n'importe
+ * ou, et une liste sans 0 final bouclait sans fin en grossissant le tableau
+ * (realloc() non verifie). numblocks n'etait jamais renseigne alors que les
+ * appelants s'en servent maintenant pour borner blocktbl[]. Retourne NULL si
+ * la liste est invalide (les appelants rendent alors BUP_BROKEN = 8). */
+static u16 *ReadBlockTable(u32 addr, u32 *tableaddr, int block, int blocksize, u32 size, int *numblocks, int *blocksread)
 {
    u16 *blocktbl = NULL;
-   int i=0;
    int allocsize = 32;
    int index = 0;
+   const u32 totalblocks = size / blocksize;
+   const u32 mask = (blocksize << 1) - 1;
 
    tableaddr[0] = addr + (block * blocksize * 2) + 0x45;
    blocksread[0]=0;
+   numblocks[0]=0;
 
    // Allocate buffer
    if ((blocktbl = (u16 *)malloc(sizeof(u16) * allocsize)) == NULL)
@@ -732,32 +804,52 @@ static u16 *ReadBlockTable(u32 addr, u32 *tableaddr, int block, int blocksize, i
    // Now read in the table
    for(;;)
    {
-       u16 block;
-       block = (DMAMappedMemoryReadByte(tableaddr[0]) << 8) | DMAMappedMemoryReadByte(tableaddr[0] + 2);
-       if (block == 0) {
+       u16 nextblock;
+       nextblock = (DMAMappedMemoryReadByte(tableaddr[0]) << 8) | DMAMappedMemoryReadByte(tableaddr[0] + 2);
+       if (nextblock == 0) {
          break;
        }
-       tableaddr[0] += 4;
-       if (((tableaddr[0]-1) & ((blocksize << 1) - 1)) == 0)
-       {
-          tableaddr[0] = addr + (blocktbl[blocksread[0]] * blocksize * 2) + 9;
-          blocksread[0]++;
+       if ((nextblock < 2) || (nextblock >= totalblocks) || ((u32)index >= totalblocks)) {
+         LOG("ReadBlockTable: broken block list (block %d, entry %d = %04X)\n", block, index, nextblock);
+         free(blocktbl);
+         return NULL;
        }
-       blocktbl[index] = block;
+       blocktbl[index] = nextblock;
        index++;
        if (index >= allocsize ) {
+         u16 *newtbl;
          allocsize *= 2;
-         blocktbl = (u16 *)realloc(blocktbl, sizeof(u16) * allocsize);
+         newtbl = (u16 *)realloc(blocktbl, sizeof(u16) * allocsize);
+         if (newtbl == NULL) {
+           free(blocktbl);
+           return NULL;
+         }
+         blocktbl = newtbl;
+       }
+       tableaddr[0] += 4;
+       if (((tableaddr[0]-1) & mask) == 0)
+       {
+          if (blocksread[0] >= index) {
+            free(blocktbl);
+            return NULL;
+          }
+          tableaddr[0] = addr + (blocktbl[blocksread[0]] * blocksize * 2) + 9;
+          blocksread[0]++;
        }
    }
 
    tableaddr[0] += 4;
-   if (((tableaddr[0] - 1) & ((blocksize << 1) - 1)) == 0)
+   if (((tableaddr[0] - 1) & mask) == 0)
    {
+     if (blocksread[0] >= index) {
+       free(blocktbl);
+       return NULL;
+     }
      tableaddr[0] = addr + (blocktbl[blocksread[0]] * blocksize * 2) + 9;
      blocksread[0]++;
    }
 
+   numblocks[0] = index;
    return blocktbl;
 }
 
@@ -829,6 +921,11 @@ void FASTCALL BiosBUPSelectPartition(SH2_struct * sh)
    LOG_BUP("BiosBUPSelectPartition. PR = %08X device = %d \n", sh->regs.PR, sh->regs.R[4] );
 
    ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
+   /* ST-162 BUP_SelPart : num = 0 .. (nombre de partitions - 1). Chaque
+    * peripherique emule n'a qu'une partition (BiosBUPInit) : un autre numero
+    * est un echec ("other : failure"), il etait accepte. */
+   if ((ret == 0) && ((sh->regs.R[5] & 0xFFFF) != 0))
+     ret = BUP_NON;
    if (ret != 0) {
      // Error
      sh->regs.R[0] = ret;
@@ -849,6 +946,19 @@ void FASTCALL BiosBUPFormat(SH2_struct * sh)
    SH2GetRegisters(sh, &sh->regs);
 
    LOG_BUP("BiosBUPFormat. PR = %08X\n", sh->regs.PR);
+
+   {
+      u32 size, addr, blocksize;
+      /* FIX : rendait 0 meme sans peripherique (ST-162 BUP_Format :
+       * "other : failure"). */
+      if (GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize) != 0)
+      {
+         sh->regs.R[0] = BUP_NON;
+         sh->regs.PC = sh->regs.PR;
+         SH2SetRegisters(sh, &sh->regs);
+         return;
+      }
+   }
 
    BupFormat(sh->regs.R[4]);
 
@@ -874,10 +984,12 @@ void FASTCALL BiosBUPStatus(SH2_struct * sh)
    LOG_BUP("BiosBUPStatus. arg1 = %d, arg2 = %d, arg3 = %08X, PR = %08X\n", sh->regs.R[4], sh->regs.R[5], sh->regs.R[6], sh->regs.PR);
 
    // Fill in status variables
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
-
    // Make sure there's a proper header, and return if there's any other errors
-   if (ret == 1 || CheckHeader(sh->regs.R[4]) != 0)
+   /* FIX : un peripherique non formate passait pour formate (CheckHeader
+    * rendait toujours 0) et ret valait alors 0 : BUP_Stat annoncait un
+    * succes. Rend maintenant BUP_NON ou BUP_UNFORMAT (ST-162 BUP_Stat). */
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
+   if (ret != 0)
    {
       // Error
       sh->regs.R[0] = ret;
@@ -888,16 +1000,22 @@ void FASTCALL BiosBUPStatus(SH2_struct * sh)
 
    freeblocks = GetFreeSpace(sh->regs.R[4], size, addr, blocksize);
 
-   needsize = sh->regs.R[5];
-   aftersize = (((blocksize - 6) * freeblocks) - 30) - needsize;
-   if (aftersize < 0) aftersize = 0;
+   /* datanum (BupStat, ST-162 2.1) : "number of items that can be written",
+    * et "The value for the size specified by BUP_Stat() for datasize is
+    * stored in datanum" : nombre de fichiers de 'datasize' octets qui
+    * tiennent dans les blocs libres. Le code ecrivait (octets libres -
+    * datasize) / taille de bloc, qui donnait 0 alors qu'un fichier tenait
+    * exactement (le jeu concluait a tort qu'il n'y avait pas la place).
+    * Nombre de blocs d'un fichier : meme calcul que BiosBUPWrite. */
+   needsize = 1 + ((sh->regs.R[5] + 0x1D) / (blocksize - 6));
+   aftersize = (int)(freeblocks / needsize);
 
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6], size); // Size of Backup Ram (in bytes)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x4, size / blocksize); // Size of Backup Ram (in blocks)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x8, blocksize); // Size of block
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0xC, (((blocksize - 6) * freeblocks) > 30) ? (((blocksize - 6) * freeblocks) - 30) : 0); // Free space(in bytes)
    SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x10, freeblocks); // Free space(in blocks)
-   SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x14, aftersize / blocksize); // writable block size
+   SH2MappedMemoryWriteLong(sh, sh->regs.R[6]+0x14, (u32)aftersize); // datanum: files of 'datasize' bytes that can be written
 
    // cycles need to be incremented
 
@@ -928,8 +1046,10 @@ void FASTCALL BiosBUPWrite(SH2_struct * sh)
    LOG_BUP("BiosBUPWrite. arg1 = %d, arg2 = %08X, arg3 = %08X, arg4 = %d, PR = %08X\n", sh->regs.R[4], sh->regs.R[5], sh->regs.R[6], sh->regs.R[7], sh->regs.PR);
 
    // Fill in status variables
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
-   if (ret == 1)
+   /* ST-162 BUP_Write : BUP_NON / BUP_UNFORMAT. Ecrire dans une memoire non
+    * formatee y creait un fichier sans en-tete de format. */
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
+   if (ret != 0)
    {
       // Error
       sh->regs.R[0] = ret;
@@ -939,7 +1059,7 @@ void FASTCALL BiosBUPWrite(SH2_struct * sh)
    }
 
    // See if save exists already
-   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize)) != 0)
+   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize, 0)) != 0)
    {
       // save exists
 
@@ -947,14 +1067,11 @@ void FASTCALL BiosBUPWrite(SH2_struct * sh)
       if (sh->regs.R[7] != 0)
       {
          // Nope, let's bail instead
-         sh->regs.R[0] = 6;
+         sh->regs.R[0] = BUP_FOUND;
          sh->regs.PC = sh->regs.PR;
          SH2SetRegisters(sh, &sh->regs);
          return;
       }
-
-      // Delete old save
-      DeleteSave(addr, block, blocksize);
    }
 
    // Let's figure out how many blocks will be needed for the save
@@ -978,20 +1095,35 @@ void FASTCALL BiosBUPWrite(SH2_struct * sh)
    savesize = 1 + ((datasize + 0x1D) / (blocksize - 6));
 
    // Will it blend? Err... fit
-   if (savesize > GetFreeSpace(sh->regs.R[4], size, addr, blocksize))
+   /* FIX : l'ancienne sauvegarde du meme nom etait effacee AVANT ce test.
+    * Si la nouvelle ne tenait pas, la fonction rendait "pas assez de place"
+    * (4) apres avoir detruit l'ancienne : perte de la sauvegarde existante.
+    * On compte maintenant ses blocs comme liberables et on n'efface qu'une
+    * fois la place garantie. */
    {
-      // Nope, time to bail
-      sh->regs.R[0] = 4;
-      sh->regs.PC = sh->regs.PR;
-      SH2SetRegisters(sh, &sh->regs);
-      return;
+      u32 freeblocks = GetFreeSpace(sh->regs.R[4], size, addr, blocksize);
+      if (block != 0)
+         freeblocks += (u32)CalcSaveSize(addr, block, blocksize, size, NULL) + 1;
+      if (savesize > freeblocks)
+      {
+         // Nope, time to bail
+         sh->regs.R[0] = BUP_NOT_ENOUGH_MEMORY;
+         sh->regs.PC = sh->regs.PR;
+         SH2SetRegisters(sh, &sh->regs);
+         return;
+      }
    }
+
+   // Delete old save (only now that the new one is known to fit)
+   if (block != 0)
+      DeleteSave(addr, block, blocksize);
 
    // Find free blocks for the save
    if ((blocktbl = GetFreeBlocks(addr, blocksize, savesize, size)) == NULL)
    {
-      // Just return an error that might make sense
-      sh->regs.R[0] = 8;
+      /* Place verifiee juste avant : seule une table de blocs endommagee
+       * peut faire echouer GetFreeBlocks(). */
+      sh->regs.R[0] = BUP_BROKEN;
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
@@ -1120,8 +1252,11 @@ void FASTCALL BiosBUPDelete(SH2_struct * sh)
    LOG_BUP("BiosBUPDelete. PR = %08X\n", sh->regs.PR);
 
    // Fill in status variables
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
-   if (ret == 1)
+   /* BUP_Delete, BUP_Dir, BUP_Verify, BUP_Read : BupCheckDevice() rend
+    * BUP_NON ou BUP_UNFORMAT (ST-162 2.4). Seul "non connecte" (1) etait
+    * detecte ; une memoire non formatee etait parcourue comme une vraie. */
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
+   if (ret != 0)
    {
       // Error
       sh->regs.R[0] = ret;
@@ -1131,17 +1266,22 @@ void FASTCALL BiosBUPDelete(SH2_struct * sh)
    }
 
    // See if save exists
-   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize)) == 0)
+   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize, 0)) == 0)
    {
       // Since the save doesn't exist, let's bail with an error
 
-      sh->regs.R[0] = 5;
+      sh->regs.R[0] = BUP_NOT_FOUND;
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
    }
 
    DeleteSave(addr, block, blocksize);
+
+   /* FIX : l'effacement n'etait pas ecrit sur disque (seul BUP_Write
+    * appelait YabFlushBackups()) : apres un arret brutal, le fichier
+    * efface reapparaissait. */
+   YabFlushBackups();
 
    sh->regs.R[0] = 0; // returns 0 if there's no error
    sh->regs.PC = sh->regs.PR;
@@ -1167,9 +1307,9 @@ void FASTCALL BiosBUPDirectory(SH2_struct * sh)
 
    LOG_BUP("BiosBUPDirectory. arg1 = %d, arg2 = %s, arg3 = %08X, arg4 = %08X, PR = %08X\n", sh->regs.R[4], filename, sh->regs.R[6], sh->regs.R[7], sh->regs.PR);
 
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
 
-   if (ret == 1)
+   if (ret != 0)
    {
       // Error
      sh->regs.R[0] = 0; // should be return 0 when it's failed
@@ -1181,7 +1321,7 @@ void FASTCALL BiosBUPDirectory(SH2_struct * sh)
    // Count Max size (a save uses at least one block)
    for (i = 0; i < (size / blocksize); i++)
    {
-      u32 block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], blockoffset, size, addr, blocksize);
+      u32 block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], blockoffset, size, addr, blocksize, 1);
 
       if (block == 0)
          break;
@@ -1205,7 +1345,7 @@ void FASTCALL BiosBUPDirectory(SH2_struct * sh)
    {
       u32 i4;
       u32 datasize=0;
-      u32 block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], blockoffset, size, addr, blocksize);
+      u32 block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], blockoffset, size, addr, blocksize, 1);
 
       if (block == 0)
          break;
@@ -1286,9 +1426,9 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
 
    LOG_BUP("BiosBUPVerify. PR = %08X\n", sh->regs.PR);
 
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
 
-   if (ret == 1)
+   if (ret != 0)
    {
       // Error
       sh->regs.R[0] = ret;
@@ -1298,10 +1438,10 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
    }
 
    // See if save exists
-   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize)) == 0)
+   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize, 0)) == 0)
    {
       // Since the save doesn't exist, let's bail with an error
-      sh->regs.R[0] = 5; // Not found
+      sh->regs.R[0] = BUP_NOT_FOUND; // Not found
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
@@ -1312,10 +1452,10 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
               (SH2MappedMemoryReadByte(sh, tableaddr+4) << 8) | SH2MappedMemoryReadByte(sh, tableaddr + 6);
 
    // Read in Block Table
-   if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, &numblocks, &blocksread)) == NULL)
+   if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, size, &numblocks, &blocksread)) == NULL)
    {
       // Just return an error that might make sense
-      sh->regs.R[0] = 8; // Broken
+      sh->regs.R[0] = BUP_BROKEN; // Broken
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
@@ -1326,6 +1466,15 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
    {
       if (((tableaddr-1) & ((blocksize << 1) - 1)) == 0)
       {
+         // Data size larger than the block list: damaged save
+         if (blocksread >= numblocks)
+         {
+            free(blocktbl);
+            sh->regs.R[0] = BUP_BROKEN; // Broken
+            sh->regs.PC = sh->regs.PR;
+            SH2SetRegisters(sh, &sh->regs);
+            return;
+         }
          // Load up the next block
          tableaddr = addr + (blocktbl[blocksread] * blocksize * 2) + 9;
          blocksread++;
@@ -1335,7 +1484,7 @@ void FASTCALL BiosBUPVerify(SH2_struct * sh)
          LOG("BiosBUPVerify. failed at %08X  want = %02X get = %08X\n", tableaddr, SH2MappedMemoryReadByte(sh, sh->regs.R[6]), SH2MappedMemoryReadByte(sh, tableaddr));
          free(blocktbl);
          // Ok, the data doesn't match
-         sh->regs.R[0] = 7; // No match
+         sh->regs.R[0] = BUP_NO_MATCH; // No match
          sh->regs.PC = sh->regs.PR;
          SH2SetRegisters(sh, &sh->regs);
          return;
@@ -1869,6 +2018,7 @@ int BupDeleteSave(u32 device, const char *savename)
    {
       // Delete old save
       DeleteSave(addr, block, blocksize);
+      YabFlushBackups();
       return 0;
    }
 
@@ -1910,6 +2060,9 @@ void BupFormat(u32 device)
          LOG("Formatting FDD not supported\n");
       default: break;
    }
+
+   /* Le formatage (BUP_Format ou interface) n'etait pas ecrit sur disque. */
+   YabFlushBackups();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2003,16 +2156,24 @@ int BiosBUPExport(u32 device, const char *savename, char ** buf, int * bufsize )
   LOG("tableaddr=%08X, datasize = %d", tableaddr, datasize );
 
   // Read in Block Table
-  if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, &numblocks, &blocksread)) == NULL)
+  if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, size, &numblocks, &blocksread)) == NULL)
   {
     LOG("ReadBlockTable failed", tableaddr, datasize );
     return -1;
   }
 
   LOG("BiosBUPExport from %08X size %08X", tableaddr, datasize);
+  /* datasize vient du support : une valeur corrompue demandait un malloc
+   * geant. Une sauvegarde ne peut pas depasser la taille du peripherique. */
+  if ((datasize == 0) || (datasize > size)) {
+    LOG("BiosBUPExport: bad data size %08X", datasize);
+    free(blocktbl);
+    return -1;
+  }
   *buf = (char*)malloc(datasize);
   if( (*buf) ==NULL ){
     LOG("Failed to allocate *buf");
+    free(blocktbl);
     return -1;
   }
   *bufsize = datasize;
@@ -2026,6 +2187,15 @@ int BiosBUPExport(u32 device, const char *savename, char ** buf, int * bufsize )
      // (as BiosBUPRead does), so blocktbl is never read past its end
      if (((tableaddr-1) & ((blocksize << 1) - 1)) == 0)
      {
+        // Data size larger than the block list: damaged save
+        if (blocksread >= numblocks)
+        {
+           free(blocktbl);
+           free(*buf);
+           *buf = NULL;
+           *bufsize = 0;
+           return -1;
+        }
         // Load up the next block
         tableaddr = addr + (blocktbl[blocksread] * blocksize * 2) + 9;
         blocksread++;
@@ -2061,18 +2231,17 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
    //sh->regs.R[4], sh->regs.R[5], sh->regs.R[6], sh->regs.R[7], sh->regs.PR);
 
    // Fill in status variables
-   ret = GetDeviceStats(device, &size, &addr, &blocksize);
-   if (ret == 1)
+   ret = BupCheckDevice(device, &size, &addr, &blocksize);
+   if (ret != 0)
    {
       return -1;
    }
 
+   if (bufsize <= 0)
+      return -1;
+
    // See if save exists already
-   if ((block = FindSave2(device, saveinfo->filename, 2, size, addr, blocksize)) != 0)
-   {
-      // Delete old save
-      DeleteSave(addr, block, blocksize);
-   }
+   block = FindSave2(device, saveinfo->filename, 2, size, addr, blocksize);
 
    // Let's figure out how many blocks will be needed for the save
    datasize = bufsize;
@@ -2081,17 +2250,30 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
    savesize = 1 + ((datasize + 0x1D) / (blocksize - 6));
 
    // Will it blend? Err... fit
-   if (savesize > GetFreeSpace(device, size, addr, blocksize))
+   /* Meme correction que BiosBUPWrite : la sauvegarde existante n'est
+    * effacee qu'une fois la place de la nouvelle garantie. */
    {
-      // Nope, time to bail
-      return 4;
+      u32 freeblocks = GetFreeSpace(device, size, addr, blocksize);
+      if (block != 0)
+         freeblocks += (u32)CalcSaveSize(addr, block, blocksize, size, NULL) + 1;
+      if (savesize > freeblocks)
+      {
+         // Nope, time to bail
+         return BUP_NOT_ENOUGH_MEMORY;
+      }
+   }
+
+   if (block != 0)
+   {
+      // Delete old save
+      DeleteSave(addr, block, blocksize);
    }
 
    // Find free blocks for the save
    if ((blocktbl = GetFreeBlocks(addr, blocksize, savesize, size)) == NULL)
    {
       // Just return an error that might make sense
-      return 8;
+      return BUP_BROKEN;
    }
 
    // Create save
@@ -2126,10 +2308,13 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
 
 
   // Copy over data size
-  DMAMappedMemoryWriteByte(workaddr+0x3D, (saveinfo->datasize>>24)&0xFF);
-  DMAMappedMemoryWriteByte(workaddr+0x3F, (saveinfo->datasize>>16)&0xFF);
-  DMAMappedMemoryWriteByte(workaddr+0x41, (saveinfo->datasize>>8)&0xFF);
-  DMAMappedMemoryWriteByte(workaddr+0x43, saveinfo->datasize&0xFF);
+  /* FIX : la taille ecrite dans l'en-tete doit etre celle des donnees
+   * reellement ecrites (bufsize). saveinfo->datasize pouvait differer : la
+   * lecture suivante lisait alors au-dela des blocs alloues. */
+  DMAMappedMemoryWriteByte(workaddr+0x3D, (datasize>>24)&0xFF);
+  DMAMappedMemoryWriteByte(workaddr+0x3F, (datasize>>16)&0xFF);
+  DMAMappedMemoryWriteByte(workaddr+0x41, (datasize>>8)&0xFF);
+  DMAMappedMemoryWriteByte(workaddr+0x43, datasize&0xFF);
 
    // write the block table
    workaddr += 0x45;
@@ -2192,6 +2377,8 @@ int BiosBUPImport(u32 device, saveinfo_struct * saveinfo, const char * buf, int 
    }
    //fclose(fp);
    free(blocktbl);
+   /* L'import n'etait pas ecrit sur disque. */
+   YabFlushBackups();
    return 0;
 }
 
@@ -2222,9 +2409,9 @@ void FASTCALL BiosBUPRead(SH2_struct * sh)
 
    LOG_BUP("BiosBUPRead rtn=%08X device=%d, %s, \n", sh->regs.PR, sh->regs.R[4], fname);
 
-   ret = GetDeviceStats(sh->regs.R[4], &size, &addr, &blocksize);
+   ret = BupCheckDevice(sh->regs.R[4], &size, &addr, &blocksize);
 
-   if (ret == 1)
+   if (ret != 0)
    {
       // Error
       sh->regs.R[0] = ret;
@@ -2234,11 +2421,11 @@ void FASTCALL BiosBUPRead(SH2_struct * sh)
    }
 
    // See if save exists
-   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize)) == 0)
+   if ((block = FindSave(sh, sh->regs.R[4], sh->regs.R[5], 2, size, addr, blocksize, 0)) == 0)
    {
       LOG("BiosBUPRead not found");
       // save doesn't exist
-      sh->regs.R[0] = 5;
+      sh->regs.R[0] = BUP_NOT_FOUND;
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
@@ -2249,10 +2436,10 @@ void FASTCALL BiosBUPRead(SH2_struct * sh)
               (SH2MappedMemoryReadByte(sh, tableaddr+4) << 8) | SH2MappedMemoryReadByte(sh, tableaddr + 6);
 
    // Read in Block Table
-   if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, &numblocks, &blocksread)) == NULL)
+   if ((blocktbl = ReadBlockTable(addr, &tableaddr, block, blocksize, size, &numblocks, &blocksread)) == NULL)
    {
       // Just return an error that might make sense
-      sh->regs.R[0] = 8;
+      sh->regs.R[0] = BUP_BROKEN;
       sh->regs.PC = sh->regs.PR;
       SH2SetRegisters(sh, &sh->regs);
       return;
@@ -2266,6 +2453,15 @@ void FASTCALL BiosBUPRead(SH2_struct * sh)
    {
       if (((tableaddr-1) & ((blocksize << 1) - 1)) == 0)
       {
+         // Data size larger than the block list: damaged save
+         if (blocksread >= numblocks)
+         {
+            free(blocktbl);
+            sh->regs.R[0] = BUP_BROKEN; // Broken
+            sh->regs.PC = sh->regs.PR;
+            SH2SetRegisters(sh, &sh->regs);
+            return;
+         }
          // Load up the next block
          tableaddr = addr + (blocktbl[blocksread] * blocksize * 2) + 9;
          blocksread++;
