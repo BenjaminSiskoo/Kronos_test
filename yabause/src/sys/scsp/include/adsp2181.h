@@ -169,6 +169,13 @@ void Adsp2181SetI(Adsp2181 *a, int idx, u32 val);
 s32  Adsp2181GetM(const Adsp2181 *a, int idx);
 u32  Adsp2181GetL(const Adsp2181 *a, int idx);
 
+/* Save states: CPU registers, stacks and interrupt state (not pram, not
+   the board callbacks/data pages). Load needs an Adsp2181Init'ed core;
+   returns 0 when applied. */
+int  Adsp2181StateSize(void);
+void Adsp2181SaveState(const Adsp2181 *a, void **stream);
+int  Adsp2181LoadState(Adsp2181 *a, const void *stream, int size);
+
 #ifdef __cplusplus
 }
 #endif
