@@ -34,10 +34,10 @@ typedef enum{
   MYFAIRLD,
   PATOCAR,
   VMAHJONG,
-  // danchih (Danchi de Hanafuda) uses a *different* row-scan mux scheme
-  // from the Mahjong Panel above (see the PORT_DIRECTION bit 0x08 comment
-  // in peripheral.c) - keep it as its own type so it doesn't get treated
-  // as a Mahjong Panel game by mistake. Still unhooked/unimplemented.
+  // danchih (Danchi de Hanafuda): MAME runs it on the stvmp config, i.e.
+  // the same row-scan mux as the Mahjong Panel (PerMahjongPanelEnabled()
+  // covers it). Kept as its own type for a dedicated hanafuda key layout.
+  // Hooked like MAME, not yet tested in game.
   STVHANAFUDA
 } inputType;
 
