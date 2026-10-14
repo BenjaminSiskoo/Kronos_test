@@ -2672,18 +2672,32 @@ int Vdp1LoadState(const void * stream, UNUSED int version, int size)
          Vdp1FrameBuffer16bWriteByte(NULL, NULL, i, back_framebuffer[i]);
    }
 #endif
+   {
+   /* disptoggle est le choix de l'utilisateur (ToggleVDP1, affichage des
+    * sprites), pas un etat de la machine : il ne doit pas venir du fichier.
+    * Surtout, quand le bloc Vdp1External n'est pas relisible (etat ancien,
+    * ou structure agrandie depuis : eraseOverrun/eraseOverrunLines ont ete
+    * ajoutes), le memset le mettait a 0 et common_glshader.c n'affichait
+    * plus du tout la couche VDP1 apres le chargement. */
+   const int userDisptoggle = Vdp1External.disptoggle;
    if (version > 1) {
-     int size = 0;
-     MemStateRead((void *)(&size), sizeof(int), 1, stream);
-     if (size == sizeof(Vdp1External_struct)) {
+     int extsize = 0;
+     MemStateRead((void *)(&extsize), sizeof(int), 1, stream);
+     if (extsize == sizeof(Vdp1External_struct)) {
         MemStateRead((void *)(&Vdp1External), sizeof(Vdp1External_struct),1,stream);
      } else {
        YuiMsg("Too old savestate, can not restore Vdp1External\n");
        memset((void *)(&Vdp1External), 0, sizeof(Vdp1External_struct));
+       /* Les champs connus en tete de la structure sont restes au meme
+        * endroit : on relit ce qui est commun au lieu de tout perdre. */
+       if ((extsize > 0) && (extsize < (int)sizeof(Vdp1External_struct)))
+          MemStateRead((void *)(&Vdp1External), extsize, 1, stream);
      }
    } else {
      YuiMsg("Too old savestate, can not restore Vdp1External\n");
      memset((void *)(&Vdp1External), 0, sizeof(Vdp1External_struct));
+   }
+   Vdp1External.disptoggle = userDisptoggle;
    }
    Vdp1External.updateVdp1Ram = 1;
    /* Le verrou n'est pas serialise (format de savestate inchange) : on le
