@@ -490,6 +490,65 @@ int SH2KronosInterpreterInit(void)
    return 0;
 }
 
+/* Remise en coherence du cache de decodage apres le chargement d'un etat.
+ *
+ * cacheCode[] memorise, par adresse, la fonction de l'instruction deja
+ * decodee : le coeur "Performance" l'execute ensuite SANS relire la memoire.
+ * YabLoadStateStream() remplace d'un bloc les Work RAM, la RAM son, les VRAM
+ * et le tableau de donnees du cache par memcpy, sans SH2WriteNotify() : les
+ * entrees decodees avant le chargement continuaient d'executer l'ancien
+ * code (plantage des que l'etat charge contient un autre code au meme
+ * endroit, par exemple un autre overlay).
+ *
+ * Les crochets poses dans ce cache ne sont pas non plus dans l'etat :
+ *  - outOfInt / decodeInt et interruptReturnAddress (retour d'interruption).
+ *    Un interruptReturnAddress != 0 herite de la session precedente empeche
+ *    SH2KronosNotifyInterrupt() de poser decodeInt : plus aucune
+ *    interruption n'etait servie tant que le PC ne repassait pas par
+ *    l'ancienne adresse (gel apres chargement d'un etat) ;
+ *  - les crochets BUP (BUPEntries) poses par BUPInstallHooks() aux adresses
+ *    de la table de la bibliotheque de sauvegarde. Si l'etat est charge
+ *    avant que le jeu ait appele BUP_Init dans la session courante, ils
+ *    manquaient : la vraie bibliotheque copiee en Work RAM s'executait et
+ *    accedait directement a 0x00180000, zone non cablee en mode "extended
+ *    backup" (sauvegardes impossibles), et sans YabFlushBackups() en mode
+ *    standard. BUPTableAddr est maintenant serialise (SH2 v4) et les
+ *    crochets sont reposes ici a partir de la table en Work RAM. */
+void SH2KronosInterpreterPostLoadState(SH2_struct *context)
+{
+  int i, j;
+  const int s = (context->isslave != 0) ? 1 : 0;
+
+  for (i = 0; i < 8; i++)
+    for (j = 0; j < cacheSize[i]; j++)
+      cacheCode[s][i][j] = decode;
+  for (j = 0; j < cacheSize[8]; j++)
+    cacheCode[s][8][j] = SH2undecoded;
+
+  /* Crochet d'origine de BUP_Init dans le BIOS (cf. SH2KronosInterpreterInit) */
+  cacheCode[s][0][0x7d600>>1] = BUPDetectInit;
+
+  context->interruptReturnAddress = 0;
+  context->branchDepth = 0;
+  context->isDelayed = 0;
+
+  if (context->BUPTableAddr != 0) {
+    const u32 startTableAdress = context->BUPTableAddr + 0x4;
+    for (i = 0; i < 10; i++) {
+      const u32 vector = DMAMappedMemoryReadLong(startTableAdress + i * 0x4);
+      const int id = (vector >> 20) & 0xFFF;
+      /* Table illisible ou corrompue : on ne pose rien hors des zones
+       * executables (cacheId 8 = zone non decodee). */
+      if (cacheId[id] == 8) continue;
+      LOG_BUP("SH2KronosInterpreterPostLoadState: BUP vector %d @0x%x\n", i, vector);
+      cacheCode[s][cacheId[id]][(vector >> 1) & cacheMask[cacheId[id]]] = BUPEntries[i];
+    }
+  }
+
+  /* Le point d'entree decodeInt d'une interruption en attente est repose
+   * par SH2EvaluateInterrupt(), appele juste apres par SH2PostLoadState(). */
+}
+
 int SH2KronosInterpreterDebugInit(void)
 {
   int ret = SH2KronosInterpreterInit();
