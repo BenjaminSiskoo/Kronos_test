@@ -14,6 +14,9 @@ extern int eeprom_do_read();
 extern void eeprom_init(const char* filename);
 extern void eeprom_deinit();
 extern void eeprom_start(const u8* table);
+/* Save states: "EEPR" block of the CART chunk (cs0.c); load returns 0 when applied */
+extern void eeprom_save_state(void ** stream);
+extern int eeprom_load_state(const void * stream, int size);
 
 #ifdef __cplusplus
 }
