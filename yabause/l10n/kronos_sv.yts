@@ -1,4 +1,8 @@
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|\n\nOK öppnar felsökaren. Ignorera återupptar emuleringen och registren går förlorade.
+  Offset (hex):|  Förskjutning (hex):
+%1 / %2 - list full, later samples are not listed|%1 / %2 - listan är full, senare samplingar listas inte
 %1 Images (*.%2)|%1 Avbilder (*.%2)
+%1 results|%1 resultat
 %1/%2 blocks free|%1/%2 block fria
 &About...|&Om...
 &Action Replay|&Action Replay
@@ -21,344 +25,920 @@
 &Layer|&Lager
 &Load From File|Ladda från fil
 &Log|&Logg
-&Master SH2|&Master SH2
+&Master SH2|&Master-SH2
 &Memory Transfer|&Minnesöverföring
+&No|&Nej
 &OK|&OK
 &Pause|&Paus
+&Question...|&Fråga...
 &Quit|&Avsluta
 &Raw Memory Address|&Rå minnesadress
-&Reset|&Reset
+&Reset|&Återställ
 &Save To File|&Spara till fil
 &Settings...|&Inställningar...
 &Slave SH2|&Slav SH2
 &Tools|Verk&tyg
 &Transfer|Ö&verföring
+&Vertical synchronization|&Vertikal synkronisering
 &View|&Visa
-16 Mbit Backup Ram|16 Mbit Backup Ram
+(layer disabled -- BGON bit off)\n|(lager inaktiverat -- BGON-biten av)\n
+1 result|1 resultat
+10 Yen|10 Yen
+100 Yen|100 Yen
+128 Mbit Dram|128 Mbit DRAM
+16 Mbit Backup Ram|16 Mbit backup-RAM
 16 Mbit ROM|16 Mbit ROM
-16-bit|16-bit
-16-bit Relative value(s)|16-bit Relative value(s)
-32 Mbit Backup Ram|32 Mbit Backup Ram
-32 Mbit Dram|32 Mbit Dram
-32-bit|32-bit
+16-bit|16-bitars
+16-bit Relative value(s)|16-bitars relativa värden
+1x (original resolution of the Saturn)|1x (Saturns originalupplösning)
+32 Mbit Backup Ram|32 Mbit backup-RAM
+32 Mbit Dram|32 Mbit DRAM
+32-bit|32-bitars
 3D Control Pad|3D Control Pad
-4 Mbit Backup Ram|4 Mbit Backup Ram
+3D Control Pad Configuration|Konfiguration av 3D Control Pad
+4 Mbit Backup Ram|4 Mbit backup-RAM
+4xBRZ|4xBRZ
 503/512 blocks free|503/512 block fria
 510/512 blocks free|510/512 block fria
-8 Mbit Backup Ram|8 Mbit Backup Ram
-8 Mbit Dram|8 Mbit Dram
-8-bit|8-bit
-8-bit Relative value(s)|8-bit Relative value(s)
+68000 Core|68000-kärna
+6xBRZ|6xBRZ
+8 Mbit Backup Ram|8 Mbit backup-RAM
+8 Mbit Dram|8 Mbit DRAM
+8-bit|8-bitars
+8-bit Relative value(s)|8-bitars relativa värden
 <font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>VARNING:</b> Master Codes stöds <b>INTE</b></font>
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|<h3>Hitta var ett spel lagrar ett värde</h3><p>1. Välj till vänster vad du vet och tryck sedan på <b>Sök</b> eller <b>Ta ögonblicksbild</b>.<br>2. Spela tills värdet ändras och öppna sedan det här fönstret igen.<br>3. Sök igen tills bara några få adresser återstår.<br>4. Dubbelklicka på en adress för att göra om den till ett fusk.</p>
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|<h3>Ingen adress matchar</h3><p>Prova en större tolerans, kontrollera datastorleken under <i>Avancerade alternativ</i> eller tryck på <b>Ny sökning</b> för att börja om.</p>
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polylinje</span> · <span style=" color:#B45A00;">Linje</span> · <span style=" color:gray;">Clip/Lokal</span> · <span style=" color:red;">Ogiltig</span>
+A bar lost or gained a percentage|En mätare förlorade eller vann en procentsats
+A breakpoint already exists at %1.|Det finns redan en brytpunkt på %1.
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|En livsmätare som går från full till 60 % förlorade 40 %: ange 40. Toleransen tar hand om avrundningar.
+A loss of 100 % or more means the value reached zero.|En förlust på 100 % eller mer betyder att värdet nådde noll.
 About...|Om...
 Action Replay Code :|Action Replay-kod
 Add|Add
 Add Action Replay Code|Lägg till en Action Replay-kod
 Add Cheat|Lägg till fusk
+Add Cheat…|Lägg till fusk…
 Add Codes...|Lägg till kod...
 Add Raw Memory Code|Lägg till råminneskod
+Add a breakpoint on this address|Lägg till en brytpunkt på den här adressen
+Add breakpoint|Lägg till brytpunkt
+Add cheat|Lägg till fusk
 Address|Adress
+Address (hex):|Adress (hex):
 Address :|Adress :
+Address in hex, e.g. 06004000|Adress i hex, t.ex. 06004000
+Address in hex, e.g. 06100000|Adress i hex, t.ex. 06100000
+Advance one frame|Stega en bildruta
 Advanced|Avancerat
+Advanced options|Avancerade alternativ
+All Files|Alla filer
+All Files (*)|Alla filer (*)
+All Files;|Alla filer;
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|Tillåten avvikelse, i procentenheter. Tar hand om avrundningar: en minskning med 40 % och en tolerans på 1 % matchar 39 % till 41 %.
 Always|Alltid
+Amount|Mängd
+An error occured while writing file.|Ett fel uppstod när filen skrevs.
+An error occurred while writing the screenshot: |Ett fel uppstod när skärmdumpen skrevs: 
+An exact number|Ett exakt tal
 Are you sure you want to delete '%1' ?|Är du säker på att du vill ta bort '%1' ?
 Are you sure you want to format '%1' ?|Är du säker på att du vill formatera '%1' ?
 Asia (NTSC)|Asien (NTSC)
 Asia (PAL)|Asien (PAL)
-Auto-detect|Auto-detect
+Assembly code|Assemblerkod
+Attack|Attack
+Audio preview is not available in this build.|Ljudförhandsvisning är inte tillgänglig i den här versionen.
+Auto-detect|Identifiera automatiskt
 Autostart|Autostart
-Backtrace|Backtrace
-Backup Ram Manager|Backup Ram Manager
-Binary Files (*.bin)|Binary Files (*.bin)
-Bios|Bios
+Awaiting input for|Väntar på inmatning för
+Axis|Axel
+Axis L Trigger|Axel L-avtryckare
+Axis R Trigger|Axel R-avtryckare
+Axis Throttle|Axel gasreglage
+Axis X|Axel X
+Axis Y|Axel Y
+Backtrace|Anropsstack
+Backup Ram Manager|Hantering av backup-RAM
+Bank:|Bank:
+Bet|Insats
+BiCubic|Bikubisk
+Bilinear|Bilinjär
+Bilinear Filtering (Restart required)|Bilinjär filtrering (omstart krävs)
+Binary Files (*.bin)|Binära filer (*.bin)
+Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|Binära filer (*.bin);;COFF-programfiler (*.cof *.coff);;ELF-programfiler (*.elf);;Alla filer (*)
+Binary files (*.bin)|Binära filer (*.bin)
+Bios|BIOS
+Bios Settings|BIOS-inställningar
+Bios file path|Sökväg till BIOS-fil
+Bios settings file|BIOS-inställningsfil
 Block Size :|Blockstorlek
+Breakpoint Reached|Brytpunkt nådd
+Breakpoint added at %1.|Brytpunkt tillagd på %1.
+Breakpoint removed at %1.|Brytpunkt borttagen på %1.
+Breakpoints|Brytpunkter
 Browse|Bläddra
+Bug report|Rapportera fel
+Button 2|Knapp 2
+Button 2 (patocar/skychal/supgoal/techbowl only)|Knapp 2 (endast patocar/skychal/supgoal/techbowl)
+Button 5|Knapp 5
 Byte|Byte
 Byte Write|Byteskrivning
+Byte Write : %1 %2|Skriv byte: %1 %2
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|CD-avbilder (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|CD-avbilder (*.iso *.cue *.bin *.mds *.ccd *.zip)
 CD Images (*.iso *.cue *.bin)|CD-avbild (*.iso *.cue *.bin)
+CD-ROM|CD-ROM
+COFF Program Files (*.cof *.coff)|COFF-programfiler (*.cof *.coff)
+CPU Tesselation|CPU-tessellering
+CRT (Aperture Grille)|CRT (apertur-galler)
+Can't Pause kronos while not initialized.|Kan inte pausa Kronos när den inte är initierad.
+Can't initialize Kronos.|Kan inte initiera Kronos.
+Can't plug in the new controller, cancelling.|Kan inte ansluta den nya kontrollen, avbryter.
 Cancel|Avbryt
 Cannot initialize|Kan inte initiera
 Cannot initialize Windows SPTI Driver|Kan inte initiera Windows SPTI-drivrutin
 Cart/Memory|Kassett/Minne
 Cartridge|Kassett
+Cartridge Path|Sökväg till kassett
 Cd-Rom|CD-ROM
 Central/South America (NTSC)|Central-/Sydamerika (NTSC)
 Central/South America (PAL)|Central-/Sydamerika (PAL)
+Change|Förändring
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|Ändra mappen med inställningen Debug/SH2DumpDir eller variabeln KRONOS_SH2DUMP_DIR.
+Changed|Ändrat
+Channel Viewer|Kanalvisare
 Cheat &Search...|&Sök fusk...
 Cheat Search|Sök efter fusk
 Cheat Type|Typ av fusk
 Cheats|Fusk
 Cheats File|Fuskfil
-Choose a binary file|Choose a binary file
+Chi|Chi
+Choose a STV cartridge folder|Välj en STV-kassettmapp
+Choose a binary file|Välj en binär fil
+Choose a binary or program file|Välj en binär fil eller programfil
+Choose a bios file|Välj en BIOS-fil
+Choose a cartridge file|Välj en kassettfil
+Choose a cartridge folder|Välj en kassettmapp
 Choose a cdrom drive/mount point|Välj en CD-läsare eller en monteringspunkt
 Choose a cheat file to open|Välj fuskfil att öppna
 Choose a cheat file to save to|Välj fuskfil att spara till
 Choose a file to save your state|Välj en fil att spara ditt läge till
-Choose a location for binary file|Choose a location for binary file
+Choose a file to store bios settings|Välj en fil för att lagra BIOS-inställningar
+Choose a folder to store save states|Välj en mapp för sparade lägen
+Choose a folder to store screenshots|Välj en mapp för skärmdumpar
+Choose a location for binary file|Välj en plats för binärfilen
+Choose a location for the VRAM dump|Välj en plats för VRAM-dumpen
+Choose a location for the text file|Välj en plats för textfilen
+Choose a location for your binary file|Välj en plats för din binära fil
+Choose a location for your bitmap|Välj en plats för din bitmapp
 Choose a location for your screenshot|Välj plats att spara skärmdump till
+Choose a location for your wav file|Välj en plats för din wav-fil
+Choose a memory file|Välj en minnesfil
+Choose a mpeg rom|Välj en mpeg-rom
+Choose the location of the addr2line executable|Välj platsen för programmet addr2line
+Clear|Rensa
 Clear configuration|Rensa inställningar
 Close|Stäng
 Code|Kod
-Code Breakpoints|Code Breakpoints
+Code Breakpoints|Kodbrytpunkter
+Coin1|Mynt1
+Coin2|Mynt2
+Coins && Control Panel|Mynt && Kontrollpanel
+Color RAM|Färg-RAM
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|Color RAM läge %1  —  %2 poster  (%3 byte vardera)
+Color RAM not available|Color RAM inte tillgängligt
 Comment :|Kommentar :
-Common Control Registers|Common Control Registers
+Common Control Registers|Gemensamma kontrollregister
+Common registers|Gemensamma register
 Compare Type|Jämför typ
-DSP Control Registers|DSP Control Registers
-DSP Registers|DSP Registers
+Compared to the previous search, the value has:|Jämfört med föregående sökning har värdet:
+Compatibility List|Kompatibilitetslista
+Compute Shader Video Interface|Compute Shader-videogränssnitt
+Copy address|Kopiera adress
+Copy line|Kopiera rad
+Could not add a breakpoint at %1: the list is full or the address is not supported.|Kunde inte lägga till en brytpunkt på %1: listan är full eller adressen stöds inte.
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|Kunde inte lägga till en minnesbrytpunkt på %1: listan är full eller adressen stöds inte.
+Could not open the audio device.|Kunde inte öppna ljudenheten.
+Could not write the report file.|Kunde inte skriva rapportfilen.
+Couldn't load state file|Kunde inte läsa in lägesfilen
+Couldn't save state file|Kunde inte spara lägesfilen
+Count|Antal
+Ctrl+wheel to zoom|Ctrl+hjul för att zooma
+DSP Control Registers|DSP-kontrollregister
+DSP Registers|DSP-register
+Data RAM|Data RAM
 Data Size|Datastorlek
 Data Size :|Datastorlek :
 Data Type|Datatyp
-Debug CPU|Debug CPU
-Debug M68K|Debug M68K
-Debug Master SH2|Debug Master SH2
-Debug SCU DSP|Debug SCU DSP
-Debug Slave SH2|Debug Slave SH2
-Debug VDP1|Debug VDP1
-Debug VDP2Viewer|Debug VDP2Viewer
+Debug|Felsökning
+Debug CPU|Felsök CPU
+Debug M68K|Felsök M68K
+Debug Master SH2|Felsök master-SH2
+Debug SCSP|Felsök SCSP
+Debug SCSP Channels|Felsök SCSP-kanaler
+Debug SCSP DSP|Felsök SCSP-DSP
+Debug SCU DSP|Felsök SCU-DSP
+Debug Slave SH2|Felsök slav-SH2
+Debug VDP1|Felsök VDP1
+Debug VDP2|Felsök VDP2
+Debug VDP2Viewer|Felsök VDP2Viewer
+Decay 1|Avklingning 1
+Decay 2|Avklingning 2
+Decoded|Avkodat
+Decreased|Minskat
+Default Dial IP|Standard-IP för uppringning
+Default System Language|Standardsystemspråk
+Deinterlacing Adaptive|Avflätning adaptiv
+Deinterlacing Bob|Avflätning Bob
+Deinterlacing Debug Adaptive|Avflätning adaptiv (felsökning)
 Del|Del
 Delete|Ta bort
 Description|Beskrivning
 Description :|Beskrivning :
+Deutsch|Deutsch
+Development Extension|Utvecklingstillägg
 Device List|Lista över enheter
-DirectX Input Interface|DirectX Input Interface
-DirectX Sound Interface|DirectX Sound Interface
+DirectX Input Interface|DirectX inmatningsgränssnitt
+DirectX Sound Interface|DirectX ljudgränssnitt
+Directory|Mapp
 Disabled|Avaktiverad
-Disassembled Code|Disassembled Code
-Display Enabled|Display Enabled
-Display on Hover|Display on Hover
+Disassembled Code|Disassemblerad kod
+Discord Channel|Discord-kanal
+Display Enabled|Visning aktiverad
+Display on Hover|Visa vid hovring
+Door Switch|Dörrbrytare
+Double Mission Stick|Dubbel Mission Stick
+Double Mission Stick Configuration|Konfiguration av dubbel Mission Stick
+Double-click a breakpoint to show it in the disassembly|Dubbelklicka på en brytpunkt för att visa den i disassemblyn
+Double-click an address to add it as a cheat.|Dubbelklicka på en adress för att lägga till den som fusk.
 Down|Ner
+Down_P2|Ned_S2
 Download|Nedladdning
-Draw End|Draw End
+Draw End|Ritslut
+Dummy 68k Interface|Dummy 68k-gränssnitt
 Dummy CD Drive|Provisorisk CD-enhet
 Dummy Input Interface|Provisoriskt indatagränssnitt
 Dummy OSD Interface|Provisoriskt OSD-gränssnitt
 Dummy Sound Interface|Provisoriskt ljudgränssnitt
 Dummy Video Interface|Provisoriskt videogränssnitt
+ELF Program Files (*elf)|ELF-programfiler (*elf)
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|Varje post är en sampling, identifierad av sin startadress, som spelades när det här fönstret öppnades eller som har spelats sedan dess. Poster i fetstil spelas nu (hovra över en för att se dess kanaler). Markera en för att tysta alla kanaler som spelar den.
 Edit configuration|Ändra inställningar
+Eject/Load ISO...|Mata ut/Läs in ISO...
+Embellishment filter :|Förskönningsfilter:
 Emu-Compatibility|Emu-kompatibilitet
 Emulation|Emulering
+Emulation paused|Emulering pausad
 Enable|Aktivera
+Enable Bios Emulation|Aktivera BIOS-emulering
+Enable Code : %1 %2|Aktivera kod: %1 %2
 Enable Frame Skip/Limiter|Aktivera frameskip/-begränsning
+Enable vertical synchronization|Aktivera vertikal synkronisering
 Enabled|Aktiverad
 End Address:|Slutadress
 English|Engelska
-Enter New Value|Enter New Value
+Enter New Value|Ange nytt värde
+Enter new assembly code|Ange ny assemblerkod
+Envelope|Envelopp
+Equal to|Lika med
+Error|Fel
+Error...|Fel...
+Europe (PAL)|Europa (PAL)
 Europe + others (PAL)|Europa + övriga (PAL)
 Exact|Exakt
+Example: 100 → %1 is a gain of %2 %.|Exempel: 100 → %1 är en ökning med %2 %.
+Example: 100 → %1 is a loss of %2 %.|Exempel: 100 → %1 är en förlust på %2 %.
+Execute one instruction (F11)|Kör en instruktion (F11)
+Execute one instruction, running calls to the end (F10)|Kör en instruktion, kör anrop till slutet (F10)
+Export Debug|Exportera felsökning
+Export Debug Info (.txt)...|Exportera felsökningsinfo (.txt)...
+Export Registers / Debug (.txt)...|Exportera register / felsökning (.txt)...
+Export bank (.bin)...|Exportera bank (.bin)...
+Extend Internal backup memory to 8MB|Utöka internt backupminne till 8 MB
+F&PS|F&PS
 FPS|FPS
+FSR 1.0 (EASU + RCAS)|FSR 1.0 (EASU + RCAS)
+FXAA|FXAA
+Family-Specific && Diagnostics|Familjespecifikt && Diagnostik
 File|Fil
 File Name :|Filnamn :
 File transfer|Filöverföring
 File:|Fil:
+Filter registers...|Filtrera register...
+Finished searching up to end of memory, continue from the beginning?|Sökningen har nått minnets slut, fortsätta från början?
+Finished.|Klart.
+Fit the image back into the view (Ctrl+wheel to zoom)|Anpassa bilden till vyn igen (Ctrl+hjul för att zooma)
+Fit the texture back into the view (Ctrl+wheel to zoom)|Anpassa texturen till vyn igen (Ctrl+hjul för att zooma)
+Flip/Flop|Flip/Flop
 Format|Formatera
-Frame Skip/Limiter|Frame Skip/Limiter
+Frame Skip/Limiter|Bildöverhopp/Begränsare
+FreeBSD CD Drive|FreeBSD CD-enhet
 French|Franska
 From|Från
 From File|Från fil
 From File...|Från fil...
 Fullscreen|Helskärm
-Fullscreen Resolution|Fullscreen Resolution
+Fullscreen Resolution|Helskärmsupplösning
+GPU Tesselation|GPU-tessellering
+Gained|Vunnit
 General|Allmänt
-General Info|General Info
+General Info|Allmän info
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|Allmänt register R15.\nEnligt konvention fungerar det också som SH-2:ans hårdvarustackpekare (SP): processorn lägger/hämtar det på stacken vid undantag och avbrott, och kompilerad kod använder det på samma sätt för anropsstacken.
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|Allmänt register.\nInnehåller data eller en adress; används fritt av kompilerad kod och av alla SH-2-instruktioner som tar en registeroperand.
 German|Tyska
-Goto Address|Goto Address
+Get Existing Directory...|Välj befintlig mapp...
+Get Item...|Välj objekt...
+Get Open File Name...|Öppna fil...
+Get Save File Name...|Spara fil...
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|Global Base Register (GBR).\nBasadress för GBR-relativ adressering: MOV.B/W/L @(disp,GBR) och @(R0,GBR)-immediateformerna av AND/OR/XOR/TST beräknar alla sin effektiva adress från detta register.
+Go|Gå
+Go to an address (Ctrl+G)|Gå till en adress (Ctrl+G)
+Goto Address|Gå till adress
+Gouraud Mode :|Gouraud-läge:
+Greater than|Större än
 Greater then|Större än
+Gun|Ljuspistol
+Gun Configuration|Konfiguration av ljuspistol
+Gun/Mouse Sensitivity|Känslighet för pistol/mus
+HQ4x|HQ4x
 Hard Reset|Hård omstart
 Height|Höjd
-Hex value(s)|Hex value(s)
-Hide Menubar|Hide Menubar
-Hide Toolbar|Hide Toolbar
+Hex value(s)|Hexvärde(n)
+Hide Menubar|Dölj menyraden
+Hide Toolbar|Dölj verktygsfältet
+High + Low WRAM|Hög + låg WRAM
+High WRAM|Hög WRAM
+Highlighted slots are sounding right now.|Markerade kanaler ljuder just nu.
+Hopper Cabinet|Hopperskåp
+Hopper Cabinet Configuration|Konfiguration av hopperskåp
+Hopper Sensor Test|Test av hoppersensor
+Hopper Sensor Test (hold to force a payout pulse)|Test av hoppersensor (håll in för att tvinga fram en utbetalningspuls)
 ISO-File Virtual Drive|ISO-fil virtuell enhet
+Image format|Bildformat
+Improved|Förbättrad
+Inactive slot|Inaktiv kanal
+Increased|Ökat
 Information...|Information...
+Inline Assembly|Inline-assembler
 Input|Kontroller
+Input code address|Ange kodadress
+Internal Backup RAM|Internt backup-RAM
 Invalid Address|Ogiltig adress
+Invalid Address or Value|Ogiltig adress eller ogiltigt värde
+Invalid Start/End Address Combination|Ogiltig kombination av start-/slutadress
 Invalid Value|Ogiltigt värde
+Invalid address.|Ogiltig adress.
+Invalid address: %1|Ogiltig adress: %1
+It went up or down|Det gick upp eller ned
 Italian|Italienska
 Japan (NTSC)|Japan (NTSC)
 Japanese|Japanska
-Japanese Modem|Japanese Modem
+Japanese Modem|Japanskt modem
+Jump list|Hopplista
+Kan|Kan
+Keyboard|Tangentbord
 Korea (NTSC)|Korea (NTSC)
+Kronos Cheat Files (*.yct);;All Files (*)|Kronos-fuskfiler (*.yct);;Alla filer (*)
+Kronos Qt GUI|Kronos Qt GUI
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|Kronos Qt GUI<br />Baserat på UoYabause <br /></a><br />Kronos-teamet<br /></a>
+Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Kronos Qt GUI<br />Baserat på Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause-teamet<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Kronos Save State (*.yss)|Kronos sparat läge (*.yss)
+Kronos is not initialized, can't manage backup ram.|Kronos är inte initierad, kan inte hantera backup-RAM.
 L&oad State|L&adda tillstånd
+LFO|LFO
+Lanczos3|Lanczos3
 Language :|Språk :
 Layer|Lager
+Layer inactive|Lager inaktivt
 Left|Vänster
+Left Stick Axis Throttle|Vänster spak axel gasreglage
+Left Stick Axis X|Vänster spak axel X
+Left Stick Axis Y|Vänster spak axel Y
+Left Stick Throttle Down|Vänster spak gas ned
+Left Stick X Left|Vänster spak X vänster
+Left Stick Y Down|Vänster spak Y ned
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|Vänster spak:\nAvtryckare:   X\nVänster knapp: Y\nHöger knapp:  Z
 Left trigger|Vänster avtryckare
+Left_P2|Vänster_S2
 Less than|Mindre än
+Life bar, energy gauge...|Livsmätare, energimätare...
 Linux CD Drive|Linux CD-enhet
+Linux Joystick Interface|Linux joystickgränssnitt
+Live|Live
+Lives, ammo, score, money...|Liv, ammunition, poäng, pengar...
 Load|Ladda
+Load Code|Läs in kod
 Load State|Ladda läge
 Load State As|Ladda läge som
 Load as executable|Ladda som exekverbar
-Local Coordinates|Local Coordinates
+Load0|Läs in0
+Load1|Läs in1
+Load2|Läs in2
+Load3|Läs in3
+Load4|Läs in4
+Load5|Läs in5
+Load6|Läs in6
+Load7|Läs in7
+Load8|Läs in8
+Load9|Läs in9
+Local Coordinates|Lokala koordinater
 Log|Logg
 Long|Long
 Long Write|Lång skrivning
-Loop Track Clear|Loop Track Clear
-Loop Track Start|Loop Track Start
+Long Write : %1 %2|Skriv long: %1 %2
+Loop Track Clear|Rensa loopspårning
+Loop Track Start|Starta loopspårning
+Loop Track Stop|Stoppa loopspårning
+Lost|Förlorat
+Low WRAM|Låg WRAM
 M68K|M68K
-M68K Registers|M68K Registers
+M68K Registers|M68K-register
+MASTER SH2|MASTER-SH2
 MSH2|MSH2
-Master SH2|Master SH2
+MSH2 reached code breakpoint at |MSH2 nådde en kodbrytpunkt på 
+MSH2 reached data breakpoint at |MSH2 nådde en databrytpunkt på 
+Mac OS X (IOKit) Joystick Interface|Mac OS X (IOKit) joystickgränssnitt
+Mac OS X Core Audio Sound Interface|Mac OS X Core Audio ljudgränssnitt
+MacOSX CD Drive|MacOSX CD-enhet
+Magnet Sensor|Magnetsensor
+Magnet Sensor (micrombc only)|Magnetsensor (endast micrombc)
+Mahjong Panel|Mahjongpanel
+Mahjong Panel Configuration|Konfiguration av mahjongpanel
+Mame romset 0.269:|Mame-romset 0.269:
+Master SH2|Master-SH2
+Master SH2 Registers|Master-SH2-register
+Medal|Medalj
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|Hopperskåp för medaljer/biljetter (patocar, skychal, supgoal, techbowl, micrombc). Själva hoppersensorn simuleras automatiskt och är inte kopplad till någon tangent.
 Memory|Minne
 Memory &Editor|Minnes&editor
-Memory Breakpoints|Memory Breakpoints
+Memory Breakpoints|Minnesbrytpunkter
 Memory Dump|Minnesdump
 Memory Editor|Minnesredigerare
-Memory Search|Memory Search
+Memory Search|Minnessökning
 Memory Transfer|Minnesöverföring
+Memory breakpoint set at %1.|Minnesbrytpunkt satt på %1.
 Memory dump|Minnesdump
+Mesh Mode :|Nätläge:
+Middle|Mitten
+Mission Stick|Mission Stick
+Mission Stick Configuration|Konfiguration av Mission Stick
+Mixer|Mixer
+Modulation|Modulering
 Mouse|Mus
+Mouse Configuration|Konfiguration av mus
+Move the mouse over the image to inspect a pixel.|Håll musen över bilden för att granska en pixel.
+Move the mouse over the texture to inspect a pixel.|Håll musen över texturen för att granska en pixel.
 Mpeg ROM|MPEG ROM
+Multicart|Multicart
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|Multiply-and-Accumulate-register, höga 32 bitar.\nSkrivs tillsammans med MACL av instruktionerna MAC.W/MAC.L; S-biten i SR avgör om paret MACH:MACL mättas eller slår runt vid spill.
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|Multiply-and-Accumulate-register, låga 32 bitar.\nAnvänds också som vanligt 32-bitars resultatregister av MUL.L, DMULS.L och DMULU.L, som bara skriver till MACH:MACL.
+Musashi Interface|Musashi-gränssnitt
+Mute individual sounds|Tysta enskilda ljud
+Mute/UnMute Sound|Ljud av/på
 NBG0|NBG0
-NBG0/RBG1 Info|NBG0/RBG1 Info
+NBG0 Info|NBG0-info
+NBG0/RBG1 Info|NBG0/RBG1-info
 NBG1|NBG1
-NBG1 Info|NBG1 Info
+NBG1 Info|NBG1-info
 NBG2|NBG2
-NBG2 Info|NBG2 Info
+NBG2 Info|NBG2-info
 NBG3|NBG3
-NBG3 Info|NBG3 Info
+NBG3 Info|NBG3-info
+Narrow down|Begränsa
+Narrowing down: |Begränsar: 
+Native (current resolution of the window)|Ursprunglig (fönstrets nuvarande upplösning)
+Native (native resolution of Window)|Ursprunglig (fönstrets egen upplösning)
+NetBSD CD Drive|NetBSD CD-enhet
 Netlink|Netlink
 Never|Aldrig
+New search|Ny sökning
+Next Frame|Nästa bildruta
+No audio output device found.|Ingen ljudutgångsenhet hittades.
+No game running|Inget spel körs
+No matches found.|Inga träffar hittades.
+No need to know the real value: each address is compared with what it held at the previous search.|Du behöver inte veta det verkliga värdet: varje adress jämförs med vad den innehöll vid föregående sökning.
+No search yet|Ingen sökning ännu
+No sound has been played yet.|Inget ljud har spelats ännu.
+No texture|Ingen textur
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|Ingen textur för detta kommando (ritslut, överhoppat, klippning,\nlokala koordinater eller ett ogiltigt kommandoord)
 None|Ingen
-Normal Sprite|Normal Sprite
+Normal Sprite|Normal sprite
+Normal format not available, trying alternative|Normalt format inte tillgängligt, provar alternativ
 North America (NTSC)|Nordamerika (NTSC)
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|Inget att spela: ljudkällan för den här kanalen är noll-data (SSCTL = 2 eller 3).
 OSD Core|OSD-kärna
+Off|Av
 Ok|OK
+On|På
 On fullscreen|Helskärm
-On message|On message
+On message|Vid meddelande
+Opaque|Ogenomskinlig
 Open &CD Rom...|Öppna &CD-ROM...
 Open &ISO...|Öppna &ISO...
 Open CD Rom|Öppna CD-ROM
+Open Channel Viewer...|Öppna kanalvisare...
+Open DSP Debugger...|Öppna DSP-felsökare...
+Open SSF|Öppna SSF
+Open a cartridge file|Öppna en kassettfil
+Open a mpeg rom|Öppna en mpeg-rom
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|Öppna SCSP-DSP-felsökaren (program, register, brytpunkter, stegvis körning)
+Open the VDP2 viewer|Öppna VDP2-visaren
+Open the live 32-slot envelope and mute viewer|Öppna live-visaren för envelopper och tystning av de 32 kanalerna
+Open&Tray|Öppna &lucka
+OpenAL Sound Interface|OpenAL ljudgränssnitt
 OpenGL Video Interface|OpenGL-videogränssnitt
-Options|Options
-Other Debug|Other Debug
+OpenGL size :|OpenGL-storlek:
+Options|Alternativ
+Original|Original
+Original (original resolution of the Saturn)|Original (Saturns originalupplösning)
+Original aspect ratio|Ursprungligt bildförhållande
+Other|Övrigt
+Other Debug|Övrig felsökning
+Output|Utgång
+P1 - Bet|S1 - Insats
+P1 - Chi|S1 - Chi
+P1 - Flip/Flop|S1 - Flip/Flop
+P1 - Kan|S1 - Kan
+P1 - Pon|S1 - Pon
+P1 - Reach|S1 - Reach
+P1 - Ron|S1 - Ron
+P1 - Start|S1 - Start
+P2 - Chi|S2 - Chi
+P2 - Flip/Flop|S2 - Flip/Flop
+P2 - Kan|S2 - Kan
+P2 - Pon|S2 - Pon
+P2 - Reach|S2 - Reach
+P2 - Ron|S2 - Ron
+P2 - Start|S2 - Start
 Pad|Kontroll
 Pad Configuration|Kontrollinställningar
 Pause|Paus
+Pitch|Tonhöjd
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6
+Pixel Perfect|Pixel Perfect
+Pixel Perfect - Full screen|Pixel Perfect - Helskärm
+Play Slot|Spela kanal
+Player 1 Panel|Spelare 1-panel
+Player 2 Panel (kiwames only)|Spelare 2-panel (endast kiwames)
+Playing on slot(s) %1|Spelas på kanal(er) %1
+Playing slot %1...|Spelar kanal %1...
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|Spelar kanalen från dess key on, med samma ljudgenerator som spelet (utan DSP-effekterna och de andra kanalerna).
+Pon|Pon
+Port|Port
+Port 1|Port 1
+Port 2|Port 2
+Power Button|Strömknapp
+Press Esc key to cancel|Tryck på Esc för att avbryta
+Preview|Förhandsvisning
+Previous|Föregående
 Pro Action Replay|Pro Action Replay
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|Procedure Register (PR).\nReturadress som sparas av BSR/BSRF/JSR; RTS hoppar till det som lagras här. Det närmaste SH-2 har ett hårdvarulänkregister.
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|Programräknare (PC).\nAdressen till instruktionen som ska köras (fördröjningsplatser är redan medräknade). Det är detta en kodbrytpunkt jämför mot.
 Qt Keyboard Input Interface|Qt tangentbordsindatagränssnitt
+Question...|Fråga...
 Quit|Avsluta
 R&un|&Kör
 RBG0|RBG0
-RBG0 Info|RBG0 Info
-Read|Read
+RBG0 Info|RBG0-info
+RBG1|RBG1
+RBG1 Info|RBG1-info
+Raw Values|Råvärden
+Reach|Reach
+Read|Läs
 Region|Region
-Registers|Registers
-Reset|Reset
+Register|Register
+Registers|Register
+Related debuggers|Relaterade felsökare
+Release|Release
+Remove Peripheral|Ta bort enhet
+Remove breakpoint|Ta bort brytpunkt
+Remove the selected breakpoints|Ta bort de valda brytpunkterna
+Report written to:|Rapport skriven till:
+Reserved1|Reserverad1
+Reserved2|Reserverad2
+Reserved3|Reserverad3
+Reserved4|Reserverad4
+Reserved5|Reserverad5
+Reset|Återställ
+Reset Zoom|Återställ zoom
 Resolution|Upplösning
+Restart|Starta om
+Results|Resultat
 Right|Höger
+Right Stick Axis Throttle|Höger spak axel gasreglage
+Right Stick Axis X|Höger spak axel X
+Right Stick Axis Y|Höger spak axel Y
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|Höger spak:\nAvtryckare:   A\nVänster knapp: B\nHöger knapp:  C
 Right trigger|Höger avtryckare
+Right_P2|Höger_S2
+Ron|Ron
 Run|Kör
+Run until the current function returns (Shift+F11)|Kör tills den aktuella funktionen returnerar (Skift+F11)
+S&CSP|S&CSP
 S&ave State|Sp&ara tillstånd
 SCSP|SCSP
+SCSP Channels|SCSP-kanaler
+SCSP-&DSP|SCSP-&DSP
+SCU-&DSP|SCU-&DSP
 SCU-DSP|SCU-DSP
 SDL Joystick Interface|SDL joystick-gränssnitt
 SDL Sound Interface|SDL ljudgränssnitt
+SH2 Debug|SH2-felsökning
 SH2 Debugger Interpreter|SH2 felsökningstolk
 SH2 Dynamic Recompiler|SH2 dynamisk omkompilering
 SH2 Interpreter|SH2-tolkare
-SH2 Registers|SH2 Registers
+SH2 Performance|SH2-prestanda
+SH2 Registers|SH2-register
+SLAVE SH2|SLAV-SH2
 SSH2|SSH2
+SSH2 reached code breakpoint at |SSH2 nådde en kodbrytpunkt på 
+SSH2 reached data breakpoint at |SSH2 nådde en databrytpunkt på 
+ST-V Cabinet|ST-V-skåp
+ST-V cabinet Configuration|Konfiguration av ST-V-skåp
+STV Rom game|STV ROM-spel
+Sample|Sampling
+Sample size|Samplingsstorlek
+Sample start address 0x%1|Samplingens startadress 0x%1
 Save|Spara
-Save As WAV|Save As WAV
-Save Bitmap|Save Bitmap
+Save As Bitmap|Spara som bitmapp
+Save As WAV|Spara som WAV
+Save Bitmap|Spara bitmapp
+Save COEF|Spara COEF
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|Spara Data RAM-bank 0 (64 x 32-bitars ord) till .bin
+Save Data RAM bank 1 to .bin|Spara Data RAM-bank 1 till .bin
+Save Data RAM bank 2 to .bin|Spara Data RAM-bank 2 till .bin
+Save Data RAM bank 3 to .bin|Spara Data RAM-bank 3 till .bin
 Save Information|Spara information
 Save List|Spara lista
-Save MD0|Save MD0
-Save MD1|Save MD1
-Save MD2|Save MD2
-Save MD3|Save MD3
-Save Program|Save Program
-Save Selected|Save Selected
-Save Slot Registers|Save Slot Registers
+Save MADRS|Spara MADRS
+Save MD0|Spara MD0
+Save MD1|Spara MD1
+Save MD2|Spara MD2
+Save MD3|Spara MD3
+Save MEMS|Spara MEMS
+Save Program|Spara program
+Save RAW|Spara RAW
+Save Raw Data|Spara rådata
+Save SCSP DSP COEF|Spara SCSP-DSP COEF
+Save SCSP DSP MADRS|Spara SCSP-DSP MADRS
+Save SCSP DSP MEMS|Spara SCSP-DSP MEMS
+Save SCSP DSP Program (MPRO)|Spara SCSP-DSP-program (MPRO)
+Save SCSP DSP TEMP|Spara SCSP-DSP TEMP
+Save SCU DSP Data RAM MD0|Spara SCU-DSP Data RAM MD0
+Save SCU DSP Data RAM MD1|Spara SCU-DSP Data RAM MD1
+Save SCU DSP Data RAM MD2|Spara SCU-DSP Data RAM MD2
+Save SCU DSP Data RAM MD3|Spara SCU-DSP Data RAM MD3
+Save SCU DSP Program RAM|Spara SCU-DSP Program RAM
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|Spara SCU-DSP Program RAM (256 x 32-bitars ord) till .bin
+Save Selected|Spara markerade
+Save Slot Registers|Spara kanalregister
 Save State|Spara läge
 Save State As|Spara läge som
 Save States|Spara lägen
+Save TEMP|Spara TEMP
+Save Tab|Spara flik
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|Spara COEF-tabellen (64 x 16-bitars filterkoefficienter) till .bin
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|Spara DSP-programmet (MPRO, 128 x 64-bitars instruktioner) till .bin
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|Spara MADRS-tabellen (32 x 16-bitars ringbuffertadresser) till .bin
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|Spara MEMS-arbetsområdet i ljudminnet (32 x 32-bitars ord) till .bin
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|Spara fliken Register (rå + avkodad) och fliken Felsökning till en textfil
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|Spara TEMP-fördröjningsminnet (128 x 32-bitars ord) till .bin
+Save the VDP1 registers, command list and selected command info to a text file|Spara VDP1-registren, kommandolistan och info om valt kommando till en textfil
+Save the selected VRAM bank to a raw .bin file|Spara den valda VRAM-banken till en rå .bin-fil
+Save0|Spara0
+Save1|Spara1
+Save2|Spara2
+Save3|Spara3
+Save4|Spara4
+Save5|Spara5
+Save6|Spara6
+Save7|Spara7
+Save8|Spara8
+Save9|Spara9
 Sc&reenshot|Skä&rmbild
-Screen Enabled|Screen Enabled
+Scale3x|Scale3x
+Scale4x|Scale4x
+Scanline|Scanline
+Scanline filter|Scanline-filter
+Scanline off|Scanline av
+Scanline on|Scanline på
+Screen Enabled|Skärm aktiverad
+Screen Select:|Skärmval:
+Screen Viewer|Skärmvisare
+Screen:|Skärm:
 Screenshot|Skärmdump
+Screenshots|Skärmdumpar
 Search|Sök
-Search Criteria|Search Criteria
-Search Memory|Search Memory
+Search Criteria|Sökkriterier
+Search Memory|Sök i minnet
 Search Value:|Sök värde:
+Search, change the value in the game, then search again until only a few addresses remain.|Sök, ändra värdet i spelet och sök igen tills bara några få adresser återstår.
 Search/Add Cheats|Sök/Lägg till fusk
+Searching memory...|Söker i minnet...
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|Sega Mahjong-panel (kiwames, vmahjong, myfairld). A-N väljer brickor; Kan/Pon/Chi/Reach/Ron är åtgärdsknapparna. Spelare 2:s panel finns bara på 2-spelarskåpet (Pro Mahjong Kiwame S).
+Sega Saturn Sound Format files (*.ssf *.minissf)|Sega Saturn Sound Format-filer (*.ssf *.minissf)
+Select / Shoot Button|Välj- / Skjutknapp
+Select Button|Väljknapp
+Select Cartridge...|Välj kassett...
 Select a file to load your state|Välj fil för att ladda ditt läge
 Select your iso/cue/bin file|Välj din iso/cue/bin-fil
+Select your iso/cue/bin/zip file|Välj din iso/cue/bin/zip-fil
+Select your iso/cue/bin/zip/chd file|Välj din iso/cue/bin/zip/chd-fil
+Select your ssf file|Välj din ssf-fil
+Service|Service
 Set PC to Start Address|Sätt PC till startadress
 Settings|Inställningar
-Shortcuts|Shortcuts
+Sharp Bilinear|Skarp bilinjär
+Sharpen (Adaptive)|Skärpa (adaptiv)
+Shoot Button|Skjutknapp
+Shortcut|Genväg
+Shortcuts|Genvägar
 Show FPS|Visa FPS
-Show Log Window|Show Log Window
+Show Log Window|Visa loggfönster
+Show hex dump|Visa hexdump
+Showing the first %1. Narrow down the search to see the rest.|Visar de första %1. Begränsa sökningen för att se resten.
 Signed|Signerad
-Signed 16-bit value|Signed 16-bit value
-Signed 32-bit value|Signed 32-bit value
-Signed 8-bit value|Signed 8-bit value
+Signed 16-bit value|Signerat 16-bitarsvärde
+Signed 32-bit value|Signerat 32-bitarsvärde
+Signed 8-bit value|Signerat 8-bitarsvärde
+Size|Storlek
 Slave SH2|Slav SH2
-Slot Info|Slot Info
-Slot Number:|Slot Number:
+Slave SH2 Registers|Slav-SH2-register
+Slot|Kanal
+Slot %1|Kanal %1
+Slot %1 is sounding|Kanal %1 ljuder
+Slot Info|Kanalinfo
+Slot Number:|Kanalnummer:
+Slot details|Kanaldetaljer
+Slot envelopes|Kanalenvelopper
+Slot number|Kanalnummer
 Software OSD Interface|Mjukvaru OSD-gränssnitt
 Software Video Interface|Mjukvaruvideogränssnitt
 Sound|Ljud
 Sound Core|Ljudgränssnitt
+Sound...|Ljud...
+Source|Källkod
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|Källfilen hittades inte på den här datorn:\n%1\n\naddr2line anger rad %2.
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|Källkod hittades inte eller är inte tillgänglig.\nOm källorna finns, se till att skalets utdata är på engelska i Linux.\nDet görs genom att lägga till LC_ALL=C före startkommandot för Kronos\n
 Spanish|Spanska
+Sprite Info|Sprite-info
+Stack|Stack
+Stack Walk|Stackgenomgång
+Stack Walk Off|Stackgenomgång av
 Start|Start
 Start Address:|Startadress
-Start in Fullscreen|Start in Fullscreen
+Start a game to inspect the common control registers.|Starta ett spel för att granska de gemensamma kontrollregistren.
+Start a game to inspect the sound slots.|Starta ett spel för att granska ljudkanalerna.
+Start in Fullscreen|Starta i helskärm
+Start1|Start1
+Start2|Start2
 Status|Status
-Step Into|Step Into
-Step Out|Step Out
-Step Over|Step Over
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|Statusregister (SR).\nT - test-/jämförelseresultat; även carry/borrow-flaggan för skift och addition/subtraktion med carry.\nS - väljer mättnad eller omslag för MAC-instruktionens resultat.\nQ, M - internt tillstånd som DIV0U/DIV0S/DIV1 använder för att bygga en 32-bitars division av 1-bitarssteg; meningslöst utanför en divisionssekvens.\nI3-I0 - aktuell avbrottsmasknivå (0-15); avbrottsbegäranden med denna eller lägre prioritet hålls väntande.
+Step Into|Stega in
+Step Out|Stega ut
+Step Over|Stega över
+Stick Down|Spak ned
+Stick Left|Spak vänster
+Stick Right|Spak höger
+Stick Up|Spak upp
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|Vänster spakknapp: samma som A \nHöger spakknapp: samma som B \nSpakens avtryckare: samma som C
+Stop|Stopp
+Stop Slot|Stoppa kanal
+Stopped.|Stoppad.
 Store|Lagra
-Synchronize Saturn internal clock with set time|Synchronize Saturn internal clock with set time
-System Clipping Coordinates|System Clipping Coordinates
+Stretch to window|Sträck ut till fönstret
+Synchronize Saturn internal clock with set time|Synkronisera Saturns interna klocka med inställd tid
+System Clipping Coordinates|Systemets klippningskoordinater
+TV effect :|TV-effekt:
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|Ta en ögonblicksbild nu, stäng fönstret, spela tills värdet ändras, öppna det sedan igen och sök.
+Take snapshot|Ta ögonblicksbild
+Tesselation|Tessellering
+Test|Test
 Text|Text
-Texture|Texture
+Text files (*.txt)|Textfiler (*.txt)
+Texture|Textur
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|Master-SH2 körs alltid: det är kärnan som boot-ROM:et startar först och som som standard har bussprioritet när båda SH-2 kommer åt samma resurs samtidigt. De flesta spel kör huvuddelen av sin logik här.
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|Slav-SH2 är inaktiv tills ett spel uttryckligen startar den (se Sega Saturn Dual CPU User's Guide). Spel som använder den lägger vanligtvis ut en andra, parallell arbetsbörda här i stället för kod som saknar koppling till master-SH2.
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|Ljudenheten stöder inte 44,1 kHz stereo 16-bitars utmatning, så kanalen kan inte förhandsvisas.
+The dummies cores don't need configuration|Dummy-kärnorna behöver ingen konfiguration
+The dummies cores don't need configuration.|Dummy-kärnorna behöver ingen konfiguration.
+The emulation is paused while this window is open.|Emuleringen är pausad medan det här fönstret är öppet.
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|Ljudkällan för den här kanalen är noll-data (SSCTL = 2 eller 3), så det finns inget att spara.
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|Det här lagret ger ingen utdata just nu.\nTroligen är dess BGON-aktiveringsbit av -- se\nfliken Register (BGON) eller huvudfönstret VDP2-felsökning.
+Throttle Down|Gas ned
+Throttle Up|Gas upp
+Timers / Misc|Timrar / Övrigt
 To|Till
 To File...|Till fil...
+Tolerance ±|Tolerans ±
 Tools|Verktyg
-Track Inf Loop Results|Track Inf Loop Results
+Trace Logging|Spårningslogg
+Track Inf Loop Results|Resultat från spårning av oändliga loopar
+Trackball (patocar / skychal / supgoal / techbowl only)|Styrkula (endast patocar / skychal / supgoal / techbowl)
+Trackball Down|Styrkula ned
+Trackball Left|Styrkula vänster
+Trackball Right|Styrkula höger
+Trackball Up|Styrkula upp
 Transfer|Överföring
 Translation|Översättning
-Type:|Type:
+Triangles using perspective correction|Trianglar med perspektivkorrigering
+Trigger|Avtryckare
+Type|Typ
+Type:|Typ:
 Unable to add code|Kan inte lägga till kod
 Unable to change description|Kan inte ändra beskrivning
 Unable to open file for loading|Kan inte öppna fil för att ladda
 Unable to open file for saving|Kan inte öppna fil för att spara
 Unable to remove code|Kan inte ta bort kod
+Unable to save file|Kan inte spara filen
+Unchanged|Oförändrat
 Unknow (%1)|Okänt (%1)
+Unknown (%1)|Okänd (%1)
+Unmute all|Slå på allt ljud
 Unsigned|Osignerad
-Unsigned 16-bit value|Unsigned 16-bit value
-Unsigned 32-bit value|Unsigned 32-bit value
-Unsigned 8-bit value|Unsigned 8-bit value
+Unsigned 16-bit value|Osignerat 16-bitarsvärde
+Unsigned 32-bit value|Osignerat 32-bitarsvärde
+Unsigned 8-bit value|Osignerat 8-bitarsvärde
 Up|Upp
+Up_P2|Upp_S2
 Upload|Uppladdning
+Upscale Filter :|Uppskalningsfilter:
+Use SH2 cache - Experimental|Använd SH2-cache - Experimentell
+Use System Locale|Använd systemspråk
+Use Vdp1 Cache|Använd VDP1-cache
+User Interface Translation|Översättning av gränssnittet
+VDP&1|VDP&1
+VDP&2|VDP&2
 VDP1|VDP1
-VDP1 Command Info|VDP1 Command Info
-VDP1 Command List|VDP1 Command List
+VDP1 Command Info|VDP1-kommandoinfo
+VDP1 Command List|VDP1-kommandolista
+VDP1 Registers|VDP1-register
+VDP1 not initialised.|VDP1 inte initierad.
 VDP2|VDP2
+VDP2 Debug|VDP2-felsökning
+VDP2 Debug — inactive|VDP2-felsökning — inaktiv
+VDP2 RAM not available.|VDP2-RAM inte tillgängligt.
+VDP2 Viewer|VDP2-visare
+VDP2 not initialised.|VDP2 inte initierad.
+VDP2Viewer Viewer|VDP2Viewer-visare
+VRAM Hex|VRAM hex
+VRAM-A  (0x00000-0x3FFFF)|VRAM-A  (0x00000-0x3FFFF)
+VRAM-A0 (0x00000-0x1FFFF)|VRAM-A0 (0x00000-0x1FFFF)
+VRAM-A1 (0x20000-0x3FFFF)|VRAM-A1 (0x20000-0x3FFFF)
+VRAM-B  (0x40000-0x7FFFF)|VRAM-B  (0x40000-0x7FFFF)
+VRAM-B0 (0x40000-0x5FFFF)|VRAM-B0 (0x40000-0x5FFFF)
+VRAM-B1 (0x60000-0x7FFFF)|VRAM-B1 (0x60000-0x7FFFF)
 Value|Värde
 Value :|Värde :
-Value:|Value:
+Value out of range for this data type (%1 to %2).|Värdet ligger utanför intervallet för den här datatypen (%1 till %2).
+Value you see on screen, e.g. 3|Värdet du ser på skärmen, t.ex. 3
+Value:|Värde:
+Values are read from the SCSP registers while the emulation is paused.|Värdena läses från SCSP-registren medan emuleringen är pausad.
 Vdp1|Vdp1
 Vdp2|Vdp2
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|Vector Base Register (VBR).\nBasadress för undantags-/avbrottsvektortabellen: vektor n är 32-bitars hanteraradressen lagrad på VBR + n*4. Sätts normalt en gång av boot-ROM/BIOS och lämnas orörd av spelkoden.
 Video|Video
+Video CD Card (MPEG Card)|Video CD-kort (MPEG-kort)
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|Video CD-kort-ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;Alla filer (*)
 Video Core|Videogränssnitt
 Video Driver|Videodrivrutin
 Video Format|Videoformat
 View|Visa
-Viewer|Viewer
+Viewer|Visare
+Viewer && Registers...|Visare && Register...
+Volume|Volym
+WAV Files (*.wav)|WAV-filer (*.wav)
 Waiting Input...|Väntar på input...
+Warning...|Varning...
+Wave File Output Interface|Gränssnitt för utmatning till Wave-fil
+What do you know about the value?|Vad vet du om värdet?
+Wheel|Ratt
+Wheel Configuration|Konfiguration av ratt
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|Vart CMDLINK skickar kommandotolken härnäst: NEXT (följande tabell), ASSIGN/CALL (hopp till en given adress), RETURN eller END (avsluta listan här).
 Width|Bredd
-Window Resolution|Window Resolution
+Window Resolution|Fönsterupplösning
+Window size :|Fönsterstorlek:
 Windows SPTI Driver|Windows SPTI-drivrutin
+Wireframe :|Trådmodell:
 Word|Word
 Word Write|Ordskrivning
-Write|Write
+Word Write : %1 %2|Skriv word: %1 %2
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Det mesta av spelets data finns här.
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).
+Write|Skriv
 Yabause Cheat Files (*.yct);;All Files (*)|Yabause fuskfil (*.yct);;Alla filer (*)
 Yabause Qt GUI|Yabause Qt GUI
 Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt-gränssnitt<br />Baserat op Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause-gruppen<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
 Yabause Save State (*.yss)|Yabause Sparat Läge (*.yss)
 Yabause is not initialized, can't manage backup ram.|Yabause är inte initierat, kan inte hantera backup-RAM.
+Yes|Ja
+You don't know the real value|Du vet inte det verkliga värdet
+Youtube Channel|Youtube-kanal
+addr2line Executable|Programmet addr2line
+addr2line utility is not configured properly, source not available.|Verktyget addr2line är inte korrekt konfigurerat, källkod inte tillgänglig.
 http://www.emu-compatibility.com/yabause/index.php?lang=uk|http://www.emu-compatibility.com/yabause/index.php?lang=uk
 http://www.monkeystudio.org|http://www.monkeystudio.org
+nanovg OSD Interface|nanovg OSD-gränssnitt
+no memory selected|inget minne valt
 toolBar|Verktygsfält

@@ -1,6 +1,9 @@
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|
+  Offset (hex):|
+%1 / %2 - list full, later samples are not listed|
 %1 Images (*.%2)|
+%1 results|
 %1/%2 blocks free|
-3D Control Pad Configuration|
 &About...|
 &Action Replay|
 &Backup Manager...|
@@ -24,8 +27,10 @@
 &Log|
 &Master SH2|
 &Memory Transfer|
+&No|
 &OK|
 &Pause|
+&Question...|
 &Quit|
 &Raw Memory Address|
 &Reset|
@@ -34,78 +39,139 @@
 &Slave SH2|
 &Tools|
 &Transfer|
+&Vertical synchronization|
 &View|
-16-bit|
-16-bit Relative value(s)|
+(layer disabled -- BGON bit off)\n|
+1 result|
+10 Yen|
+100 Yen|
+128 Mbit Dram|
 16 Mbit Backup Ram|
 16 Mbit ROM|
-32-bit|
+16-bit|
+16-bit Relative value(s)|
+1x (original resolution of the Saturn)|
 32 Mbit Backup Ram|
 32 Mbit Dram|
+32-bit|
 3D Control Pad|
+3D Control Pad Configuration|
 4 Mbit Backup Ram|
+4xBRZ|
 503/512 blocks free|
 510/512 blocks free|
 68000 Core|
+6xBRZ|
 8 Mbit Backup Ram|
 8 Mbit Dram|
 8-bit|
 8-bit Relative value(s)|
 <font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|
+A bar lost or gained a percentage|
+A breakpoint already exists at %1.|
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|
+A loss of 100 % or more means the value reached zero.|
 About...|
 Action Replay Code :|
 Add|
 Add Action Replay Code|
 Add Cheat|
+Add Cheat…|
 Add Codes...|
 Add Raw Memory Code|
+Add a breakpoint on this address|
+Add breakpoint|
+Add cheat|
 Address|
+Address (hex):|
 Address :|
+Address in hex, e.g. 06004000|
+Address in hex, e.g. 06100000|
+Advance one frame|
 Advanced|
+Advanced options|
 All Files|
-All Files;|
 All Files (*)|
+All Files;|
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|
 Always|
+Amount|
 An error occured while writing file.|
+An error occurred while writing the screenshot: |
+An exact number|
 Are you sure you want to delete '%1' ?|
 Are you sure you want to format '%1' ?|
 Asia (NTSC)|
 Asia (PAL)|
 Assembly code|
+Attack|
+Audio preview is not available in this build.|
 Auto-detect|
-Awaiting input for|
 Autostart|
+Awaiting input for|
 Axis|
+Axis L Trigger|
+Axis R Trigger|
 Axis Throttle|
 Axis X|
 Axis Y|
-Axis L Trigger|
-Axis R Trigger|
+Backtrace|
 Backup Ram Manager|
+Bank:|
+Bet|
+BiCubic|
 Bilinear|
 Bilinear Filtering (Restart required)|
 Binary Files (*.bin)|
 Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|
+Binary files (*.bin)|
 Bios|
+Bios Settings|
+Bios file path|
+Bios settings file|
 Block Size :|
+Breakpoint Reached|
+Breakpoint added at %1.|
+Breakpoint removed at %1.|
+Breakpoints|
 Bug report|
+Button 2|
+Button 2 (patocar/skychal/supgoal/techbowl only)|
+Button 5|
 Byte|
 Byte Write|
 Byte Write : %1 %2|
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|
+CD-ROM|
+COFF Program Files (*.cof *.coff)|
+CPU Tesselation|
+CRT (Aperture Grille)|
+Can't Pause kronos while not initialized.|
+Can't initialize Kronos.|
+Can't plug in the new controller, cancelling.|
 Cancel|
 Cannot initialize Windows SPTI Driver|
-Can't plug in the new controller, cancelling.|
-Can't initialize Kronos.|
 Cart/Memory|
 Cartridge|
-CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|
+Cartridge Path|
 Cd-Rom|
 Central/South America (NTSC)|
 Central/South America (PAL)|
-Cheats File|
+Change|
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|
+Changed|
+Channel Viewer|
 Cheat &Search...|
 Cheat Search|
 Cheat Type|
+Cheats|
+Cheats File|
+Chi|
+Choose a STV cartridge folder|
 Choose a binary or program file|
 Choose a bios file|
 Choose a cartridge file|
@@ -114,26 +180,50 @@ Choose a cdrom drive/mount point|
 Choose a cheat file to open|
 Choose a cheat file to save to|
 Choose a file to save your state|
+Choose a file to store bios settings|
 Choose a folder to store save states|
+Choose a folder to store screenshots|
 Choose a location for binary file|
+Choose a location for the VRAM dump|
+Choose a location for the text file|
 Choose a location for your binary file|
 Choose a location for your bitmap|
 Choose a location for your screenshot|
 Choose a location for your wav file|
 Choose a memory file|
 Choose a mpeg rom|
+Choose the location of the addr2line executable|
 Clear|
 Clear configuration|
 Close|
+Code|
 Code Breakpoints|
-COFF Program Files (*.cof *.coff)|
+Coin1|
+Coin2|
+Coins && Control Panel|
+Color RAM|
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|
+Color RAM not available|
 Comment :|
 Common Control Registers|
-Compatibility List|
+Common registers|
 Compare Type|
-Couldn't save state file|
+Compared to the previous search, the value has:|
+Compatibility List|
+Compute Shader Video Interface|
+Copy address|
+Copy line|
+Could not add a breakpoint at %1: the list is full or the address is not supported.|
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|
+Could not open the audio device.|
+Could not write the report file.|
 Couldn't load state file|
-CPU Tesselation|
+Couldn't save state file|
+Count|
+Ctrl+wheel to zoom|
+DSP Control Registers|
+DSP Registers|
+Data RAM|
 Data Size|
 Data Size :|
 Data Type|
@@ -142,95 +232,193 @@ Debug CPU|
 Debug M68K|
 Debug Master SH2|
 Debug SCSP|
+Debug SCSP Channels|
+Debug SCSP DSP|
 Debug SCU DSP|
 Debug Slave SH2|
 Debug VDP1|
+Debug VDP2|
 Debug VDP2Viewer|
+Decay 1|
+Decay 2|
+Decoded|
+Decreased|
 Default Dial IP|
+Default System Language|
+Deinterlacing Adaptive|
+Deinterlacing Bob|
+Deinterlacing Debug Adaptive|
 Del|
 Delete|
 Description|
+Description :|
+Deutsch|
+Development Extension|
 Device List|
 DirectX Input Interface|
 DirectX Sound Interface|
+Directory|
 Disabled|
 Disassembled Code|
+Discord Channel|
 Display on Hover|
+Door Switch|
 Double Mission Stick|
 Double Mission Stick Configuration|
+Double-click a breakpoint to show it in the disassembly|
+Double-click an address to add it as a cheat.|
 Down|
+Down_P2|
 Download|
-DSP Control Registers|
-DSP Registers|
 Dummy 68k Interface|
 Dummy CD Drive|
 Dummy Input Interface|
 Dummy OSD Interface|
 Dummy Sound Interface|
 Dummy Video Interface|
+ELF Program Files (*elf)|
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|
 Edit configuration|
 Eject/Load ISO...|
-ELF Program Files (*elf)|
-End Address:|
-English|
 Embellishment filter :|
+Emulation paused|
 Enable|
 Enable Bios Emulation|
 Enable Code : %1 %2|
 Enable Frame Skip/Limiter|
+Enable vertical synchronization|
 Enabled|
-Enter new assembly code|
+End Address:|
+English|
 Enter New Value|
+Enter new assembly code|
+Envelope|
+Equal to|
 Error|
-Extend Internal backup memory to 8MB|
+Error...|
+Europe (PAL)|
 Europe + others (PAL)|
 Exact|
-File:|
+Example: 100 → %1 is a gain of %2 %.|
+Example: 100 → %1 is a loss of %2 %.|
+Execute one instruction (F11)|
+Execute one instruction, running calls to the end (F10)|
+Export Debug|
+Export Debug Info (.txt)...|
+Export Registers / Debug (.txt)...|
+Export bank (.bin)...|
+Extend Internal backup memory to 8MB|
+F&PS|
+FSR 1.0 (EASU + RCAS)|
+FXAA|
+Family-Specific && Diagnostics|
 File Name :|
+File:|
+Filter registers...|
 Finished searching up to end of memory, continue from the beginning?|
+Finished.|
+Fit the image back into the view (Ctrl+wheel to zoom)|
+Fit the texture back into the view (Ctrl+wheel to zoom)|
+Flip/Flop|
+Format|
+FreeBSD CD Drive|
 French|
 From File...|
+GPU Tesselation|
+Gained|
 General|
 General Info|
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|
 German|
+Get Existing Directory...|
+Get Item...|
+Get Open File Name...|
+Get Save File Name...|
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|
+Go|
+Go to an address (Ctrl+G)|
 Goto Address|
-GPU Tesselation|
+Gouraud Mode :|
+Greater than|
 Greater then|
 Gun|
 Gun Configuration|
 Gun/Mouse Sensitivity|
+HQ4x|
 Hex value(s)|
 Hide Menubar|
 Hide Toolbar|
+High + Low WRAM|
+High WRAM|
+Highlighted slots are sounding right now.|
+Hopper Cabinet|
+Hopper Cabinet Configuration|
+Hopper Sensor Test|
+Hopper Sensor Test (hold to force a payout pulse)|
+ISO-File Virtual Drive|
+Image format|
 Improved|
+Inactive slot|
+Increased|
 Information...|
 Inline Assembly|
 Input|
+Input code address|
 Internal Backup RAM|
 Invalid Address|
+Invalid Address or Value|
 Invalid Start/End Address Combination|
 Invalid Value|
-ISO-File Virtual Drive|
+Invalid address.|
+Invalid address: %1|
+It went up or down|
 Italian|
 Japan (NTSC)|
 Japanese|
 Japanese Modem|
+Jump list|
+Kan|
+Keyboard|
 Korea (NTSC)|
 Kronos Cheat Files (*.yct);;All Files (*)|
 Kronos Qt GUI|
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|
 Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|
 Kronos Save State (*.yss)|
 Kronos is not initialized, can't manage backup ram.|
-Language :|
 L&oad State|
+LFO|
+Lanczos3|
+Language :|
+Layer inactive|
 Left|
-Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|
+Left Stick Axis Throttle|
 Left Stick Axis X|
 Left Stick Axis Y|
-Left Stick Axis Throttle|
 Left Stick Throttle Down|
+Left Stick X Left|
+Left Stick Y Down|
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|
 Left trigger|
+Left_P2|
 Less than|
+Life bar, energy gauge...|
+Linux CD Drive|
+Linux Joystick Interface|
+Live|
+Lives, ammo, score, money...|
+Load Code|
+Load0|
+Load1|
+Load2|
+Load3|
+Load4|
+Load5|
+Load6|
+Load7|
+Load8|
+Load9|
 Log|
 Long|
 Long Write|
@@ -238,23 +426,49 @@ Long Write : %1 %2|
 Loop Track Clear|
 Loop Track Start|
 Loop Track Stop|
+Lost|
+Low WRAM|
+M68K Registers|
+MASTER SH2|
+MSH2 reached code breakpoint at |
+MSH2 reached data breakpoint at |
+Mac OS X (IOKit) Joystick Interface|
+Mac OS X Core Audio Sound Interface|
+MacOSX CD Drive|
+Magnet Sensor|
+Magnet Sensor (micrombc only)|
+Mahjong Panel|
+Mahjong Panel Configuration|
+Mame romset 0.269:|
+Master SH2 Registers|
+Medal|
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|
 Memory|
+Memory &Editor|
 Memory Breakpoints|
 Memory Editor|
-Memory &Editor|
 Memory Search|
 Memory Transfer|
+Memory breakpoint set at %1.|
 Mesh Mode :|
 Middle|
-Mission Stick|Mission Stick
-Mission Stick Configuration|Configuration du Mission Stick
+Mission Stick|
+Mission Stick Configuration|
+Mixer|
+Modulation|
 Mouse|
 Mouse Configuration|
+Move the mouse over the image to inspect a pixel.|
+Move the mouse over the texture to inspect a pixel.|
 Mpeg ROM|
+Multicart|
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|
 Musashi Interface|
-nanovg OSD Interface|
-Native (native resolution of Window)|
+Mute individual sounds|
+Mute/UnMute Sound|
 NBG0|
+NBG0 Info|
 NBG0/RBG1 Info|
 NBG1|
 NBG1 Info|
@@ -262,171 +476,410 @@ NBG2|
 NBG2 Info|
 NBG3|
 NBG3 Info|
+Narrow down|
+Narrowing down: |
+Native (current resolution of the window)|
+Native (native resolution of Window)|
+NetBSD CD Drive|
 Netlink|
 Never|
-&No|
+New search|
+Next Frame|
+No audio output device found.|
+No game running|
 No matches found.|
-None|
+No need to know the real value: each address is compared with what it held at the previous search.|
+No search yet|
+No sound has been played yet.|
+No texture|
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|
 None|
 Normal format not available, trying alternative|
 North America (NTSC)|
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|
+OSD Core|
+Off|
+Ok|
+On|
 On fullscreen|
 On message|
+Opaque|
 Open &CD Rom...|
 Open &ISO...|
 Open CD Rom|
+Open Channel Viewer...|
+Open DSP Debugger...|
 Open SSF|
+Open a cartridge file|
+Open a mpeg rom|
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|
+Open the VDP2 viewer|
+Open the live 32-slot envelope and mute viewer|
 Open&Tray|
-OpenGL size :|
+OpenAL Sound Interface|
 OpenGL Video Interface|
+OpenGL size :|
 Options|
 Original|
 Original (original resolution of the Saturn)|
 Original aspect ratio|
-OSD Core|
+Other|
+Other Debug|
+Output|
+P1 - Bet|
+P1 - Chi|
+P1 - Flip/Flop|
+P1 - Kan|
+P1 - Pon|
+P1 - Reach|
+P1 - Ron|
+P1 - Start|
+P2 - Chi|
+P2 - Flip/Flop|
+P2 - Kan|
+P2 - Pon|
+P2 - Reach|
+P2 - Ron|
+P2 - Start|
 Pad|
 Pad Configuration|
+Pause|
+Pitch|
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|
+Pixel Perfect|
+Pixel Perfect - Full screen|
 Play Slot|
+Player 1 Panel|
+Player 2 Panel (kiwames only)|
+Playing on slot(s) %1|
+Playing slot %1...|
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|
+Pon|
 Port|
+Port 1|
+Port 2|
+Power Button|
 Press Esc key to cancel|
+Preview|
+Previous|
+Pro Action Replay|
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|
 Qt Keyboard Input Interface|
-&Question...|
+Question...|
+R&un|
 RBG0|
 RBG0 Info|
+RBG1|
+RBG1 Info|
+Raw Values|
+Reach|
 Read|
 Region|
+Register|
+Registers|
+Related debuggers|
+Release|
 Remove Peripheral|
+Remove breakpoint|
+Remove the selected breakpoints|
+Report written to:|
+Reserved1|
+Reserved2|
+Reserved3|
+Reserved4|
+Reserved5|
+Reset Zoom|
 Restart|
+Results|
 Right|
-Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|
+Right Stick Axis Throttle|
 Right Stick Axis X|
 Right Stick Axis Y|
-Right Stick Axis Throttle|
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|
 Right trigger|
-R&un|
-Save As Bitmap|
-Save As WAV|
-Save Bitmap|
-Save Information|
-Save List|
-Save MD0|
-Save MD1|
-Save MD2|
-Save MD3|
-Save Selected|
-Save Program|
+Right_P2|
+Ron|
+Run until the current function returns (Shift+F11)|
+S&CSP|
 S&ave State|
-Save States|
-Save Slot Registers|
-Save Tab|
-Screen Enabled|
-Screen Select:|
-Sc&reenshot|
-Scanline filter|
-Scanline off|
-Scanline on|
 SCSP|
 SCSP Channels|
+SCSP-&DSP|
+SCU-&DSP|
 SDL Joystick Interface|
 SDL Sound Interface|
-Search|
-Search/Add Cheats|
-Search Criteria|
-Search Memory|
-Search Value:|
-Sega Saturn Sound Format files (*.ssf *.minissf)|
-Select a file to load your state|
-Select your iso/cue/bin/zip file|
-Select your ssf file|
-Set PC to Start Address|
-Settings|
+SH2 Debug|
 SH2 Debugger Interpreter|
 SH2 Interpreter|
 SH2 Performance|
 SH2 Registers|
+SLAVE SH2|
+SSH2 reached code breakpoint at |
+SSH2 reached data breakpoint at |
+ST-V Cabinet|
+ST-V cabinet Configuration|
+STV Rom game|
+Sample|
+Sample size|
+Sample start address 0x%1|
+Save As Bitmap|
+Save As WAV|
+Save Bitmap|
+Save COEF|
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|
+Save Data RAM bank 1 to .bin|
+Save Data RAM bank 2 to .bin|
+Save Data RAM bank 3 to .bin|
+Save Information|
+Save List|
+Save MADRS|
+Save MD0|
+Save MD1|
+Save MD2|
+Save MD3|
+Save MEMS|
+Save Program|
+Save RAW|
+Save Raw Data|
+Save SCSP DSP COEF|
+Save SCSP DSP MADRS|
+Save SCSP DSP MEMS|
+Save SCSP DSP Program (MPRO)|
+Save SCSP DSP TEMP|
+Save SCU DSP Data RAM MD0|
+Save SCU DSP Data RAM MD1|
+Save SCU DSP Data RAM MD2|
+Save SCU DSP Data RAM MD3|
+Save SCU DSP Program RAM|
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|
+Save Selected|
+Save Slot Registers|
+Save States|
+Save TEMP|
+Save Tab|
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|
+Save the VDP1 registers, command list and selected command info to a text file|
+Save the selected VRAM bank to a raw .bin file|
+Save0|
+Save1|
+Save2|
+Save3|
+Save4|
+Save5|
+Save6|
+Save7|
+Save8|
+Save9|
+Sc&reenshot|
+Scale3x|
+Scale4x|
+Scanline|
+Scanline filter|
+Scanline off|
+Scanline on|
+Screen Enabled|
+Screen Select:|
+Screen Viewer|
+Screen:|
+Screenshots|
+Search|
+Search Criteria|
+Search Memory|
+Search Value:|
+Search, change the value in the game, then search again until only a few addresses remain.|
+Search/Add Cheats|
+Searching memory...|
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|
+Sega Saturn Sound Format files (*.ssf *.minissf)|
+Select / Shoot Button|
+Select Button|
+Select Cartridge...|
+Select a file to load your state|
+Select your iso/cue/bin/zip file|
+Select your iso/cue/bin/zip/chd file|
+Select your ssf file|
+Service|
+Set PC to Start Address|
+Settings|
+Sharp Bilinear|
+Sharpen (Adaptive)|
+Shoot Button|
+Shortcut|
 Shortcuts|
 Show FPS|
 Show Log Window|
+Show hex dump|
+Showing the first %1. Narrow down the search to see the rest.|
 Signed|
-Signed 8-bit value|
 Signed 16-bit value|
 Signed 32-bit value|
+Signed 8-bit value|
+Size|
+Slave SH2 Registers|
+Slot|
+Slot %1|
+Slot %1 is sounding|
 Slot Info|
 Slot Number:|
+Slot details|
+Slot envelopes|
+Slot number|
 Software OSD Interface|
 Software Video Interface|
-Sound...|
 Sound|
 Sound Core|
+Sound...|
+Source|
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|
 Spanish|
-ST-V cabinet Configuration|
-ST-V Cabinet|
-STV Rom game|
+Sprite Info|
+Stack|
+Stack Walk|
+Stack Walk Off|
 Start|
 Start Address:|
+Start a game to inspect the common control registers.|
+Start a game to inspect the sound slots.|
 Start in Fullscreen|
+Start1|
+Start2|
 Status|
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|
 Step Into|
 Step Out|
 Step Over|
 Stick Down|
-Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|
 Stick Left|
 Stick Right|
 Stick Up|
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|
 Stop|
+Stop Slot|
+Stopped.|
 Stretch to window|
 Synchronize Saturn internal clock with set time|
+TV effect :|
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|
+Take snapshot|
 Tesselation|
+Test|
 Text|
+Text files (*.txt)|
 Texture|
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|
 The dummies cores don't need configuration|
+The dummies cores don't need configuration.|
+The emulation is paused while this window is open.|
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|
 Throttle Down|
 Throttle Up|
+Timers / Misc|
 To File...|
-toolBar|
+Tolerance ±|
 Trace Logging|
+Track Inf Loop Results|
+Trackball (patocar / skychal / supgoal / techbowl only)|
+Trackball Down|
+Trackball Left|
+Trackball Right|
+Trackball Up|
 Translation|
 Triangles using perspective correction|
 Trigger|
-TV effect :|
+Type|
 Type:|
 Unable to add code|
 Unable to change description|
-Unsigned|
-Unsigned 8-bit value|
-Unsigned 16-bit value|
-Unsigned 32-bit value|
-Up|
-Upload|
-Unable to add code|
 Unable to open file for loading|
 Unable to open file for saving|
 Unable to remove code|
+Unable to save file|
+Unchanged|
 Unknown (%1)|
+Unmute all|
+Unsigned|
+Unsigned 16-bit value|
+Unsigned 32-bit value|
+Unsigned 8-bit value|
+Up|
+Up_P2|
+Upload|
 Upscale Filter :|
+Use SH2 cache - Experimental|
+Use System Locale|
 Use Vdp1 Cache|
-Value|
-Value:|
-Value :|
+User Interface Translation|
+VDP&1|
+VDP&2|
 VDP1|
 VDP1 Command Info|
 VDP1 Command List|
+VDP1 Registers|
+VDP1 not initialised.|
 VDP2|
+VDP2 Debug|
+VDP2 Debug — inactive|
+VDP2 RAM not available.|
+VDP2 Viewer|
+VDP2 not initialised.|
 VDP2Viewer Viewer|
+VRAM Hex|
+VRAM-A  (0x00000-0x3FFFF)|
+VRAM-A0 (0x00000-0x1FFFF)|
+VRAM-A1 (0x20000-0x3FFFF)|
+VRAM-B  (0x40000-0x7FFFF)|
+VRAM-B0 (0x40000-0x5FFFF)|
+VRAM-B1 (0x60000-0x7FFFF)|
+Value|
+Value :|
+Value out of range for this data type (%1 to %2).|
+Value you see on screen, e.g. 3|
+Value:|
+Values are read from the SCSP registers while the emulation is paused.|
+Vdp1|
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|
 Video|
+Video CD Card (MPEG Card)|
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|
 Video Core|
 Video Driver|
 Video Format|
 View|
 Viewer|
+Viewer && Registers...|
+Volume|
 WAV Files (*.wav)|
+Warning...|
+Wave File Output Interface|
+What do you know about the value?|
 Wheel|
 Wheel Configuration|
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|
 Window Resolution|
+Window size :|
 Windows SPTI Driver|
+Wireframe :|
 Word|
 Word Write|
 Word Write : %1 %2|
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|
 Write|
 Yes|
+You don't know the real value|
+Youtube Channel|
+addr2line Executable|
+addr2line utility is not configured properly, source not available.|
+nanovg OSD Interface|
+no memory selected|
+toolBar|

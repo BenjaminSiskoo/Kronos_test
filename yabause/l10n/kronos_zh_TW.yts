@@ -1,373 +1,944 @@
-%1 Images (*.%2)|%1 Images (*.%2)
-%1/%2 blocks free|%1/%2 blocks free
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|\n\n點選「確定」開啟除錯器。點選「忽略」繼續模擬，暫存器內容將丟失。
+  Offset (hex):|  偏移 (十六進位制):
+%1 / %2 - list full, later samples are not listed|%1 / %2 - 列表已滿，後續取樣不再列出
+%1 Images (*.%2)|%1 影象 (*.%2)
+%1 results|%1 個結果
+%1/%2 blocks free|%1/%2 塊可用
 &About...|關於(&A)…
-&Action Replay|&Action Replay
-&Backup Manager...|&Backup Manager...
-&Browse|&Browse
+&Action Replay|Action Replay(&A)
+&Backup Manager...|備份管理器(&B)...
+&Browse|瀏覽(&B)
 &Cancel|取消(&C)
 &Capture Screen|補捉畫面(&C)
-&Cheat List|&Cheat List
-&Cheats|&Cheats
-&Cheats List...|&Cheats List...
+&Cheat List|作弊碼列表(&C)
+&Cheats|作弊碼(&C)
+&Cheats List...|作弊碼列表(&C)...
 &Clear|清除(&C)
 &Close|關閉(&C)
-&Debug|&Debug
+&Debug|除錯(&D)
 &Delete|刪除(&D)
 &Emulation|摸擬(&E)
 &File|檔案(&F)
-&Frame Skip/Limiter|&Frame Skip/Limiter
+&Frame Skip/Limiter|跳幀/限速(&F)
 &Fullscreen|全螢幕(&F)
 &Help|幫助(&H)
-&Layer|&Layer
-&Load From File|&Load From File
+&Layer|圖層(&L)
+&Load From File|從檔案載入(&L)
 &Log|&Log
-&Master SH2|&Master SH2
-&Memory Transfer|&Memory Transfer
+&Master SH2|主 SH2(&M)
+&Memory Transfer|記憶體傳輸(&M)
+&No|否(&N)
 &OK|確定(&O)
 &Pause|暫停(&P)
+&Question...|問題(&Q)...
 &Quit|離開(&Q)
-&Raw Memory Address|&Raw Memory Address
+&Raw Memory Address|原始記憶體位址(&R)
 &Reset|重置(&R)
 &Save To File|保存至檔案(&S)
 &Settings...|設定…(&S)
-&Slave SH2|&Slave SH2
+&Slave SH2|從 SH2(&S)
 &Tools|工具(&T)
-&Transfer|&Transfer
-&View|&View
-16 Mbit Backup Ram|16 Mbit Backup Ram
+&Transfer|傳輸(&T)
+&Vertical synchronization|垂直同步(&V)
+&View|檢視(&V)
+(layer disabled -- BGON bit off)\n|(圖層已停用 -- BGON 位元關閉)\n
+1 result|1 個結果
+10 Yen|10 日元
+100 Yen|100 日元
+128 Mbit Dram|128 Mbit DRAM
+16 Mbit Backup Ram|16 Mbit 備份記憶體
 16 Mbit ROM|16 Mbit ROM
 16-bit|１６位元
-16-bit Relative value(s)|16-bit Relative value(s)
-32 Mbit Backup Ram|32 Mbit Backup Ram
-32 Mbit Dram|32 Mbit Dram
+16-bit Relative value(s)|16 位相對值
+1x (original resolution of the Saturn)|1x (土星原始解析度)
+32 Mbit Backup Ram|32 Mbit 備份記憶體
+32 Mbit Dram|32 Mbit DRAM
 32-bit|３２位元
-3D Control Pad|3D Control Pad
-4 Mbit Backup Ram|4 Mbit Backup Ram
-503/512 blocks free|503/512 blocks free
-510/512 blocks free|510/512 blocks free
-8 Mbit Backup Ram|8 Mbit Backup Ram
-8 Mbit Dram|8 Mbit Dram
+3D Control Pad|3D 手柄
+3D Control Pad Configuration|3D 手柄設定
+4 Mbit Backup Ram|4 Mbit 備份記憶體
+4xBRZ|4xBRZ
+503/512 blocks free|503/512 塊可用
+510/512 blocks free|510/512 塊可用
+68000 Core|68000 核心
+6xBRZ|6xBRZ
+8 Mbit Backup Ram|8 Mbit 備份記憶體
+8 Mbit Dram|8 Mbit DRAM
 8-bit|８位元
-8-bit Relative value(s)|8-bit Relative value(s)
-<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>
+8-bit Relative value(s)|8 位相對值
+<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>警告:</b> <b>不支援</b>主程式碼 (Master Code)。</font>
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|<h3>查詢遊戲儲存某個數值的位置</h3><p>1. 在左側選擇你已知的資訊，然後點選<b>搜尋</b>或<b>拍攝快照</b>。<br>2. 繼續遊戲直到數值發生變化，然後重新開啟此視窗。<br>3. 再次搜尋，直到只剩下少數幾個位址。<br>4. 雙擊某個位址即可將其轉換為作弊碼。</p>
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|<h3>沒有匹配的位址</h3><p>請嘗試更大的容差，檢查<i>進階選項</i>中的資料大小，或點選<b>新搜尋</b>重新開始。</p>
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|<span style=" color:darkgreen;">精靈</span> · <span style=" color:blue;">多邊形</span> · <span style=" color:darkcyan;">折線</span> · <span style=" color:#B45A00;">線條</span> · <span style=" color:gray;">裁剪/區域性</span> · <span style=" color:red;">無效</span>
+A bar lost or gained a percentage|某個血條減少或增加了一定百分比
+A breakpoint already exists at %1.|%1 處已存在斷點。
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|從滿血降到 60 % 的血條減少了 40 %: 輸入 40。容差可吸收舍入誤差。
+A loss of 100 % or more means the value reached zero.|減少 100 % 或更多表示數值已歸零。
 About...|關於…
-Action Replay Code :|Action Replay Code :
+Action Replay Code :|Action Replay 程式碼:
 Add|新增
-Add Action Replay Code|Add Action Replay Code
-Add Cheat|Add Cheat
-Add Codes...|Add Codes...
-Add Raw Memory Code|Add Raw Memory Code
-Address|Address
-Address :|Address :
+Add Action Replay Code|新增 Action Replay 程式碼
+Add Cheat|新增作弊碼
+Add Cheat…|新增作弊碼…
+Add Codes...|新增程式碼...
+Add Raw Memory Code|新增原始記憶體程式碼
+Add a breakpoint on this address|在此位址新增斷點
+Add breakpoint|新增斷點
+Add cheat|新增作弊碼
+Address|位址
+Address (hex):|位址 (十六進位):
+Address :|位址:
+Address in hex, e.g. 06004000|十六進位位址，例如 06004000
+Address in hex, e.g. 06100000|十六進位位址，例如 06100000
+Advance one frame|前進一幀
 Advanced|進階
-Always|Always
-Are you sure you want to delete '%1' ?|Are you sure you want to delete '%1' ?
-Are you sure you want to format '%1' ?|Are you sure you want to format '%1' ?
-Asia (NTSC)|Asia (NTSC)
-Asia (PAL)|Asia (PAL)
+Advanced options|進階選項
+All Files|所有檔案
+All Files (*)|所有檔案 (*)
+All Files;|所有檔案;
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|允許的偏差，單位為百分點。可吸收舍入誤差: 降低 40 % 且容差為 1 % 時，匹配 39 % 到 41 %。
+Always|總是
+Amount|幅度
+An error occured while writing file.|寫入檔案時出錯。
+An error occurred while writing the screenshot: |寫入截圖時出錯: 
+An exact number|精確數值
+Are you sure you want to delete '%1' ?|確定要刪除「%1」嗎？
+Are you sure you want to format '%1' ?|確定要格式化「%1」嗎？
+Asia (NTSC)|亞洲 (NTSC)
+Asia (PAL)|亞洲 (PAL)
+Assembly code|組合語言程式碼
+Attack|起音
+Audio preview is not available in this build.|此版本不提供音訊預覽。
 Auto-detect|自動偵測
 Autostart|自動開始
-Awaiting input for|Awaiting input for
-Axis|Axis
-Backtrace|Backtrace
-Backup Ram Manager|Backup Ram Manager
-Binary Files (*.bin)|Binary Files (*.bin)
-Bios|Bios
+Awaiting input for|等待輸入
+Axis|軸
+Axis L Trigger|L 扳機軸
+Axis R Trigger|R 扳機軸
+Axis Throttle|油門軸
+Axis X|X 軸
+Axis Y|Y 軸
+Backtrace|呼叫棧
+Backup Ram Manager|備份記憶體管理器
+Bank:|記憶體區:
+Bet|下注
+BiCubic|雙三次
+Bilinear|雙線性
+Bilinear Filtering (Restart required)|雙線性過濾 (需要重啟)
+Binary Files (*.bin)|二進位檔案 (*.bin)
+Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|二進位檔案 (*.bin);;COFF 程式檔案 (*.cof *.coff);;ELF 程式檔案 (*.elf);;所有檔案 (*)
+Binary files (*.bin)|二進位檔案 (*.bin)
+Bios|BIOS
+Bios Settings|BIOS 設定
+Bios file path|BIOS 檔案路徑
+Bios settings file|BIOS 設定檔案
 Block Size :|區塊大小：
-Browse|Browse
-Byte|Byte
-Byte Write|Byte Write
-CD Images (*.iso *.cue *.bin)|CD Images (*.iso *.cue *.bin)
+Breakpoint Reached|已到達斷點
+Breakpoint added at %1.|已在 %1 新增斷點。
+Breakpoint removed at %1.|已移除 %1 處的斷點。
+Breakpoints|斷點
+Browse|瀏覽
+Bug report|報告錯誤
+Button 2|按鈕 2
+Button 2 (patocar/skychal/supgoal/techbowl only)|按鈕 2 (僅限 patocar/skychal/supgoal/techbowl)
+Button 5|按鈕 5
+Byte|位元組
+Byte Write|位元組寫入
+Byte Write : %1 %2|位元組寫入: %1 %2
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|CD 映象 (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|CD 映象 (*.iso *.cue *.bin *.mds *.ccd *.zip)
+CD Images (*.iso *.cue *.bin)|CD 映象 (*.iso *.cue *.bin)
+CD-ROM|CD-ROM
+COFF Program Files (*.cof *.coff)|COFF 程式檔案 (*.cof *.coff)
+CPU Tesselation|CPU 曲面細分
+CRT (Aperture Grille)|CRT (柵狀蔭罩)
+Can't Pause kronos while not initialized.|Kronos 未初始化時無法暫停。
+Can't initialize Kronos.|無法初始化 Kronos。
+Can't plug in the new controller, cancelling.|無法連線新控制器，正在取消。
 Cancel|取消
-Cannot initialize|Cannot initialize
-Cannot initialize Windows SPTI Driver|Cannot initialize Windows SPTI Driver
+Cannot initialize|無法初始化
+Cannot initialize Windows SPTI Driver|無法初始化 Windows SPTI 驅動程式
 Cart/Memory|卡匣／記憶體
 Cartridge|卡匣
+Cartridge Path|卡匣路徑
 Cd-Rom|Cd-Rom
-Central/South America (NTSC)|Central/South America (NTSC)
-Central/South America (PAL)|Central/South America (PAL)
-Cheat &Search...|Cheat &Search...
-Cheat Search|Cheat Search
-Cheat Type|Cheat Type
-Cheats|Cheats
-Cheats File|Cheats File
-Choose a binary file|Choose a binary file
-Choose a cartridge file|Choose a cartridge file
-Choose a cdrom drive/mount point|Choose a cdrom drive/mount point
-Choose a cheat file to open|Choose a cheat file to open
-Choose a cheat file to save to|Choose a cheat file to save to
-Choose a file to save your state|Choose a file to save your state
-Choose a location for binary file|Choose a location for binary file
-Choose a location for your screenshot|Choose a location for your screenshot
-Choose a memory file|Choose a memory file
-Choose a mpeg rom|Choose a mpeg rom
-Clear configuration|Clear configuration
+Central/South America (NTSC)|中南美洲 (NTSC)
+Central/South America (PAL)|中南美洲 (PAL)
+Change|變化
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|請透過 Debug/SH2DumpDir 設定或 KRONOS_SH2DUMP_DIR 變數更改資料夾。
+Changed|已改變
+Channel Viewer|聲道檢視器
+Cheat &Search...|作弊碼搜尋(&S)...
+Cheat Search|作弊碼搜尋
+Cheat Type|作弊碼型別
+Cheats|作弊碼
+Cheats File|作弊碼檔案
+Chi|吃
+Choose a STV cartridge folder|選擇 STV 卡匣資料夾
+Choose a binary file|選擇二進位檔案
+Choose a binary or program file|選擇二進位或程式檔案
+Choose a bios file|選擇 BIOS 檔案
+Choose a cartridge file|選擇卡匣檔案
+Choose a cartridge folder|選擇卡匣資料夾
+Choose a cdrom drive/mount point|選擇光碟機/掛載點
+Choose a cheat file to open|選擇要開啟的作弊碼檔案
+Choose a cheat file to save to|選擇要儲存的作弊碼檔案
+Choose a file to save your state|選擇儲存即時存檔的檔案
+Choose a file to store bios settings|選擇用於儲存 BIOS 設定的檔案
+Choose a folder to store save states|選擇即時存檔資料夾
+Choose a folder to store screenshots|選擇截圖資料夾
+Choose a location for binary file|選擇二進位檔案的位置
+Choose a location for the VRAM dump|選擇 VRAM 轉儲的儲存位置
+Choose a location for the text file|選擇文字檔案的儲存位置
+Choose a location for your binary file|選擇二進位檔案的儲存位置
+Choose a location for your bitmap|選擇點陣圖的儲存位置
+Choose a location for your screenshot|選擇截圖的儲存位置
+Choose a location for your wav file|選擇 wav 檔案的儲存位置
+Choose a memory file|選擇記憶體檔案
+Choose a mpeg rom|選擇 mpeg rom
+Choose the location of the addr2line executable|選擇 addr2line 可執行檔案的位置
+Clear|清除
+Clear configuration|清除配置
 Close|關閉
-Code|Code
-Code Breakpoints|Code Breakpoints
-Comment :|Comment :
-Common Control Registers|Common Control Registers
-Compare Type|Compare Type
-DSP Control Registers|DSP Control Registers
-DSP Registers|DSP Registers
-Data Size|Data Size
-Data Size :|Data Size :
-Data Type|Data Type
-Debug CPU|Debug CPU
-Debug M68K|Debug M68K
-Debug Master SH2|Debug Master SH2
-Debug SCU DSP|Debug SCU DSP
-Debug Slave SH2|Debug Slave SH2
-Debug VDP1|Debug VDP1
-Debug VDP2Viewer|Debug VDP2Viewer
+Code|程式碼
+Code Breakpoints|程式碼斷點
+Coin1|投幣1
+Coin2|投幣2
+Coins && Control Panel|投幣 && 控制面板
+Color RAM|色彩 RAM
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|色彩 RAM 模式 %1  —  %2 個項目  (每個 %3 位元組)
+Color RAM not available|色彩 RAM 無法使用
+Comment :|註釋:
+Common Control Registers|通用控制暫存器
+Common registers|通用暫存器
+Compare Type|比較型別
+Compared to the previous search, the value has:|與上次搜尋相比，數值:
+Compatibility List|相容性列表
+Compute Shader Video Interface|計算著色器視訊介面
+Copy address|複製位址
+Copy line|複製行
+Could not add a breakpoint at %1: the list is full or the address is not supported.|無法在 %1 新增斷點: 列表已滿或不支援該位址。
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|無法在 %1 新增記憶體斷點: 列表已滿或不支援該位址。
+Could not open the audio device.|無法開啟音訊裝置。
+Could not write the report file.|無法寫入報告檔案。
+Couldn't load state file|無法讀取即時存檔檔案
+Couldn't save state file|無法儲存即時存檔檔案
+Count|計數
+Ctrl+wheel to zoom|Ctrl+滾輪縮放
+DSP Control Registers|DSP 控制暫存器
+DSP Registers|DSP 暫存器
+Data RAM|Data RAM
+Data Size|資料大小
+Data Size :|資料大小:
+Data Type|資料型別
+Debug|除錯
+Debug CPU|除錯 CPU
+Debug M68K|除錯 M68K
+Debug Master SH2|除錯主 SH2
+Debug SCSP|除錯 SCSP
+Debug SCSP Channels|除錯 SCSP 聲道
+Debug SCSP DSP|除錯 SCSP DSP
+Debug SCU DSP|除錯 SCU DSP
+Debug Slave SH2|除錯從 SH2
+Debug VDP1|除錯 VDP1
+Debug VDP2|除錯 VDP2
+Debug VDP2Viewer|除錯 VDP2Viewer
+Decay 1|衰減 1
+Decay 2|衰減 2
+Decoded|已解碼
+Decreased|減少了
+Default Dial IP|預設撥號 IP
+Default System Language|預設系統語言
+Deinterlacing Adaptive|自適應去隔行
+Deinterlacing Bob|Bob 去隔行
+Deinterlacing Debug Adaptive|自適應去隔行 (除錯)
 Del|刪除
 Delete|刪除
 Description|描述
 Description :|描述：
+Deutsch|Deutsch
+Development Extension|開發擴充套件
 Device List|裝置列表
-DirectX Input Interface|DirectX Input Interface
-DirectX Sound Interface|DirectX Sound Interface
+DirectX Input Interface|DirectX 輸入介面
+DirectX Sound Interface|DirectX 聲音介面
+Directory|資料夾
 Disabled|禁用
-Disassembled Code|Disassembled Code
-Display Enabled|Display Enabled
-Display on Hover|Display on Hover
-Down|Down
-Download|Download
-Draw End|Draw End
-Dummy CD Drive|Dummy CD Drive
-Dummy Input Interface|Dummy Input Interface
-Dummy OSD Interface|Dummy OSD Interface
-Dummy Sound Interface|Dummy Sound Interface
-Dummy Video Interface|Dummy Video Interface
+Disassembled Code|反組譯程式碼
+Discord Channel|Discord 頻道
+Display Enabled|顯示已啟用
+Display on Hover|懸停時顯示
+Door Switch|門開關
+Double Mission Stick|雙搖桿 Mission Stick
+Double Mission Stick Configuration|雙搖桿 Mission Stick 設定
+Double-click a breakpoint to show it in the disassembly|雙擊斷點可在反組譯中顯示
+Double-click an address to add it as a cheat.|雙擊位址可將其新增為作弊碼。
+Down|下
+Down_P2|下_P2
+Download|下載
+Draw End|繪製結束
+Dummy 68k Interface|空 68k 介面
+Dummy CD Drive|空 CD 驅動器
+Dummy Input Interface|空輸入介面
+Dummy OSD Interface|空 OSD 介面
+Dummy Sound Interface|空聲音介面
+Dummy Video Interface|空視訊介面
+ELF Program Files (*elf)|ELF 程式檔案 (*elf)
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|每個條目是一個取樣，以其起始位址標識，它在開啟此視窗時正在播放或之後被播放過。粗體條目正在播放 (懸停可檢視其通道)。勾選某個條目可靜音所有正在播放它的通道。
 Edit configuration|編輯配置
+Eject/Load ISO...|彈出/載入 ISO...
+Embellishment filter :|美化濾鏡:
 Emu-Compatibility|模擬相容性
 Emulation|模擬
+Emulation paused|模擬已暫停
 Enable|啟動
-Enable Frame Skip/Limiter|Enable Frame Skip/Limiter
+Enable Bios Emulation|啟用 BIOS 模擬
+Enable Code : %1 %2|啟用程式碼: %1 %2
+Enable Frame Skip/Limiter|啟用跳幀/限速
+Enable vertical synchronization|啟用垂直同步
 Enabled|啟用
 End Address:|終止位址：
 English|英語
-Enter New Value|Enter New Value
-Europe + others (PAL)|Europe + others (PAL)
-Exact|Exact
+Enter New Value|輸入新數值
+Enter new assembly code|輸入新的組合語言程式碼
+Envelope|包絡
+Equal to|等於
+Error|錯誤
+Error...|錯誤...
+Europe (PAL)|歐洲 (PAL)
+Europe + others (PAL)|歐洲及其他 (PAL)
+Exact|精確
+Example: 100 → %1 is a gain of %2 %.|示例: 100 → %1 表示增加了 %2 %。
+Example: 100 → %1 is a loss of %2 %.|示例: 100 → %1 表示減少了 %2 %。
+Execute one instruction (F11)|執行一條指令 (F11)
+Execute one instruction, running calls to the end (F10)|執行一條指令，呼叫會執行到底 (F10)
+Export Debug|匯出除錯資訊
+Export Debug Info (.txt)...|匯出除錯資訊 (.txt)...
+Export Registers / Debug (.txt)...|匯出暫存器 / 除錯資訊 (.txt)...
+Export bank (.bin)...|匯出記憶體區 (.bin)...
+Extend Internal backup memory to 8MB|將內部備份記憶體擴充套件到 8MB
+F&PS|F&PS
 FPS|FPS
+FSR 1.0 (EASU + RCAS)|FSR 1.0 (EASU + RCAS)
+FXAA|FXAA
+Family-Specific && Diagnostics|機型專用 && 診斷
 File|檔案
 File Name :|檔案名稱：
-File transfer|File transfer
+File transfer|檔案傳輸
 File:|檔案：
+Filter registers...|篩選暫存器...
+Finished searching up to end of memory, continue from the beginning?|已搜尋到記憶體末尾，是否從頭繼續？
+Finished.|已完成。
+Fit the image back into the view (Ctrl+wheel to zoom)|使影象適應檢視 (Ctrl+滾輪縮放)
+Fit the texture back into the view (Ctrl+wheel to zoom)|使紋理適應檢視 (Ctrl+滾輪縮放)
+Flip/Flop|Flip/Flop
 Format|格式
-Frame Skip/Limiter|Frame Skip/Limiter
+Frame Skip/Limiter|跳幀/限速
+FreeBSD CD Drive|FreeBSD CD 驅動器
 French|法語
-From|From
-From File|From File
-From File...|From File...
-Fullscreen|Fullscreen
-Fullscreen Resolution|Fullscreen Resolution
-General|General
+From|從
+From File|從檔案
+From File...|從檔案...
+Fullscreen|全屏
+Fullscreen Resolution|全屏解析度
+GPU Tesselation|GPU 曲面細分
+Gained|增加了
+General|常規
 General Info|一般資訊
-German|German
-Goto Address|Goto Address
-Greater then|Greater then
-Hard Reset|Hard Reset
-Height|Height
-Hex value(s)|Hex value(s)
-Hide Menubar|Hide Menubar
-Hide Toolbar|Hide Toolbar
-ISO-File Virtual Drive|ISO-File Virtual Drive
-Information...|Information...
-Input|Input
-Invalid Address|Invalid Address
-Invalid Value|Invalid Value
-Italian|Italian
-Japan (NTSC)|Japan (NTSC)
-Japanese|Japanese
-Japanese Modem|Japanese Modem
-Korea (NTSC)|Korea (NTSC)
-L&oad State|L&oad State
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|通用暫存器 R15。\n按照慣例，它同時作為 SH-2 的硬體棧指標 (SP): CPU 在異常和中斷時對其壓棧/出棧，編譯後的程式碼也同樣將其用作呼叫棧。
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|通用暫存器。\n儲存資料或位址；編譯後的程式碼以及任何帶暫存器運算元的 SH-2 指令都可以自由使用。
+German|德語
+Get Existing Directory...|選擇現有資料夾...
+Get Item...|選擇專案...
+Get Open File Name...|開啟檔案...
+Get Save File Name...|儲存檔案...
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|全域性基址暫存器 (GBR)。\nGBR 相對定址所用的基址: MOV.B/W/L @(disp,GBR) 以及 AND/OR/XOR/TST 的 @(R0,GBR) 立即數形式都從該暫存器計算有效位址。
+Go|轉到
+Go to an address (Ctrl+G)|轉到位址 (Ctrl+G)
+Goto Address|轉到位址
+Gouraud Mode :|Gouraud 模式:
+Greater than|大於
+Greater then|大於
+Gun|光槍
+Gun Configuration|光槍設定
+Gun/Mouse Sensitivity|光槍/滑鼠靈敏度
+HQ4x|HQ4x
+Hard Reset|硬重置
+Height|高度
+Hex value(s)|十六進位制值
+Hide Menubar|隱藏選單欄
+Hide Toolbar|隱藏工具欄
+High + Low WRAM|高 + 低 WRAM
+High WRAM|高 WRAM
+Highlighted slots are sounding right now.|高亮的通道正在發聲。
+Hopper Cabinet|退幣機臺
+Hopper Cabinet Configuration|退幣機臺設定
+Hopper Sensor Test|退幣感測器測試
+Hopper Sensor Test (hold to force a payout pulse)|退幣感測器測試 (按住可強制發出一次出幣脈衝)
+ISO-File Virtual Drive|ISO 檔案虛擬驅動器
+Image format|影象格式
+Improved|改進
+Inactive slot|未啟用通道
+Increased|增加了
+Information...|資訊...
+Inline Assembly|內嵌組合語言
+Input|輸入
+Input code address|輸入程式碼位址
+Internal Backup RAM|內部備份記憶體
+Invalid Address|無效的位址
+Invalid Address or Value|無效的位址或數值
+Invalid Start/End Address Combination|起始/結束位址組合無效
+Invalid Value|無效的數值
+Invalid address.|無效的位址。
+Invalid address: %1|無效的位址: %1
+It went up or down|上升或下降了
+Italian|義大利語
+Japan (NTSC)|日本 (NTSC)
+Japanese|日語
+Japanese Modem|日本調變解調器
+Jump list|跳轉列表
+Kan|槓
+Keyboard|鍵盤
+Korea (NTSC)|韓國 (NTSC)
+Kronos Cheat Files (*.yct);;All Files (*)|Kronos 作弊碼檔案 (*.yct);;所有檔案 (*)
+Kronos Qt GUI|Kronos Qt GUI
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|Kronos Qt GUI<br />基於 UoYabause <br /></a><br />Kronos 團隊<br /></a>
+Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Kronos Qt GUI<br />基於 Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause 團隊<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Kronos Save State (*.yss)|Kronos 即時存檔 (*.yss)
+Kronos is not initialized, can't manage backup ram.|Kronos 未初始化，無法管理備份記憶體。
+L&oad State|讀取存檔(&O)
+LFO|LFO
+Lanczos3|Lanczos3
 Language :|語言：
-Layer|Layer
-Left|Left
-Left trigger|Left trigger
-Less than|Less than
-Linux CD Drive|Linux CD Drive
-Load|Load
-Load State|Load State
-Load State As|Load State As
-Load as executable|Load as executable
-Local Coordinates|Local Coordinates
+Layer|圖層
+Layer inactive|圖層未啟用
+Left|左
+Left Stick Axis Throttle|左搖桿油門軸
+Left Stick Axis X|左搖桿 X 軸
+Left Stick Axis Y|左搖桿 Y 軸
+Left Stick Throttle Down|左搖桿油門下
+Left Stick X Left|左搖桿 X 左
+Left Stick Y Down|左搖桿 Y 下
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|左搖桿:\n扳機:     X\n左按鈕:   Y\n右按鈕:   Z
+Left trigger|左扳機
+Left_P2|左_P2
+Less than|小於
+Life bar, energy gauge...|血條、能量槽...
+Linux CD Drive|Linux CD 驅動器
+Linux Joystick Interface|Linux 搖桿介面
+Live|實時
+Lives, ammo, score, money...|生命、彈藥、分數、金錢...
+Load|載入
+Load Code|載入程式碼
+Load State|讀取存檔
+Load State As|讀取存檔自
+Load as executable|作為可執行檔案載入
+Load0|讀取0
+Load1|讀取1
+Load2|讀取2
+Load3|讀取3
+Load4|讀取4
+Load5|讀取5
+Load6|讀取6
+Load7|讀取7
+Load8|讀取8
+Load9|讀取9
+Local Coordinates|區域性座標
 Log|Log
-Long|Long
-Long Write|Long Write
-Loop Track Clear|Loop Track Clear
-Loop Track Start|Loop Track Start
+Long|長字
+Long Write|長字寫入
+Long Write : %1 %2|長字寫入: %1 %2
+Loop Track Clear|清除迴圈跟蹤
+Loop Track Start|開始迴圈跟蹤
+Loop Track Stop|停止迴圈跟蹤
+Lost|減少了
+Low WRAM|低 WRAM
 M68K|M68K
-M68K Registers|M68K Registers
+M68K Registers|M68K 暫存器
+MASTER SH2|主 SH2
 MSH2|MSH2
-Master SH2|Master SH2
-Memory|Memory
-Memory &Editor|Memory &Editor
-Memory Breakpoints|Memory Breakpoints
-Memory Dump|Memory Dump
-Memory Editor|Memory Editor
-Memory Search|Memory Search
-Memory Transfer|Memory Transfer
-Memory dump|Memory dump
-Middle|Middle
+MSH2 reached code breakpoint at |MSH2 到達程式碼斷點，位址 
+MSH2 reached data breakpoint at |MSH2 到達資料斷點，位址 
+Mac OS X (IOKit) Joystick Interface|Mac OS X (IOKit) 搖桿介面
+Mac OS X Core Audio Sound Interface|Mac OS X Core Audio 聲音介面
+MacOSX CD Drive|MacOSX CD 驅動器
+Magnet Sensor|磁性感測器
+Magnet Sensor (micrombc only)|磁性感測器 (僅限 micrombc)
+Mahjong Panel|麻將面板
+Mahjong Panel Configuration|麻將面板設定
+Mame romset 0.269:|Mame romset 0.269:
+Master SH2|主 SH2
+Master SH2 Registers|主 SH2 暫存器
+Medal|獎牌
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|獎牌/彩票退幣機臺 (patocar、skychal、supgoal、techbowl、micrombc)。退幣感測器本身由程式自動模擬，不繫結任何按鍵。
+Memory|記憶體
+Memory &Editor|記憶體編輯器(&E)
+Memory Breakpoints|記憶體斷點
+Memory Dump|記憶體轉儲
+Memory Editor|記憶體編輯器
+Memory Search|記憶體搜尋
+Memory Transfer|記憶體傳輸
+Memory breakpoint set at %1.|已在 %1 設定記憶體斷點。
+Memory dump|記憶體轉儲
+Mesh Mode :|網格模式:
+Middle|中間
+Mission Stick|Mission Stick
+Mission Stick Configuration|Mission Stick 設定
+Mixer|混音器
+Modulation|調製
 Mouse|滑鼠
 Mouse Configuration|滑鼠配置
+Move the mouse over the image to inspect a pixel.|將滑鼠移到影象上可檢查畫素。
+Move the mouse over the texture to inspect a pixel.|將滑鼠移到紋理上可檢查畫素。
 Mpeg ROM|Mpeg ROM
+Multicart|多合一卡匣
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|乘累加暫存器，高 32 位。\n由 MAC.W/MAC.L 指令與 MACL 一同寫入；SR 中的 S 位決定 MACH:MACL 在溢位時飽和還是迴繞。
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|乘累加暫存器，低 32 位。\n也被 MUL.L、DMULS.L 和 DMULU.L 用作普通的 32 位結果暫存器，這些指令只寫入 MACH:MACL。
+Musashi Interface|Musashi 介面
+Mute individual sounds|靜音單個聲音
+Mute/UnMute Sound|靜音/取消靜音
 NBG0|NBG0
-NBG0/RBG1 Info|NBG0/RBG1 Info
+NBG0 Info|NBG0 資訊
+NBG0/RBG1 Info|NBG0/RBG1 資訊
 NBG1|NBG1
-NBG1 Info|NBG1 Info
+NBG1 Info|NBG1 資訊
 NBG2|NBG2
-NBG2 Info|NBG2 Info
+NBG2 Info|NBG2 資訊
 NBG3|NBG3
-NBG3 Info|NBG3 Info
+NBG3 Info|NBG3 資訊
+Narrow down|縮小範圍
+Narrowing down: |縮小範圍: 
+Native (current resolution of the window)|原生 (視窗當前解析度)
+Native (native resolution of Window)|原生 (視窗原生解析度)
+NetBSD CD Drive|NetBSD CD 驅動器
 Netlink|Netlink
-Never|Never
-None|None
-Normal Sprite|Normal Sprite
-North America (NTSC)|North America (NTSC)
-OSD Core|OSD Core
+Never|從不
+New search|新搜尋
+Next Frame|下一幀
+No audio output device found.|未找到音訊輸出裝置。
+No game running|沒有正在執行的遊戲
+No matches found.|未找到匹配項。
+No need to know the real value: each address is compared with what it held at the previous search.|無需知道實際數值: 每個位址都會與它在上次搜尋時的值進行比較。
+No search yet|尚未搜尋
+No sound has been played yet.|尚未播放任何聲音。
+No texture|無紋理
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|此命令沒有紋理 (繪製結束、已跳過、裁剪、\n區域性座標或無效的命令字)
+None|無
+Normal Sprite|普通精靈
+Normal format not available, trying alternative|常規格式不可用，正在嘗試替代格式
+North America (NTSC)|北美 (NTSC)
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|無內容可播放: 此通道的音源為零資料 (SSCTL = 2 或 3)。
+OSD Core|OSD 核心
+Off|關
 Ok|確定
-On fullscreen|On fullscreen
-On message|On message
+On|開
+On fullscreen|全屏時
+On message|有資訊時
+Opaque|不透明
 Open &CD Rom...|開起光碟(&C)
 Open &ISO...|開起映像檔(&I)
 Open CD Rom|開起光碟
+Open Channel Viewer...|開啟聲道檢視器...
+Open DSP Debugger...|開啟 DSP 除錯器...
+Open SSF|開啟 SSF
+Open a cartridge file|開啟卡匣檔案
+Open a mpeg rom|開啟 mpeg rom
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|開啟 SCSP DSP 除錯器 (程式、暫存器、斷點、單步)
+Open the VDP2 viewer|開啟 VDP2 檢視器
+Open the live 32-slot envelope and mute viewer|開啟 32 個通道的實時包絡與靜音檢視器
+Open&Tray|開啟托盤(&T)
+OpenAL Sound Interface|OpenAL 聲音介面
 OpenGL Video Interface|OpenGL視訊界面
-Options|Options
-Other Debug|Other Debug
+OpenGL size :|OpenGL 尺寸:
+Options|選項
+Original|原始
+Original (original resolution of the Saturn)|原始 (土星原始解析度)
+Original aspect ratio|原始寬高比
+Other|其他
+Other Debug|其他除錯
+Output|輸出
+P1 - Bet|P1 - 下注
+P1 - Chi|P1 - 吃
+P1 - Flip/Flop|P1 - Flip/Flop
+P1 - Kan|P1 - 槓
+P1 - Pon|P1 - 碰
+P1 - Reach|P1 - 立直
+P1 - Ron|P1 - 榮和
+P1 - Start|P1 - 開始
+P2 - Chi|P2 - 吃
+P2 - Flip/Flop|P2 - Flip/Flop
+P2 - Kan|P2 - 槓
+P2 - Pon|P2 - 碰
+P2 - Reach|P2 - 立直
+P2 - Ron|P2 - 榮和
+P2 - Start|P2 - 開始
 Pad|搖桿
 Pad Configuration|搖桿配置
 Pause|暫停
-Press Esc key to cancel|Press Esc key to cancel
+Pitch|音高
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|像素 (%1, %2)  R=%3 G=%4 B=%5 A=%6
+Pixel Perfect|畫素完美
+Pixel Perfect - Full screen|畫素完美 - 全屏
+Play Slot|播放通道
+Player 1 Panel|玩家 1 面板
+Player 2 Panel (kiwames only)|玩家 2 面板 (僅限 kiwames)
+Playing on slot(s) %1|正在通道 %1 上播放
+Playing slot %1...|正在播放通道 %1...
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|使用與遊戲相同的音源發生器，從鍵按下 (key on) 開始播放該通道 (不含 DSP 效果和其他通道)。
+Pon|碰
+Port|埠
+Port 1|埠 1
+Port 2|埠 2
+Power Button|電源按鈕
+Press Esc key to cancel|按 Esc 鍵取消
+Preview|預覽
+Previous|上次
 Pro Action Replay|Pro Action Replay
-Qt Keyboard Input Interface|Qt Keyboard Input Interface
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|過程暫存器 (PR)。\n由 BSR/BSRF/JSR 儲存的返回位址；RTS 會跳轉到此處儲存的位址。這是 SH-2 上最接近硬體連結暫存器的東西。
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|程式計數器 (PC)。\n即將執行的指令位址 (已考慮延遲槽)。程式碼斷點就是與它進行比較。
+Qt Keyboard Input Interface|Qt 鍵盤輸入介面
+Question...|問題...
 Quit|離開
 R&un|執行(&R)
 RBG0|RBG0
-RBG0 Info|RBG0 Info
-Read|Read
-Region|Region
-Registers|Registers
+RBG0 Info|RBG0 資訊
+RBG1|RBG1
+RBG1 Info|RBG1 資訊
+Raw Values|原始值
+Reach|立直
+Read|讀取
+Region|地區
+Register|暫存器
+Registers|暫存器
+Related debuggers|相關除錯器
+Release|釋音
+Remove Peripheral|移除外設
+Remove breakpoint|移除斷點
+Remove the selected breakpoints|移除所選斷點
+Report written to:|報告已寫入:
+Reserved1|保留1
+Reserved2|保留2
+Reserved3|保留3
+Reserved4|保留4
+Reserved5|保留5
 Reset|重置
+Reset Zoom|重置縮放
 Resolution|解析度
-Right|Right
-Right trigger|Right trigger
+Restart|重啟
+Results|結果
+Right|右
+Right Stick Axis Throttle|右搖桿油門軸
+Right Stick Axis X|右搖桿 X 軸
+Right Stick Axis Y|右搖桿 Y 軸
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|右搖桿:\n扳機:     A\n左按鈕:   B\n右按鈕:   C
+Right trigger|右扳機
+Right_P2|右_P2
+Ron|榮和
 Run|執行
-S&ave State|S&ave State
+Run until the current function returns (Shift+F11)|執行到當前函式返回 (Shift+F11)
+S&CSP|S&CSP
+S&ave State|即時存檔(&A)
 SCSP|SCSP
+SCSP Channels|SCSP 聲道
+SCSP-&DSP|SCSP-&DSP
+SCU-&DSP|SCU-&DSP
 SCU-DSP|SCU-DSP
-SDL Joystick Interface|SDL Joystick Interface
-SDL Sound Interface|SDL Sound Interface
-SH2 Debugger Interpreter|SH2 Debugger Interpreter
-SH2 Dynamic Recompiler|SH2 Dynamic Recompiler
-SH2 Interpreter|SH2 Interpreter
-SH2 Registers|SH2 Registers
+SDL Joystick Interface|SDL 搖桿介面
+SDL Sound Interface|SDL 聲音介面
+SH2 Debug|SH2 除錯
+SH2 Debugger Interpreter|SH2 除錯直譯器
+SH2 Dynamic Recompiler|SH2 動態重編譯器
+SH2 Interpreter|SH2 直譯器
+SH2 Performance|SH2 效能
+SH2 Registers|SH2 暫存器
+SLAVE SH2|從 SH2
 SSH2|SSH2
+SSH2 reached code breakpoint at |SSH2 到達程式碼斷點，位址 
+SSH2 reached data breakpoint at |SSH2 到達資料斷點，位址 
+ST-V Cabinet|ST-V 機臺
+ST-V cabinet Configuration|ST-V 機臺設定
+STV Rom game|STV Rom 遊戲
+Sample|取樣
+Sample size|取樣大小
+Sample start address 0x%1|取樣起始位址 0x%1
 Save|保存
-Save As WAV|Save As WAV
-Save Bitmap|Save Bitmap
-Save Information|Save Information
-Save List|Save List
-Save MD0|Save MD0
-Save MD1|Save MD1
-Save MD2|Save MD2
-Save MD3|Save MD3
-Save Program|Save Program
-Save Selected|Save Selected
-Save Slot Registers|Save Slot Registers
-Save State|Save State
-Save State As|Save State As
-Save States|Save States
-Sc&reenshot|Sc&reenshot
-Screen Enabled|Screen Enabled
+Save As Bitmap|另存為點陣圖
+Save As WAV|另存為 WAV
+Save Bitmap|儲存點陣圖
+Save COEF|儲存 COEF
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|將 Data RAM 第 0 區 (64 個 32 位字) 儲存為 .bin
+Save Data RAM bank 1 to .bin|將 Data RAM 第 1 區儲存為 .bin
+Save Data RAM bank 2 to .bin|將 Data RAM 第 2 區儲存為 .bin
+Save Data RAM bank 3 to .bin|將 Data RAM 第 3 區儲存為 .bin
+Save Information|存檔資訊
+Save List|儲存列表
+Save MADRS|儲存 MADRS
+Save MD0|儲存 MD0
+Save MD1|儲存 MD1
+Save MD2|儲存 MD2
+Save MD3|儲存 MD3
+Save MEMS|儲存 MEMS
+Save Program|儲存程式
+Save RAW|儲存 RAW
+Save Raw Data|儲存原始資料
+Save SCSP DSP COEF|儲存 SCSP DSP COEF
+Save SCSP DSP MADRS|儲存 SCSP DSP MADRS
+Save SCSP DSP MEMS|儲存 SCSP DSP MEMS
+Save SCSP DSP Program (MPRO)|儲存 SCSP DSP 程式 (MPRO)
+Save SCSP DSP TEMP|儲存 SCSP DSP TEMP
+Save SCU DSP Data RAM MD0|儲存 SCU DSP Data RAM MD0
+Save SCU DSP Data RAM MD1|儲存 SCU DSP Data RAM MD1
+Save SCU DSP Data RAM MD2|儲存 SCU DSP Data RAM MD2
+Save SCU DSP Data RAM MD3|儲存 SCU DSP Data RAM MD3
+Save SCU DSP Program RAM|儲存 SCU DSP Program RAM
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|將 SCU DSP Program RAM (256 個 32 位字) 儲存為 .bin
+Save Selected|儲存所選
+Save Slot Registers|儲存通道暫存器
+Save State|即時存檔
+Save State As|即時存檔另存為
+Save States|即時存檔
+Save TEMP|儲存 TEMP
+Save Tab|儲存標籤頁
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|將 COEF 表 (64 個 16 位濾波係數) 儲存為 .bin
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|將 DSP 程式 (MPRO，128 條 64 位指令) 儲存為 .bin
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|將 MADRS 表 (32 個 16 位環形緩衝位址) 儲存為 .bin
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|將聲音記憶體中的 MEMS 工作區 (32 個 32 位字) 儲存為 .bin
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|將「暫存器」標籤頁 (原始 + 解碼) 和「除錯」標籤頁儲存到文字檔案
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|將 TEMP 延遲線記憶體 (128 個 32 位字) 儲存為 .bin
+Save the VDP1 registers, command list and selected command info to a text file|將 VDP1 暫存器、命令列表和所選命令資訊儲存到文字檔案
+Save the selected VRAM bank to a raw .bin file|將所選 VRAM 記憶體區儲存為原始 .bin 檔案
+Save0|存檔0
+Save1|存檔1
+Save2|存檔2
+Save3|存檔3
+Save4|存檔4
+Save5|存檔5
+Save6|存檔6
+Save7|存檔7
+Save8|存檔8
+Save9|存檔9
+Sc&reenshot|截圖(&R)
+Scale3x|Scale3x
+Scale4x|Scale4x
+Scanline|掃描線
+Scanline filter|掃描線濾鏡
+Scanline off|掃描線關
+Scanline on|掃描線開
+Screen Enabled|螢幕已啟用
+Screen Select:|螢幕選擇:
+Screen Viewer|螢幕檢視器
+Screen:|螢幕:
 Screenshot|畫面快照
-Search|Search
-Search Criteria|Search Criteria
-Search Memory|Search Memory
-Search Value:|Search Value:
-Search/Add Cheats|Search/Add Cheats
-Select a file to load your state|Select a file to load your state
-Select your iso/cue/bin file|Select your iso/cue/bin file
-Set PC to Start Address|Set PC to Start Address
-Settings|Settings
-Shortcuts|Shortcuts
-Show FPS|Show FPS
-Show Log Window|Show Log Window
-Signed|Signed
+Screenshots|截圖
+Search|搜尋
+Search Criteria|搜尋條件
+Search Memory|搜尋記憶體
+Search Value:|搜尋值:
+Search, change the value in the game, then search again until only a few addresses remain.|搜尋後在遊戲中改變數值，然後再次搜尋，直到只剩下少數幾個位址。
+Search/Add Cheats|搜尋/新增作弊碼
+Searching memory...|正在搜尋記憶體...
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|世嘉麻將面板 (kiwames、vmahjong、myfairld)。A-N 用於選牌；槓/碰/吃/立直/榮和是動作按鈕。玩家 2 的面板僅存在於雙人機臺 (Pro Mahjong Kiwame S)。
+Sega Saturn Sound Format files (*.ssf *.minissf)|世嘉土星聲音格式檔案 (*.ssf *.minissf)
+Select / Shoot Button|選擇 / 射擊按鈕
+Select Button|選擇按鈕
+Select Cartridge...|選擇卡匣...
+Select a file to load your state|選擇要讀取的即時存檔檔案
+Select your iso/cue/bin file|選擇 iso/cue/bin 檔案
+Select your iso/cue/bin/zip file|選擇 iso/cue/bin/zip 檔案
+Select your iso/cue/bin/zip/chd file|選擇 iso/cue/bin/zip/chd 檔案
+Select your ssf file|選擇 ssf 檔案
+Service|服務
+Set PC to Start Address|將 PC 設為起始位址
+Settings|設定
+Sharp Bilinear|銳利雙線性
+Sharpen (Adaptive)|銳化 (自適應)
+Shoot Button|射擊按鈕
+Shortcut|快捷鍵
+Shortcuts|快捷鍵
+Show FPS|顯示 FPS
+Show Log Window|顯示日誌視窗
+Show hex dump|顯示十六進位制轉儲
+Showing the first %1. Narrow down the search to see the rest.|僅顯示前 %1 個。縮小搜尋範圍以檢視其餘結果。
+Signed|有符號
 Signed 16-bit value|有號１６位元值
 Signed 32-bit value|有號３２位元值
 Signed 8-bit value|有號８位元值
-Slave SH2|Slave SH2
-Slot Info|Slot Info
-Slot Number:|Slot Number:
-Software OSD Interface|Software OSD Interface
-Software Video Interface|Software Video Interface
+Size|大小
+Slave SH2|從 SH2
+Slave SH2 Registers|從 SH2 暫存器
+Slot|通道
+Slot %1|通道 %1
+Slot %1 is sounding|通道 %1 正在發聲
+Slot Info|通道資訊
+Slot Number:|通道編號:
+Slot details|通道詳情
+Slot envelopes|通道包絡
+Slot number|通道編號
+Software OSD Interface|軟體 OSD 介面
+Software Video Interface|軟體視訊介面
 Sound|音效
 Sound Core|音效核心
+Sound...|聲音...
+Source|原始碼
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|在本機上找不到原始碼檔案:\n%1\n\naddr2line 指出位於第 %2 行。
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|找不到原始碼或原始碼無法使用。\n如果原始碼存在，在 Linux 下請確保 shell 輸出為英文。\n可在 Kronos 啟動命令前加上 LC_ALL=C 達成\n
 Spanish|西語
+Sprite Info|精靈資訊
+Stack|棧
+Stack Walk|棧回溯
+Stack Walk Off|關閉棧回溯
 Start|開始
 Start Address:|起始位址：
-Start in Fullscreen|Start in Fullscreen
-Status|Status
-Step Into|Step Into
-Step Out|Step Out
-Step Over|Step Over
-Store|Store
-Synchronize Saturn internal clock with set time|Synchronize Saturn internal clock with set time
-System Clipping Coordinates|System Clipping Coordinates
-Text|Text
-Texture|Texture
+Start a game to inspect the common control registers.|啟動遊戲以檢查通用控制暫存器。
+Start a game to inspect the sound slots.|啟動遊戲以檢查聲音通道。
+Start in Fullscreen|以全屏啟動
+Start1|開始1
+Start2|開始2
+Status|狀態
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|狀態暫存器 (SR)。\nT - 測試/比較結果；也是移位指令和帶進位加/減指令的進位/借位標誌。\nS - 選擇 MAC 指令結果是飽和還是迴繞。\nQ, M - DIV0U/DIV0S/DIV1 用於以 1 位步進構建 32 位除法的內部狀態；在除法序列之外沒有意義。\nI3-I0 - 當前中斷遮蔽級別 (0-15)；優先順序不高於該級別的中斷請求將保持掛起。
+Step Into|單步進入
+Step Out|單步跳出
+Step Over|單步跳過
+Stick Down|搖桿下
+Stick Left|搖桿左
+Stick Right|搖桿右
+Stick Up|搖桿上
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|搖桿左按鈕: 同 A \n搖桿右按鈕: 同 B \n搖桿扳機: 同 C
+Stop|停止
+Stop Slot|停止通道
+Stopped.|已停止。
+Store|儲存
+Stretch to window|拉伸至視窗
+Synchronize Saturn internal clock with set time|將土星內部時鐘與設定時間同步
+System Clipping Coordinates|系統裁剪座標
+TV effect :|電視效果:
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|現在拍攝快照，關閉此視窗，繼續遊戲直到數值改變，然後重新開啟並搜尋。
+Take snapshot|拍攝快照
+Tesselation|曲面細分
+Test|測試
+Text|文字
+Text files (*.txt)|文字檔案 (*.txt)
+Texture|紋理
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|主 SH2 始終在執行: 它是啟動 ROM 首先啟動的核心，並且在兩個 SH-2 同時訪問同一資源時預設擁有匯流排優先權。大多數遊戲的主要邏輯都在這裡執行。
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|從 SH2 在遊戲明確啟動它之前一直處於空閒狀態 (參見 Sega Saturn Dual CPU User's Guide)。使用它的遊戲通常會把第二個並行任務放在這裡，而不是執行與主 SH2 無關的程式碼。
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|音訊裝置不支援 44.1 kHz 立體聲 16 位輸出，因此無法預覽該通道。
+The dummies cores don't need configuration|空核心無需配置
+The dummies cores don't need configuration.|空核心無需配置。
+The emulation is paused while this window is open.|此視窗開啟期間模擬將暫停。
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|此通道的音源為零資料 (SSCTL = 2 或 3)，因此沒有可儲存的內容。
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|此圖層目前沒有任何輸出。\n很可能其 BGON 啟用位元處於關閉狀態 -- 請查看\n「暫存器」分頁 (BGON) 或 VDP2 除錯主視窗。
+Throttle Down|油門下
+Throttle Up|油門上
+Timers / Misc|計時器 / 其他
 To|To
-To File...|To File...
-Tools|Tools
-Track Inf Loop Results|Track Inf Loop Results
-Transfer|Transfer
+To File...|到檔案...
+Tolerance ±|容差 ±
+Tools|工具
+Trace Logging|跟蹤日誌
+Track Inf Loop Results|無限迴圈跟蹤結果
+Trackball (patocar / skychal / supgoal / techbowl only)|軌跡球 (僅限 patocar / skychal / supgoal / techbowl)
+Trackball Down|軌跡球下
+Trackball Left|軌跡球左
+Trackball Right|軌跡球右
+Trackball Up|軌跡球上
+Transfer|傳輸
 Translation|翻譯版
-Type:|Type:
-Unable to add code|Unable to add code
-Unable to change description|Unable to change description
-Unable to open file for loading|Unable to open file for loading
-Unable to open file for saving|Unable to open file for saving
-Unable to remove code|Unable to remove code
-Unknow (%1)|Unknow (%1)
-Unsigned|Unsigned
-Unsigned 16-bit value|Unsigned 16-bit value
-Unsigned 32-bit value|Unsigned 32-bit value
-Unsigned 8-bit value|Unsigned 8-bit value
+Triangles using perspective correction|使用透視校正的三角形
+Trigger|扳機
+Type|型別
+Type:|型別:
+Unable to add code|無法新增程式碼
+Unable to change description|無法修改描述
+Unable to open file for loading|無法開啟檔案以讀取
+Unable to open file for saving|無法開啟檔案以儲存
+Unable to remove code|無法移除程式碼
+Unable to save file|無法儲存檔案
+Unchanged|未改變
+Unknow (%1)|未知 (%1)
+Unknown (%1)|未知 (%1)
+Unmute all|全部取消靜音
+Unsigned|無符號
+Unsigned 16-bit value|無符號 16 位數值
+Unsigned 32-bit value|無符號 32 位數值
+Unsigned 8-bit value|無符號 8 位數值
 Up|Up
-Upload|Upload
-Use System Locale|Use System Locale
+Up_P2|上_P2
+Upload|上傳
+Upscale Filter :|放大濾鏡:
+Use SH2 cache - Experimental|使用 SH2 快取 - 實驗性
+Use System Locale|使用系統語言
+Use Vdp1 Cache|使用 VDP1 快取
+User Interface Translation|介面語言
+VDP&1|VDP&1
+VDP&2|VDP&2
 VDP1|VDP1
-VDP1 Command Info|VDP1 Command Info
-VDP1 Command List|VDP1 Command List
+VDP1 Command Info|VDP1 命令資訊
+VDP1 Command List|VDP1 命令列表
+VDP1 Registers|VDP1 暫存器
+VDP1 not initialised.|VDP1 未初始化。
 VDP2|VDP2
-Value|Value
-Value :|Value :
-Value:|Value:
+VDP2 Debug|VDP2 除錯
+VDP2 Debug — inactive|VDP2 除錯 — 未啟用
+VDP2 RAM not available.|VDP2 RAM 不可用。
+VDP2 Viewer|VDP2 檢視器
+VDP2 not initialised.|VDP2 未初始化。
+VDP2Viewer Viewer|VDP2Viewer 檢視器
+VRAM Hex|VRAM 十六進位制
+VRAM-A  (0x00000-0x3FFFF)|VRAM-A  (0x00000-0x3FFFF)
+VRAM-A0 (0x00000-0x1FFFF)|VRAM-A0 (0x00000-0x1FFFF)
+VRAM-A1 (0x20000-0x3FFFF)|VRAM-A1 (0x20000-0x3FFFF)
+VRAM-B  (0x40000-0x7FFFF)|VRAM-B  (0x40000-0x7FFFF)
+VRAM-B0 (0x40000-0x5FFFF)|VRAM-B0 (0x40000-0x5FFFF)
+VRAM-B1 (0x60000-0x7FFFF)|VRAM-B1 (0x60000-0x7FFFF)
+Value|數值
+Value :|數值:
+Value out of range for this data type (%1 to %2).|數值超出該資料型別的範圍 (%1 到 %2)。
+Value you see on screen, e.g. 3|螢幕上看到的數值，例如 3
+Value:|數值:
+Values are read from the SCSP registers while the emulation is paused.|在模擬暫停時從 SCSP 暫存器讀取數值。
 Vdp1|Vdp1
 Vdp2|Vdp2
-Video|Video
-Video Core|Video Core
-Video Driver|Video Driver
-Video Format|Video Format
-View|View
-Viewer|Viewer
-Waiting Input...|Waiting Input...
-Width|Width
-Window Resolution|Window Resolution
-Windows SPTI Driver|Windows SPTI Driver
-Word|Word
-Word Write|Word Write
-Write|Write
-Yabause Cheat Files (*.yct);;All Files (*)|Yabause Cheat Files (*.yct);;All Files (*)
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|向量基址暫存器 (VBR)。\n異常/中斷向量表的基址: 向量 n 是儲存在 VBR + n*4 處的 32 位處理程式位址。通常由啟動 ROM/BIOS 設定一次，遊戲程式碼不會更改。
+Video|視訊
+Video CD Card (MPEG Card)|Video CD 卡 (MPEG 卡)
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|Video CD 卡 ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;所有檔案 (*)
+Video Core|視訊核心
+Video Driver|視訊驅動
+Video Format|視訊格式
+View|檢視
+Viewer|檢視器
+Viewer && Registers...|檢視器 && 暫存器...
+Volume|音量
+WAV Files (*.wav)|WAV 檔案 (*.wav)
+Waiting Input...|等待輸入...
+Warning...|警告...
+Wave File Output Interface|Wave 檔案輸出介面
+What do you know about the value?|關於這個數值你知道什麼？
+Wheel|方向盤
+Wheel Configuration|方向盤設定
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|CMDLINK 接下來將命令直譯器引向何處: NEXT (下一個表)、ASSIGN/CALL (跳轉到指定位址)、RETURN 或 END (在此結束列表)。
+Width|寬度
+Window Resolution|視窗解析度
+Window size :|視窗大小:
+Windows SPTI Driver|Windows SPTI 驅動程式
+Wireframe :|線框:
+Word|字
+Word Write|字寫入
+Word Write : %1 %2|字寫入: %1 %2
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|Work RAM-H，0x06000000 - 0x060FFFFF (1 MB)。大部分遊戲資料位於此處。
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|Work RAM-L，0x00200000 - 0x002FFFFF (1 MB)。
+Write|寫入
+Yabause Cheat Files (*.yct);;All Files (*)|Yabause 作弊碼檔案 (*.yct);;所有檔案 (*)
 Yabause Qt GUI|Yabause Qt GUI
-Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
-Yabause Save State (*.yss)|Yabause Save State (*.yss)
-Yabause is not initialized, can't manage backup ram.|Yabause is not initialized, can't manage backup ram.
+Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt GUI<br />基於 Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause 團隊<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Yabause Save State (*.yss)|Yabause 即時存檔 (*.yss)
+Yabause is not initialized, can't manage backup ram.|Yabause 未初始化，無法管理備份記憶體。
+Yes|是
+You don't know the real value|你不知道實際數值
+Youtube Channel|Youtube 頻道
+addr2line Executable|addr2line 可執行檔案
+addr2line utility is not configured properly, source not available.|addr2line 工具未正確設定，無法顯示原始碼。
 http://www.emu-compatibility.com/yabause/index.php?lang=uk|http://www.emu-compatibility.com/yabause/index.php?lang=uk
 http://www.monkeystudio.org|http://www.monkeystudio.org
-toolBar|toolBar
+nanovg OSD Interface|nanovg OSD 介面
+no memory selected|未選擇記憶體
+toolBar|工具欄

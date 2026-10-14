@@ -1,8 +1,12 @@
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|\n\nOK apre il debugger. Ignora riprende l'emulazione e i registri vanno persi.
+  Offset (hex):|  Offset (hex):
+%1 / %2 - list full, later samples are not listed|%1 / %2 - elenco pieno, i campioni successivi non sono elencati
 %1 Images (*.%2)|%1 Immagini (*.%2)
+%1 results|%1 risultati
 %1/%2 blocks free|%1/%2 blocchi liberi
 &About...|&Informazioni...
 &Action Replay|&Action Replay
-&Backup Manager...|&Backup Manager...
+&Backup Manager...|Gestione &backup...
 &Browse|&Sfoglia
 &Cancel|&Annulla
 &Capture Screen|&Cattura Schermata
@@ -18,402 +22,868 @@
 &Frame Skip/Limiter|&Limita/Salta Frame
 &Fullscreen|&Schermo Intero
 &Help|&Aiuto
-&Layer|&Layer
+&Layer|&Livello
 &Load From File|&Carica da File
 &Log|&Log
-&Master SH2|&Master SH2
+&Master SH2|SH2 &master
 &Memory Transfer|&Trasferimento Memoria
+&No|&No
 &OK|&OK
 &Pause|&Pausa
+&Question...|&Domanda...
 &Quit|&Esci
-&Raw Memory Address|&Raw Memory Address
+&Raw Memory Address|Indirizzo di memoria &grezzo
 &Reset|&Resetta
 &Save To File|&Salva su File
 &Settings...|&Impostazioni...
-&Slave SH2|&Slave SH2
+&Slave SH2|SH2 &slave
 &Tools|&Strumenti
-&Transfer|&Transfer
+&Transfer|&Trasferisci
+&Vertical synchronization|Sincronizzazione &verticale
 &View|&Visualizza
-16-bit|
-16-bit Relative value(s)|
-16 Mbit Backup Ram|
-16 Mbit ROM|
-32-bit|
-32 Mbit Backup Ram|
-32 Mbit Dram|
-3D Control Pad|
-4 Mbit Backup Ram|
-503/512 blocks free|
-510/512 blocks free|
-68000 Core|68000 Core
-8 Mbit Backup Ram|
-8 Mbit Dram|
-8-bit|
-8-bit Relative value(s)|
-<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|
+(layer disabled -- BGON bit off)\n|(livello disattivato -- bit BGON a 0)\n
+1 result|1 risultato
+10 Yen|10 Yen
+100 Yen|100 Yen
+128 Mbit Dram|DRAM da 128 Mbit
+16 Mbit Backup Ram|RAM di backup da 16 Mbit
+16 Mbit ROM|ROM da 16 Mbit
+16-bit|16 bit
+16-bit Relative value(s)|Valore/i relativo/i a 16 bit
+1x (original resolution of the Saturn)|1x (risoluzione originale del Saturn)
+32 Mbit Backup Ram|RAM di backup da 32 Mbit
+32 Mbit Dram|DRAM da 32 Mbit
+32-bit|32 bit
+3D Control Pad|3D Control Pad
+3D Control Pad Configuration|Configurazione 3D Control Pad
+4 Mbit Backup Ram|RAM di backup da 4 Mbit
+4xBRZ|4xBRZ
+503/512 blocks free|503/512 blocchi liberi
+510/512 blocks free|510/512 blocchi liberi
+68000 Core|Core 68000
+6xBRZ|6xBRZ
+8 Mbit Backup Ram|RAM di backup da 8 Mbit
+8 Mbit Dram|DRAM da 8 Mbit
+8-bit|8 bit
+8-bit Relative value(s)|Valore/i relativo/i a 8 bit
+<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>ATTENZIONE:</b> i Master Code <b>NON</b> sono supportati.</font>
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|<h3>Trova dove un gioco memorizza un valore</h3><p>1. Scegli a sinistra ciò che sai, poi premi <b>Cerca</b> o <b>Scatta istantanea</b>.<br>2. Gioca finché il valore cambia, poi riapri questa finestra.<br>3. Cerca di nuovo finché restano solo pochi indirizzi.<br>4. Fai doppio clic su un indirizzo per trasformarlo in un cheat.</p>
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|<h3>Nessun indirizzo corrisponde</h3><p>Prova una tolleranza maggiore, controlla la dimensione dei dati in <i>Opzioni avanzate</i> o premi <b>Nuova ricerca</b> per ricominciare.</p>
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Poligono</span> · <span style=" color:darkcyan;">Polilinea</span> · <span style=" color:#B45A00;">Linea</span> · <span style=" color:gray;">Clip/Locale</span> · <span style=" color:red;">Non valido</span>
+A bar lost or gained a percentage|Una barra ha perso o guadagnato una percentuale
+A breakpoint already exists at %1.|Esiste già un breakpoint a %1.
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|Una barra della vita che passa da piena al 60 % ha perso il 40 %: inserisci 40. La tolleranza assorbe gli arrotondamenti.
+A loss of 100 % or more means the value reached zero.|Una perdita del 100 % o più significa che il valore ha raggiunto zero.
 About...|Attorno...
-Action Replay Code :|
+Action Replay Code :|Codice Action Replay:
 Add|Aggiungi
 Add Action Replay Code|Aggiungi codice Action Replay
 Add Cheat|Aggiungi Trucco
+Add Cheat…|Aggiungi cheat…
 Add Codes...|Aggiungi Codici....
 Add Raw Memory Code|Aggiungi Raw Memory Code
+Add a breakpoint on this address|Aggiungi un breakpoint su questo indirizzo
+Add breakpoint|Aggiungi breakpoint
+Add cheat|Aggiungi cheat
 Address|Indirizzo
+Address (hex):|Indirizzo (hex):
 Address :|Indirizzo:
+Address in hex, e.g. 06004000|Indirizzo in hex, es. 06004000
+Address in hex, e.g. 06100000|Indirizzo in hex, es. 06100000
+Advance one frame|Avanza di un fotogramma
 Advanced|Avanzate
-All Files;|
-All Files (*)|
-Always|
-An error occured while writing file.|
+Advanced options|Opzioni avanzate
+All Files|Tutti i file
+All Files (*)|Tutti i file (*)
+All Files;|Tutti i file;
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|Scarto consentito, in punti percentuali. Assorbe gli arrotondamenti: un calo del 40 % con una tolleranza dell'1 % corrisponde al 39 %-41 %.
+Always|Sempre
+Amount|Quantità
+An error occured while writing file.|Si è verificato un errore durante la scrittura del file.
+An error occurred while writing the screenshot: |Si è verificato un errore durante la scrittura dello screenshot: 
+An exact number|Un numero esatto
 Are you sure you want to delete '%1' ?|Sicuro di voler cancellare '%1'?
 Are you sure you want to format '%1' ?|Sicuro di voler formattare '%1'?
 Asia (NTSC)|Asia (NTSC)
-Asia (PAL)|
-Assembly code|
-Auto-detect|
-Awaiting input for|
-Autostart|
+Asia (PAL)|Asia (PAL)
+Assembly code|Codice assembly
+Attack|Attacco
+Audio preview is not available in this build.|L'anteprima audio non è disponibile in questa build.
+Auto-detect|Rilevamento automatico
+Autostart|Avvio automatico
+Awaiting input for|In attesa di input per
 Axis|Asse
+Axis L Trigger|Asse L Grilletto
+Axis R Trigger| Asse R Grilletto
 Axis Throttle|Asse strozzare
 Axis X|Asse X
 Axis Y|Asse Y
-Axis L Trigger|Asse L Grilletto
-Axis R Trigger| Asse R Grilletto
+Backtrace|Stack delle chiamate
 Backup Ram Manager|Gestione Backup RAM
-Bilinear|
+Bank:|Banco:
+Bet|Puntata
+BiCubic|Bicubico
+Bilinear|Bilineare
 Bilinear Filtering (Restart required)|Filtro bilineare (necessario riavvio)
-Binary Files (*.bin)|Binary Files (*.bin)
+Binary Files (*.bin)|File binari (*.bin)
+Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|File binari (*.bin);;Programmi COFF (*.cof *.coff);;Programmi ELF (*.elf);;Tutti i file (*)
+Binary files (*.bin)|File binari (*.bin)
 Bios|BIOS
+Bios Settings|Impostazioni BIOS
+Bios file path|Percorso del file BIOS
+Bios settings file|File delle impostazioni BIOS
 Block Size :|Dimensioni Blocco:
+Breakpoint Reached|Breakpoint raggiunto
+Breakpoint added at %1.|Breakpoint aggiunto a %1.
+Breakpoint removed at %1.|Breakpoint rimosso a %1.
+Breakpoints|Breakpoint
 Bug report|Riportare un errore
-Byte|
-Byte Write|
-Byte Write : %1 %2|
-Cancel|
-Cannot initialize Windows SPTI Driver|
-Can't plug in the new controller, cancelling.|
-Can't initialize Kronos.|
+Button 2|Pulsante 2
+Button 2 (patocar/skychal/supgoal/techbowl only)|Pulsante 2 (solo patocar/skychal/supgoal/techbowl)
+Button 5|Pulsante 5
+Byte|Byte
+Byte Write|Scrittura byte
+Byte Write : %1 %2|Scrittura byte: %1 %2
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|Immagini CD (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|Immagini CD (*.iso *.cue *.bin *.mds *.ccd *.zip)
+CD Images (*.iso *.cue *.bin *.mds *.ccd)|
+CD-ROM|CD-ROM
+COFF Program Files (*.cof *.coff)|Programmi COFF (*.cof *.coff)
+CPU Tesselation|Tassellazione della CPU
+CRT (Aperture Grille)|CRT (griglia di apertura)
+Can't Pause kronos while not initialized.|Impossibile mettere in pausa Kronos finché non è inizializzato.
+Can't initialize Kronos.|Impossibile inizializzare Kronos.
+Can't plug in the new controller, cancelling.|Impossibile collegare il nuovo controller, annullamento.
+Cancel|Annulla
+Cannot initialize Windows SPTI Driver|Impossibile inizializzare il driver Windows SPTI
 Cart/Memory|Cart/Memoria
 Cartridge|Cartuccia
-CD Images (*.iso *.cue *.bin *.mds *.ccd)|
+Cartridge Path|Percorso della cartuccia
 Cd-Rom|Cd-Rom
-Central/South America (NTSC)|Central/South America (NTSC)
-Central/South America (PAL)|Central/South America (PAL)
-Cheats File|
-Cheat &Search...|Cheat &Search...
-Cheat Search|Cheat Search
+Central/South America (NTSC)|America centrale/meridionale (NTSC)
+Central/South America (PAL)|America centrale/meridionale (PAL)
+Change|Variazione
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|Cambia la cartella con l'impostazione Debug/SH2DumpDir o la variabile KRONOS_SH2DUMP_DIR.
+Changed|Cambiato
+Channel Viewer|Visualizzatore canali
+Cheat &Search...|&Ricerca cheat...
+Cheat Search|Ricerca cheat
 Cheat Type|Tipo di Trucco
-Choose a binary or program file|
-Choose a bios file|
-Choose a cartridge file|
-Choose a cartridge folder|
-Choose a cdrom drive/mount point|Choose a cdrom drive/mount point
+Cheats|Cheat
+Cheats File|File dei cheat
+Chi|Chi
+Choose a STV cartridge folder|Scegli una cartella di cartucce STV
+Choose a binary or program file|Scegli un file binario o di programma
+Choose a bios file|Scegli un file BIOS
+Choose a cartridge file|Scegli un file di cartuccia
+Choose a cartridge folder|Scegli una cartella di cartucce
+Choose a cdrom drive/mount point|Scegli un'unità cdrom/punto di montaggio
 Choose a cheat file to open|Selezionare un file cheat da aprire
 Choose a cheat file to save to|Selezionare un file cheat per salvare
 Choose a file to save your state|Selezionare un file per salvare lo stato
-Choose a folder to store save states|
-Choose a location for binary file|Choose a location for binary file
+Choose a file to store bios settings|Scegli un file per salvare le impostazioni BIOS
+Choose a folder to store save states|Scegli una cartella per gli stati salvati
+Choose a folder to store screenshots|Scegli una cartella per gli screenshot
+Choose a location for binary file|Scegli una posizione per il file binario
+Choose a location for the VRAM dump|Scegli una posizione per il dump della VRAM
+Choose a location for the text file|Scegli una posizione per il file di testo
 Choose a location for your binary file|Scegli un percorso per il tuo file binario
 Choose a location for your bitmap|Scegli una posizione per la tua bitmap
 Choose a location for your screenshot|Selezionare una directory per gli screenshoot
 Choose a location for your wav file|Scegli una posizione per il tuo file wav
 Choose a memory file|Scegli un file di memoria
-Choose a mpeg rom|
+Choose a mpeg rom|Scegli una rom mpeg
+Choose the location of the addr2line executable|Scegli la posizione dell'eseguibile addr2line
 Clear|Chiaro
 Clear configuration|Chiaro configurazione
 Close|Chiudi
-Code Breakpoints|Code Breakpoints
-COFF Program Files (*.cof *.coff)|
-Comment :|
+Code|Codice
+Code Breakpoints|Breakpoint di codice
+Coin1|Moneta1
+Coin2|Moneta2
+Coins && Control Panel|Gettoniera && Pannello di controllo
+Color RAM|Color RAM
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|Color RAM modalità %1  —  %2 voci  (%3 byte ciascuna)
+Color RAM not available|Color RAM non disponibile
+Comment :|Commento:
 Common Control Registers|Registri di controllo comuni
+Common registers|Registri comuni
+Compare Type|Tipo di confronto
+Compared to the previous search, the value has:|Rispetto alla ricerca precedente, il valore è:
 Compatibility List|Elenco di compatibilità
-Compare Type|
-Couldn't save state file|Impossibile salvare il file di stato
+Compute Shader Video Interface|Interfaccia video Compute Shader
+Copy address|Copia indirizzo
+Copy line|Copia riga
+Could not add a breakpoint at %1: the list is full or the address is not supported.|Impossibile aggiungere un breakpoint a %1: l'elenco è pieno o l'indirizzo non è supportato.
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|Impossibile aggiungere un breakpoint di memoria a %1: l'elenco è pieno o l'indirizzo non è supportato.
+Could not open the audio device.|Impossibile aprire il dispositivo audio.
+Could not write the report file.|Impossibile scrivere il file di rapporto.
 Couldn't load state file|Impossibile caricare il file di stato
-CPU Tesselation|Tassellazione della CPU
+Couldn't save state file|Impossibile salvare il file di stato
+Count|Conteggio
+Ctrl+wheel to zoom|Ctrl+rotellina per lo zoom
+DSP Control Registers|Registri di controllo DSP
+DSP Registers|Registri DSP
+Data RAM|Data RAM
 Data Size|Dimensione dei dati
 Data Size :|Dimensione dei dati :
-Data Type|
-Debug CPU|
-Debug M68K|
-Debug Master SH2|
-Debug SCSP|
-Debug SCU DSP|
-Debug Slave SH2|
-Debug VDP1|
-Debug VDP2Viewer|
-Default Dial IP|
+Data Type|Tipo di dati
+Debug|Debug
+Debug CPU|Debug CPU
+Debug M68K|Debug M68K
+Debug Master SH2|Debug SH2 master
+Debug SCSP|Debug SCSP
+Debug SCSP Channels|Debug canali SCSP
+Debug SCSP DSP|Debug DSP SCSP
+Debug SCU DSP|Debug DSP SCU
+Debug Slave SH2|Debug SH2 slave
+Debug VDP1|Debug VDP1
+Debug VDP2|Debug VDP2
+Debug VDP2Viewer|Debug VDP2Viewer
+Decay 1|Decadimento 1
+Decay 2|Decadimento 2
+Decoded|Decodificato
+Decreased|Diminuito
+Default Dial IP|IP di composizione predefinito
+Default System Language|Lingua di sistema predefinita
+Deinterlacing Adaptive|Deinterlacciamento adattivo
+Deinterlacing Bob|Deinterlacciamento Bob
+Deinterlacing Debug Adaptive|Deinterlacciamento adattivo (debug)
 Del|Del
 Delete|Elimina
 Description|Descrizione
+Description :|Descrizione:
+Deutsch|Deutsch
+Development Extension|Estensione di sviluppo
 Device List|Lista periferiche
-DirectX Input Interface|DirectX Input Interface
-DirectX Sound Interface|DirectX Sound Interface
-Disassembled Code|Disassembled Code
-Display on Hover|
-Double Mission Stick|
+DirectX Input Interface|Interfaccia di input DirectX
+DirectX Sound Interface|Interfaccia audio DirectX
+Directory|Cartella
+Disabled|Disattivato
+Disassembled Code|Codice disassemblato
+Discord Channel|Canale Discord
+Display on Hover|Mostra al passaggio del mouse
+Door Switch|Interruttore porta
+Double Mission Stick|Doppio Mission Stick
+Double Mission Stick Configuration|Configurazione Doppio Mission Stick
+Double-click a breakpoint to show it in the disassembly|Fai doppio clic su un breakpoint per mostrarlo nel disassemblato
+Double-click an address to add it as a cheat.|Fai doppio clic su un indirizzo per aggiungerlo come cheat.
 Down|Giù
+Down_P2|Giù_G2
 Download|Scaricare
-DSP Control Registers|Registri di controllo DSP
-DSP Registers|
-Dummy 68k Interface|
-Dummy CD Drive|
-Dummy Input Interface|
-Dummy OSD Interface|
-Dummy Sound Interface|
-Dummy Video Interface|
+Dummy 68k Interface|Interfaccia 68k fittizia
+Dummy CD Drive|Unità CD fittizia
+Dummy Input Interface|Interfaccia di input fittizia
+Dummy OSD Interface|Interfaccia OSD fittizia
+Dummy Sound Interface|Interfaccia audio fittizia
+Dummy Video Interface|Interfaccia video fittizia
+ELF Program Files (*elf)|Programmi ELF (*elf)
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|Ogni voce è un campione, identificato dal suo indirizzo iniziale, che era in riproduzione all'apertura di questa finestra o che è stato riprodotto da allora. Le voci in grassetto sono in riproduzione ora (passa sopra con il mouse per vederne gli slot). Spuntane una per silenziare tutti gli slot che la riproducono.
 Edit configuration|Modifica configurazione
 Eject/Load ISO...|Espulsione / caricamento ISO ...
-ELF Program Files (*elf)|
-End Address:|
-English|Inglese
 Embellishment filter :|Filtro abbellimento:
+Emulation paused|Emulazione in pausa
 Enable|Abilita
 Enable Bios Emulation|Abilita l'emulazione del bios
-Enable Code : %1 %2|
-Enable Frame Skip/Limiter|
+Enable Code : %1 %2|Abilita codice: %1 %2
+Enable Frame Skip/Limiter|Abilita salto fotogrammi/limitatore
+Enable vertical synchronization|Abilita sincronizzazione verticale
 Enabled|Abilitato
-Enter new assembly code|Inserisci il nuovo codice assembly
+End Address:|Indirizzo finale:
+English|Inglese
 Enter New Value|Inserisci un nuovo valore
+Enter new assembly code|Inserisci il nuovo codice assembly
+Envelope|Inviluppo
+Equal to|Uguale a
 Error|Errore
+Error...|Errore...
+Europe (PAL)|Europa (PAL)
+Europe + others (PAL)|Europa + altri (PAL)
+Exact|Esatto
+Example: 100 → %1 is a gain of %2 %.|Esempio: 100 → %1 è un guadagno del %2 %.
+Example: 100 → %1 is a loss of %2 %.|Esempio: 100 → %1 è una perdita del %2 %.
+Execute one instruction (F11)|Esegui un'istruzione (F11)
+Execute one instruction, running calls to the end (F10)|Esegui un'istruzione, eseguendo le chiamate fino in fondo (F10)
+Export Debug|Esporta debug
+Export Debug Info (.txt)...|Esporta informazioni di debug (.txt)...
+Export Registers / Debug (.txt)...|Esporta registri / debug (.txt)...
+Export bank (.bin)...|Esporta banco (.bin)...
 Extend Internal backup memory to 8MB|Estendi la memoria di backup interna a 8 MB
-Europe + others (PAL)|
-Exact|
+F&PS|F&PS
+FSR 1.0 (EASU + RCAS)|FSR 1.0 (EASU + RCAS)
+FXAA|FXAA
+Family-Specific && Diagnostics|Specifici per famiglia && Diagnostica
 File|File
 File Name :|Nome file:
-Finished searching up to end of memory, continue from the beginning?|
+File:|File:
+Filter registers...|Filtra registri...
+Finished searching up to end of memory, continue from the beginning?|Ricerca terminata fino alla fine della memoria, continuare dall'inizio?
+Finished.|Terminato.
+Fit the image back into the view (Ctrl+wheel to zoom)|Adatta di nuovo l'immagine alla vista (Ctrl+rotellina per lo zoom)
+Fit the texture back into the view (Ctrl+wheel to zoom)|Adatta di nuovo la texture alla vista (Ctrl+rotellina per lo zoom)
+Flip/Flop|Flip/Flop
+Format|Formatta
+FreeBSD CD Drive|Unità CD FreeBSD
 French|Francese
-From File...|
+From File...|Da file...
+GPU Tesselation|Tassellazione GPU
+Gained|Guadagnato
 General|Generale
-General Info|General Info
+General Info|Info generali
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|Registro generico R15.\nPer convenzione funge anche da stack pointer hardware dell'SH-2 (SP): la CPU lo salva/ripristina su eccezioni e interrupt, e il codice compilato lo usa allo stesso modo per lo stack delle chiamate.
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|Registro generico.\nContiene dati o un indirizzo; usato liberamente dal codice compilato e da qualsiasi istruzione SH-2 con un operando registro.
 German|Tedesco
-Goto Address|Goto Address
-GPU Tesselation
-Greater then|Greater then
+Get Existing Directory...|Scegli cartella esistente...
+Get Item...|Scegli elemento...
+Get Open File Name...|Apri file...
+Get Save File Name...|Salva file...
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|Global Base Register (GBR).\nIndirizzo base usato dall'indirizzamento relativo a GBR: MOV.B/W/L @(disp,GBR) e le forme immediate @(R0,GBR) di AND/OR/XOR/TST calcolano tutte il loro indirizzo effettivo da questo registro.
+Go|Vai
+Go to an address (Ctrl+G)|Vai a un indirizzo (Ctrl+G)
+Goto Address|Vai all'indirizzo
+Gouraud Mode :|Modalità Gouraud:
+Greater than|Maggiore di
+Greater then|Maggiore di
 Gun|Pistola
-Gun Configuration|
-Gun/Mouse Sensitivity|
-Hex value(s)|Hex value(s)
-Hide Menubar|Hide Menubar
-Hide Toolbar|Hide Toolbar
+Gun Configuration|Configurazione pistola
+Gun/Mouse Sensitivity|Sensibilità pistola/mouse
+HQ4x|HQ4x
+Hex value(s)|Valore/i esadecimale/i
+Hide Menubar|Nascondi barra dei menu
+Hide Toolbar|Nascondi barra degli strumenti
+High + Low WRAM|WRAM alta + bassa
+High WRAM|WRAM alta
+Highlighted slots are sounding right now.|Gli slot evidenziati stanno suonando in questo momento.
+Hopper Cabinet|Cabinato con hopper
+Hopper Cabinet Configuration|Configurazione cabinato con hopper
+Hopper Sensor Test|Test sensore hopper
+Hopper Sensor Test (hold to force a payout pulse)|Test sensore hopper (tieni premuto per forzare un impulso di erogazione)
+ISO-File Virtual Drive|Unità virtuale file ISO
+Image format|Formato immagine
+Improved|Migliorato
+Inactive slot|Slot inattivo
+Increased|Aumentato
 Information...|Informazione...
 Inline Assembly|Assemblaggio in linea
 Input|Ingresso
-Internal Backup RAM|
+Input code address|Indirizzo del codice
+Internal Backup RAM|RAM di backup interna
 Invalid Address|Indirizzo non valido
-Invalid Start/End Address Combination|
+Invalid Address or Value|Indirizzo o valore non valido
+Invalid Start/End Address Combination|Combinazione di indirizzi iniziale/finale non valida
 Invalid Value|Valore non valido
-ISO-File Virtual Drive|
+Invalid address.|Indirizzo non valido.
+Invalid address: %1|Indirizzo non valido: %1
+It went up or down|È salito o sceso
 Italian|Italiano
-Japan (NTSC)|Japan (NTSC)
+Japan (NTSC)|Giappone (NTSC)
 Japanese|Giapponese
-Japanese Modem|Japanese Modem
-Korea (NTSC)|Korea (NTSC)
+Japanese Modem|Modem giapponese
+Jump list|Elenco salti
+Kan|Kan
+Keyboard|Tastiera
+Korea (NTSC)|Corea (NTSC)
+Kronos Cheat Files (*.yct);;All Files (*)|File cheat Kronos (*.yct);;Tutti i file (*)
+Kronos Qt GUI|Interfaccia Qt di Kronos
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|Interfaccia Qt di Kronos<br />Basata su UoYabause <br /></a><br />Il team di Kronos<br /></a>
+Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Interfaccia Qt di Kronos<br />Basata su Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Il team di Yabause<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Kronos Save State (*.yss)|Stato salvato Kronos (*.yss)
+Kronos is not initialized, can't manage backup ram.|Kronos non è inizializzato, non può gestire il backup ram.
+L&oad State|C&arica stato
+LFO|LFO
+Lanczos3|Lanczos3
 Language :|Lingua:
-L&oad State|L&oad State
+Layer inactive|Livello inattivo
 Left|Sinistra
-Left Stick Axis X|
-Left Stick Axis Y|
-Left Stick Axis Throttle|
-Left trigger|
-Less than|
+Left Stick Axis Throttle|Asse acceleratore stick sinistro
+Left Stick Axis X|Asse X stick sinistro
+Left Stick Axis Y|Asse Y stick sinistro
+Left Stick Throttle Down|Stick sinistro acceleratore giù
+Left Stick X Left|Stick sinistro X sinistra
+Left Stick Y Down|Stick sinistro Y giù
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|Stick sinistro:\nGrilletto:         X\nPulsante sinistro: Y\nPulsante destro:   Z
+Left trigger|Grilletto sinistro
+Left_P2|Sinistra_G2
+Less than|Minore di
+Life bar, energy gauge...|Barra della vita, indicatore di energia...
+Linux CD Drive|Unità CD Linux
+Linux Joystick Interface|Interfaccia joystick Linux
+Live|Dal vivo
+Lives, ammo, score, money...|Vite, munizioni, punteggio, denaro...
+Load Code|Carica codice
+Load0|Carica0
+Load1|Carica1
+Load2|Carica2
+Load3|Carica3
+Load4|Carica4
+Load5|Carica5
+Load6|Carica6
+Load7|Carica7
+Load8|Carica8
+Load9|Carica9
 Log|Log
 Long|Long
 Long Write|Scrivi Log
-Long Write : %1 %2|
-Loop Track Clear|Loop Track Clear
-Loop Track Start|Loop Track Start
-Loop Track Stop|
+Long Write : %1 %2|Scrittura long: %1 %2
+Loop Track Clear|Cancella ciclo di traccia
+Loop Track Start|Avvia ciclo di traccia
+Loop Track Stop|Ferma ciclo di traccia
+Lost|Perso
+Low WRAM|WRAM bassa
+M68K Registers|Registri M68K
+MASTER SH2|SH2 MASTER
+MSH2 reached code breakpoint at |L'MSH2 ha raggiunto un breakpoint di codice a 
+MSH2 reached data breakpoint at |L'MSH2 ha raggiunto un breakpoint di dati a 
+Mac OS X (IOKit) Joystick Interface|Interfaccia joystick Mac OS X (IOKit)
+Mac OS X Core Audio Sound Interface|Interfaccia audio Core Audio di Mac OS X
+MacOSX CD Drive|Unità CD MacOSX
+Magnet Sensor|Sensore magnetico
+Magnet Sensor (micrombc only)|Sensore magnetico (solo micrombc)
+Mahjong Panel|Pannello Mahjong
+Mahjong Panel Configuration|Configurazione pannello Mahjong
+Mame romset 0.269:|Romset Mame 0.269:
+Master SH2 Registers|Registri SH2 master
+Medal|Medaglia
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|Cabinato con hopper di medaglie/biglietti (patocar, skychal, supgoal, techbowl, micrombc). Il sensore dell'hopper è simulato automaticamente e non è associato a nessun tasto.
 Memory|Memoria
-Memory Breakpoints|Memory Breakpoints
-Memory Editor|
-Memory &Editor|
-Memory Search|
+Memory &Editor|&Editor memoria
+Memory Breakpoints|Breakpoint di memoria
+Memory Editor|Editor memoria
+Memory Search|Ricerca in memoria
 Memory Transfer|Trasferimento Memoria
-Middle|
+Memory breakpoint set at %1.|Breakpoint di memoria impostato a %1.
+Mesh Mode :|Modalità mesh:
+Middle|Centro
 Mission Stick|Mission Stick
+Mission Stick Configuration|Configurazione Mission Stick
+Mixer|Mixer
+Modulation|Modulazione
 Mouse|Mouse
 Mouse Configuration|Configurazione del mouse
-Mpeg ROM|
-Musashi Interface|
-nanovg OSD Interface|
-Native (native resolution of Window)|
+Move the mouse over the image to inspect a pixel.|Muovi il mouse sull'immagine per ispezionare un pixel.
+Move the mouse over the texture to inspect a pixel.|Muovi il mouse sulla texture per ispezionare un pixel.
+Mpeg ROM|ROM Mpeg
+Multicart|Multicart
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|Registro Multiply-and-Accumulate, 32 bit alti.\nScritto insieme a MACL dalle istruzioni MAC.W/MAC.L; il bit S di SR stabilisce se la coppia MACH:MACL satura o si riavvolge in caso di overflow.
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|Registro Multiply-and-Accumulate, 32 bit bassi.\nUsato anche come normale registro risultato a 32 bit da MUL.L, DMULS.L e DMULU.L, che scrivono solo in MACH:MACL.
+Musashi Interface|Interfaccia Musashi
+Mute individual sounds|Silenzia singoli suoni
+Mute/UnMute Sound|Attiva/disattiva audio
 NBG0|
-NBG0/RBG1 Info|
+NBG0 Info|Info NBG0
+NBG0/RBG1 Info|Info NBG0/RBG1
 NBG1|NBG1
-NBG1 Info|NBG1 Info
+NBG1 Info|Info NBG1
 NBG2|NBG2
-NBG2 Info|NBG2 Info
+NBG2 Info|Info NBG2
 NBG3|NBG3
-NBG3 Info|NBG3 Info
+NBG3 Info|Info NBG3
+Narrow down|Restringi
+Narrowing down: |Restringimento: 
+Native (current resolution of the window)|Nativa (risoluzione attuale della finestra)
+Native (native resolution of Window)|Nativa (risoluzione nativa della finestra)
+NetBSD CD Drive|Unità CD NetBSD
 Netlink|Netlink
-Never|Never
-&No|
+Never|Mai
+New search|Nuova ricerca
+Next Frame|Fotogramma successivo
+No audio output device found.|Nessun dispositivo di uscita audio trovato.
+No game running|Nessun gioco in esecuzione
 No matches found.|Nessun risultato trovato.
-None|
-None|
-Normal format not available, trying alternative|
-North America (NTSC)|
-On fullscreen|On fullscreen
-On message|On message
-Open &CD Rom...|Open &CD Rom...
-Open &ISO...|Open &ISO...
+No need to know the real value: each address is compared with what it held at the previous search.|Non serve conoscere il valore reale: ogni indirizzo viene confrontato con ciò che conteneva alla ricerca precedente.
+No search yet|Nessuna ricerca ancora
+No sound has been played yet.|Non è ancora stato riprodotto alcun suono.
+No texture|Nessuna texture
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|Nessuna texture per questo comando (fine disegno, saltato, clipping,\ncoordinate locali o parola di comando non valida)
+None|Nessuno
+Normal format not available, trying alternative|Formato normale non disponibile, provo un'alternativa
+North America (NTSC)|Nord America (NTSC)
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|Niente da riprodurre: la sorgente sonora di questo slot sono dati nulli (SSCTL = 2 o 3).
+OSD Core|Core OSD
+Off|Off
+Ok|Ok
+On|On
+On fullscreen|A schermo intero
+On message|Su messaggio
+Opaque|Opaco
+Open &CD Rom...|Apri &CD-ROM...
+Open &ISO...|Apri &ISO...
 Open CD Rom|Apri CD Rom
+Open Channel Viewer...|Apri visualizzatore canali...
+Open DSP Debugger...|Apri debugger DSP...
 Open SSF|Apri SSF
-Open&Tray|
-OpenGL size :|Dimensione OpenGL
+Open a cartridge file|Apri un file di cartuccia
+Open a mpeg rom|Apri una rom mpeg
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|Apri il debugger DSP dell'SCSP (programma, registri, breakpoint, passo singolo)
+Open the VDP2 viewer|Apri il visualizzatore VDP2
+Open the live 32-slot envelope and mute viewer|Apri il visualizzatore dal vivo di inviluppi e silenziamento dei 32 slot
+Open&Tray|Apri &vassoio
+OpenAL Sound Interface|Interfaccia audio OpenAL
 OpenGL Video Interface|Interfaccia Video OpenGL
+OpenGL size :|Dimensione OpenGL
 Options|Opzioni
+Original|Originale
 Original (original resolution of the Saturn)|Originale (risoluzione originale di Saturn)
 Original aspect ratio|Proporzioni originali
-OSD Core|
-Pad|
+Other|Altro
+Other Debug|Altro debug
+Output|Uscita
+P1 - Bet|G1 - Puntata
+P1 - Chi|G1 - Chi
+P1 - Flip/Flop|G1 - Flip/Flop
+P1 - Kan|G1 - Kan
+P1 - Pon|G1 - Pon
+P1 - Reach|G1 - Reach
+P1 - Ron|G1 - Ron
+P1 - Start|G1 - Start
+P2 - Chi|G2 - Chi
+P2 - Flip/Flop|G2 - Flip/Flop
+P2 - Kan|G2 - Kan
+P2 - Pon|G2 - Pon
+P2 - Reach|G2 - Reach
+P2 - Ron|G2 - Ron
+P2 - Start|G2 - Start
+Pad|Pad
 Pad Configuration|Configurazione del pad
-Play Slot|
-Port|
-Press Esc key to cancel|
-Qt Keyboard Input Interface|
-&Question...|
+Pause|Pausa
+Pitch|Intonazione
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6
+Pixel Perfect|Pixel Perfect
+Pixel Perfect - Full screen|Pixel Perfect - Schermo intero
+Play Slot|Riproduci slot
+Player 1 Panel|Pannello giocatore 1
+Player 2 Panel (kiwames only)|Pannello giocatore 2 (solo kiwames)
+Playing on slot(s) %1|In riproduzione sugli slot %1
+Playing slot %1...|Riproduzione slot %1...
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|Riproduce lo slot dal suo key on, con lo stesso generatore sonoro del gioco (senza gli effetti DSP e gli altri slot).
+Pon|Pon
+Port|Porta
+Port 1|Porta 1
+Port 2|Porta 2
+Power Button|Pulsante di accensione
+Press Esc key to cancel|Premi Esc per annullare
+Preview|Anteprima
+Previous|Precedente
+Pro Action Replay|Pro Action Replay
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|Procedure Register (PR).\nIndirizzo di ritorno salvato da BSR/BSRF/JSR; RTS salta a quanto memorizzato qui. È ciò che nell'SH-2 si avvicina di più a un link register hardware.
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|Program Counter (PC).\nIndirizzo dell'istruzione che sta per essere eseguita (i delay slot sono già considerati). È il valore confrontato da un breakpoint di codice.
+Qt Keyboard Input Interface|Interfaccia di input tastiera Qt
+Question...|Domanda...
+R&un|&Esegui
 RBG0|RBG0
-RBG0 Info|RBG0 Info
-Read|Read
+RBG0 Info|Info RBG0
+RBG1|RBG1
+RBG1 Info|Info RBG1
+Raw Values|Valori grezzi
+Reach|Reach
+Read|Lettura
 Region|Regione
-Remove Peripheral|
+Register|Registro
+Registers|Registri
+Related debuggers|Debugger correlati
+Release|Rilascio
+Remove Peripheral|Rimuovi periferica
+Remove breakpoint|Rimuovi breakpoint
+Remove the selected breakpoints|Rimuovi i breakpoint selezionati
+Report written to:|Rapporto scritto in:
+Reserved1|Riservato1
+Reserved2|Riservato2
+Reserved3|Riservato3
+Reserved4|Riservato4
+Reserved5|Riservato5
+Reset Zoom|Reimposta zoom
 Restart|Ricomincia
+Results|Risultati
 Right|Destra
-Right Stick Axis X|
-Right Stick Axis Y|
-Right Stick Axis Throttle|
-Right trigger|
-R&un|
+Right Stick Axis Throttle|Asse acceleratore stick destro
+Right Stick Axis X|Asse X stick destro
+Right Stick Axis Y|Asse Y stick destro
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|Stick destro:\nGrilletto:         A\nPulsante sinistro: B\nPulsante destro:   C
+Right trigger|Grilletto destro
+Right_P2|Destra_G2
+Ron|Ron
+Run until the current function returns (Shift+F11)|Esegui finché la funzione corrente non ritorna (Maiusc+F11)
+S&CSP|S&CSP
+S&ave State|S&alva stato
+SCSP|
+SCSP Channels|Canali SCSP
+SCSP-&DSP|SCSP-&DSP
+SCU-&DSP|SCU-&DSP
+SDL Joystick Interface|Interfaccia joystick SDL
+SDL Sound Interface|Interfaccia audio SDL
+SH2 Debug|Debug SH2
+SH2 Debugger Interpreter|Interprete SH2 di debug
+SH2 Interpreter|Interprete SH2
+SH2 Performance|Prestazioni SH2
+SH2 Registers|Registri SH2
+SLAVE SH2|SH2 SLAVE
+SSH2 reached code breakpoint at |L'SSH2 ha raggiunto un breakpoint di codice a 
+SSH2 reached data breakpoint at |L'SSH2 ha raggiunto un breakpoint di dati a 
+ST-V Cabinet|Cabinato ST-V
+ST-V cabinet Configuration|Configurazione cabinato ST-V
+STV Rom game|Gioco STV Rom
+Sample|Campione
+Sample size|Dimensione campione
+Sample start address 0x%1|Indirizzo iniziale del campione 0x%1
 Save As Bitmap|Salva come bitmap
-Save As WAV|Save As WAV
-Save Bitmap|Save Bitmap
+Save As WAV|Salva come WAV
+Save Bitmap|Salva bitmap
+Save COEF|Salva COEF
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|Salva il banco 0 della Data RAM (64 word a 32 bit) in .bin
+Save Data RAM bank 1 to .bin|Salva il banco 1 della Data RAM in .bin
+Save Data RAM bank 2 to .bin|Salva il banco 2 della Data RAM in .bin
+Save Data RAM bank 3 to .bin|Salva il banco 3 della Data RAM in .bin
 Save Information|Salva Informazioni
 Save List|Salva lista
-Save MD0|Save MD0
-Save MD1|Save MD1
-Save MD2|Save MD2
-Save MD3|Save MD3
-Save Selected|Save Selected
-Save Program|Save Program
-S&ave State|
+Save MADRS|Salva MADRS
+Save MD0|Salva MD0
+Save MD1|Salva MD1
+Save MD2|Salva MD2
+Save MD3|Salva MD3
+Save MEMS|Salva MEMS
+Save Program|Salva programma
+Save RAW|Salva RAW
+Save Raw Data|Salva dati grezzi
+Save SCSP DSP COEF|Salva COEF del DSP SCSP
+Save SCSP DSP MADRS|Salva MADRS del DSP SCSP
+Save SCSP DSP MEMS|Salva MEMS del DSP SCSP
+Save SCSP DSP Program (MPRO)|Salva programma del DSP SCSP (MPRO)
+Save SCSP DSP TEMP|Salva TEMP del DSP SCSP
+Save SCU DSP Data RAM MD0|Salva Data RAM MD0 del DSP SCU
+Save SCU DSP Data RAM MD1|Salva Data RAM MD1 del DSP SCU
+Save SCU DSP Data RAM MD2|Salva Data RAM MD2 del DSP SCU
+Save SCU DSP Data RAM MD3|Salva Data RAM MD3 del DSP SCU
+Save SCU DSP Program RAM|Salva Program RAM del DSP SCU
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|Salva la Program RAM del DSP SCU (256 word a 32 bit) in .bin
+Save Selected|Salva selezionati
+Save Slot Registers|Salva registri dello slot
 Save State|Salva stato
-Save Slot Registers|Save Slot Registers
-Save Tab|
+Save States|Stati salvati
+Save TEMP|Salva TEMP
+Save Tab|Salva scheda
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|Salva la tabella COEF (64 coefficienti di filtro a 16 bit) in .bin
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|Salva il programma DSP (MPRO, 128 istruzioni a 64 bit) in .bin
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|Salva la tabella MADRS (32 indirizzi di buffer circolare a 16 bit) in .bin
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|Salva l'area di lavoro MEMS della memoria audio (32 word a 32 bit) in .bin
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|Salva la scheda Registri (grezzi + decodificati) e la scheda Debug in un file di testo
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|Salva la memoria della linea di ritardo TEMP (128 word a 32 bit) in .bin
+Save the VDP1 registers, command list and selected command info to a text file|Salva i registri VDP1, l'elenco dei comandi e le info del comando selezionato in un file di testo
+Save the selected VRAM bank to a raw .bin file|Salva il banco VRAM selezionato in un file .bin grezzo
+Save0|Salva0
+Save1|Salva1
+Save2|Salva2
+Save3|Salva3
+Save4|Salva4
+Save5|Salva5
+Save6|Salva6
+Save7|Salva7
+Save8|Salva8
+Save9|Salva9
+Sc&reenshot|Sc&reenshot
+Scale3x|Scale3x
+Scale4x|Scale4x
+Scanline|Scanline
+Scanline filter|Filtro scanline
+Scanline off|Scanline disattivate
+Scanline on|Scanline attivate
 Screen Enabled|Schermo abilitato
 Screen Select:|Seleziona schermo:
-Sc&reenshot|
-Scanline filter|
-Scanline off|
-Scanline on|
-SCSP|
-SCSP Channels|
-SDL Joystick Interface|
-SDL Sound Interface|Interfaccia audio SDL
+Screen Viewer|Visualizzatore schermo
+Screen:|Schermo:
+Screenshots|Screenshot
 Search|Ricerca
+Search Criteria|Criteri di ricerca
+Search Memory|Cerca in memoria
+Search Value:|Valore da cercare:
+Search, change the value in the game, then search again until only a few addresses remain.|Cerca, cambia il valore nel gioco, poi cerca di nuovo finché restano solo pochi indirizzi.
 Search/Add Cheats|Cerca / Aggiungi trucchi
-Search Criteria|Search Criteria
-Search Memory|Search Memory
-Search Value:|Search Value:
-Sega Saturn Sound Format files (*.ssf *.minissf)|
+Searching memory...|Ricerca in memoria...
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|Pannello Mahjong Sega (kiwames, vmahjong, myfairld). A-N selezionano le tessere; Kan/Pon/Chi/Reach/Ron sono i pulsanti d'azione. Il pannello del giocatore 2 esiste solo sul cabinato a 2 giocatori (Pro Mahjong Kiwame S).
+Sega Saturn Sound Format files (*.ssf *.minissf)|File Sega Saturn Sound Format (*.ssf *.minissf)
+Select / Shoot Button|Pulsante Selezione / Sparo
+Select Button|Pulsante Selezione
+Select Cartridge...|Seleziona cartuccia...
 Select a file to load your state|Seleziona un file per caricare il tuo stato
 Select your iso/cue/bin/zip file|Seleziona il tuo file iso / cue / bin / zip
-Select your ssf file|
-Set PC to Start Address|
+Select your iso/cue/bin/zip/chd file|Seleziona il tuo file iso/cue/bin/zip/chd
+Select your ssf file|Seleziona il tuo file ssf
+Service|Servizio
+Set PC to Start Address|Imposta PC all'indirizzo iniziale
 Settings|Impostazioni
-SH2 Debugger Interpreter|
-SH2 Interpreter|
-SH2 Performance|
-SH2 Registers|
-Shortcuts|Shortcuts
-Show FPS|Show FPS
-Show Log Window|Show Log Window
-Signed|Signed
-Signed 8-bit value|
-Signed 16-bit value|
-Signed 32-bit value|
-Slot Info|Slot Info
-Slot Number:|Slot Number:
-Software OSD Interface|Software OSD Interface
-Software Video Interface|Software Video Interface
-Sound...|
+Sharp Bilinear|Bilineare nitido
+Sharpen (Adaptive)|Nitidezza (adattiva)
+Shoot Button|Pulsante di sparo
+Shortcut|Scorciatoia
+Shortcuts|Scorciatoie
+Show FPS|Mostra FPS
+Show Log Window|Mostra finestra di log
+Show hex dump|Mostra dump esadecimale
+Showing the first %1. Narrow down the search to see the rest.|Vengono mostrati i primi %1. Restringi la ricerca per vedere il resto.
+Signed|Con segno
+Signed 16-bit value|Valore a 16 bit con segno
+Signed 32-bit value|Valore a 32 bit con segno
+Signed 8-bit value|Valore a 8 bit con segno
+Size|Dimensione
+Slave SH2 Registers|Registri SH2 slave
+Slot|Slot
+Slot %1|Slot %1
+Slot %1 is sounding|Lo slot %1 sta suonando
+Slot Info|Info slot
+Slot Number:|Numero slot:
+Slot details|Dettagli slot
+Slot envelopes|Inviluppi degli slot
+Slot number|Numero slot
+Software OSD Interface|Interfaccia OSD software
+Software Video Interface|Interfaccia video software
 Sound|Suono
 Sound Core|Sistema Audio
+Sound...|Audio...
+Source|Sorgente
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|File sorgente non trovato su questo computer:\n%1\n\naddr2line lo indica alla riga %2.
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|Sorgente non trovato o non disponibile.\nSe i sorgenti sono presenti, su Linux assicurati che l'output della shell sia in inglese.\nBasta aggiungere LC_ALL=C prima del comando di avvio di Kronos\n
 Spanish|Spagnolo
-ST-V cabinet Configuration|
-ST-V Cabinet|
-STV Rom game|Gioco STV Rom
+Sprite Info|Info sprite
+Stack|Stack
+Stack Walk|Scansione dello stack
+Stack Walk Off|Scansione dello stack disattivata
 Start|Inizia
 Start Address:|Indirizzo Iniziale:
-Start in Fullscreen|Start in Fullscreen
+Start a game to inspect the common control registers.|Avvia un gioco per ispezionare i registri di controllo comuni.
+Start a game to inspect the sound slots.|Avvia un gioco per ispezionare gli slot audio.
+Start in Fullscreen|Avvia a schermo intero
+Start1|Start1
+Start2|Start2
 Status|Stato
-Step Into|Step Into
-Step Out|Step Out
-Step Over|Step Over
-Stick Down|
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|Status Register (SR).\nT - risultato di test/confronto; anche il flag di riporto/prestito per gli scorrimenti e le addizioni/sottrazioni con riporto.\nS - sceglie tra saturazione e riavvolgimento per il risultato dell'istruzione MAC.\nQ, M - stato interno usato da DIV0U/DIV0S/DIV1 per costruire una divisione a 32 bit con passi da 1 bit; privo di significato al di fuori di una divisione.\nI3-I0 - livello attuale della maschera di interrupt (0-15); le richieste di interrupt con questa priorità o inferiore restano in attesa.
+Step Into|Esegui entrando
+Step Out|Esegui uscendo
+Step Over|Esegui saltando
+Stick Down|Stick giù
+Stick Left|Stick sinistra
+Stick Right|Stick destra
+Stick Up|Stick su
 Stick left button: same as A|
-Stick Left|
-Stick Right|
-Stick Up|
-Stop|
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|Pulsante sinistro dello stick: come A \nPulsante destro dello stick: come B \nGrilletto dello stick: come C
+Stop|Stop
+Stop Slot|Ferma slot
+Stopped.|Fermato.
 Stretch to window|Allungare alla finestra
-Synchronize Saturn internal clock with set time|Synchronize Saturn internal clock with set time
+Synchronize Saturn internal clock with set time|Sincronizza l'orologio interno del Saturn con l'ora impostata
+TV effect :|Effetto TV:
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|Scatta ora un'istantanea, chiudi questa finestra, gioca finché il valore cambia, poi riaprila e cerca.
+Take snapshot|Scatta istantanea
 Tesselation|Tassellazione
-Text|
-Texture|
-The dummies cores don't need configuration|
-Throttle Down|
-Throttle Up|
+Test|Test
+Text|Testo
+Text files (*.txt)|File di testo (*.txt)
+Texture|Texture
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|L'SH2 master è sempre in esecuzione: è il core che la ROM di avvio fa partire per primo e, per impostazione predefinita, quello con priorità sul bus quando entrambi gli SH-2 accedono contemporaneamente alla stessa risorsa. La maggior parte dei giochi esegue qui il grosso della propria logica.
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|L'SH2 slave è inattivo finché un gioco non lo avvia esplicitamente (vedi Sega Saturn Dual CPU User's Guide). I giochi che lo usano di solito vi spostano un secondo carico di lavoro parallelo anziché codice non correlato a quello dell'SH2 master.
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|Il dispositivo audio non supporta l'uscita stereo a 16 bit a 44,1 kHz, quindi non è possibile l'anteprima dello slot.
+The dummies cores don't need configuration|I core fittizi non necessitano di configurazione
+The dummies cores don't need configuration.|I core fittizi non necessitano di configurazione.
+The emulation is paused while this window is open.|L'emulazione è in pausa finché questa finestra è aperta.
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|La sorgente sonora di questo slot sono dati nulli (SSCTL = 2 o 3), quindi non c'è niente da salvare.
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|Questo livello non sta producendo alcuna immagine al momento.\nProbabilmente il suo bit di attivazione BGON è a 0 -- vedi\nla scheda Registri (BGON) o la finestra principale Debug VDP2.
+Throttle Down|Acceleratore giù
+Throttle Up|Acceleratore su
+Timers / Misc|Timer / Varie
 To File...|Nel file...
-toolBar|
-Trace Logging|
+Tolerance ±|Tolleranza ±
+Trace Logging|Log di traccia
+Track Inf Loop Results|Risultati del tracciamento dei cicli infiniti
+Trackball (patocar / skychal / supgoal / techbowl only)|Trackball (solo patocar / skychal / supgoal / techbowl)
+Trackball Down|Trackball giù
+Trackball Left|Trackball sinistra
+Trackball Right|Trackball destra
+Trackball Up|Trackball su
 Translation|Traduzione
 Triangles using perspective correction|Triangoli usando la correzione prospettica
-Trigger|
-TV effect :|
-Type:|Type:
+Trigger|Grilletto
+Type|Tipo
+Type:|Tipo:
 Unable to add code|Impossibile aggiungere il codice
 Unable to change description|Impossibile cambiare la descrizione
-Unsigned|
-Unsigned 8-bit value|
-Unsigned 16-bit value|
-Unsigned 32-bit value|
-Up|Su
-Upload|Caricare
-Unable to add code|Impossibile aggiungere il codice
 Unable to open file for loading|Impossibile aprire il file per il caricamento
 Unable to open file for saving|Impossibile aprire il file per il salvataggio
 Unable to remove code|Impossibile rimuovere il codice
-Unknown (%1)|
-Upscale Filter :|
-Use Vdp1 Cache|
-Value|
-Value:|
-Value :|
+Unable to save file|Impossibile salvare il file
+Unchanged|Invariato
+Unknown (%1)|Sconosciuto (%1)
+Unmute all|Riattiva tutto
+Unsigned|Senza segno
+Unsigned 16-bit value|Valore a 16 bit senza segno
+Unsigned 32-bit value|Valore a 32 bit senza segno
+Unsigned 8-bit value|Valore a 8 bit senza segno
+Up|Su
+Up_P2|Su_G2
+Upload|Caricare
+Upscale Filter :|Filtro di upscaling:
+Use SH2 cache - Experimental|Usa cache SH2 - Sperimentale
+Use System Locale|Usa la lingua del sistema
+Use Vdp1 Cache|Usa cache VDP1
+User Interface Translation|Traduzione dell'interfaccia
+VDP&1|VDP&1
+VDP&2|VDP&2
 VDP1|
-VDP1 Command Info|VDP1 Command Info
-VDP1 Command List|VDP1 Command List
+VDP1 Command Info|Info comando VDP1
+VDP1 Command List|Elenco comandi VDP1
+VDP1 Registers|Registri VDP1
+VDP1 not initialised.|VDP1 non inizializzato.
 VDP2|VDP2
-VDP2Viewer Viewer|
+VDP2 Debug|Debug VDP2
+VDP2 Debug — inactive|Debug VDP2 — inattivo
+VDP2 RAM not available.|RAM del VDP2 non disponibile.
+VDP2 Viewer|Visualizzatore VDP2
+VDP2 not initialised.|VDP2 non inizializzato.
+VDP2Viewer Viewer|Visualizzatore VDP2Viewer
+VRAM Hex|VRAM hex
+VRAM-A  (0x00000-0x3FFFF)|VRAM-A  (0x00000-0x3FFFF)
+VRAM-A0 (0x00000-0x1FFFF)|VRAM-A0 (0x00000-0x1FFFF)
+VRAM-A1 (0x20000-0x3FFFF)|VRAM-A1 (0x20000-0x3FFFF)
+VRAM-B  (0x40000-0x7FFFF)|VRAM-B  (0x40000-0x7FFFF)
+VRAM-B0 (0x40000-0x5FFFF)|VRAM-B0 (0x40000-0x5FFFF)
+VRAM-B1 (0x60000-0x7FFFF)|VRAM-B1 (0x60000-0x7FFFF)
+Value|Valore
+Value :|Valore:
+Value out of range for this data type (%1 to %2).|Valore fuori intervallo per questo tipo di dati (da %1 a %2).
+Value you see on screen, e.g. 3|Valore che vedi sullo schermo, es. 3
+Value:|Valore:
+Values are read from the SCSP registers while the emulation is paused.|I valori vengono letti dai registri dell'SCSP mentre l'emulazione è in pausa.
+Vdp1|Vdp1
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|Vector Base Register (VBR).\nIndirizzo base della tabella dei vettori di eccezione/interrupt: il vettore n è l'indirizzo a 32 bit del gestore memorizzato in VBR + n*4. Di norma impostato una sola volta dalla ROM di avvio/BIOS e lasciato invariato dal codice del gioco.
 Video|Video
+Video CD Card (MPEG Card)|Scheda Video CD (scheda MPEG)
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|ROM della scheda Video CD (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;Tutti i file (*)
 Video Core|Sistema Video
 Video Driver|Driver Video
 Video Format|Formato Video
 View|Vista
-Viewer|Viewer
-WAV Files (*.wav)|
+Viewer|Visualizzatore
+Viewer && Registers...|Visualizzatore && Registri...
+Volume|Volume
+WAV Files (*.wav)|File WAV (*.wav)
+Warning...|Attenzione...
+Wave File Output Interface|Interfaccia di uscita su file Wave
+What do you know about the value?|Cosa sai del valore?
 Wheel|Ruota
 Wheel Configuration|Configurazione della ruota
-Window Resolution|Window Resolution
-Windows SPTI Driver|Windows SPTI Driver
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|Dove CMDLINK invia l'interprete dei comandi successivamente: NEXT (tabella seguente), ASSIGN/CALL (salto a un indirizzo dato), RETURN o END (termina qui l'elenco).
+Window Resolution|Risoluzione finestra
+Window size :|Dimensione finestra:
+Windows SPTI Driver|Driver Windows SPTI
+Wireframe :|Wireframe:
 Word|Word
-Word Write|Word Write
-Word Write : %1 %2|
-Write|Write
-Kronos Cheat Files (*.yct);;All Files (*)|
-Kronos Qt GUI|
-Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|
-Kronos Save State (*.yss)|
-Kronos is not initialized, can't manage backup ram.|Kronos non è inizializzato, non può gestire il backup ram.
-Yes|
+Word Write|Scrittura word
+Word Write : %1 %2|Scrittura word: %1 %2
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Qui si trova la maggior parte dei dati di gioco.
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).
+Write|Scrittura
+Yes|Sì
+You don't know the real value|Non conosci il valore reale
+Youtube Channel|Canale Youtube
+addr2line Executable|Eseguibile addr2line
+addr2line utility is not configured properly, source not available.|L'utilità addr2line non è configurata correttamente, sorgente non disponibile.
+nanovg OSD Interface|Interfaccia OSD nanovg
+no memory selected|nessuna memoria selezionata
+toolBar|Barra degli strumenti

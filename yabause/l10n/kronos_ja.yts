@@ -1,5 +1,9 @@
-%1 Images (*.%2)|%1 Images (*.%2)
-%1/%2 blocks free|%1/%2 blocks free
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|\n\nOK でデバッガーを開きます。無視するとエミュレーションを再開し、レジスタの内容は失われます。
+  Offset (hex):|  オフセット (16進):
+%1 / %2 - list full, later samples are not listed|%1 / %2 - リストが一杯のため、以降のサンプルは表示されません
+%1 Images (*.%2)|%1 画像 (*.%2)
+%1 results|%1 件の結果
+%1/%2 blocks free|空きブロック %1/%2
 &About...|Yabauseについて...(&A)
 &Action Replay|リプレイ(&A)
 &Backup Manager...|バックアップマネージャ(&B)
@@ -23,351 +27,918 @@
 &Log|ログ(&L)
 &Master SH2|マスターSH2(&M)
 &Memory Transfer|メモリ転送(&M)
+&No|いいえ(&N)
 &OK|&OK
 &Pause|一時停止(&P)
+&Question...|質問(&Q)...
 &Quit|終了(&Q)
-&Raw Memory Address|&Raw Memory Address
+&Raw Memory Address|生のメモリアドレス(&R)
 &Reset|リセット(&R)
 &Save To File|ファイルに保存(&S)
 &Settings...|設定(&S)
 &Slave SH2|スレーブSH2(&S)
 &Tools|ツール(&T)
 &Transfer|転送(&T)
+&Vertical synchronization|垂直同期(&V)
 &View|表示(&V)
+(layer disabled -- BGON bit off)\n|(レイヤー無効 -- BGON ビットがオフ)\n
+1 result|1 件の結果
+10 Yen|10円
+100 Yen|100円
+128 Mbit Dram|128Mbit DRAM
 16 Mbit Backup Ram|16Mbバックアップラム
 16 Mbit ROM|16Mb ROM
 16-bit|16ビット
-16-bit Relative value(s)|16-bit Relative value(s)
+16-bit Relative value(s)|16ビット相対値
+1x (original resolution of the Saturn)|1x (サターン本来の解像度)
 32 Mbit Backup Ram|32MbバックアップRAM
 32 Mbit Dram|32Mb DRAM
 32-bit|32ビット
 3D Control Pad|3Dコントロールパッド
+3D Control Pad Configuration|3Dコントロールパッドの設定
 4 Mbit Backup Ram|4MbバックアップRAM
+4xBRZ|4xBRZ
 503/512 blocks free|503/512ブロック空き
 510/512 blocks free|510/512ブロック空き
+68000 Core|68000 コア
+6xBRZ|6xBRZ
 8 Mbit Backup Ram|8MbバックアップRAM
 8 Mbit Dram|8Mb DRAM
 8-bit|8ビット
-8-bit Relative value(s)|8-bit Relative value(s)
+8-bit Relative value(s)|8ビット相対値
 <font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>警告:</b> マスタコードはサポート <b>されません</b>。</font>
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|<h3>ゲームが値を保存している場所を探す</h3><p>1. 左側で分かっていることを選び、<b>検索</b>または<b>スナップショットを撮る</b>を押します。<br>2. 値が変わるまでプレイしてから、このウィンドウを再び開きます。<br>3. アドレスが数個に絞られるまで検索を繰り返します。<br>4. アドレスをダブルクリックするとチートになります。</p>
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|<h3>一致するアドレスがありません</h3><p>許容誤差を大きくするか、<i>詳細オプション</i>でデータサイズを確認するか、<b>新規検索</b>を押してやり直してください。</p>
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|<span style=" color:darkgreen;">スプライト</span> · <span style=" color:blue;">ポリゴン</span> · <span style=" color:darkcyan;">ポリライン</span> · <span style=" color:#B45A00;">ライン</span> · <span style=" color:gray;">クリップ/ローカル</span> · <span style=" color:red;">無効</span>
+A bar lost or gained a percentage|ゲージが一定の割合だけ減った/増えた
+A breakpoint already exists at %1.|%1 にはすでにブレークポイントがあります。
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|満タンから 60 % になったライフゲージは 40 % 減っています: 40 と入力してください。許容誤差が丸めを吸収します。
+A loss of 100 % or more means the value reached zero.|100 % 以上減った場合は、値がゼロになったことを意味します。
 About...|Yabauseについて...
-Action Replay Code :|Action Replay Code :
+Action Replay Code :|アクションリプレイコード:
 Add|追加
-Add Action Replay Code|Add Action Replay Code
+Add Action Replay Code|アクションリプレイコードを追加
 Add Cheat|チート追加
-Add Codes...|Add Codes...
-Add Raw Memory Code|Add Raw Memory Code
+Add Cheat…|チートを追加…
+Add Codes...|コードを追加...
+Add Raw Memory Code|生メモリコードを追加
+Add a breakpoint on this address|このアドレスにブレークポイントを追加
+Add breakpoint|ブレークポイントを追加
+Add cheat|チートを追加
 Address|アドレス
-Address :|Address :
-Advanced|Advanced
+Address (hex):|アドレス (16進):
+Address :|アドレス:
+Address in hex, e.g. 06004000|16進アドレス (例: 06004000)
+Address in hex, e.g. 06100000|16進アドレス (例: 06100000)
+Advance one frame|1フレーム進める
+Advanced|詳細
+Advanced options|詳細オプション
+All Files|すべてのファイル
+All Files (*)|すべてのファイル (*)
+All Files;|すべてのファイル;
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|許容される差 (パーセントポイント)。丸めを吸収します: 許容誤差 1 % で 40 % 減少を指定すると 39 % から 41 % に一致します。
 Always|常時
+Amount|量
+An error occured while writing file.|ファイルの書き込み中にエラーが発生しました。
+An error occurred while writing the screenshot: |スクリーンショットの書き込み中にエラーが発生しました: 
+An exact number|正確な数値
 Are you sure you want to delete '%1' ?|'%1'を本当に削除してよいですか？
 Are you sure you want to format '%1' ?|'%1'を本当にフォーマットしてよいですか？
 Asia (NTSC)|アジア(NTSC)
 Asia (PAL)|アジア(PAL)
+Assembly code|アセンブリコード
+Attack|アタック
+Audio preview is not available in this build.|このビルドではオーディオのプレビューは利用できません。
 Auto-detect|自動検出
-Autostart|Autostart
-Awaiting input for|Awaiting input for
+Autostart|自動起動
+Awaiting input for|入力待ち
 Axis|軸
+Axis L Trigger|Lトリガー軸
+Axis R Trigger|Rトリガー軸
+Axis Throttle|スロットル軸
+Axis X|X軸
+Axis Y|Y軸
 Backtrace|バックトレース
 Backup Ram Manager|バックアップRAMマネージャ
+Bank:|バンク:
+Bet|ベット
+BiCubic|バイキュービック
+Bilinear|バイリニア
+Bilinear Filtering (Restart required)|バイリニアフィルタリング (再起動が必要)
 Binary Files (*.bin)|バイナリファイル (*.bin)
+Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|バイナリファイル (*.bin);;COFFプログラムファイル (*.cof *.coff);;ELFプログラムファイル (*.elf);;すべてのファイル (*)
+Binary files (*.bin)|バイナリファイル (*.bin)
 Bios|BIOS
-Block Size :|Block Size :
+Bios Settings|BIOS設定
+Bios file path|BIOSファイルのパス
+Bios settings file|BIOS設定ファイル
+Block Size :|ブロックサイズ:
+Breakpoint Reached|ブレークポイントに到達
+Breakpoint added at %1.|%1 にブレークポイントを追加しました。
+Breakpoint removed at %1.|%1 のブレークポイントを削除しました。
+Breakpoints|ブレークポイント
 Browse|ブラウズ
+Bug report|バグを報告
+Button 2|ボタン2
+Button 2 (patocar/skychal/supgoal/techbowl only)|ボタン2 (patocar/skychal/supgoal/techbowl のみ)
+Button 5|ボタン5
 Byte|バイト
-Byte Write|Byte Write
+Byte Write|バイト書き込み
+Byte Write : %1 %2|バイト書き込み: %1 %2
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|CDイメージ (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|CDイメージ (*.iso *.cue *.bin *.mds *.ccd *.zip)
 CD Images (*.iso *.cue *.bin)|CDイメージ  (*.iso *.cue *.bin)
+CD-ROM|CD-ROM
+COFF Program Files (*.cof *.coff)|COFFプログラムファイル (*.cof *.coff)
+CPU Tesselation|CPUテッセレーション
+CRT (Aperture Grille)|CRT (アパーチャグリル)
+Can't Pause kronos while not initialized.|初期化されていない間は Kronos を一時停止できません。
+Can't initialize Kronos.|Kronos を初期化できません。
+Can't plug in the new controller, cancelling.|新しいコントローラーを接続できません。キャンセルします。
 Cancel|キャンセル
 Cannot initialize|初期化不可
 Cannot initialize Windows SPTI Driver|Windows SPTIドライバの初期化不可
 Cart/Memory|カートリッジ/メモリ
 Cartridge|カートリッジ
+Cartridge Path|カートリッジのパス
 Cd-Rom|CD-ROM
 Central/South America (NTSC)|中南米 (NTSC)
 Central/South America (PAL)|中南米 (PAL)
-Cheat &Search...|Cheat &Search...
+Change|変化量
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|Debug/SH2DumpDir 設定または KRONOS_SH2DUMP_DIR 変数でフォルダーを変更してください。
+Changed|変化した
+Channel Viewer|チャンネルビューアー
+Cheat &Search...|チート検索(&S)...
 Cheat Search|チート検索
 Cheat Type|チートタイプ
 Cheats|チート
 Cheats File|チートファイル
+Chi|チー
+Choose a STV cartridge folder|STVカートリッジフォルダーを選択
 Choose a binary file|バイナリファイルを選んでください
+Choose a binary or program file|バイナリまたはプログラムファイルを選択
+Choose a bios file|BIOSファイルを選択
 Choose a cartridge file|カートリッジファイルを選んでください
-Choose a cdrom drive/mount point|Choose a cdrom drive/mount point
+Choose a cartridge folder|カートリッジフォルダーを選択
+Choose a cdrom drive/mount point|CD-ROMドライブ/マウントポイントを選択
 Choose a cheat file to open|開くファイルを選んでください
-Choose a cheat file to save to|Choose a cheat file to save to
+Choose a cheat file to save to|保存先のチートファイルを選択
 Choose a file to save your state|状態を保存するファイルを選んでください
+Choose a file to store bios settings|BIOS設定を保存するファイルを選択
+Choose a folder to store save states|ステートセーブの保存先フォルダーを選択
+Choose a folder to store screenshots|スクリーンショットの保存先フォルダーを選択
 Choose a location for binary file|バイナリファイルの場所を選んでください
+Choose a location for the VRAM dump|VRAMダンプの保存先を選択
+Choose a location for the text file|テキストファイルの保存先を選択
+Choose a location for your binary file|バイナリファイルの保存先を選択
+Choose a location for your bitmap|ビットマップの保存先を選択
 Choose a location for your screenshot|スクリーンショットの場所を選んでください
+Choose a location for your wav file|wavファイルの保存先を選択
 Choose a memory file|メモリファイルを選んでください
 Choose a mpeg rom|Mpeg ROMを選んでください
-Clear configuration|Clear configuration
+Choose the location of the addr2line executable|addr2line 実行ファイルの場所を選択
+Clear|クリア
+Clear configuration|設定をクリア
 Close|閉じる
 Code|コード
-Code Breakpoints|Code Breakpoints
+Code Breakpoints|コードブレークポイント
+Coin1|コイン1
+Coin2|コイン2
+Coins && Control Panel|コイン && コントロールパネル
+Color RAM|カラーRAM
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|カラーRAM モード %1  —  %2 エントリ  (各 %3 バイト)
+Color RAM not available|カラーRAMは利用できません
 Comment :|コメント
-Common Control Registers|Common Control Registers
-Compare Type|Compare Type
-DSP Control Registers|DSP Control Registers
-DSP Registers|DSP Registers
+Common Control Registers|共通コントロールレジスタ
+Common registers|共通レジスタ
+Compare Type|比較の種類
+Compared to the previous search, the value has:|前回の検索と比べて、値は:
+Compatibility List|互換性リスト
+Compute Shader Video Interface|コンピュートシェーダー ビデオインターフェース
+Copy address|アドレスをコピー
+Copy line|行をコピー
+Could not add a breakpoint at %1: the list is full or the address is not supported.|%1 にブレークポイントを追加できませんでした: リストが一杯か、アドレスが対応していません。
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|%1 にメモリブレークポイントを追加できませんでした: リストが一杯か、アドレスが対応していません。
+Could not open the audio device.|オーディオデバイスを開けませんでした。
+Could not write the report file.|レポートファイルを書き込めませんでした。
+Couldn't load state file|ステートファイルを読み込めませんでした
+Couldn't save state file|ステートファイルを保存できませんでした
+Count|回数
+Ctrl+wheel to zoom|Ctrl+ホイールでズーム
+DSP Control Registers|DSPコントロールレジスタ
+DSP Registers|DSPレジスタ
+Data RAM|データRAM
 Data Size|データサイズ
 Data Size :|データサイズ:
 Data Type|データタイプ
+Debug|デバッグ
 Debug CPU|CPUをデバッグする
 Debug M68K|M68Kをデバッグする
 Debug Master SH2|マスターSH2をデバッグする
+Debug SCSP|SCSPデバッグ
+Debug SCSP Channels|SCSPチャンネルデバッグ
+Debug SCSP DSP|SCSP DSPデバッグ
 Debug SCU DSP|SCU DSPをデバッグする
 Debug Slave SH2|スレーブSH2をデバッグする
 Debug VDP1|VDP1をデバッグする
+Debug VDP2|VDP2デバッグ
 Debug VDP2Viewer|VDP2ビューアをデバッグする
+Decay 1|ディケイ1
+Decay 2|ディケイ2
+Decoded|デコード
+Decreased|減った
+Default Dial IP|デフォルトのダイヤルIP
+Default System Language|デフォルトのシステム言語
+Deinterlacing Adaptive|デインターレース 適応型
+Deinterlacing Bob|デインターレース Bob
+Deinterlacing Debug Adaptive|デインターレース 適応型 (デバッグ)
 Del|Del
 Delete|消去
-Description|Description
-Description :|Description :
+Description|説明
+Description :|説明:
+Deutsch|Deutsch
+Development Extension|開発用拡張
 Device List|デバイスリスト
 DirectX Input Interface|DirectX入力インタフェース
 DirectX Sound Interface|DirectXサウンドインタフェース
-Disabled|Disabled
+Directory|フォルダー
+Disabled|無効
 Disassembled Code|逆アセンブルコード
-Display Enabled|Display Enabled
-Display on Hover|Display on Hover
-Down|Down
+Discord Channel|Discordチャンネル
+Display Enabled|表示有効
+Display on Hover|ホバー時に表示
+Door Switch|ドアスイッチ
+Double Mission Stick|ダブルミッションスティック
+Double Mission Stick Configuration|ダブルミッションスティックの設定
+Double-click a breakpoint to show it in the disassembly|ブレークポイントをダブルクリックすると逆アセンブル上に表示します
+Double-click an address to add it as a cheat.|アドレスをダブルクリックするとチートとして追加します。
+Down|下
+Down_P2|下_P2
 Download|ダウンロード
-Draw End|Draw End
-Dummy CD Drive|Dummy CD Drive
-Dummy Input Interface|Dummy Input Interface
-Dummy OSD Interface|Dummy OSD Interface
-Dummy Sound Interface|Dummy Sound Interface
-Dummy Video Interface|Dummy Video Interface
-Edit configuration|Edit configuration
+Draw End|描画終了
+Dummy 68k Interface|ダミー 68kインターフェース
+Dummy CD Drive|ダミー CDドライブ
+Dummy Input Interface|ダミー 入力インターフェース
+Dummy OSD Interface|ダミー OSDインターフェース
+Dummy Sound Interface|ダミー サウンドインターフェース
+Dummy Video Interface|ダミー ビデオインターフェース
+ELF Program Files (*elf)|ELFプログラムファイル (*elf)
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|各項目は開始アドレスで識別されるサンプルで、このウィンドウを開いた時点で再生中だったもの、またはその後に再生されたものです。太字の項目は現在再生中です (カーソルを合わせるとスロットが表示されます)。チェックを入れると、そのサンプルを再生しているすべてのスロットをミュートします。
+Edit configuration|設定を編集
+Eject/Load ISO...|ISOの取り出し/読み込み...
+Embellishment filter :|装飾フィルター:
 Emu-Compatibility|Emu-Compatibility
 Emulation|エミュレーション
-Enable|Enable
-Enable Frame Skip/Limiter|Enable Frame Skip/Limiter
-Enabled|Enabled
-End Address:|End Address:
+Emulation paused|エミュレーション一時停止中
+Enable|有効にする
+Enable Bios Emulation|BIOSエミュレーションを有効にする
+Enable Code : %1 %2|コードを有効化: %1 %2
+Enable Frame Skip/Limiter|フレームスキップ/リミッターを有効にする
+Enable vertical synchronization|垂直同期を有効にする
+Enabled|有効
+End Address:|終了アドレス:
 English|英語
-Enter New Value|Enter New Value
+Enter New Value|新しい値を入力
+Enter new assembly code|新しいアセンブリコードを入力
+Envelope|エンベロープ
+Equal to|等しい
+Error|エラー
+Error...|エラー...
+Europe (PAL)|ヨーロッパ (PAL)
 Europe + others (PAL)|欧州他 (PAL)
-Exact|Exact
+Exact|完全一致
+Example: 100 → %1 is a gain of %2 %.|例: 100 → %1 は %2 % の増加です。
+Example: 100 → %1 is a loss of %2 %.|例: 100 → %1 は %2 % の減少です。
+Execute one instruction (F11)|1命令実行 (F11)
+Execute one instruction, running calls to the end (F10)|1命令実行、呼び出しは最後まで実行 (F10)
+Export Debug|デバッグをエクスポート
+Export Debug Info (.txt)...|デバッグ情報をエクスポート (.txt)...
+Export Registers / Debug (.txt)...|レジスタ / デバッグをエクスポート (.txt)...
+Export bank (.bin)...|バンクをエクスポート (.bin)...
+Extend Internal backup memory to 8MB|内部バックアップメモリを 8MB に拡張
+F&PS|F&PS
 FPS|FPS
+FSR 1.0 (EASU + RCAS)|FSR 1.0 (EASU + RCAS)
+FXAA|FXAA
+Family-Specific && Diagnostics|ファミリー固有 && 診断
 File|ファイル
-File Name :|File Name :
-File transfer|File transfer
-File:|File:
-Format|Format
-Frame Skip/Limiter|Frame Skip/Limiter
-French|French
-From|From
-From File|From File
-From File...|From File...
-Fullscreen|Fullscreen
-Fullscreen Resolution|Fullscreen Resolution
-General|General
-General Info|General Info
+File Name :|ファイル名:
+File transfer|ファイル転送
+File:|ファイル:
+Filter registers...|レジスタを絞り込む...
+Finished searching up to end of memory, continue from the beginning?|メモリの最後まで検索しました。先頭から続けますか？
+Finished.|完了しました。
+Fit the image back into the view (Ctrl+wheel to zoom)|画像をビューに合わせる (Ctrl+ホイールでズーム)
+Fit the texture back into the view (Ctrl+wheel to zoom)|テクスチャをビューに合わせる (Ctrl+ホイールでズーム)
+Flip/Flop|フリップ/フロップ
+Format|フォーマット
+Frame Skip/Limiter|フレームスキップ/リミッター
+FreeBSD CD Drive|FreeBSD CDドライブ
+French|フランス語
+From|開始
+From File|ファイルから
+From File...|ファイルから...
+Fullscreen|フルスクリーン
+Fullscreen Resolution|フルスクリーン解像度
+GPU Tesselation|GPUテッセレーション
+Gained|増えた
+General|一般
+General Info|一般情報
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|汎用レジスタ R15。\n慣例として SH-2 のハードウェアスタックポインタ (SP) も兼ねます: CPU は例外や割り込みの際にこれをプッシュ/ポップし、コンパイルされたコードも同様に呼び出しスタックとして使用します。
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|汎用レジスタ。\nデータまたはアドレスを保持します。コンパイルされたコードや、レジスタオペランドを取るあらゆる SH-2 命令から自由に使用されます。
 German|ドイツ語
-Goto Address|Goto Address
-Greater then|Greater then
-Hard Reset|Hard Reset
-Height|Height
-Hex value(s)|Hex value(s)
-Hide Menubar|Hide Menubar
-Hide Toolbar|Hide Toolbar
-ISO-File Virtual Drive|ISO-File Virtual Drive
-Information...|Information...
-Input|Input
+Get Existing Directory...|既存のフォルダーを選択...
+Get Item...|項目を選択...
+Get Open File Name...|ファイルを開く...
+Get Save File Name...|ファイルを保存...
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|グローバルベースレジスタ (GBR)。\nGBR相対アドレッシングで使用するベースアドレス: MOV.B/W/L @(disp,GBR) と AND/OR/XOR/TST の @(R0,GBR) 即値形式は、すべてこのレジスタから実効アドレスを計算します。
+Go|移動
+Go to an address (Ctrl+G)|アドレスへ移動 (Ctrl+G)
+Goto Address|アドレスへ移動
+Gouraud Mode :|グーローモード:
+Greater than|より大きい
+Greater then|より大きい
+Gun|ガン
+Gun Configuration|ガンの設定
+Gun/Mouse Sensitivity|ガン/マウスの感度
+HQ4x|HQ4x
+Hard Reset|ハードリセット
+Height|高さ
+Hex value(s)|16進値
+Hide Menubar|メニューバーを隠す
+Hide Toolbar|ツールバーを隠す
+High + Low WRAM|ハイ + ロー WRAM
+High WRAM|ハイ WRAM
+Highlighted slots are sounding right now.|ハイライトされたスロットが現在発音中です。
+Hopper Cabinet|ホッパー筐体
+Hopper Cabinet Configuration|ホッパー筐体の設定
+Hopper Sensor Test|ホッパーセンサーテスト
+Hopper Sensor Test (hold to force a payout pulse)|ホッパーセンサーテスト (押し続けると払い出しパルスを強制)
+ISO-File Virtual Drive|ISOファイル仮想ドライブ
+Image format|画像形式
+Improved|改良版
+Inactive slot|非アクティブなスロット
+Increased|増加した
+Information...|情報...
+Inline Assembly|インラインアセンブリ
+Input|入力
+Input code address|コードアドレスの入力
+Internal Backup RAM|内部バックアップRAM
 Invalid Address|無効なアドレス
+Invalid Address or Value|無効なアドレスまたは値
+Invalid Start/End Address Combination|開始/終了アドレスの組み合わせが無効です
 Invalid Value|無効な値
+Invalid address.|無効なアドレスです。
+Invalid address: %1|無効なアドレス: %1
+It went up or down|増えたか減った
 Italian|イタリア語
 Japan (NTSC)|日本 (NTSC)
 Japanese|日本語
-Japanese Modem|Japanese Modem
+Japanese Modem|日本のモデム
+Jump list|ジャンプリスト
+Kan|カン
+Keyboard|キーボード
 Korea (NTSC)|韓国 (NTSC)
-L&oad State|L&oad State
-Language :|Language :
-Layer|Layer
-Left|Left
-Left trigger|Left trigger
-Less than|Less than
-Linux CD Drive|Linux CD Drive
-Load|Load
-Load State|Load State
-Load State As|Load State As
-Load as executable|Load as executable
-Local Coordinates|Local Coordinates
+Kronos Cheat Files (*.yct);;All Files (*)|Kronos チートファイル (*.yct);;すべてのファイル (*)
+Kronos Qt GUI|Kronos Qt GUI
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|Kronos Qt GUI<br />UoYabause ベース <br /></a><br />Kronos チーム<br /></a>
+Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Kronos Qt GUI<br />Yabause %1 ベース<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause チーム<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Kronos Save State (*.yss)|Kronos ステートセーブ (*.yss)
+Kronos is not initialized, can't manage backup ram.|Kronos が初期化されていないため、バックアップRAMを管理できません。
+L&oad State|ステートロード(&O)
+LFO|LFO
+Lanczos3|Lanczos3
+Language :|言語:
+Layer|レイヤー
+Layer inactive|レイヤー非アクティブ
+Left|左
+Left Stick Axis Throttle|左スティック スロットル軸
+Left Stick Axis X|左スティック X軸
+Left Stick Axis Y|左スティック Y軸
+Left Stick Throttle Down|左スティック スロットル下
+Left Stick X Left|左スティック X左
+Left Stick Y Down|左スティック Y下
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|左スティック:\nトリガー:   X\n左ボタン:   Y\n右ボタン:   Z
+Left trigger|左トリガー
+Left_P2|左_P2
+Less than|より小さい
+Life bar, energy gauge...|ライフゲージ、エネルギーゲージ...
+Linux CD Drive|Linux CDドライブ
+Linux Joystick Interface|Linux ジョイスティックインターフェース
+Live|ライブ
+Lives, ammo, score, money...|残機、弾数、スコア、お金...
+Load|読み込む
+Load Code|コードを読み込む
+Load State|ステートロード
+Load State As|ステートを指定して読み込む
+Load as executable|実行ファイルとして読み込む
+Load0|ロード0
+Load1|ロード1
+Load2|ロード2
+Load3|ロード3
+Load4|ロード4
+Load5|ロード5
+Load6|ロード6
+Load7|ロード7
+Load8|ロード8
+Load9|ロード9
+Local Coordinates|ローカル座標
 Log|ログ
-Long|Long
-Long Write|Long Write
-Loop Track Clear|Loop Track Clear
-Loop Track Start|Loop Track Start
+Long|ロング
+Long Write|ロング書き込み
+Long Write : %1 %2|ロング書き込み: %1 %2
+Loop Track Clear|ループトレースをクリア
+Loop Track Start|ループトレース開始
+Loop Track Stop|ループトレース停止
+Lost|減った
+Low WRAM|ロー WRAM
 M68K|M68K
 M68K Registers|M68Kレジスタ
+MASTER SH2|マスターSH2
 MSH2|MSH2
+MSH2 reached code breakpoint at |MSH2 がコードブレークポイントに到達しました: 
+MSH2 reached data breakpoint at |MSH2 がデータブレークポイントに到達しました: 
+Mac OS X (IOKit) Joystick Interface|Mac OS X (IOKit) ジョイスティックインターフェース
+Mac OS X Core Audio Sound Interface|Mac OS X Core Audio サウンドインターフェース
+MacOSX CD Drive|MacOSX CDドライブ
+Magnet Sensor|マグネットセンサー
+Magnet Sensor (micrombc only)|マグネットセンサー (micrombc のみ)
+Mahjong Panel|麻雀パネル
+Mahjong Panel Configuration|麻雀パネルの設定
+Mame romset 0.269:|Mame romset 0.269:
 Master SH2|マスターSH2
+Master SH2 Registers|マスターSH2レジスタ
+Medal|メダル
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|メダル/チケット ホッパー筐体 (patocar, skychal, supgoal, techbowl, micrombc)。ホッパーセンサー自体は自動的にシミュレートされ、キーには割り当てられません。
 Memory|メモリ
-Memory &Editor|Memory &Editor
-Memory Breakpoints|Memory Breakpoints
-Memory Dump|Memory Dump
-Memory Editor|Memory Editor
-Memory Search|Memory Search
-Memory Transfer|Memory Transfer
-Memory dump|Memory dump
-Middle|Middle
-Mouse|Mouse
-Mouse Configuration|Mouse Configuration
+Memory &Editor|メモリエディター(&E)
+Memory Breakpoints|メモリブレークポイント
+Memory Dump|メモリダンプ
+Memory Editor|メモリエディター
+Memory Search|メモリ検索
+Memory Transfer|メモリ転送
+Memory breakpoint set at %1.|%1 にメモリブレークポイントを設定しました。
+Memory dump|メモリダンプ
+Mesh Mode :|メッシュモード:
+Middle|中央
+Mission Stick|ミッションスティック
+Mission Stick Configuration|ミッションスティックの設定
+Mixer|ミキサー
+Modulation|モジュレーション
+Mouse|マウス
+Mouse Configuration|マウスの設定
+Move the mouse over the image to inspect a pixel.|画像の上にマウスを置くとピクセルを調べられます。
+Move the mouse over the texture to inspect a pixel.|テクスチャの上にマウスを置くとピクセルを調べられます。
 Mpeg ROM|MPEG ROM
+Multicart|マルチカート
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|積和レジスタ、上位32ビット。\nMAC.W/MAC.L 命令で MACL と一緒に書き込まれます。SR の S ビットにより、オーバーフロー時に MACH:MACL の組が飽和するかラップアラウンドするかが決まります。
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|積和レジスタ、下位32ビット。\nMUL.L、DMULS.L、DMULU.L でも通常の32ビット結果レジスタとして使用されます (これらは MACH:MACL にのみ書き込みます)。
+Musashi Interface|Musashi インターフェース
+Mute individual sounds|個別のサウンドをミュート
+Mute/UnMute Sound|サウンドのミュート/解除
 NBG0|NBG0
-NBG0/RBG1 Info|NBG0/RBG1 Info
+NBG0 Info|NBG0 情報
+NBG0/RBG1 Info|NBG0/RBG1 情報
 NBG1|NBG1
-NBG1 Info|NBG1 Info
+NBG1 Info|NBG1 情報
 NBG2|NBG2
-NBG2 Info|NBG2 Info
+NBG2 Info|NBG2 情報
 NBG3|NBG3
-NBG3 Info|NBG3 Info
-Netlink|Netlink
-Never|Never
-None|None
-Normal Sprite|Normal Sprite
+NBG3 Info|NBG3 情報
+Narrow down|絞り込む
+Narrowing down: |絞り込み中: 
+Native (current resolution of the window)|ネイティブ (ウィンドウの現在の解像度)
+Native (native resolution of Window)|ネイティブ (ウィンドウのネイティブ解像度)
+NetBSD CD Drive|NetBSD CDドライブ
+Netlink|ネットリンク
+Never|しない
+New search|新規検索
+Next Frame|次のフレーム
+No audio output device found.|オーディオ出力デバイスが見つかりません。
+No game running|ゲームが実行されていません
+No matches found.|一致するものが見つかりませんでした。
+No need to know the real value: each address is compared with what it held at the previous search.|実際の値を知る必要はありません: 各アドレスは前回の検索時の値と比較されます。
+No search yet|まだ検索していません
+No sound has been played yet.|まだサウンドは再生されていません。
+No texture|テクスチャなし
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|このコマンドにはテクスチャがありません (描画終了、スキップ、クリッピング、\nローカル座標、または無効なコマンドワード)
+None|なし
+Normal Sprite|通常スプライト
+Normal format not available, trying alternative|通常の形式が利用できないため、代替形式を試します
 North America (NTSC)|北米 (NTSC)
-OSD Core|OSD Core
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|再生するものがありません: このスロットの音源はゼロデータです (SSCTL = 2 または 3)。
+OSD Core|OSDコア
+Off|オフ
 Ok|Ok
-On fullscreen|On fullscreen
-On message|On message
-Open &CD Rom...|Open &CD Rom...
-Open &ISO...|Open &ISO...
+On|オン
+On fullscreen|フルスクリーン時
+On message|メッセージ時
+Opaque|不透明
+Open &CD Rom...|CD-ROMを開く(&C)...
+Open &ISO...|ISOを開く(&I)...
 Open CD Rom|CD-ROMを開く
+Open Channel Viewer...|チャンネルビューアーを開く...
+Open DSP Debugger...|DSPデバッガーを開く...
+Open SSF|SSFを開く
+Open a cartridge file|カートリッジファイルを開く
+Open a mpeg rom|mpeg ROMを開く
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|SCSP DSPデバッガーを開く (プログラム、レジスタ、ブレークポイント、ステップ実行)
+Open the VDP2 viewer|VDP2ビューアーを開く
+Open the live 32-slot envelope and mute viewer|32スロットのエンベロープとミュートのライブビューアーを開く
+Open&Tray|トレイを開く(&T)
+OpenAL Sound Interface|OpenAL サウンドインターフェース
 OpenGL Video Interface|OpenGLビデオインタフェース
+OpenGL size :|OpenGL サイズ:
 Options|オプション
-Other Debug|Other Debug
+Original|オリジナル
+Original (original resolution of the Saturn)|オリジナル (サターン本来の解像度)
+Original aspect ratio|オリジナルのアスペクト比
+Other|その他
+Other Debug|その他のデバッグ
+Output|出力
+P1 - Bet|P1 - ベット
+P1 - Chi|P1 - チー
+P1 - Flip/Flop|P1 - フリップ/フロップ
+P1 - Kan|P1 - カン
+P1 - Pon|P1 - ポン
+P1 - Reach|P1 - リーチ
+P1 - Ron|P1 - ロン
+P1 - Start|P1 - スタート
+P2 - Chi|P2 - チー
+P2 - Flip/Flop|P2 - フリップ/フロップ
+P2 - Kan|P2 - カン
+P2 - Pon|P2 - ポン
+P2 - Reach|P2 - リーチ
+P2 - Ron|P2 - ロン
+P2 - Start|P2 - スタート
 Pad|Pad
-Pad Configuration|Pad Configuration
+Pad Configuration|パッドの設定
 Pause|一時停止
-Press Esc key to cancel|Press Esc key to cancel
-Pro Action Replay|Pro Action Replay
+Pitch|ピッチ
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|ピクセル (%1, %2)  R=%3 G=%4 B=%5 A=%6
+Pixel Perfect|ピクセルパーフェクト
+Pixel Perfect - Full screen|ピクセルパーフェクト - フルスクリーン
+Play Slot|スロットを再生
+Player 1 Panel|プレイヤー1 パネル
+Player 2 Panel (kiwames only)|プレイヤー2 パネル (kiwames のみ)
+Playing on slot(s) %1|スロット %1 で再生中
+Playing slot %1...|スロット %1 を再生中...
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|ゲームと同じ音源ジェネレーターを使い、キーオンからスロットを再生します (DSPエフェクトと他のスロットは含みません)。
+Pon|ポン
+Port|ポート
+Port 1|ポート1
+Port 2|ポート2
+Power Button|電源ボタン
+Press Esc key to cancel|Escキーでキャンセル
+Preview|プレビュー
+Previous|前回
+Pro Action Replay|プロアクションリプレイ
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|プロシージャレジスタ (PR)。\nBSR/BSRF/JSR が保存する戻りアドレスです。RTS はここに格納された場所へジャンプします。SH-2 でハードウェアのリンクレジスタに最も近いものです。
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|プログラムカウンタ (PC)。\nこれから実行される命令のアドレスです (遅延スロットは考慮済み)。コードブレークポイントはこの値と比較します。
 Qt Keyboard Input Interface|Qtキーボード入力インタフェース
+Question...|質問...
 Quit|終了
 R&un|R&un
 RBG0|RBG0
-RBG0 Info|RBG0 Info
-Read|Read
-Region|Region
-Registers|Registers
-Reset|Reset
-Resolution|Resolution
-Right|Right
-Right trigger|Right trigger
+RBG0 Info|RBG0 情報
+RBG1|RBG1
+RBG1 Info|RBG1 情報
+Raw Values|生の値
+Reach|リーチ
+Read|読み込み
+Region|地域
+Register|レジスタ
+Registers|レジスタ
+Related debuggers|関連デバッガー
+Release|リリース
+Remove Peripheral|周辺機器を取り外す
+Remove breakpoint|ブレークポイントを削除
+Remove the selected breakpoints|選択したブレークポイントを削除
+Report written to:|レポートの書き込み先:
+Reserved1|予約1
+Reserved2|予約2
+Reserved3|予約3
+Reserved4|予約4
+Reserved5|予約5
+Reset|リセット
+Reset Zoom|ズームをリセット
+Resolution|解像度
+Restart|再起動
+Results|結果
+Right|右
+Right Stick Axis Throttle|右スティック スロットル軸
+Right Stick Axis X|右スティック X軸
+Right Stick Axis Y|右スティック Y軸
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|右スティック:\nトリガー:   A\n左ボタン:   B\n右ボタン:   C
+Right trigger|右トリガー
+Right_P2|右_P2
+Ron|ロン
 Run|Run
-S&ave State|S&ave State
+Run until the current function returns (Shift+F11)|現在の関数から戻るまで実行 (Shift+F11)
+S&CSP|S&CSP
+S&ave State|ステートセーブ(&A)
 SCSP|SCSP
+SCSP Channels|SCSPチャンネル
+SCSP-&DSP|SCSP-&DSP
+SCU-&DSP|SCU-&DSP
 SCU-DSP|SCU-DSP
 SDL Joystick Interface|SDLジョイスティックインタフェース
 SDL Sound Interface|SDLサウンドインタフェース
+SH2 Debug|SH2 デバッグ
 SH2 Debugger Interpreter|SH2デバッガインタプリタ
 SH2 Dynamic Recompiler|SH2ダイナミックリコンバイラ
 SH2 Interpreter|SH2インタプリタ
-SH2 Registers|SH2 Registers
+SH2 Performance|SH2 パフォーマンス
+SH2 Registers|SH2 レジスタ
+SLAVE SH2|スレーブSH2
 SSH2|SSH2
-Save|Save
-Save As WAV|Save As WAV
-Save Bitmap|Save Bitmap
-Save Information|Save Information
-Save List|Save List
-Save MD0|Save MD0
-Save MD1|Save MD1
-Save MD2|Save MD2
-Save MD3|Save MD3
-Save Program|Save Program
-Save Selected|Save Selected
-Save Slot Registers|Save Slot Registers
-Save State|Save State
-Save State As|Save State As
-Save States|Save States
-Sc&reenshot|Sc&reenshot
-Screen Enabled|Screen Enabled
+SSH2 reached code breakpoint at |SSH2 がコードブレークポイントに到達しました: 
+SSH2 reached data breakpoint at |SSH2 がデータブレークポイントに到達しました: 
+ST-V Cabinet|ST-V 筐体
+ST-V cabinet Configuration|ST-V 筐体の設定
+STV Rom game|STV ROMゲーム
+Sample|サンプル
+Sample size|サンプルサイズ
+Sample start address 0x%1|サンプル開始アドレス 0x%1
+Save|保存
+Save As Bitmap|ビットマップとして保存
+Save As WAV|WAVとして保存
+Save Bitmap|ビットマップを保存
+Save COEF|COEFを保存
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|データRAMバンク0 (32ビットワード×64) を .bin に保存
+Save Data RAM bank 1 to .bin|データRAMバンク1を .bin に保存
+Save Data RAM bank 2 to .bin|データRAMバンク2を .bin に保存
+Save Data RAM bank 3 to .bin|データRAMバンク3を .bin に保存
+Save Information|セーブ情報
+Save List|リストを保存
+Save MADRS|MADRSを保存
+Save MD0|MD0を保存
+Save MD1|MD1を保存
+Save MD2|MD2を保存
+Save MD3|MD3を保存
+Save MEMS|MEMSを保存
+Save Program|プログラムを保存
+Save RAW|RAWを保存
+Save Raw Data|生データを保存
+Save SCSP DSP COEF|SCSP DSP COEFを保存
+Save SCSP DSP MADRS|SCSP DSP MADRSを保存
+Save SCSP DSP MEMS|SCSP DSP MEMSを保存
+Save SCSP DSP Program (MPRO)|SCSP DSPプログラム (MPRO) を保存
+Save SCSP DSP TEMP|SCSP DSP TEMPを保存
+Save SCU DSP Data RAM MD0|SCU DSP データRAM MD0を保存
+Save SCU DSP Data RAM MD1|SCU DSP データRAM MD1を保存
+Save SCU DSP Data RAM MD2|SCU DSP データRAM MD2を保存
+Save SCU DSP Data RAM MD3|SCU DSP データRAM MD3を保存
+Save SCU DSP Program RAM|SCU DSP プログラムRAMを保存
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|SCU DSP プログラムRAM (32ビットワード×256) を .bin に保存
+Save Selected|選択項目を保存
+Save Slot Registers|スロットレジスタを保存
+Save State|ステートセーブ
+Save State As|名前を付けてステートセーブ
+Save States|ステートセーブ
+Save TEMP|TEMPを保存
+Save Tab|タブを保存
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|COEFテーブル (16ビットフィルター係数×64) を .bin に保存
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|DSPプログラム (MPRO、64ビット命令×128) を .bin に保存
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|MADRSテーブル (16ビットリングバッファアドレス×32) を .bin に保存
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|サウンドメモリのMEMSワーク領域 (32ビットワード×32) を .bin に保存
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|レジスタタブ (生 + デコード) とデバッグタブをテキストファイルに保存
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|TEMPディレイラインメモリ (32ビットワード×128) を .bin に保存
+Save the VDP1 registers, command list and selected command info to a text file|VDP1レジスタ、コマンドリスト、選択したコマンドの情報をテキストファイルに保存
+Save the selected VRAM bank to a raw .bin file|選択したVRAMバンクを生の .bin ファイルに保存
+Save0|セーブ0
+Save1|セーブ1
+Save2|セーブ2
+Save3|セーブ3
+Save4|セーブ4
+Save5|セーブ5
+Save6|セーブ6
+Save7|セーブ7
+Save8|セーブ8
+Save9|セーブ9
+Sc&reenshot|スクリーンショット(&R)
+Scale3x|Scale3x
+Scale4x|Scale4x
+Scanline|スキャンライン
+Scanline filter|スキャンラインフィルター
+Scanline off|スキャンライン オフ
+Scanline on|スキャンライン オン
+Screen Enabled|画面有効
+Screen Select:|画面選択:
+Screen Viewer|画面ビューアー
+Screen:|画面:
 Screenshot|スクリーンショット
-Search|Search
-Search Criteria|Search Criteria
-Search Memory|Search Memory
-Search Value:|Search Value:
-Search/Add Cheats|Search/Add Cheats
-Select a file to load your state|Select a file to load your state
-Select your iso/cue/bin file|Select your iso/cue/bin file
-Set PC to Start Address|Set PC to Start Address
-Settings|Settings
-Shortcuts|Shortcuts
-Show FPS|Show FPS
-Show Log Window|Show Log Window
-Signed|Signed
-Signed 16-bit value|Signed 16-bit value
-Signed 32-bit value|Signed 32-bit value
-Signed 8-bit value|Signed 8-bit value
+Screenshots|スクリーンショット
+Search|検索
+Search Criteria|検索条件
+Search Memory|メモリを検索
+Search Value:|検索値:
+Search, change the value in the game, then search again until only a few addresses remain.|検索し、ゲーム内で値を変えてから、アドレスが数個に絞られるまで再検索してください。
+Search/Add Cheats|チートの検索/追加
+Searching memory...|メモリを検索中...
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|セガ 麻雀パネル (kiwames, vmahjong, myfairld)。A-N で牌を選び、カン/ポン/チー/リーチ/ロンがアクションボタンです。プレイヤー2のパネルは2人用筐体 (プロ麻雀 極S) にのみ存在します。
+Sega Saturn Sound Format files (*.ssf *.minissf)|セガサターン サウンドフォーマットファイル (*.ssf *.minissf)
+Select / Shoot Button|セレクト / ショットボタン
+Select Button|セレクトボタン
+Select Cartridge...|カートリッジを選択...
+Select a file to load your state|ステートを読み込むファイルを選択
+Select your iso/cue/bin file|iso/cue/bin ファイルを選択してください
+Select your iso/cue/bin/zip file|iso/cue/bin/zip ファイルを選択してください
+Select your iso/cue/bin/zip/chd file|iso/cue/bin/zip/chd ファイルを選択してください
+Select your ssf file|ssf ファイルを選択してください
+Service|サービス
+Set PC to Start Address|PCを開始アドレスに設定
+Settings|設定
+Sharp Bilinear|シャープバイリニア
+Sharpen (Adaptive)|シャープ (適応型)
+Shoot Button|ショットボタン
+Shortcut|ショートカット
+Shortcuts|ショートカット
+Show FPS|FPSを表示
+Show Log Window|ログウィンドウを表示
+Show hex dump|16進ダンプを表示
+Showing the first %1. Narrow down the search to see the rest.|最初の %1 件を表示しています。残りを見るには検索を絞り込んでください。
+Signed|符号付き
+Signed 16-bit value|符号付き16ビット値
+Signed 32-bit value|符号付き32ビット値
+Signed 8-bit value|符号付き8ビット値
+Size|サイズ
 Slave SH2|スレーブSH2
-Slot Info|Slot Info
-Slot Number:|Slot Number:
-Software OSD Interface|Software OSD Interface
-Software Video Interface|Software Video Interface
+Slave SH2 Registers|スレーブSH2レジスタ
+Slot|スロット
+Slot %1|スロット %1
+Slot %1 is sounding|スロット %1 が発音中
+Slot Info|スロット情報
+Slot Number:|スロット番号:
+Slot details|スロットの詳細
+Slot envelopes|スロットのエンベロープ
+Slot number|スロット番号
+Software OSD Interface|ソフトウェア OSDインターフェース
+Software Video Interface|ソフトウェア ビデオインターフェース
 Sound|サウンド
 Sound Core|サウンドコア
+Sound...|サウンド...
+Source|ソース
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|このマシンにソースファイルが見つかりません:\n%1\n\naddr2line によると %2 行目です。
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|ソースが見つからないか利用できません。\nソースがある場合、Linux ではシェルの出力が英語であることを確認してください。\nKronos の起動コマンドの前に LC_ALL=C を付けると実現できます\n
 Spanish|スペイン語
-Start|Start
-Start Address:|Start Address:
-Start in Fullscreen|Start in Fullscreen
-Status|Status
-Step Into|Step Into
-Step Out|Step Out
-Step Over|Step Over
-Store|Store
-Synchronize Saturn internal clock with set time|Synchronize Saturn internal clock with set time
-System Clipping Coordinates|System Clipping Coordinates
-Text|Text
-Texture|Texture
+Sprite Info|スプライト情報
+Stack|スタック
+Stack Walk|スタックウォーク
+Stack Walk Off|スタックウォーク オフ
+Start|スタート
+Start Address:|開始アドレス:
+Start a game to inspect the common control registers.|共通コントロールレジスタを調べるにはゲームを開始してください。
+Start a game to inspect the sound slots.|サウンドスロットを調べるにはゲームを開始してください。
+Start in Fullscreen|フルスクリーンで起動
+Start1|スタート1
+Start2|スタート2
+Status|状態
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|ステータスレジスタ (SR)。\nT - テスト/比較の結果。シフトやキャリー付き加減算命令のキャリー/ボローフラグでもあります。\nS - MAC 命令の結果を飽和させるかラップアラウンドさせるかを選択します。\nQ, M - DIV0U/DIV0S/DIV1 が1ビットずつのステップから32ビット除算を組み立てるのに使う内部状態。除算シーケンス外では意味を持ちません。\nI3-I0 - 現在の割り込みマスクレベル (0-15)。この優先度以下の割り込み要求は保留されます。
+Step Into|ステップイン
+Step Out|ステップアウト
+Step Over|ステップオーバー
+Stick Down|スティック下
+Stick Left|スティック左
+Stick Right|スティック右
+Stick Up|スティック上
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|スティック左ボタン: A と同じ \nスティック右ボタン: B と同じ \nスティックトリガー: C と同じ
+Stop|停止
+Stop Slot|スロットを停止
+Stopped.|停止しました。
+Store|格納
+Stretch to window|ウィンドウに合わせて引き伸ばす
+Synchronize Saturn internal clock with set time|サターンの内部時計を設定時刻に同期する
+System Clipping Coordinates|システムクリッピング座標
+TV effect :|TV効果:
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|今スナップショットを撮ってこのウィンドウを閉じ、値が変わるまでプレイしてから、再び開いて検索してください。
+Take snapshot|スナップショットを撮る
+Tesselation|テッセレーション
+Test|テスト
+Text|テキスト
+Text files (*.txt)|テキストファイル (*.txt)
+Texture|テクスチャ
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|マスターSH2 は常に動作しています: ブートROMが最初に起動するコアであり、デフォルトでは両方の SH-2 が同時に同じリソースにアクセスした際にバス優先権を持ちます。ほとんどのゲームはロジックの大部分をここで実行します。
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|スレーブSH2 はゲームが明示的に起動するまで停止しています (Sega Saturn Dual CPU User's Guide を参照)。これを使うタイトルは通常、マスターSH2 と無関係なコードではなく、2つ目の並列処理をここに割り振ります。
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|オーディオデバイスが 44.1kHz ステレオ 16ビット出力に対応していないため、スロットをプレビューできません。
+The dummies cores don't need configuration|ダミーコアには設定は不要です
+The dummies cores don't need configuration.|ダミーコアには設定は不要です。
+The emulation is paused while this window is open.|このウィンドウが開いている間、エミュレーションは一時停止します。
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|このスロットの音源はゼロデータ (SSCTL = 2 または 3) のため、保存するものがありません。
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|このレイヤーは現在何も出力していません。\nおそらく BGON 有効ビットがオフです -- \nレジスタタブ (BGON) または VDP2デバッグのメインウィンドウを参照してください。
+Throttle Down|スロットル下
+Throttle Up|スロットル上
+Timers / Misc|タイマー / その他
 To|To
-To File...|To File...
-Tools|Tools
-Track Inf Loop Results|Track Inf Loop Results
-Transfer|Transfer
-Translation|Translation
-Type:|Type:
-Unable to add code|Unable to add code
-Unable to change description|Unable to change description
-Unable to open file for loading|Unable to open file for loading
-Unable to open file for saving|Unable to open file for saving
-Unable to remove code|Unable to remove code
-Unknow (%1)|Unknow (%1)
-Unsigned|Unsigned
-Unsigned 16-bit value|Unsigned 16-bit value
-Unsigned 32-bit value|Unsigned 32-bit value
-Unsigned 8-bit value|Unsigned 8-bit value
+To File...|ファイルへ...
+Tolerance ±|許容誤差 ±
+Tools|ツール
+Trace Logging|トレースログ
+Track Inf Loop Results|無限ループ追跡の結果
+Trackball (patocar / skychal / supgoal / techbowl only)|トラックボール (patocar / skychal / supgoal / techbowl のみ)
+Trackball Down|トラックボール下
+Trackball Left|トラックボール左
+Trackball Right|トラックボール右
+Trackball Up|トラックボール上
+Transfer|転送
+Translation|翻訳
+Triangles using perspective correction|パースペクティブ補正付き三角形
+Trigger|トリガー
+Type|種類
+Type:|種類:
+Unable to add code|コードを追加できません
+Unable to change description|説明を変更できません
+Unable to open file for loading|読み込み用にファイルを開けません
+Unable to open file for saving|保存用にファイルを開けません
+Unable to remove code|コードを削除できません
+Unable to save file|ファイルを保存できません
+Unchanged|変化なし
+Unknow (%1)|不明 (%1)
+Unknown (%1)|不明 (%1)
+Unmute all|すべてのミュートを解除
+Unsigned|符号なし
+Unsigned 16-bit value|符号なし16ビット値
+Unsigned 32-bit value|符号なし32ビット値
+Unsigned 8-bit value|符号なし8ビット値
 Up|Up
-Upload|Upload
-Use System Locale|Use System Locale
+Up_P2|上_P2
+Upload|アップロード
+Upscale Filter :|アップスケールフィルター:
+Use SH2 cache - Experimental|SH2キャッシュを使用 - 実験的
+Use System Locale|システムの言語を使用
+Use Vdp1 Cache|VDP1キャッシュを使用
+User Interface Translation|ユーザーインターフェースの翻訳
+VDP&1|VDP&1
+VDP&2|VDP&2
 VDP1|Vdp1
-VDP1 Command Info|VDP1 Command Info
-VDP1 Command List|VDP1 Command List
+VDP1 Command Info|VDP1 コマンド情報
+VDP1 Command List|VDP1 コマンドリスト
+VDP1 Registers|VDP1レジスタ
+VDP1 not initialised.|VDP1 は初期化されていません。
 VDP2|Vdp2
-Value|Value
-Value :|Value :
-Value:|Value:
+VDP2 Debug|VDP2デバッグ
+VDP2 Debug — inactive|VDP2デバッグ — 非アクティブ
+VDP2 RAM not available.|VDP2 RAMは利用できません。
+VDP2 Viewer|VDP2ビューアー
+VDP2 not initialised.|VDP2 は初期化されていません。
+VDP2Viewer Viewer|VDP2Viewer ビューアー
+VRAM Hex|VRAM 16進
+VRAM-A  (0x00000-0x3FFFF)|VRAM-A  (0x00000-0x3FFFF)
+VRAM-A0 (0x00000-0x1FFFF)|VRAM-A0 (0x00000-0x1FFFF)
+VRAM-A1 (0x20000-0x3FFFF)|VRAM-A1 (0x20000-0x3FFFF)
+VRAM-B  (0x40000-0x7FFFF)|VRAM-B  (0x40000-0x7FFFF)
+VRAM-B0 (0x40000-0x5FFFF)|VRAM-B0 (0x40000-0x5FFFF)
+VRAM-B1 (0x60000-0x7FFFF)|VRAM-B1 (0x60000-0x7FFFF)
+Value|値
+Value :|値:
+Value out of range for this data type (%1 to %2).|このデータ型の範囲外の値です (%1 ～ %2)。
+Value you see on screen, e.g. 3|画面に表示されている値 (例: 3)
+Value:|値:
+Values are read from the SCSP registers while the emulation is paused.|値はエミュレーション一時停止中に SCSP レジスタから読み取られます。
 Vdp1|Vdp1
 Vdp2|Vdp2
-Video|Video
-Video Core|Video Core
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|ベクタベースレジスタ (VBR)。\n例外/割り込みベクタテーブルのベースアドレス: ベクタ n は VBR + n*4 に格納された32ビットのハンドラーアドレスです。通常はブートROM/BIOS が一度設定し、ゲームコードは変更しません。
+Video|ビデオ
+Video CD Card (MPEG Card)|ビデオCDカード (MPEGカード)
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|ビデオCDカードROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;すべてのファイル (*)
+Video Core|ビデオコア
 Video Driver|ビデオドライバ
 Video Format|ビデオフォーマット
-View|View
-Viewer|Viewer
-Waiting Input...|Waiting Input...
-Width|Width
-Window Resolution|Window Resolution
+View|表示
+Viewer|ビューアー
+Viewer && Registers...|ビューアー && レジスタ...
+Volume|音量
+WAV Files (*.wav)|WAVファイル (*.wav)
+Waiting Input...|入力待ち...
+Warning...|警告...
+Wave File Output Interface|Waveファイル出力インターフェース
+What do you know about the value?|値について何が分かっていますか？
+Wheel|ハンドル
+Wheel Configuration|ハンドルの設定
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|CMDLINK が次にコマンドインタープリターを送る先: NEXT (次のテーブル)、ASSIGN/CALL (指定アドレスへジャンプ)、RETURN、または END (ここでリストを終了)。
+Width|幅
+Window Resolution|ウィンドウ解像度
+Window size :|ウィンドウサイズ:
 Windows SPTI Driver|Windows SPTIドライバ
-Word|Word
-Word Write|Word Write
-Write|Write
-Yabause Cheat Files (*.yct);;All Files (*)|Yabause Cheat Files (*.yct);;All Files (*)
+Wireframe :|ワイヤーフレーム:
+Word|ワード
+Word Write|ワード書き込み
+Word Write : %1 %2|ワード書き込み: %1 %2
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|Work RAM-H、0x06000000 - 0x060FFFFF (1MB)。ゲームデータのほとんどはここにあります。
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|Work RAM-L、0x00200000 - 0x002FFFFF (1MB)。
+Write|書き込み
+Yabause Cheat Files (*.yct);;All Files (*)|Yabause チートファイル (*.yct);;すべてのファイル (*)
 Yabause Qt GUI|Yabause Qt GUI
-Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
-Yabause Save State (*.yss)|Yabause Save State (*.yss)
-Yabause is not initialized, can't manage backup ram.|Yabause is not initialized, can't manage backup ram.
+Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt GUI<br />Yabause %1 ベース<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause チーム<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Yabause Save State (*.yss)|Yabause ステートセーブ (*.yss)
+Yabause is not initialized, can't manage backup ram.|Yabause が初期化されていないため、バックアップRAMを管理できません。
+Yes|はい
+You don't know the real value|実際の値は分からない
+Youtube Channel|Youtubeチャンネル
+addr2line Executable|addr2line 実行ファイル
+addr2line utility is not configured properly, source not available.|addr2line ユーティリティが正しく設定されていないため、ソースを表示できません。
 http://www.emu-compatibility.com/yabause/index.php?lang=uk|http://www.emu-compatibility.com/yabause/index.php?lang=uk
 http://www.monkeystudio.org|http://www.monkeystudio.org
-toolBar|toolBar
+nanovg OSD Interface|nanovg OSDインターフェース
+no memory selected|メモリが選択されていません
+toolBar|ツールバー

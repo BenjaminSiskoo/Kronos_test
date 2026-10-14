@@ -1,364 +1,944 @@
-%1 Images (*.%2)|%1 Images (*.%2)
+\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost.|\n\nOK atveria derintuvę. Ignoruoti tęsia emuliaciją, o registrų reikšmės prarandamos.
+  Offset (hex):|  Poslinkis (hex):
+%1 / %2 - list full, later samples are not listed|%1 / %2 - sąrašas pilnas, vėlesni garso pavyzdžiai nerodomi
+%1 Images (*.%2)|%1 vaizdai (*.%2)
+%1 results|Rezultatų: %1
 %1/%2 blocks free|%1/%2 blokų laisvų
 &About...|&Apie...
 &Action Replay|&Veiksmo pakartojimas
-&Backup Manager...|&Backup Manager...
+&Backup Manager...|&Atsarginės atminties tvarkytuvė...
 &Browse|&Naršyti
-&Cancel|&Cancel
+&Cancel|&Atšaukti
 &Capture Screen|&Nufotografuoti ekraną
 &Cheat List|&Kodų sąrašas
 &Cheats|&Kodai
-&Cheats List...|&Cheats List...
+&Cheats List...|&Kodų sąrašas...
 &Clear|&Išvalyti
-&Close|&Close
+&Close|&Uždaryti
 &Debug|&Klaidų taisymas
 &Delete|&Trinti
-&Emulation|&Emulation
+&Emulation|&Emuliacija
 &File|&Failas
-&Frame Skip/Limiter|&Frame Skip/Limiter
+&Frame Skip/Limiter|&Kadrų praleidimas/Ribotuvas
 &Fullscreen|&Pilnas ekranas
 &Help|&Pagalba
 &Layer|&Sluoksniai
 &Load From File|&Įkelti iš failo
 &Log|&Log
-&Master SH2|&Master SH2
+&Master SH2|&Pagrindinis SH2
 &Memory Transfer|&Atminties pervedimas
+&No|&Ne
 &OK|&Gerai
 &Pause|&Pauzė
+&Question...|&Klausimas...
 &Quit|&Išeiti
 &Raw Memory Address|&Priėjimas prie Raw atminties
 &Reset|&Perkrauti
 &Save To File|&Išsaugoti į failą
 &Settings...|&Nuostatos
-&Slave SH2|&Slave SH2
-&Tools|&Tools
-&Transfer|&Transfer
+&Slave SH2|Pa&galbinis SH2
+&Tools|Į&rankiai
+&Transfer|&Perkelti
+&Vertical synchronization|&Vertikalus sinchronizavimas
 &View|&Žiūrėti
-16 Mbit Backup Ram|16 Mbit Backup Ram
+(layer disabled -- BGON bit off)\n|(sluoksnis išjungtas -- bitas BGON išjungtas)\n
+1 result|1 rezultatas
+10 Yen|10 jenų
+100 Yen|100 jenų
+128 Mbit Dram|128 Mbit DRAM
+16 Mbit Backup Ram|16 Mbit atsarginė RAM
 16 Mbit ROM|16 Mbit ROM
-16-bit|16-bit
-16-bit Relative value(s)|16-bit Relative value(s)
-32 Mbit Backup Ram|32 Mbit Backup Ram
-32 Mbit Dram|32 Mbit Dram
-32-bit|32-bit
+16-bit|16 bitų
+16-bit Relative value(s)|16 bitų santykinė(s) reikšmė(s)
+1x (original resolution of the Saturn)|1x (originali Saturn raiška)
+32 Mbit Backup Ram|32 Mbit atsarginė RAM
+32 Mbit Dram|32 Mbit DRAM
+32-bit|32 bitų
 3D Control Pad|3D Control Pad
-4 Mbit Backup Ram|4 Mbit Backup Ram
+3D Control Pad Configuration|3D Control Pad konfigūracija
+4 Mbit Backup Ram|4 Mbit atsarginė RAM
+4xBRZ|4xBRZ
 503/512 blocks free|503/512 blokų laisvų
 510/512 blocks free|510/512 blokų laisvų
-8 Mbit Backup Ram|8 Mbit Backup Ram
-8 Mbit Dram|8 Mbit Dram
-8-bit|8-bit
-8-bit Relative value(s)|8-bit Relative value(s)
-<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>
+68000 Core|68000 branduolys
+6xBRZ|6xBRZ
+8 Mbit Backup Ram|8 Mbit atsarginė RAM
+8 Mbit Dram|8 Mbit DRAM
+8-bit|8 bitų
+8-bit Relative value(s)|8 bitų santykinė(s) reikšmė(s)
+<font color="red"><b>WARNING:</b> Master Codes are <b>NOT</b> supported.</font>|<font color="red"><b>DĖMESIO:</b> Master kodai <b>NEPALAIKOMI</b>.</font>
+<h3>Find where a game stores a value</h3><p>1. Pick what you know on the left, then press <b>Search</b> or <b>Take snapshot</b>.<br>2. Play until the value changes, then reopen this window.<br>3. Search again until only a few addresses remain.<br>4. Double-click an address to turn it into a cheat.</p>|<h3>Raskite, kur žaidimas saugo reikšmę</h3><p>1. Kairėje pasirinkite, ką žinote, tada spauskite <b>Ieškoti</b> arba <b>Padaryti momentinę kopiją</b>.<br>2. Žaiskite, kol reikšmė pasikeis, tada vėl atverkite šį langą.<br>3. Ieškokite dar kartą, kol liks tik keli adresai.<br>4. Dukart spustelėkite adresą, kad paverstumėte jį kodu.</p>
+<h3>No address matches</h3><p>Try a larger tolerance, check the data size in <i>Advanced options</i>, or press <b>New search</b> to start over.</p>|<h3>Neatitinka nė vienas adresas</h3><p>Pabandykite didesnę paklaidą, patikrinkite duomenų dydį skiltyje <i>Išplėstinės parinktys</i> arba spauskite <b>Nauja paieška</b>, kad pradėtumėte iš naujo.</p>
+<span style=" color:darkgreen;">Sprite</span> · <span style=" color:blue;">Polygon</span> · <span style=" color:darkcyan;">Polyline</span> · <span style=" color:#B45A00;">Line</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Invalid</span>|<span style=" color:darkgreen;">Spraitas</span> · <span style=" color:blue;">Daugiakampis</span> · <span style=" color:darkcyan;">Laužtė</span> · <span style=" color:#B45A00;">Linija</span> · <span style=" color:gray;">Clip/Local</span> · <span style=" color:red;">Netinkama</span>
+A bar lost or gained a percentage|Juosta prarado arba įgijo procentų
+A breakpoint already exists at %1.|Stabdos taškas adresu %1 jau yra.
+A life bar going from full to 60 % lost 40 %: enter 40. The tolerance absorbs rounding.|Gyvybės juosta, nukritusi nuo pilnos iki 60 %, prarado 40 %: įveskite 40. Paklaida kompensuoja apvalinimą.
+A loss of 100 % or more means the value reached zero.|100 % ar didesnis praradimas reiškia, kad reikšmė pasiekė nulį.
 About...|Apie...
 Action Replay Code :|Veiksmo pakartojimo kodas:
 Add|Add
 Add Action Replay Code|Pridėti veiksmo pakartojimo kodą:
-Add Cheat|Add Cheat
+Add Cheat|Pridėti kodą
+Add Cheat…|Pridėti kodą…
 Add Codes...|Pridėti kodų...
 Add Raw Memory Code|Pridėti "Raw" atminties kodą
-Address|Address
+Add a breakpoint on this address|Pridėti stabdos tašką šiuo adresu
+Add breakpoint|Pridėti stabdos tašką
+Add cheat|Pridėti kodą
+Address|Adresas
+Address (hex):|Adresas (hex):
 Address :|Adresas :
+Address in hex, e.g. 06004000|Adresas hex, pvz. 06004000
+Address in hex, e.g. 06100000|Adresas hex, pvz. 06100000
+Advance one frame|Vienu kadru pirmyn
 Advanced|Papildoma
-Always|Always
+Advanced options|Išplėstinės parinktys
+All Files|Visi failai
+All Files (*)|Visi failai (*)
+All Files;|Visi failai;
+Allowed gap, in percentage points. Absorbs rounding: a 40 % drop with a 1 % tolerance matches 39 % to 41 %.|Leidžiamas nuokrypis procentiniais punktais. Kompensuoja apvalinimą: 40 % kritimas su 1 % paklaida atitinka nuo 39 % iki 41 %.
+Always|Visada
+Amount|Kiekis
+An error occured while writing file.|Rašant failą įvyko klaida.
+An error occurred while writing the screenshot: |Rašant ekrano nuotrauką įvyko klaida: 
+An exact number|Tikslus skaičius
 Are you sure you want to delete '%1' ?|Ar tu įsitikinęs,kad nori ištrinti '%1' ?
 Are you sure you want to format '%1' ?|Ar tu įsitikinęs,kad nori suformatuoti '%1' ?
-Asia (NTSC)|Asia (NTSC)
-Asia (PAL)|Asia (PAL)
-Auto-detect|Auto-detect
-Autostart|Autostart
-Backtrace|Backtrace
+Asia (NTSC)|Azija (NTSC)
+Asia (PAL)|Azija (PAL)
+Assembly code|Asemblerio kodas
+Attack|Ataka
+Audio preview is not available in this build.|Garso peržiūra šioje versijoje negalima.
+Auto-detect|Aptikti automatiškai
+Autostart|Automatinis paleidimas
+Awaiting input for|Laukiama įvesties
+Axis|Ašis
+Axis L Trigger|Ašis L gaidukas
+Axis R Trigger|Ašis R gaidukas
+Axis Throttle|Ašis droselis
+Axis X|Ašis X
+Axis Y|Ašis Y
+Backtrace|Iškvietimų dėklas
 Backup Ram Manager|Atsarginės darbinės atminties tvarkyklė
-Binary Files (*.bin)|Binary Files (*.bin)
+Bank:|Bankas:
+Bet|Statymas
+BiCubic|Bikubinis
+Bilinear|Bilinijinis
+Bilinear Filtering (Restart required)|Bilinijinis filtravimas (reikia paleisti iš naujo)
+Binary Files (*.bin)|Dvejetainiai failai (*.bin)
+Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)|Dvejetainiai failai (*.bin);;COFF programos (*.cof *.coff);;ELF programos (*.elf);;Visi failai (*)
+Binary files (*.bin)|Dvejetainiai failai (*.bin)
 Bios|Bios'as
+Bios Settings|BIOS nuostatos
+Bios file path|BIOS failo kelias
+Bios settings file|BIOS nuostatų failas
 Block Size :|Bloko dydis:
-Browse|Browse
-Byte|Byte
-Byte Write|Byte Write
+Breakpoint Reached|Pasiektas stabdos taškas
+Breakpoint added at %1.|Stabdos taškas pridėtas adresu %1.
+Breakpoint removed at %1.|Stabdos taškas pašalintas adresu %1.
+Breakpoints|Stabdos taškai
+Browse|Naršyti
+Bug report|Pranešti apie klaidą
+Button 2|Mygtukas 2
+Button 2 (patocar/skychal/supgoal/techbowl only)|Mygtukas 2 (tik patocar/skychal/supgoal/techbowl)
+Button 5|Mygtukas 5
+Byte|Baitas
+Byte Write|Baito rašymas
+Byte Write : %1 %2|Baito rašymas: %1 %2
+CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)|CD atvaizdai (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)
+CD Images (*.iso *.cue *.bin *.mds *.ccd *.zip)|CD atvaizdai (*.iso *.cue *.bin *.mds *.ccd *.zip)
 CD Images (*.iso *.cue *.bin)|CD atvaizdai (*.iso *.cue *.bin)
+CD-ROM|CD-ROM
+COFF Program Files (*.cof *.coff)|COFF programos (*.cof *.coff)
+CPU Tesselation|CPU teseliacija
+CRT (Aperture Grille)|CRT (apertūrinės grotelės)
+Can't Pause kronos while not initialized.|Negalima pristabdyti Kronos, kol jis neinicijuotas.
+Can't initialize Kronos.|Nepavyksta inicijuoti Kronos.
+Can't plug in the new controller, cancelling.|Nepavyksta prijungti naujo valdiklio, atšaukiama.
 Cancel|Atšaukti
 Cannot initialize|Negalima pradėti
-Cannot initialize Windows SPTI Driver|Cannot initialize Windows SPTI Driver
+Cannot initialize Windows SPTI Driver|Nepavyksta inicijuoti Windows SPTI tvarkyklės
 Cart/Memory|Darbinė atmintis
-Cartridge|Disketė
+Cartridge|Kasetė
+Cartridge Path|Kasetės kelias
 Cd-Rom|CD-ROM
-Central/South America (NTSC)|Central/South America (NTSC)
-Central/South America (PAL)|Central/South America (PAL)
-Cheat &Search...|Cheat &Search...
-Cheat Search|Cheat Search
+Central/South America (NTSC)|Centrinė/Pietų Amerika (NTSC)
+Central/South America (PAL)|Centrinė/Pietų Amerika (PAL)
+Change|Pokytis
+Change the folder with the Debug/SH2DumpDir setting or the KRONOS_SH2DUMP_DIR variable.|Pakeiskite aplanką nuostata Debug/SH2DumpDir arba kintamuoju KRONOS_SH2DUMP_DIR.
+Changed|Pasikeitė
+Channel Viewer|Kanalų peržiūra
+Cheat &Search...|Kodų &paieška...
+Cheat Search|Kodų paieška
 Cheat Type|Kodų tipas
 Cheats|Kodai
 Cheats File|Kodų failas
-Choose a binary file|Choose a binary file
+Chi|Chi
+Choose a STV cartridge folder|Pasirinkite STV kasetės aplanką
+Choose a binary file|Pasirinkite dvejetainį failą
+Choose a binary or program file|Pasirinkite dvejetainį arba programos failą
+Choose a bios file|Pasirinkite BIOS failą
+Choose a cartridge file|Pasirinkite kasetės failą
+Choose a cartridge folder|Pasirinkite kasetės aplanką
 Choose a cdrom drive/mount point|Pasirink CD-ROM prijungimo tašką
 Choose a cheat file to open|Pasirink kodų failą
 Choose a cheat file to save to|Pasirink kodų failą išsaugojimui į
 Choose a file to save your state|Pasirink failą išsaugoti žaidimui
-Choose a location for binary file|Choose a location for binary file
+Choose a file to store bios settings|Pasirinkite failą BIOS nuostatoms saugoti
+Choose a folder to store save states|Pasirinkite aplanką būsenų įrašams
+Choose a folder to store screenshots|Pasirinkite aplanką ekrano nuotraukoms
+Choose a location for binary file|Pasirinkite dvejetainio failo vietą
+Choose a location for the VRAM dump|Pasirinkite VRAM iškelties vietą
+Choose a location for the text file|Pasirinkite tekstinio failo vietą
+Choose a location for your binary file|Pasirinkite dvejetainio failo vietą
+Choose a location for your bitmap|Pasirinkite rastrinio vaizdo vietą
 Choose a location for your screenshot|Pasirink vietą žaidimo ekranvaizdžiui
-Clear configuration|Clear configuration
+Choose a location for your wav file|Pasirinkite wav failo vietą
+Choose a memory file|Pasirinkite atminties failą
+Choose a mpeg rom|Pasirinkite mpeg rom
+Choose the location of the addr2line executable|Pasirinkite vykdomojo failo addr2line vietą
+Clear|Išvalyti
+Clear configuration|Išvalyti konfigūraciją
 Close|Uždaryti
 Code|Kodas
-Code Breakpoints|Code Breakpoints
+Code Breakpoints|Kodo stabdos taškai
+Coin1|Moneta1
+Coin2|Moneta2
+Coins && Control Panel|Monetos && Valdymo pultas
+Color RAM|Spalvų RAM
+Color RAM mode %1  —  %2 entries  (%3 bytes each)|Color RAM režimas %1  —  %2 įrašai  (po %3 baitus)
+Color RAM not available|Color RAM neprieinama
 Comment :|Komentaras:
-Common Control Registers|Common Control Registers
-Compare Type|Compare Type
-DSP Control Registers|DSP Control Registers
-DSP Registers|DSP Registers
-Data Size|Data Size
+Common Control Registers|Bendrieji valdymo registrai
+Common registers|Bendrieji registrai
+Compare Type|Palyginimo tipas
+Compared to the previous search, the value has:|Palyginti su ankstesne paieška, reikšmė:
+Compatibility List|Suderinamumo sąrašas
+Compute Shader Video Interface|Compute Shader vaizdo sąsaja
+Copy address|Kopijuoti adresą
+Copy line|Kopijuoti eilutę
+Could not add a breakpoint at %1: the list is full or the address is not supported.|Nepavyko pridėti stabdos taško adresu %1: sąrašas pilnas arba adresas nepalaikomas.
+Could not add a memory breakpoint at %1: the list is full or the address is not supported.|Nepavyko pridėti atminties stabdos taško adresu %1: sąrašas pilnas arba adresas nepalaikomas.
+Could not open the audio device.|Nepavyko atverti garso įrenginio.
+Could not write the report file.|Nepavyko įrašyti ataskaitos failo.
+Couldn't load state file|Nepavyko įkelti būsenos failo
+Couldn't save state file|Nepavyko įrašyti būsenos failo
+Count|Skaičius
+Ctrl+wheel to zoom|Ctrl+ratukas mastelio keitimui
+DSP Control Registers|DSP valdymo registrai
+DSP Registers|DSP registrai
+Data RAM|Data RAM
+Data Size|Duomenų dydis
 Data Size :|Duomenų dydis:
-Data Type|Data Type
-Debug CPU|Debug CPU
-Debug M68K|Debug M68K
-Debug Master SH2|Debug Master SH2
-Debug SCU DSP|Debug SCU DSP
-Debug Slave SH2|Debug Slave SH2
-Debug VDP1|Debug VDP1
-Debug VDP2Viewer|Debug VDP2Viewer
+Data Type|Duomenų tipas
+Debug|Derinimas
+Debug CPU|Derinti CPU
+Debug M68K|Derinti M68K
+Debug Master SH2|Derinti pagrindinį SH2
+Debug SCSP|Derinti SCSP
+Debug SCSP Channels|Derinti SCSP kanalus
+Debug SCSP DSP|Derinti SCSP DSP
+Debug SCU DSP|Derinti SCU DSP
+Debug Slave SH2|Derinti pagalbinį SH2
+Debug VDP1|Derinti VDP1
+Debug VDP2|Derinti VDP2
+Debug VDP2Viewer|Derinti VDP2Viewer
+Decay 1|Slopimas 1
+Decay 2|Slopimas 2
+Decoded|Iškoduota
+Decreased|Sumažėjo
+Default Dial IP|Numatytasis rinkimo IP
+Default System Language|Numatytoji sistemos kalba
+Deinterlacing Adaptive|Adaptyvus išpynimas
+Deinterlacing Bob|Išpynimas Bob
+Deinterlacing Debug Adaptive|Adaptyvus išpynimas (derinimas)
 Del|Del
 Delete|Trinti
 Description|Aprašymas
 Description :|Aprašymas :
+Deutsch|Deutsch
+Development Extension|Kūrimo plėtinys
 Device List|Įrenginių sąrašas
-DirectX Input Interface|DirectX Input Interface
-DirectX Sound Interface|DirectX Sound Interface
+DirectX Input Interface|DirectX įvesties sąsaja
+DirectX Sound Interface|DirectX garso sąsaja
+Directory|Aplankas
 Disabled|Neįgalinta
-Disassembled Code|Disassembled Code
-Display Enabled|Display Enabled
-Display on Hover|Display on Hover
+Disassembled Code|Išardytas kodas
+Discord Channel|Discord kanalas
+Display Enabled|Rodymas įjungtas
+Display on Hover|Rodyti užvedus pelę
+Door Switch|Durelių jungiklis
+Double Mission Stick|Dvigubas Mission Stick
+Double Mission Stick Configuration|Dvigubo Mission Stick konfigūracija
+Double-click a breakpoint to show it in the disassembly|Dukart spustelėkite stabdos tašką, kad parodytumėte jį išardytame kode
+Double-click an address to add it as a cheat.|Dukart spustelėkite adresą, kad pridėtumėte jį kaip kodą.
 Down|Žemyn
+Down_P2|Žemyn_Ž2
 Download|Atsisiųsti
-Draw End|Draw End
-Dummy CD Drive|Dummy CD Drive
-Dummy Input Interface|Dummy Input Interface
-Dummy OSD Interface|Dummy OSD Interface
-Dummy Sound Interface|Dummy Sound Interface
-Dummy Video Interface|Dummy Video Interface
-Edit configuration|Edit configuration
+Draw End|Piešimo pabaiga
+Dummy 68k Interface|Fiktyvi 68k sąsaja
+Dummy CD Drive|Fiktyvus CD įrenginys
+Dummy Input Interface|Fiktyvi įvesties sąsaja
+Dummy OSD Interface|Fiktyvi OSD sąsaja
+Dummy Sound Interface|Fiktyvi garso sąsaja
+Dummy Video Interface|Fiktyvi vaizdo sąsaja
+ELF Program Files (*elf)|ELF programos (*elf)
+Each entry is a sample, identified by its start address, that was playing when this window opened or has been played since. Entries in bold are playing now (hover one to see its slots). Check one to silence every slot playing it.|Kiekvienas įrašas yra garso pavyzdys, nurodomas pradžios adresu, kuris skambėjo atveriant šį langą arba buvo grotas vėliau. Paryškinti įrašai skamba dabar (užveskite pelę, kad pamatytumėte jų lizdus). Pažymėkite įrašą, kad nutildytumėte visus jį grojančius lizdus.
+Edit configuration|Redaguoti konfigūraciją
+Eject/Load ISO...|Išstumti/Įkelti ISO...
+Embellishment filter :|Pagražinimo filtras:
 Emu-Compatibility|Emuliatoriaus suderinamumas
 Emulation|Emuliacija
+Emulation paused|Emuliacija pristabdyta
 Enable|Įgalinti
-Enable Frame Skip/Limiter|Enable Frame Skip/Limiter
+Enable Bios Emulation|Įgalinti BIOS emuliaciją
+Enable Code : %1 %2|Įgalinti kodą: %1 %2
+Enable Frame Skip/Limiter|Įgalinti kadrų praleidimą/ribotuvą
+Enable vertical synchronization|Įgalinti vertikalų sinchronizavimą
 Enabled|Įgalinta
 End Address:|End Adress:
 English|Anglų
-Enter New Value|Enter New Value
-Europe + others (PAL)|Europe + others (PAL)
-Exact|Exact
+Enter New Value|Įveskite naują reikšmę
+Enter new assembly code|Įveskite naują asemblerio kodą
+Envelope|Gaubtinė
+Equal to|Lygu
+Error|Klaida
+Error...|Klaida...
+Europe (PAL)|Europa (PAL)
+Europe + others (PAL)|Europa + kitos (PAL)
+Exact|Tiksliai
+Example: 100 → %1 is a gain of %2 %.|Pavyzdys: 100 → %1 yra %2 % prieaugis.
+Example: 100 → %1 is a loss of %2 %.|Pavyzdys: 100 → %1 yra %2 % praradimas.
+Execute one instruction (F11)|Vykdyti vieną instrukciją (F11)
+Execute one instruction, running calls to the end (F10)|Vykdyti vieną instrukciją, iškvietimus vykdant iki galo (F10)
+Export Debug|Eksportuoti derinimą
+Export Debug Info (.txt)...|Eksportuoti derinimo informaciją (.txt)...
+Export Registers / Debug (.txt)...|Eksportuoti registrus / derinimą (.txt)...
+Export bank (.bin)...|Eksportuoti banką (.bin)...
+Extend Internal backup memory to 8MB|Išplėsti vidinę atsarginę atmintį iki 8 MB
+F&PS|F&PS
 FPS|KPS
+FSR 1.0 (EASU + RCAS)|FSR 1.0 (EASU + RCAS)
+FXAA|FXAA
+Family-Specific && Diagnostics|Šeimai būdingi && Diagnostika
 File|Failas
 File Name :|Failo pavadinimas:
 File transfer|Failo perkėlimas
-File:|File:
+File:|Failas:
+Filter registers...|Filtruoti registrus...
+Finished searching up to end of memory, continue from the beginning?|Paieška baigta iki atminties pabaigos, tęsti nuo pradžios?
+Finished.|Baigta.
+Fit the image back into the view (Ctrl+wheel to zoom)|Vėl sutalpinti vaizdą lange (Ctrl+ratukas mastelio keitimui)
+Fit the texture back into the view (Ctrl+wheel to zoom)|Vėl sutalpinti tekstūrą lange (Ctrl+ratukas mastelio keitimui)
+Flip/Flop|Flip/Flop
 Format|Formatuoti
 Frame Skip/Limiter|Kadrų praleidimas
+FreeBSD CD Drive|FreeBSD CD įrenginys
 French|Prancūzų
 From|Iš
 From File|Iš failo
 From File...|Iš failo...
 Fullscreen|Pilnas ekranas
-Fullscreen Resolution|Fullscreen Resolution
+Fullscreen Resolution|Viso ekrano raiška
+GPU Tesselation|GPU teseliacija
+Gained|Įgijo
 General|Pagrindiniai
-General Info|General Info
+General Info|Bendroji informacija
+General-purpose register R15.\nBy convention this doubles as the SH-2 hardware stack pointer (SP): the CPU pushes/pops it on exceptions and interrupts, and compiled code uses it the same way for the call stack.|Bendrosios paskirties registras R15.\nPagal susitarimą jis taip pat yra SH-2 aparatinis dėklo rodyklė (SP): procesorius jį įrašo/išima išimčių ir pertraukčių metu, o sukompiliuotas kodas taip pat jį naudoja iškvietimų dėklui.
+General-purpose register.\nHolds data or an address; used freely by compiled code and by any SH-2 instruction that takes a register operand.|Bendrosios paskirties registras.\nSaugo duomenis arba adresą; laisvai naudojamas sukompiliuoto kodo ir bet kurios SH-2 instrukcijos su registro operandu.
 German|Vokiečių
-Goto Address|Goto Address
-Greater then|Greater then
+Get Existing Directory...|Pasirinkti esamą aplanką...
+Get Item...|Pasirinkti elementą...
+Get Open File Name...|Atverti failą...
+Get Save File Name...|Įrašyti failą...
+Global Base Register (GBR).\nBase address used by GBR-relative addressing: MOV.B/W/L @(disp,GBR) and the @(R0,GBR) immediate forms of AND/OR/XOR/TST all compute their effective address from this register.|Globalios bazės registras (GBR).\nBazinis adresas, naudojamas GBR atžvilgiu adresuojant: MOV.B/W/L @(disp,GBR) ir AND/OR/XOR/TST tiesioginės formos @(R0,GBR) visos skaičiuoja efektyvųjį adresą iš šio registro.
+Go|Eiti
+Go to an address (Ctrl+G)|Eiti į adresą (Ctrl+G)
+Goto Address|Eiti į adresą
+Gouraud Mode :|Gouraud režimas:
+Greater than|Daugiau nei
+Greater then|Daugiau nei
+Gun|Šautuvas
+Gun Configuration|Šautuvo konfigūracija
+Gun/Mouse Sensitivity|Šautuvo/pelės jautrumas
+HQ4x|HQ4x
 Hard Reset|"Gilus" perkrovimas
 Height|Aukštis
-Hex value(s)|Hex value(s)
-Hide Menubar|Hide Menubar
-Hide Toolbar|Hide Toolbar
-ISO-File Virtual Drive|ISO-File Virtual Drive
-Information...|Information...
+Hex value(s)|Šešioliktainė(s) reikšmė(s)
+Hide Menubar|Slėpti meniu juostą
+Hide Toolbar|Slėpti įrankių juostą
+High + Low WRAM|Viršutinė + apatinė WRAM
+High WRAM|Viršutinė WRAM
+Highlighted slots are sounding right now.|Paryškinti lizdai skamba dabar.
+Hopper Cabinet|Automatas su bunkeriu
+Hopper Cabinet Configuration|Automato su bunkeriu konfigūracija
+Hopper Sensor Test|Bunkerio jutiklio testas
+Hopper Sensor Test (hold to force a payout pulse)|Bunkerio jutiklio testas (laikykite, kad priverstumėte išmokėjimo impulsą)
+ISO-File Virtual Drive|Virtualus ISO failų įrenginys
+Image format|Vaizdo formatas
+Improved|Patobulintas
+Inactive slot|Neaktyvus lizdas
+Increased|Padidėjo
+Information...|Informacija...
+Inline Assembly|Įterptasis asembleris
 Input|Įvedimas
+Input code address|Kodo adresas
+Internal Backup RAM|Vidinė atsarginė RAM
 Invalid Address|Neteisingas adresas
+Invalid Address or Value|Netinkamas adresas arba reikšmė
+Invalid Start/End Address Combination|Netinkamas pradžios/pabaigos adresų derinys
 Invalid Value|Neteisinga vertė
+Invalid address.|Netinkamas adresas.
+Invalid address: %1|Netinkamas adresas: %1
+It went up or down|Ji padidėjo arba sumažėjo
 Italian|Italų
-Japan (NTSC)|Japan (NTSC)
+Japan (NTSC)|Japonija (NTSC)
 Japanese|Japonų
-Japanese Modem|Japanese Modem
-Korea (NTSC)|Korea (NTSC)
-L&oad State|L&oad State
+Japanese Modem|Japoniškas modemas
+Jump list|Šuolių sąrašas
+Kan|Kan
+Keyboard|Klaviatūra
+Korea (NTSC)|Korėja (NTSC)
+Kronos Cheat Files (*.yct);;All Files (*)|Kronos kodų failai (*.yct);;Visi failai (*)
+Kronos Qt GUI|Kronos Qt GUI
+Kronos Qt Gui<br />Based on UoYabause <br /></a><br />The Kronos Team<br /></a>|Kronos Qt GUI<br />Paremta UoYabause <br /></a><br />Kronos komanda<br /></a>
+Kronos Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Kronos Qt GUI<br />Paremta Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause komanda<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Kronos Save State (*.yss)|Kronos būsenos įrašas (*.yss)
+Kronos is not initialized, can't manage backup ram.|Kronos neinicijuotas, negalima tvarkyti atsarginės atminties.
+L&oad State|Į&kelti būseną
+LFO|LFO
+Lanczos3|Lanczos3
 Language :|Kalba :
 Layer|Sluoksniai
+Layer inactive|Sluoksnis neaktyvus
 Left|Kairė
+Left Stick Axis Throttle|Kairės lazdelės droselio ašis
+Left Stick Axis X|Kairės lazdelės X ašis
+Left Stick Axis Y|Kairės lazdelės Y ašis
+Left Stick Throttle Down|Kairė lazdelė droselis žemyn
+Left Stick X Left|Kairė lazdelė X kairėn
+Left Stick Y Down|Kairė lazdelė Y žemyn
+Left stick:\nTrigger:      X\nLeft button:  Y\nRight button: Z|Kairė lazdelė:\nGaidukas:        X\nKairysis mygt.:  Y\nDešinysis mygt.: Z
 Left trigger|Kairysis mygtukas
-Less than|Less than
-Linux CD Drive|Linux CD Drive
+Left_P2|Kairėn_Ž2
+Less than|Mažiau nei
+Life bar, energy gauge...|Gyvybės juosta, energijos matuoklis...
+Linux CD Drive|Linux CD įrenginys
+Linux Joystick Interface|Linux vairalazdės sąsaja
+Live|Tiesiogiai
+Lives, ammo, score, money...|Gyvybės, šoviniai, taškai, pinigai...
 Load|Įkrauti
+Load Code|Įkelti kodą
 Load State|Įkelti išsaugotą žaidimą
 Load State As|Išsaugoti žaidimą kaip
 Load as executable|Įkrauti kaip paleidžiamąjį failą
-Local Coordinates|Local Coordinates
+Load0|Įkelti0
+Load1|Įkelti1
+Load2|Įkelti2
+Load3|Įkelti3
+Load4|Įkelti4
+Load5|Įkelti5
+Load6|Įkelti6
+Load7|Įkelti7
+Load8|Įkelti8
+Load9|Įkelti9
+Local Coordinates|Vietinės koordinatės
 Log|Log'as
 Long|Long
-Long Write|Long Write
-Loop Track Clear|Loop Track Clear
-Loop Track Start|Loop Track Start
+Long Write|Long rašymas
+Long Write : %1 %2|Long rašymas: %1 %2
+Loop Track Clear|Išvalyti ciklo sekimą
+Loop Track Start|Pradėti ciklo sekimą
+Loop Track Stop|Stabdyti ciklo sekimą
+Lost|Prarado
+Low WRAM|Apatinė WRAM
 M68K|M68K
-M68K Registers|M68K Registers
+M68K Registers|M68K registrai
+MASTER SH2|PAGRINDINIS SH2
 MSH2|MSH2
-Master SH2|Master SH2
+MSH2 reached code breakpoint at |MSH2 pasiekė kodo stabdos tašką adresu 
+MSH2 reached data breakpoint at |MSH2 pasiekė duomenų stabdos tašką adresu 
+Mac OS X (IOKit) Joystick Interface|Mac OS X (IOKit) vairalazdės sąsaja
+Mac OS X Core Audio Sound Interface|Mac OS X Core Audio garso sąsaja
+MacOSX CD Drive|MacOSX CD įrenginys
+Magnet Sensor|Magnetinis jutiklis
+Magnet Sensor (micrombc only)|Magnetinis jutiklis (tik micrombc)
+Mahjong Panel|Mahjong pultas
+Mahjong Panel Configuration|Mahjong pulto konfigūracija
+Mame romset 0.269:|Mame romset 0.269:
+Master SH2|Pagrindinis SH2
+Master SH2 Registers|Pagrindinio SH2 registrai
+Medal|Medalis
+Medal/ticket hopper cabinet (patocar, skychal, supgoal, techbowl, micrombc). The hopper sensor itself is simulated automatically and isn't bound to a key.|Medalių/bilietų automatas su bunkeriu (patocar, skychal, supgoal, techbowl, micrombc). Pats bunkerio jutiklis imituojamas automatiškai ir nepriskirtas jokiam klavišui.
 Memory|Atmintis
-Memory &Editor|Memory &Editor
-Memory Breakpoints|Memory Breakpoints
+Memory &Editor|Atminties &tvarkymas
+Memory Breakpoints|Atminties stabdos taškai
 Memory Dump|Atminties "išmetimas"
 Memory Editor|Atminties tvarkymas
-Memory Search|Memory Search
+Memory Search|Atminties paieška
 Memory Transfer|Atminties pervedimas
+Memory breakpoint set at %1.|Atminties stabdos taškas nustatytas adresu %1.
 Memory dump|Atminties "išmetimas"
-Mouse|Mouse
+Mesh Mode :|Tinklelio režimas:
+Middle|Vidurys
+Mission Stick|Mission Stick
+Mission Stick Configuration|Mission Stick konfigūracija
+Mixer|Maišiklis
+Modulation|Moduliacija
+Mouse|Pelė
+Mouse Configuration|Pelės konfigūracija
+Move the mouse over the image to inspect a pixel.|Užveskite pelę ant vaizdo, kad patikrintumėte pikselį.
+Move the mouse over the texture to inspect a pixel.|Užveskite pelę ant tekstūros, kad patikrintumėte pikselį.
 Mpeg ROM|Mpeg ROM'as
+Multicart|Multikasetė
+Multiply-and-Accumulate register, high 32 bits.\nWritten together with MACL by the MAC.W/MAC.L instructions; the S bit in SR selects whether the MACH:MACL pair saturates or wraps on overflow.|Daugybos-kaupimo registras, vyresnieji 32 bitai.\nRašomas kartu su MACL instrukcijomis MAC.W/MAC.L; SR bitas S nustato, ar pora MACH:MACL perpildžius prisisotina, ar persivynioja.
+Multiply-and-Accumulate register, low 32 bits.\nAlso used as an ordinary 32-bit result register by MUL.L, DMULS.L and DMULU.L, which only ever write MACH:MACL.|Daugybos-kaupimo registras, jaunesnieji 32 bitai.\nTaip pat naudojamas kaip įprastas 32 bitų rezultato registras instrukcijų MUL.L, DMULS.L ir DMULU.L, kurios rašo tik į MACH:MACL.
+Musashi Interface|Musashi sąsaja
+Mute individual sounds|Nutildyti atskirus garsus
+Mute/UnMute Sound|Išjungti/įjungti garsą
 NBG0|NBG0
-NBG0/RBG1 Info|NBG0/RBG1 Info
+NBG0 Info|NBG0 informacija
+NBG0/RBG1 Info|NBG0/RBG1 informacija
 NBG1|NBG1
-NBG1 Info|NBG1 Info
+NBG1 Info|NBG1 informacija
 NBG2|NBG2
-NBG2 Info|NBG2 Info
+NBG2 Info|NBG2 informacija
 NBG3|NBG3
-NBG3 Info|NBG3 Info
+NBG3 Info|NBG3 informacija
+Narrow down|Susiaurinti
+Narrowing down: |Siaurinama: 
+Native (current resolution of the window)|Savoji (dabartinė lango raiška)
+Native (native resolution of Window)|Savoji (savoji lango raiška)
+NetBSD CD Drive|NetBSD CD įrenginys
 Netlink|Netlink
-Never|Never
-None|None
-Normal Sprite|Normal Sprite
-North America (NTSC)|North America (NTSC)
-OSD Core|OSD Core
+Never|Niekada
+New search|Nauja paieška
+Next Frame|Kitas kadras
+No audio output device found.|Garso išvesties įrenginys nerastas.
+No game running|Žaidimas nepaleistas
+No matches found.|Atitikmenų nerasta.
+No need to know the real value: each address is compared with what it held at the previous search.|Tikrosios reikšmės žinoti nereikia: kiekvienas adresas lyginamas su tuo, ką jis turėjo ankstesnės paieškos metu.
+No search yet|Paieškos dar nebuvo
+No sound has been played yet.|Dar negrotas joks garsas.
+No texture|Nėra tekstūros
+No texture for this command (draw end, skipped, clipping,\nlocal coordinates, or an invalid command word)|Šiai komandai nėra tekstūros (piešimo pabaiga, praleista, apkarpymas,\nvietinės koordinatės arba netinkamas komandos žodis)
+None|Nėra
+Normal Sprite|Įprastas spraitas
+Normal format not available, trying alternative|Įprastas formatas neprieinamas, bandoma alternatyva
+North America (NTSC)|Šiaurės Amerika (NTSC)
+Nothing to play: the sound source of this slot is zero data (SSCTL = 2 or 3).|Nėra ką groti: šio lizdo garso šaltinis yra nuliniai duomenys (SSCTL = 2 arba 3).
+OSD Core|OSD branduolys
+Off|Išjungta
 Ok|Gerai
-On fullscreen|On fullscreen
-On message|On message
-Open &CD Rom...|Open &CD Rom...
-Open &ISO...|Open &ISO...
+On|Įjungta
+On fullscreen|Viso ekrano režime
+On message|Gavus pranešimą
+Opaque|Nepermatomas
+Open &CD Rom...|Atverti &CD-ROM...
+Open &ISO...|Atverti &ISO...
 Open CD Rom|Atverti CD-ROM'ą
-OpenGL Video Interface|OpenGL Video Interface
-Options|Options
-Other Debug|Other Debug
+Open Channel Viewer...|Atverti kanalų peržiūrą...
+Open DSP Debugger...|Atverti DSP derintuvę...
+Open SSF|Atverti SSF
+Open a cartridge file|Atverti kasetės failą
+Open a mpeg rom|Atverti mpeg rom
+Open the SCSP DSP debugger (program, registers, breakpoints, single-step)|Atverti SCSP DSP derintuvę (programa, registrai, stabdos taškai, žingsninis vykdymas)
+Open the VDP2 viewer|Atverti VDP2 peržiūrą
+Open the live 32-slot envelope and mute viewer|Atverti tiesioginę 32 lizdų gaubtinių ir nutildymo peržiūrą
+Open&Tray|Atverti &dėklą
+OpenAL Sound Interface|OpenAL garso sąsaja
+OpenGL Video Interface|OpenGL vaizdo sąsaja
+OpenGL size :|OpenGL dydis:
+Options|Parinktys
+Original|Originalus
+Original (original resolution of the Saturn)|Originali (originali Saturn raiška)
+Original aspect ratio|Originalus kraštinių santykis
+Other|Kita
+Other Debug|Kitas derinimas
+Output|Išvestis
+P1 - Bet|Ž1 - Statymas
+P1 - Chi|Ž1 - Chi
+P1 - Flip/Flop|Ž1 - Flip/Flop
+P1 - Kan|Ž1 - Kan
+P1 - Pon|Ž1 - Pon
+P1 - Reach|Ž1 - Reach
+P1 - Ron|Ž1 - Ron
+P1 - Start|Ž1 - Start
+P2 - Chi|Ž2 - Chi
+P2 - Flip/Flop|Ž2 - Flip/Flop
+P2 - Kan|Ž2 - Kan
+P2 - Pon|Ž2 - Pon
+P2 - Reach|Ž2 - Reach
+P2 - Ron|Ž2 - Ron
+P2 - Start|Ž2 - Start
 Pad|Pad
-Pad Configuration|Pad Configuration
+Pad Configuration|Pultelio konfigūracija
 Pause|Pauzė
+Pitch|Aukštis
+Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6|Pikselis (%1, %2)  R=%3 G=%4 B=%5 A=%6
+Pixel Perfect|Pixel Perfect
+Pixel Perfect - Full screen|Pixel Perfect - Visas ekranas
+Play Slot|Groti lizdą
+Player 1 Panel|1 žaidėjo pultas
+Player 2 Panel (kiwames only)|2 žaidėjo pultas (tik kiwames)
+Playing on slot(s) %1|Grojama lizde (-uose) %1
+Playing slot %1...|Grojamas lizdas %1...
+Plays the slot from its key on, with the same sound generator as the game (without the DSP effects and the other slots).|Groja lizdą nuo jo key on tuo pačiu garso generatoriumi kaip žaidimas (be DSP efektų ir kitų lizdų).
+Pon|Pon
+Port|Prievadas
+Port 1|Prievadas 1
+Port 2|Prievadas 2
+Power Button|Maitinimo mygtukas
+Press Esc key to cancel|Spauskite Esc, kad atšauktumėte
+Preview|Peržiūra
+Previous|Ankstesnė
 Pro Action Replay|Pro Action Replay
-Qt Keyboard Input Interface|Qt Keyboard Input Interface
+Procedure Register (PR).\nReturn address saved by BSR/BSRF/JSR; RTS jumps to whatever is stored here. The closest thing the SH-2 has to a hardware link register.|Procedūros registras (PR).\nGrįžimo adresas, kurį išsaugo BSR/BSRF/JSR; RTS peršoka į čia saugomą adresą. Artimiausias SH-2 aparatinio sąsajos registro atitikmuo.
+Program Counter (PC).\nAddress of the instruction about to execute (delay slots are already accounted for). This is what a code breakpoint compares against.|Programos skaitiklis (PC).\nInstrukcijos, kuri tuoj bus vykdoma, adresas (vėlinimo lizdai jau įskaityti). Su juo lyginamas kodo stabdos taškas.
+Qt Keyboard Input Interface|Qt klaviatūros įvesties sąsaja
+Question...|Klausimas...
 Quit|Išeiti
 R&un|&Leisti
 RBG0|RBG0
-RBG0 Info|RBG0 Info
-Read|Read
+RBG0 Info|RBG0 informacija
+RBG1|RBG1
+RBG1 Info|RBG1 informacija
+Raw Values|Neapdorotos reikšmės
+Reach|Reach
+Read|Skaityti
 Region|Regionas
-Registers|Registers
+Register|Registras
+Registers|Registrai
+Related debuggers|Susiję derintuvai
+Release|Atleidimas
+Remove Peripheral|Pašalinti periferinį įrenginį
+Remove breakpoint|Pašalinti stabdos tašką
+Remove the selected breakpoints|Pašalinti pasirinktus stabdos taškus
+Report written to:|Ataskaita įrašyta į:
+Reserved1|Rezervuota1
+Reserved2|Rezervuota2
+Reserved3|Rezervuota3
+Reserved4|Rezervuota4
+Reserved5|Rezervuota5
 Reset|Perkrauti
+Reset Zoom|Atstatyti mastelį
 Resolution|Raiška
+Restart|Paleisti iš naujo
+Results|Rezultatai
 Right|Dešinė
+Right Stick Axis Throttle|Dešinės lazdelės droselio ašis
+Right Stick Axis X|Dešinės lazdelės X ašis
+Right Stick Axis Y|Dešinės lazdelės Y ašis
+Right Stick:\nTrigger:      A\nLeft button:  B\nRight button: C|Dešinė lazdelė:\nGaidukas:        A\nKairysis mygt.:  B\nDešinysis mygt.: C
 Right trigger|Dešinysis mygtukas
+Right_P2|Dešinėn_Ž2
+Ron|Ron
 Run|Leisti
-S&ave State|S&ave State
+Run until the current function returns (Shift+F11)|Vykdyti, kol grįš dabartinė funkcija (Shift+F11)
+S&CSP|S&CSP
+S&ave State|Įr&ašyti būseną
 SCSP|SCSP
+SCSP Channels|SCSP kanalai
+SCSP-&DSP|SCSP-&DSP
+SCU-&DSP|SCU-&DSP
 SCU-DSP|SCU-DSP
-SDL Joystick Interface|SDL Joystick Interface
-SDL Sound Interface|SDL Sound Interface
-SH2 Debugger Interpreter|SH2 Debugger Interpreter
-SH2 Dynamic Recompiler|SH2 Dynamic Recompiler
+SDL Joystick Interface|SDL vairalazdės sąsaja
+SDL Sound Interface|SDL garso sąsaja
+SH2 Debug|SH2 derinimas
+SH2 Debugger Interpreter|SH2 derinimo interpretatorius
+SH2 Dynamic Recompiler|SH2 dinaminis perkompiliatorius
 SH2 Interpreter|SH2 Interpretatorius
-SH2 Registers|SH2 Registers
+SH2 Performance|SH2 našumas
+SH2 Registers|SH2 registrai
+SLAVE SH2|PAGALBINIS SH2
 SSH2|SSH2
+SSH2 reached code breakpoint at |SSH2 pasiekė kodo stabdos tašką adresu 
+SSH2 reached data breakpoint at |SSH2 pasiekė duomenų stabdos tašką adresu 
+ST-V Cabinet|ST-V automatas
+ST-V cabinet Configuration|ST-V automato konfigūracija
+STV Rom game|STV ROM žaidimas
+Sample|Garso pavyzdys
+Sample size|Garso pavyzdžio dydis
+Sample start address 0x%1|Garso pavyzdžio pradžios adresas 0x%1
 Save|Išsaugoti
-Save As WAV|Save As WAV
-Save Bitmap|Save Bitmap
+Save As Bitmap|Įrašyti kaip rastrinį vaizdą
+Save As WAV|Įrašyti kaip WAV
+Save Bitmap|Įrašyti rastrinį vaizdą
+Save COEF|Įrašyti COEF
+Save Data RAM bank 0 (64 x 32-bit words) to .bin|Įrašyti Data RAM banką 0 (64 x 32 bitų žodžiai) į .bin
+Save Data RAM bank 1 to .bin|Įrašyti Data RAM banką 1 į .bin
+Save Data RAM bank 2 to .bin|Įrašyti Data RAM banką 2 į .bin
+Save Data RAM bank 3 to .bin|Įrašyti Data RAM banką 3 į .bin
 Save Information|Išsaugoti informaciją
 Save List|Išsaugojimų sąrašas
-Save MD0|Save MD0
-Save MD1|Save MD1
-Save MD2|Save MD2
-Save MD3|Save MD3
-Save Program|Save Program
-Save Selected|Save Selected
-Save Slot Registers|Save Slot Registers
+Save MADRS|Įrašyti MADRS
+Save MD0|Įrašyti MD0
+Save MD1|Įrašyti MD1
+Save MD2|Įrašyti MD2
+Save MD3|Įrašyti MD3
+Save MEMS|Įrašyti MEMS
+Save Program|Įrašyti programą
+Save RAW|Įrašyti RAW
+Save Raw Data|Įrašyti neapdorotus duomenis
+Save SCSP DSP COEF|Įrašyti SCSP DSP COEF
+Save SCSP DSP MADRS|Įrašyti SCSP DSP MADRS
+Save SCSP DSP MEMS|Įrašyti SCSP DSP MEMS
+Save SCSP DSP Program (MPRO)|Įrašyti SCSP DSP programą (MPRO)
+Save SCSP DSP TEMP|Įrašyti SCSP DSP TEMP
+Save SCU DSP Data RAM MD0|Įrašyti SCU DSP Data RAM MD0
+Save SCU DSP Data RAM MD1|Įrašyti SCU DSP Data RAM MD1
+Save SCU DSP Data RAM MD2|Įrašyti SCU DSP Data RAM MD2
+Save SCU DSP Data RAM MD3|Įrašyti SCU DSP Data RAM MD3
+Save SCU DSP Program RAM|Įrašyti SCU DSP Program RAM
+Save SCU DSP Program RAM (256 x 32-bit words) to .bin|Įrašyti SCU DSP Program RAM (256 x 32 bitų žodžiai) į .bin
+Save Selected|Įrašyti pažymėtus
+Save Slot Registers|Įrašyti lizdo registrus
 Save State|Išsaugoti žaidimą
 Save State As|Išsaugoti žaidimą kaip
 Save States|Žaidimų išsaugojimo failai
-Sc&reenshot|Sc&reenshot
-Screen Enabled|Screen Enabled
+Save TEMP|Įrašyti TEMP
+Save Tab|Įrašyti kortelę
+Save the COEF table (64 x 16-bit filter coefficients) to .bin|Įrašyti COEF lentelę (64 x 16 bitų filtro koeficientai) į .bin
+Save the DSP program (MPRO, 128 x 64-bit instructions) to .bin|Įrašyti DSP programą (MPRO, 128 x 64 bitų instrukcijos) į .bin
+Save the MADRS table (32 x 16-bit ring buffer addresses) to .bin|Įrašyti MADRS lentelę (32 x 16 bitų žiedinio buferio adresai) į .bin
+Save the MEMS sound-memory work area (32 x 32-bit words) to .bin|Įrašyti garso atminties MEMS darbo sritį (32 x 32 bitų žodžiai) į .bin
+Save the Registers tab (raw + decoded) and the Debug tab to a text file|Įrašyti registrų kortelę (neapdorota + iškoduota) ir derinimo kortelę į tekstinį failą
+Save the TEMP delay-line memory (128 x 32-bit words) to .bin|Įrašyti TEMP vėlinimo linijos atmintį (128 x 32 bitų žodžiai) į .bin
+Save the VDP1 registers, command list and selected command info to a text file|Įrašyti VDP1 registrus, komandų sąrašą ir pasirinktos komandos informaciją į tekstinį failą
+Save the selected VRAM bank to a raw .bin file|Įrašyti pasirinktą VRAM banką į neapdorotą .bin failą
+Save0|Įrašyti0
+Save1|Įrašyti1
+Save2|Įrašyti2
+Save3|Įrašyti3
+Save4|Įrašyti4
+Save5|Įrašyti5
+Save6|Įrašyti6
+Save7|Įrašyti7
+Save8|Įrašyti8
+Save9|Įrašyti9
+Sc&reenshot|Ekrano &nuotrauka
+Scale3x|Scale3x
+Scale4x|Scale4x
+Scanline|Scanline
+Scanline filter|Scanline filtras
+Scanline off|Scanline išjungta
+Scanline on|Scanline įjungta
+Screen Enabled|Ekranas įjungtas
+Screen Select:|Ekrano pasirinkimas:
+Screen Viewer|Ekrano peržiūra
+Screen:|Ekranas:
 Screenshot|Ekrano nuotrauka
-Search|Search
-Search Criteria|Search Criteria
-Search Memory|Search Memory
-Search Value:|Search Value:
-Search/Add Cheats|Search/Add Cheats
+Screenshots|Ekrano nuotraukos
+Search|Ieškoti
+Search Criteria|Paieškos kriterijai
+Search Memory|Ieškoti atmintyje
+Search Value:|Ieškoma reikšmė:
+Search, change the value in the game, then search again until only a few addresses remain.|Ieškokite, pakeiskite reikšmę žaidime ir vėl ieškokite, kol liks tik keli adresai.
+Search/Add Cheats|Ieškoti/pridėti kodų
+Searching memory...|Ieškoma atmintyje...
+Sega Mahjong Panel (kiwames, vmahjong, myfairld). A-N select tiles; Kan/Pon/Chi/Reach/Ron are the action buttons. Player 2's panel only exists on the 2-player cabinet (Pro Mahjong Kiwame S).|Sega Mahjong pultas (kiwames, vmahjong, myfairld). A-N renkasi plyteles; Kan/Pon/Chi/Reach/Ron yra veiksmų mygtukai. 2 žaidėjo pultas yra tik 2 žaidėjų automate (Pro Mahjong Kiwame S).
+Sega Saturn Sound Format files (*.ssf *.minissf)|Sega Saturn Sound Format failai (*.ssf *.minissf)
+Select / Shoot Button|Pasirinkimo / šūvio mygtukas
+Select Button|Pasirinkimo mygtukas
+Select Cartridge...|Pasirinkti kasetę...
 Select a file to load your state|Pasirink žaidimo išsaugojimo failą įkėlimui
 Select your iso/cue/bin file|Pasirink iso/cue/bin failą
-Set PC to Start Address|Set PC to Start Address
+Select your iso/cue/bin/zip file|Pasirinkite iso/cue/bin/zip failą
+Select your iso/cue/bin/zip/chd file|Pasirinkite iso/cue/bin/zip/chd failą
+Select your ssf file|Pasirinkite ssf failą
+Service|Aptarnavimas
+Set PC to Start Address|Nustatyti PC į pradžios adresą
 Settings|Nuostatos
-Shortcuts|Shortcuts
-Show FPS|Show FPS
-Show Log Window|Show Log Window
-Signed|Signed
-Signed 16-bit value|Signed 16-bit value
-Signed 32-bit value|Signed 32-bit value
-Signed 8-bit value|Signed 8-bit value
-Slave SH2|Slave SH2
-Slot Info|Slot Info
-Slot Number:|Slot Number:
-Software OSD Interface|Software OSD Interface
-Software Video Interface|Software Video Interface
+Sharp Bilinear|Ryškus bilinijinis
+Sharpen (Adaptive)|Ryškinimas (adaptyvus)
+Shoot Button|Šūvio mygtukas
+Shortcut|Spartusis klavišas
+Shortcuts|Spartieji klavišai
+Show FPS|Rodyti FPS
+Show Log Window|Rodyti žurnalo langą
+Show hex dump|Rodyti šešioliktainę iškeltį
+Showing the first %1. Narrow down the search to see the rest.|Rodomi pirmieji %1. Susiaurinkite paiešką, kad pamatytumėte likusius.
+Signed|Su ženklu
+Signed 16-bit value|16 bitų reikšmė su ženklu
+Signed 32-bit value|32 bitų reikšmė su ženklu
+Signed 8-bit value|8 bitų reikšmė su ženklu
+Size|Dydis
+Slave SH2|Pagalbinis SH2
+Slave SH2 Registers|Pagalbinio SH2 registrai
+Slot|Lizdas
+Slot %1|Lizdas %1
+Slot %1 is sounding|Lizdas %1 skamba
+Slot Info|Lizdo informacija
+Slot Number:|Lizdo numeris:
+Slot details|Lizdo informacija
+Slot envelopes|Lizdų gaubtinės
+Slot number|Lizdo numeris
+Software OSD Interface|Programinė OSD sąsaja
+Software Video Interface|Programinė vaizdo sąsaja
 Sound|Garsas
 Sound Core|Garso įranga
+Sound...|Garsas...
+Source|Šaltinis
+Source file not found on this machine:\n%1\n\naddr2line reports it at line %2.|Šaltinio failas šiame kompiuteryje nerastas:\n%1\n\naddr2line nurodo eilutę %2.
+Source not found or available.\nIf sources are present, on linux be sure the shell output is in english.\nthis can be achieved by adding LC_ALL=C before the Kronos launch command\n|Šaltinis nerastas arba neprieinamas.\nJei šaltiniai yra, Linux sistemoje įsitikinkite, kad apvalkalo išvestis yra anglų kalba.\nTam prieš Kronos paleidimo komandą pridėkite LC_ALL=C\n
 Spanish|Ispanų
+Sprite Info|Spraitų informacija
+Stack|Dėklas
+Stack Walk|Dėklo peržiūra
+Stack Walk Off|Dėklo peržiūra išjungta
 Start|Pradėti
 Start Address:|Pradžios adresas:
-Start in Fullscreen|Start in Fullscreen
+Start a game to inspect the common control registers.|Paleiskite žaidimą, kad patikrintumėte bendruosius valdymo registrus.
+Start a game to inspect the sound slots.|Paleiskite žaidimą, kad patikrintumėte garso lizdus.
+Start in Fullscreen|Paleisti visame ekrane
+Start1|Start1
+Start2|Start2
 Status|Statusas
-Step Into|Step Into
-Step Out|Step Out
-Step Over|Step Over
+Status Register (SR).\nT - test/compare result; also the carry/borrow flag for shift and add/sub-with-carry instructions.\nS - selects saturating vs. wraparound behaviour for the MAC instruction's result.\nQ, M - internal state used by DIV0U/DIV0S/DIV1 to build a 32-bit divide out of 1-bit steps; meaningless outside a divide sequence.\nI3-I0 - current interrupt mask level (0-15); interrupt requests at or below this priority are held pending.|Būsenos registras (SR).\nT - tikrinimo/palyginimo rezultatas; taip pat pernešimo/skolinimo vėliavėlė poslinkiams ir sudėčiai/atimčiai su pernešimu.\nS - parenka MAC instrukcijos rezultato prisotinimą arba persivyniojimą.\nQ, M - vidinė būsena, kurią DIV0U/DIV0S/DIV1 naudoja 32 bitų dalybai iš 1 bito žingsnių sudaryti; už dalybos sekos ribų beprasmė.\nI3-I0 - dabartinis pertraukčių kaukės lygis (0-15); tokio ar žemesnio prioriteto pertraukčių užklausos laukia.
+Step Into|Žingsnis į vidų
+Step Out|Žingsnis į išorę
+Step Over|Žingsnis per
+Stick Down|Lazdelė žemyn
+Stick Left|Lazdelė kairėn
+Stick Right|Lazdelė dešinėn
+Stick Up|Lazdelė aukštyn
+Stick left button: same as A \nStick right button: same as B \nStick trigger: same as C|Kairysis lazdelės mygtukas: kaip A \nDešinysis lazdelės mygtukas: kaip B \nLazdelės gaidukas: kaip C
+Stop|Stabdyti
+Stop Slot|Stabdyti lizdą
+Stopped.|Sustabdyta.
 Store|Saugoti
-Synchronize Saturn internal clock with set time|Synchronize Saturn internal clock with set time
-System Clipping Coordinates|System Clipping Coordinates
-Text|Text
-Texture|Texture
+Stretch to window|Ištempti per visą langą
+Synchronize Saturn internal clock with set time|Sinchronizuoti Saturn vidinį laikrodį su nustatytu laiku
+System Clipping Coordinates|Sistemos apkarpymo koordinatės
+TV effect :|TV efektas:
+Take a snapshot now, close this window, play until the value changes, then reopen it and search.|Dabar padarykite momentinę kopiją, uždarykite šį langą, žaiskite, kol reikšmė pasikeis, tada vėl jį atverkite ir ieškokite.
+Take snapshot|Padaryti momentinę kopiją
+Tesselation|Teseliacija
+Test|Testas
+Text|Tekstas
+Text files (*.txt)|Tekstiniai failai (*.txt)
+Texture|Tekstūra
+The Master SH2 is always running: it is the core the boot ROM starts first and, by default, the one with bus priority when both SH-2s access the same resource at once. Most games run the bulk of their logic here.|Pagrindinis SH2 veikia visada: tai branduolys, kurį įkrovos ROM paleidžia pirmą, ir pagal numatymą jis turi magistralės prioritetą, kai abu SH-2 vienu metu kreipiasi į tą patį išteklių. Dauguma žaidimų čia vykdo didžiąją savo logikos dalį.
+The Slave SH2 is idle until a game explicitly starts it (see the Sega Saturn Dual CPU User's Guide). Titles that use it typically offload a second, parallel workload here rather than running unrelated code to the Master SH2.|Pagalbinis SH2 neveikia, kol žaidimas jo aiškiai nepaleidžia (žr. Sega Saturn Dual CPU User's Guide). Jį naudojantys žaidimai paprastai čia perkelia antrą, lygiagretų darbo krūvį, o ne su pagrindiniu SH2 nesusijusį kodą.
+The audio device does not support 44.1 kHz stereo 16-bit output, so the slot cannot be previewed.|Garso įrenginys nepalaiko 44,1 kHz stereo 16 bitų išvesties, todėl lizdo peržiūra negalima.
+The dummies cores don't need configuration|Fiktyviems branduoliams konfigūracija nereikalinga
+The dummies cores don't need configuration.|Fiktyviems branduoliams konfigūracija nereikalinga.
+The emulation is paused while this window is open.|Kol šis langas atvertas, emuliacija pristabdyta.
+The sound source of this slot is zero data (SSCTL = 2 or 3), so there is nothing to save.|Šio lizdo garso šaltinis yra nuliniai duomenys (SSCTL = 2 arba 3), todėl nėra ką įrašyti.
+This layer isn't producing any output right now.\nMost likely its BGON enable bit is off -- see the\nRegisters tab (BGON) or the main VDP2 Debug window.|Šis sluoksnis šiuo metu nieko neišveda.\nGreičiausiai išjungtas jo įgalinimo bitas BGON -- žr.\nregistrų kortelę (BGON) arba pagrindinį VDP2 derinimo langą.
+Throttle Down|Droselis žemyn
+Throttle Up|Droselis aukštyn
+Timers / Misc|Laikmačiai / Kita
 To|To
 To File...|Į failą...
+Tolerance ±|Paklaida ±
 Tools|Įrankiai
-Track Inf Loop Results|Track Inf Loop Results
+Trace Logging|Sekimo žurnalas
+Track Inf Loop Results|Begalinių ciklų sekimo rezultatai
+Trackball (patocar / skychal / supgoal / techbowl only)|Rutulinis manipuliatorius (tik patocar / skychal / supgoal / techbowl)
+Trackball Down|Rutulinis manipuliatorius žemyn
+Trackball Left|Rutulinis manipuliatorius kairėn
+Trackball Right|Rutulinis manipuliatorius dešinėn
+Trackball Up|Rutulinis manipuliatorius aukštyn
 Transfer|Pervedimas
 Translation|Vertimas
-Type:|Type:
+Triangles using perspective correction|Trikampiai su perspektyvos korekcija
+Trigger|Gaidukas
+Type|Tipas
+Type:|Tipas:
 Unable to add code|Neįmanoma pridėti kodo
 Unable to change description|Neįmanoma keisti aprašymo
 Unable to open file for loading|Neįmanoma atverti failo įkrovimui
 Unable to open file for saving|Neįmanoma atverti failo saugojimui
 Unable to remove code|Neįmanoma pašalinti kodo
+Unable to save file|Nepavyksta įrašyti failo
+Unchanged|Nepasikeitė
 Unknow (%1)|Nežinoma (%1)
-Unsigned|Unsigned
-Unsigned 16-bit value|Unsigned 16-bit value
-Unsigned 32-bit value|Unsigned 32-bit value
-Unsigned 8-bit value|Unsigned 8-bit value
+Unknown (%1)|Nežinoma (%1)
+Unmute all|Įjungti visus
+Unsigned|Be ženklo
+Unsigned 16-bit value|16 bitų reikšmė be ženklo
+Unsigned 32-bit value|32 bitų reikšmė be ženklo
+Unsigned 8-bit value|8 bitų reikšmė be ženklo
 Up|Aukštyn
+Up_P2|Aukštyn_Ž2
 Upload|Įkrauti
+Upscale Filter :|Didinimo filtras:
+Use SH2 cache - Experimental|Naudoti SH2 podėlį - eksperimentinis
+Use System Locale|Naudoti sistemos kalbą
+Use Vdp1 Cache|Naudoti VDP1 podėlį
+User Interface Translation|Sąsajos vertimas
+VDP&1|VDP&1
+VDP&2|VDP&2
 VDP1|VDP1
-VDP1 Command Info|VDP1 Command Info
-VDP1 Command List|VDP1 Command List
+VDP1 Command Info|VDP1 komandos informacija
+VDP1 Command List|VDP1 komandų sąrašas
+VDP1 Registers|VDP1 registrai
+VDP1 not initialised.|VDP1 neinicijuotas.
 VDP2|VDP2
-Value|Value
+VDP2 Debug|VDP2 derinimas
+VDP2 Debug — inactive|VDP2 derinimas — neaktyvus
+VDP2 RAM not available.|VDP2 RAM neprieinama.
+VDP2 Viewer|VDP2 peržiūra
+VDP2 not initialised.|VDP2 neinicijuotas.
+VDP2Viewer Viewer|VDP2Viewer peržiūra
+VRAM Hex|VRAM hex
+VRAM-A  (0x00000-0x3FFFF)|VRAM-A  (0x00000-0x3FFFF)
+VRAM-A0 (0x00000-0x1FFFF)|VRAM-A0 (0x00000-0x1FFFF)
+VRAM-A1 (0x20000-0x3FFFF)|VRAM-A1 (0x20000-0x3FFFF)
+VRAM-B  (0x40000-0x7FFFF)|VRAM-B  (0x40000-0x7FFFF)
+VRAM-B0 (0x40000-0x5FFFF)|VRAM-B0 (0x40000-0x5FFFF)
+VRAM-B1 (0x60000-0x7FFFF)|VRAM-B1 (0x60000-0x7FFFF)
+Value|Reikšmė
 Value :|Vertė:
-Value:|Value:
+Value out of range for this data type (%1 to %2).|Reikšmė už šio duomenų tipo ribų (nuo %1 iki %2).
+Value you see on screen, e.g. 3|Ekrane matoma reikšmė, pvz. 3
+Value:|Reikšmė:
+Values are read from the SCSP registers while the emulation is paused.|Reikšmės nuskaitomos iš SCSP registrų, kol emuliacija pristabdyta.
 Vdp1|Vdp1
 Vdp2|Vdp2
-Video|Video
+Vector Base Register (VBR).\nBase address of the exception/interrupt vector table: vector n is the 32-bit handler address stored at VBR + n*4. Normally set once by the boot ROM/BIOS and left alone by game code.|Vektorių bazės registras (VBR).\nIšimčių/pertraukčių vektorių lentelės bazinis adresas: vektorius n yra 32 bitų apdorojimo funkcijos adresas, saugomas adresu VBR + n*4. Paprastai vieną kartą nustato įkrovos ROM/BIOS, o žaidimo kodas jo nekeičia.
+Video|Vaizdas
+Video CD Card (MPEG Card)|Video CD plokštė (MPEG plokštė)
+Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)|Video CD plokštės ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;Visi failai (*)
 Video Core|Video įranga
 Video Driver|Video tvarkyklė
 Video Format|Video formatas
-View|View
-Viewer|Viewer
+View|Rodinys
+Viewer|Peržiūra
+Viewer && Registers...|Peržiūra && Registrai...
+Volume|Garsumas
+WAV Files (*.wav)|WAV failai (*.wav)
 Waiting Input...|Laukiama įvedimo
+Warning...|Įspėjimas...
+Wave File Output Interface|Wave failo išvesties sąsaja
+What do you know about the value?|Ką žinote apie reikšmę?
+Wheel|Vairas
+Wheel Configuration|Vairo konfigūracija
+Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).|Kur CMDLINK toliau siunčia komandų interpretatorių: NEXT (kita lentelė), ASSIGN/CALL (šuolis nurodytu adresu), RETURN arba END (sąrašas čia baigiamas).
 Width|Plotis
-Window Resolution|Window Resolution
-Windows SPTI Driver|Windows SPTI Driver
+Window Resolution|Lango raiška
+Window size :|Lango dydis:
+Windows SPTI Driver|Windows SPTI tvarkyklė
+Wireframe :|Vielinis karkasas:
 Word|Word
 Word Write|Žodžių rašymas
-Write|Write
+Word Write : %1 %2|Word rašymas: %1 %2
+Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Most game data lives here.|Work RAM-H, 0x06000000 - 0x060FFFFF (1 MB). Čia yra didžioji dalis žaidimo duomenų.
+Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).|Work RAM-L, 0x00200000 - 0x002FFFFF (1 MB).
+Write|Rašyti
 Yabause Cheat Files (*.yct);;All Files (*)|Yabause kodų failai (*.yct);;Visi failai (*)
 Yabause Qt GUI|Yabause Qt grafinė sąsaja
-Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
+Yabause Qt Gui<br />Based on Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />The Yabause Team<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>|Yabause Qt GUI<br />Paremta Yabause %1<br /><a href="http://yabause.org">http://yabause.org</a><br />Yabause komanda<br /><a href="mailto:pasnox@gmail.com">Filipe AZEVEDO</a>
 Yabause Save State (*.yss)|Yabause žaidimo išsaugojimo failas (*.yss)
-Yabause is not initialized, can't manage backup ram.|Yabause is not initialized, can't manage backup ram.
+Yabause is not initialized, can't manage backup ram.|Yabause neinicijuotas, negalima tvarkyti atsarginės atminties.
+Yes|Taip
+You don't know the real value|Tikrosios reikšmės nežinote
+Youtube Channel|Youtube kanalas
+addr2line Executable|Vykdomasis failas addr2line
+addr2line utility is not configured properly, source not available.|Programa addr2line netinkamai sukonfigūruota, šaltinis neprieinamas.
 http://www.emu-compatibility.com/yabause/index.php?lang=uk|http://www.emu-compatibility.com/yabause/index.php?lang=uk
 http://www.monkeystudio.org|http://www.monkeystudio.org
+nanovg OSD Interface|nanovg OSD sąsaja
+no memory selected|nepasirinkta jokia atmintis
 toolBar|Įrankų juosta
