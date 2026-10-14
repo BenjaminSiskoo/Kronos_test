@@ -1980,9 +1980,25 @@ void CartDeInit(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Taille de la DRAM de cartouche a serialiser (0 : rien a sauver).
+ * CART_DRAM128MBIT (requise par Heart of Darkness) et CART_DEV ont aussi
+ * une DRAM, qui n'etait pas sauvee : apres chargement, le jeu retrouvait le
+ * contenu de la session courante au lieu de celui de l'etat. */
+static u32 CartStateDramSize(int carttype)
+{
+   switch (carttype) {
+      case CART_DRAM8MBIT:   return 0x100000;
+      case CART_DRAM32MBIT:  return 0x400000;
+      case CART_DEV:         return 0x400000;
+      case CART_DRAM128MBIT: return CART_DRAM128MBIT_SIZE;
+      default:               return 0;
+   }
+}
+
 int CartSaveState(void ** stream)
 {
    int offset;
+   u32 dramsize;
 
    offset = MemStateWriteHeader(stream, "CART", 1);
 
@@ -1990,16 +2006,10 @@ int CartSaveState(void ** stream)
    MemStateWrite((void *)&CartridgeArea->carttype, 4, 1, stream);
 
    // Write the areas associated with the cart type here
-   switch(CartridgeArea->carttype){
-      case CART_DRAM8MBIT: {
-         MemStateWrite((void *)CartridgeArea->dram, 1, 0x100000, stream);
-         break;
-      }
-      case CART_DRAM32MBIT: {
-         MemStateWrite((void *)CartridgeArea->dram, 1, 0x400000, stream);
-         break;
-      }
-   }
+   dramsize = CartStateDramSize(CartridgeArea->carttype);
+   if ((dramsize != 0) && (CartridgeArea->dram != NULL))
+      MemStateWrite((void *)CartridgeArea->dram, 1, dramsize, stream);
+
    return MemStateFinishHeader(stream, offset);
 }
 
@@ -2008,30 +2018,36 @@ int CartSaveState(void ** stream)
 int CartLoadState(const void * stream, UNUSED int version, int size)
 {
    int newtype;
+   u32 dramsize;
 
    // Read cart type
    MemStateRead((void *)&newtype, 4, 1, stream);
 
+   dramsize = CartStateDramSize(newtype);
+
+   /* Le bloc doit contenir la DRAM annoncee : les etats ecrits avant l'ajout
+    * de CART_DEV / CART_DRAM128MBIT n'ont que le type. */
+   if ((dramsize == 0) || (size < (int)(4 + dramsize)))
+      return size;
+
    // Check to see if old cart type and new cart type match, if they don't,
    // reallocate memory areas
-   if( newtype == CART_DRAM8MBIT || newtype == CART_DRAM32MBIT ) {
-      if( newtype != CartridgeArea->carttype ){
-            CartDeInit();
-            CartInit(NULL, newtype );
+   if (newtype != CartridgeArea->carttype) {
+      YuiMsg("Save state cartridge type (%d) differs from the current one (%d): cartridge replaced\n",
+             newtype, CartridgeArea->carttype);
+      CartDeInit();
+      if (CartInit(NULL, newtype) != 0) {
+         YuiMsg("Save state: can not create cartridge type %d\n", newtype);
+         return size;
       }
-
-      // Read the areas associated with the cart type here
-      switch(CartridgeArea->carttype){
-            case CART_DRAM8MBIT: {
-               MemStateRead((void *)CartridgeArea->dram , 1, 0x100000, stream);
-               break;
-            }
-            case CART_DRAM32MBIT: {
-               MemStateRead((void *)CartridgeArea->dram , 1, 0x400000, stream);
-               break;
-            }
-      }
+      /* FIX : la zone CS0 de la carte memoire pointait encore sur les
+       * accesseurs et sur la structure liberee de l'ancienne cartouche. */
+      MappedMemoryRemapCs0();
    }
+
+   if (CartridgeArea->dram != NULL)
+      MemStateRead((void *)CartridgeArea->dram, 1, dramsize, stream);
+
    return size;
 }
 
