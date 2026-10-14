@@ -224,6 +224,18 @@ static void PerUpdateConfig(PerBaseConfig_struct * baseconfig, int nelems, void 
 u8 m_system_output = 0;
 u8 m_ioga_mode = 0;
 u8 m_ioga_portg = 0;
+/* PORT_DIRECTION (0x11): bit n configures port n (A..G), 1 = input, 0 = output.
+   Bit 4 is PORT-E: a mahjong/hanafuda cabinet drives its row-scan mux through
+   PORT-E (output, bit clear) and its joystick lines come back as inputs (bit set),
+   which is how MAME's stvmp_ioga_r() tells the two panels apart. */
+static u8 m_port_direction = 0;
+#define PORT_DIR_E_INPUT 0x10
+
+/* PORT-D cabinet outputs: bit0/1 = coin counter 1/2 (counted on rising
+   edge), bit2/3 = coin lockout 1/2 (active low), bit 7 = hopper motor.
+   Exposed through PerGetCoinCounter()/PerGetCoinLockout(). */
+static u32 per_coin_counter[2];
+static u8  per_coin_lockout[2];
 
 /*
    Medal/ticket hopper simulation.
@@ -266,6 +278,7 @@ static u8 hopper_test_override = 0; /* PERJAMMA_HOPPER_TEST held: force the sens
    never touches these.
 */
 static u16 IOPORT_COUNTER[4];
+static u16 IOPORT_COUNTER_BASE[4]; /* value latched when PORT-G bit 7 is written as 0 */
 
 #define TRACKBALL_X 0
 #define TRACKBALL_Y 1
@@ -364,8 +377,11 @@ DEFINE_MAHJONG_BUTTON(PerMahjongP2FlipFlop, 9, 6)
 #undef DEFINE_MAHJONG_BUTTON
 
 static int PerMahjongPanelEnabled(void) {
+  /* STVHANAFUDA (danchih): MAME drives it through the very same stvmp
+     row-scan mux (stvmp_ioga_r/w), the "different mux scheme" remark on
+     PORT_DIRECTION bit 0x08 is only a question there too. */
   return (yabsys.stvInputType == STVMP) || (yabsys.stvInputType == VMAHJONG) ||
-         (yabsys.stvInputType == MYFAIRLD);
+         (yabsys.stvInputType == MYFAIRLD) || (yabsys.stvInputType == STVHANAFUDA);
 }
 
 PerMahjongPanel_struct * PerMahjongAdd(PortData_struct * port) {
@@ -494,7 +510,7 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
    u8 val = 0x0;
    switch(addr) {
      case 0x01: // P1
-       if (PerMahjongPanelEnabled()) {
+       if (PerMahjongPanelEnabled() && !(m_port_direction & PORT_DIR_E_INPUT)) {
          val = PerMahjongPanelRead(0);
          break;
        }
@@ -503,7 +519,7 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
          val |= HOPPER_SENSOR_MASK; // force the sensor line active, like a held "Sensor Test" input
        break;
      case 0x03: // P2
-       val = PerMahjongPanelEnabled() ? PerMahjongPanelRead(1) : IOPORT[PORT_B];
+       val = (PerMahjongPanelEnabled() && !(m_port_direction & PORT_DIR_E_INPUT)) ? PerMahjongPanelRead(1) : IOPORT[PORT_B];
        break;
      case 0x05: val = IOPORT[PORT_C]; break; // SYSTEM //Return press status like declared in stv.cpp
      case 0x07: val = m_system_output; break; // port D, read-backs value written
@@ -512,7 +528,8 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
      case 0x0d: //PORT-G
        if (m_ioga_mode & 0x80) // PORT-G in counter mode
        {
-         u16 word = IOPORT_COUNTER[(m_ioga_portg >> 1) & 3];
+         int sel = (m_ioga_portg >> 1) & 3;
+         u16 word = (u16)(IOPORT_COUNTER[sel] - IOPORT_COUNTER_BASE[sel]);
          val = (u8)(word >> (((m_ioga_portg & 1) ^ 1) * 8));
          m_ioga_portg = (m_ioga_portg & 0xf8) | ((m_ioga_portg + 1) & 7); // counter# is auto-incremented then read
        }
@@ -537,6 +554,14 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
   switch(addr)
   {
     case 0x07:
+      {
+        int n;
+        for (n = 0; n < 2; n++) {
+          if ((val & (1 << n)) && !(m_system_output & (1 << n)))
+            per_coin_counter[n]++;
+          per_coin_lockout[n] = !(val & (4 << n));
+        }
+      }
       m_system_output = val;
       PerHopperMotorWrite(val);
       break;
@@ -551,7 +576,15 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
     case 0x0b: IOPORT[PORT_E] = val; break; // P4
     case 0x0d:
       //port-g
+      if (!(val & 0x80)) { // bit 7 == 0 resets the counters (re-latch the baseline), like MAME
+        int c;
+        for (c = 0; c < 4; c++)
+          IOPORT_COUNTER_BASE[c] = IOPORT_COUNTER[c];
+      }
       m_ioga_portg = val;
+      break;
+    case 0x11:
+      m_port_direction = val;
       break;
     case 0x1d:
       m_ioga_mode = val;
@@ -1196,6 +1229,7 @@ void PerCabCoin1Released(PerCab_struct * pad) {
 //////////////////////////////////////////////////////////////////////////////
 
 void PerCabCoin1Pressed(PerCab_struct * pad) {
+   if (per_coin_lockout[0]) return; /* coin mech blocked by the game */
    pad[PORT_C] &= ~(0x1 << 0x0);
 }
 
@@ -1208,6 +1242,7 @@ void PerCabCoin2Released(PerCab_struct * pad) {
 //////////////////////////////////////////////////////////////////////////////
 
 void PerCabCoin2Pressed(PerCab_struct * pad) {
+   if (per_coin_lockout[1]) return; /* coin mech blocked by the game */
    pad[PORT_C] &= ~(0x1 << 0x1);
 }
 
@@ -2153,6 +2188,8 @@ void PerPortReset(void)
         }
 
         IOPORT_COUNTER[0] = IOPORT_COUNTER[1] = IOPORT_COUNTER[2] = IOPORT_COUNTER[3] = 0;
+        IOPORT_COUNTER_BASE[0] = IOPORT_COUNTER_BASE[1] = IOPORT_COUNTER_BASE[2] = IOPORT_COUNTER_BASE[3] = 0;
+        per_coin_lockout[0] = per_coin_lockout[1] = 0;
         trackball_up = trackball_down = trackball_left = trackball_right = 0;
 
         /* Mahjong Panel rows are pull-up too, and no row is selected until
@@ -2160,6 +2197,7 @@ void PerPortReset(void)
         for (i=0; i<10; i++)
           MJPORT[i] = 0xFF;
         mj_mux_data = 0;
+        m_port_direction = 0;
 
         /* Keyboards are plugged in again by the port (PerKeyboardAdd). The
            host key state is kept: keys still held are sent again as Make. */
@@ -2343,4 +2381,97 @@ void PERDummyFlush(void) {
 
 void PERDummyKeyName(UNUSED u32 key, char * name, UNUSED int size) {
 	*name = 0;
+}
+
+u32 PerGetCoinCounter(int index) {
+   return (index == 0 || index == 1) ? per_coin_counter[index] : 0;
+}
+
+int PerGetCoinLockout(int index) {
+   return (index == 0 || index == 1) ? per_coin_lockout[index] : 0;
+}
+
+void PerSetCoinCounters(u32 coin1, u32 coin2) {
+   per_coin_counter[0] = coin1;
+   per_coin_counter[1] = coin2;
+}
+
+/*
+   ST-V I/O gate array save state (CART chunk, ST-V block - see
+   CartSaveState() in cs0.c). Saved: what the game wrote (PORT-D outputs,
+   PORT-G/mode registers, PORT_DIRECTION, mahjong row select), the PORT-G
+   counters with their reset baseline, the coin lockouts and the hopper
+   simulation. Not saved: the host inputs (IOPORT[], MJPORT[], trackball
+   and hopper test keys follow the controls being held), and the coin
+   counters, which stand for the cabinet's electromechanical meters
+   (bookkeeping kept in <romset>.coins): loading an older state must not
+   wind them back.
+*/
+#define PER_IOGA_STATE_VERSION 1
+#define PER_IOGA_STATE_SIZE (4 + 4 + 4*2*2 + 1 + 1 + 4 + 2 + 2)
+
+void PerIogaSaveState(void ** stream) {
+   u32 version = PER_IOGA_STATE_VERSION;
+   s32 frames = hopper_frame_count;
+   u8 regs[4];
+   u8 hopper[3];
+
+   regs[0] = m_system_output;
+   regs[1] = m_ioga_mode;
+   regs[2] = m_ioga_portg;
+   regs[3] = m_port_direction;
+   hopper[0] = hopper_motor;
+   hopper[1] = hopper_status;
+   hopper[2] = hopper_stopping;
+
+   MemStateWrite(&version, 4, 1, stream);
+   MemStateWrite(regs, 1, 4, stream);
+   MemStateWrite(IOPORT_COUNTER, 2, 4, stream);
+   MemStateWrite(IOPORT_COUNTER_BASE, 2, 4, stream);
+   MemStateWrite(&mj_mux_data, 1, 1, stream);
+   MemStateWrite(hopper, 1, 1, stream);           /* motor */
+   MemStateWrite(&frames, 4, 1, stream);
+   MemStateWrite(&hopper[1], 1, 2, stream);       /* status, stopping */
+   MemStateWrite(per_coin_lockout, 1, 2, stream);
+}
+
+int PerIogaLoadState(const void * stream, int size) {
+   u32 version;
+   s32 frames;
+   u8 regs[4];
+   u8 motor;
+   u8 hopper[2];
+
+   if (size < PER_IOGA_STATE_SIZE)
+      return -1;
+   MemStateRead(&version, 4, 1, stream);
+   if (version != PER_IOGA_STATE_VERSION)
+      return -1;
+
+   MemStateRead(regs, 1, 4, stream);
+   MemStateRead(IOPORT_COUNTER, 2, 4, stream);
+   MemStateRead(IOPORT_COUNTER_BASE, 2, 4, stream);
+   MemStateRead(&mj_mux_data, 1, 1, stream);
+   MemStateRead(&motor, 1, 1, stream);
+   MemStateRead(&frames, 4, 1, stream);
+   MemStateRead(hopper, 1, 2, stream);
+   MemStateRead(per_coin_lockout, 1, 2, stream);
+
+   m_system_output = regs[0];
+   m_ioga_mode = regs[1];
+   m_ioga_portg = regs[2];
+   m_port_direction = regs[3];
+   per_coin_lockout[0] = per_coin_lockout[0] ? 1 : 0;
+   per_coin_lockout[1] = per_coin_lockout[1] ? 1 : 0;
+
+   hopper_motor = motor ? 1 : 0;
+   hopper_stopping = hopper[1] ? 1 : 0;
+   hopper_frame_count = (frames >= 0) ? frames : 0;
+   /* The sensor is a bit of the PORT-A input byte: put the line back in
+      the state that was saved, not only the flag. */
+   if (PerHopperEnabled())
+      PerHopperSetSensor(hopper[0] ? 1 : 0);
+   else
+      hopper_status = 0;
+   return 0;
 }
