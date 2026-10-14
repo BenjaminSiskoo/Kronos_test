@@ -56,17 +56,16 @@ UIPortManager::UIPortManager( QWidget* parent )
 	{
 		cb->addItem( QtYabause::translate( "None" ), 0 );
 		cb->addItem( QtYabause::translate( "Pad" ), PERPAD );
-      cb->addItem( QtYabause::translate( "Wheel" ), PERWHEEL );
-      cb->addItem(QtYabause::translate("Mission Stick"), PERMISSIONSTICK);
-      cb->addItem(QtYabause::translate("Double Mission Stick"), PERTWINSTICKS);
-      cb->addItem( QtYabause::translate( "3D Control Pad" ), PER3DPAD );
-      cb->addItem( QtYabause::translate( "Gun" ), PERGUN );
-      cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD ); // no bindings: the whole host keyboard, by key position
+		cb->addItem( QtYabause::translate( "3D Control Pad" ), PER3DPAD );
+		cb->addItem(QtYabause::translate("Mission Stick"), PERMISSIONSTICK);
+		cb->addItem(QtYabause::translate("Double Mission Stick"), PERTWINSTICKS);
+		cb->addItem( QtYabause::translate( "Gun" ), PERGUN );
+		cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD ); // no bindings: the whole host keyboard, by key position
 		cb->addItem( QtYabause::translate( "Mouse" ), PERMOUSE );
-                cb->addItem( QtYabause::translate( "ST-V Cabinet" ), PERCABINET );
-                cb->addItem( QtYabause::translate( "Hopper Cabinet" ), PERCABINET_HOPPER ); // same peripheral as ST-V Cabinet, opens patocar/skychal/supgoal/techbowl/micrombc's dedicated dialog directly
-                cb->addItem( QtYabause::translate( "Mahjong Panel" ), PERCABINET_MAHJONG ); // same peripheral as ST-V Cabinet, opens kiwames/vmahjong/myfairld's dedicated dialog directly
-
+		cb->addItem( QtYabause::translate( "ST-V Cabinet" ), PERCABINET );
+		cb->addItem( QtYabause::translate( "Hopper Cabinet" ), PERCABINET_HOPPER ); // same peripheral as ST-V Cabinet, opens patocar/skychal/supgoal/techbowl/micrombc's dedicated dialog directly
+		cb->addItem( QtYabause::translate( "Mahjong Panel" ), PERCABINET_MAHJONG ); // same peripheral as ST-V Cabinet, opens kiwames/vmahjong/myfairld's dedicated dialog directly
+		cb->addItem( QtYabause::translate( "Wheel" ), PERWHEEL );
 		connect( cb, SIGNAL( currentIndexChanged( int ) ), this, SLOT( cbTypeController_currentIndexChanged( int ) ) );
 	}
 
