@@ -377,6 +377,8 @@ scucodebreakpoint_struct *ScuDspGetBreakpointList(void);
 void ScuDspClearCodeBreakpoints(void);
 int ScuSaveState(void ** stream);
 int ScuLoadState(const void * stream, int version, int size);
+/* A appeler apres le chargement complet d'un etat (YabLoadStateStream). */
+void ScuPostLoadState(void);
 
 #ifdef __cplusplus
 }
