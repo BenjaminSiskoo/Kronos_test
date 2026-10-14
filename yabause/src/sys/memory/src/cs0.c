@@ -24,6 +24,7 @@
 */
 
 #include <stdlib.h>
+#include <string.h>
 #include "cs0.h"
 #include "error.h"
 #include "japmodem.h"
@@ -31,6 +32,8 @@
 #include "decrypt.h"
 #include "yui.h"
 #include "rax.h"
+#include "peripheral.h"
+#include "eeprom.h"
 
 cartridge_struct *CartridgeArea;
 
@@ -42,10 +45,11 @@ static u16 protRegLowAddr = 0;
 static u16 protRegHighAddr = 0;
 static u16 protRegSubkey = 0;
 
-/* Set by init_decathlt() (stv.c) for the handful of carts using the
- * 315-5838/317-0229 compression chip (Decathlete, Name Club, Print Club
- * Love Love...). Left off for every other ROMSTV game so the normal CS0
- * ROM read/write path below is completely unaffected. */
+/* Set by init_5838*() (stv.c) for the carts using the 315-5838 family
+ * compression chip (Decathlete 315-5838, Name Club 317-0229, Print Club
+ * 317-0230/0231). Cleared at every game load (loadGame) and STVDeInit,
+ * so for every other ROMSTV game the normal CS0 ROM read/write path below
+ * is completely unaffected. */
 u8 decathleteProtEnabled = 0;
 
 #define LOGSTV
@@ -1234,7 +1238,10 @@ static u8 FASTCALL ROMSTVCs0ReadByte(SH2_struct *context, UNUSED u8* memory, u32
 
 static u16 FASTCALL ROMSTVCs0ReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
-   if (decathleteProtEnabled && DECATHLT_REG_OFFSET(addr) == 0x7FFFF8)
+   /* MAME maps the 32-bit data register at ...FFF8, so BOTH halves
+      (FFF8 and FFFA) hit the decoder, not only the first one. */
+   if (decathleteProtEnabled && decathlt5838DecoderEnabled() &&
+       (DECATHLT_REG_OFFSET(addr) == 0x7FFFF8 || DECATHLT_REG_OFFSET(addr) == 0x7FFFFA))
    {
       return decathlt5838DataRead();
    }
@@ -1246,7 +1253,7 @@ static u16 FASTCALL ROMSTVCs0ReadWord(SH2_struct *context, UNUSED u8* memory, u3
 
 static u32 FASTCALL ROMSTVCs0ReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
-   if (decathleteProtEnabled && DECATHLT_REG_OFFSET(addr) == 0x7FFFF8)
+   if (decathleteProtEnabled && decathlt5838DecoderEnabled() && DECATHLT_REG_OFFSET(addr) == 0x7FFFF8)
    {
       u16 hi = decathlt5838DataRead();
       u16 lo = decathlt5838DataRead();
@@ -1439,6 +1446,15 @@ static void FASTCALL ROMSTVCs1WriteWord(SH2_struct *context, UNUSED u8* memory, 
     return;
   }
 
+  /* 315-5838 family control register at 0x04200000 (MAME
+     sega5838_control_w): Name Club selects plain ROM reads with 1 and the
+     decoder output with 2. */
+  if (decathleteProtEnabled && (addr & 0xFFFFFF) == 0x200000)
+  {
+    decathlt5838SetControl(val);
+    return;
+  }
+
   if (STVAddrInProtWindow(addr))
   {
     u8 decryptCmd = addr & 0xF;
@@ -1488,6 +1504,12 @@ static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, 
   if (STVRaxLatchAddr(addr))
   {
     RaxHostWrite((u16)(val >> 16));
+    return;
+  }
+
+  if (decathleteProtEnabled && (addr & 0xFFFFFF) == 0x200000)
+  {
+    decathlt5838SetControl((u16)(val >> 16)); /* big-endian: first halfword */
     return;
   }
 
@@ -1995,58 +2017,208 @@ static u32 CartStateDramSize(int carttype)
    }
 }
 
+/* CART chunk version 2:
+ *   u32 cart type
+ *   u32 DRAM length (0 if none), then the DRAM
+ *   ST-V cartridges only: tagged blocks until the end of the chunk, each
+ *   4-char tag + u32 length + data, so a block that is unknown, missing or
+ *   of another version is skipped without shifting the rest:
+ *     "PROT" 315-5881 register window (decryptOn and the bus-echo shadows)
+ *     "5881" 315-5881 transfer in progress (decrypt.c)
+ *     "5838" 315-5838 family tables and decoder position (decrypt.c)
+ *     "IOGA" I/O gate array registers, PORT-G counters, hopper (peripheral.c)
+ *     "EEPR" ST-V serial EEPROM: interface state and contents (eeprom.c)
+ *     "RAX " Acclaim RAX sound board of Batman Forever (rax.c, adsp2181.c)
+ * Version 1 (type + DRAM when the type has one) is still read. Before
+ * version 2 nothing of the ST-V protection chips or of the IOGA was saved:
+ * a state taken in the middle of a 315-5881/5838 transfer resumed with the
+ * session's current position and tables, i.e. wrong data. */
+#define CART_STATE_VERSION 2
+#define CART_STV_PROT_STATE_VERSION 1
+#define CART_STV_PROT_STATE_SIZE (4 + 1 + 4*2)
+
+static void CartStvProtSaveState(void ** stream)
+{
+   u32 version = CART_STV_PROT_STATE_VERSION;
+   MemStateWrite(&version, 4, 1, stream);
+   MemStateWrite(&decryptOn, 1, 1, stream);
+   MemStateWrite(&protRegEnable, 2, 1, stream);
+   MemStateWrite(&protRegLowAddr, 2, 1, stream);
+   MemStateWrite(&protRegHighAddr, 2, 1, stream);
+   MemStateWrite(&protRegSubkey, 2, 1, stream);
+}
+
+static int CartStvProtLoadState(const void * stream, int size)
+{
+   u32 version;
+   if (size < CART_STV_PROT_STATE_SIZE)
+      return -1;
+   MemStateRead(&version, 4, 1, stream);
+   if (version != CART_STV_PROT_STATE_VERSION)
+      return -1;
+   MemStateRead(&decryptOn, 1, 1, stream);
+   MemStateRead(&protRegEnable, 2, 1, stream);
+   MemStateRead(&protRegLowAddr, 2, 1, stream);
+   MemStateRead(&protRegHighAddr, 2, 1, stream);
+   MemStateRead(&protRegSubkey, 2, 1, stream);
+   decryptOn &= 1;
+   return 0;
+}
+
+static void CartStateWriteBlock(void ** stream, const char * tag, void (*writer)(void **))
+{
+   int lenoffset;
+   u32 len = 0;
+
+   MemStateWrite((void *)tag, 1, 4, stream);
+   lenoffset = MemStateGetOffset();
+   MemStateWrite(&len, 4, 1, stream);   /* place holder */
+   writer(stream);
+   len = (u32)(MemStateGetOffset() - lenoffset - 4);
+   MemStateWriteOffset(&len, 4, 1, stream, lenoffset);
+}
+
+static void CartStvLoadBlocks(const void * stream, int chunkend)
+{
+   while ((chunkend - MemStateGetOffset()) >= 8)
+   {
+      char tag[4];
+      u32 len;
+      int blockend, status = -1;
+
+      MemStateRead(tag, 1, 4, stream);
+      MemStateRead(&len, 4, 1, stream);
+      if (len > (u32)(chunkend - MemStateGetOffset())) {
+         YuiMsg("Save state: CART block %.4s truncated, ignored\n", tag);
+         break;
+      }
+      blockend = MemStateGetOffset() + (int)len;
+
+      if (memcmp(tag, "PROT", 4) == 0)
+         status = CartStvProtLoadState(stream, (int)len);
+      else if (memcmp(tag, "5881", 4) == 0)
+         status = cryptoLoadState(stream, (int)len);
+      else if (memcmp(tag, "5838", 4) == 0)
+         status = decathlt5838LoadState(stream, (int)len);
+      else if (memcmp(tag, "IOGA", 4) == 0)
+         status = PerIogaLoadState(stream, (int)len);
+      else if (memcmp(tag, "EEPR", 4) == 0)
+         status = eeprom_load_state(stream, (int)len);
+      else if (memcmp(tag, "RAX ", 4) == 0)
+         status = RaxLoadState(stream, (int)len);
+
+      if (status != 0)
+         YuiMsg("Save state: CART block %.4s not loaded (unknown or other version)\n", tag);
+      MemStateSetOffset(blockend);
+   }
+}
+
 int CartSaveState(void ** stream)
 {
    int offset;
    u32 dramsize;
 
-   offset = MemStateWriteHeader(stream, "CART", 1);
+   offset = MemStateWriteHeader(stream, "CART", CART_STATE_VERSION);
 
    // Write cart type
    MemStateWrite((void *)&CartridgeArea->carttype, 4, 1, stream);
 
    // Write the areas associated with the cart type here
    dramsize = CartStateDramSize(CartridgeArea->carttype);
-   if ((dramsize != 0) && (CartridgeArea->dram != NULL))
+   if (CartridgeArea->dram == NULL)
+      dramsize = 0;
+   MemStateWrite((void *)&dramsize, 4, 1, stream);
+   if (dramsize != 0)
       MemStateWrite((void *)CartridgeArea->dram, 1, dramsize, stream);
+
+   if (CartridgeArea->carttype == CART_ROMSTV)
+   {
+      CartStateWriteBlock(stream, "PROT", CartStvProtSaveState);
+      CartStateWriteBlock(stream, "5881", cryptoSaveState);
+      CartStateWriteBlock(stream, "5838", decathlt5838SaveState);
+      CartStateWriteBlock(stream, "IOGA", PerIogaSaveState);
+      CartStateWriteBlock(stream, "EEPR", eeprom_save_state);
+      CartStateWriteBlock(stream, "RAX ", RaxSaveState);
+   }
 
    return MemStateFinishHeader(stream, offset);
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-int CartLoadState(const void * stream, UNUSED int version, int size)
+/* Replaces the current cartridge by one of the saved type (it has DRAM). */
+static int CartStateChangeType(int newtype)
+{
+   YuiMsg("Save state cartridge type (%d) differs from the current one (%d): cartridge replaced\n",
+          newtype, CartridgeArea->carttype);
+   CartDeInit();
+   if (CartInit(NULL, newtype) != 0) {
+      YuiMsg("Save state: can not create cartridge type %d\n", newtype);
+      return -1;
+   }
+   /* FIX : la zone CS0 de la carte memoire pointait encore sur les
+    * accesseurs et sur la structure liberee de l'ancienne cartouche. */
+   MappedMemoryRemapCs0();
+   return 0;
+}
+
+int CartLoadState(const void * stream, int version, int size)
 {
    int newtype;
    u32 dramsize;
+   int chunkend = MemStateGetOffset() + size;
 
    // Read cart type
+   if (size < 4)
+      return size;
    MemStateRead((void *)&newtype, 4, 1, stream);
 
-   dramsize = CartStateDramSize(newtype);
+   if (version < 2)
+   {
+      dramsize = CartStateDramSize(newtype);
 
-   /* Le bloc doit contenir la DRAM annoncee : les etats ecrits avant l'ajout
-    * de CART_DEV / CART_DRAM128MBIT n'ont que le type. */
-   if ((dramsize == 0) || (size < (int)(4 + dramsize)))
-      return size;
-
-   // Check to see if old cart type and new cart type match, if they don't,
-   // reallocate memory areas
-   if (newtype != CartridgeArea->carttype) {
-      YuiMsg("Save state cartridge type (%d) differs from the current one (%d): cartridge replaced\n",
-             newtype, CartridgeArea->carttype);
-      CartDeInit();
-      if (CartInit(NULL, newtype) != 0) {
-         YuiMsg("Save state: can not create cartridge type %d\n", newtype);
+      /* Le bloc doit contenir la DRAM annoncee : les etats ecrits avant l'ajout
+       * de CART_DEV / CART_DRAM128MBIT n'ont que le type. */
+      if ((dramsize == 0) || (size < (int)(4 + dramsize)))
          return size;
-      }
-      /* FIX : la zone CS0 de la carte memoire pointait encore sur les
-       * accesseurs et sur la structure liberee de l'ancienne cartouche. */
-      MappedMemoryRemapCs0();
+
+      // Check to see if old cart type and new cart type match, if they don't,
+      // reallocate memory areas
+      if ((newtype != CartridgeArea->carttype) && (CartStateChangeType(newtype) != 0))
+         return size;
+
+      if (CartridgeArea->dram != NULL)
+         MemStateRead((void *)CartridgeArea->dram, 1, dramsize, stream);
+
+      return size;
    }
 
-   if (CartridgeArea->dram != NULL)
-      MemStateRead((void *)CartridgeArea->dram, 1, dramsize, stream);
+   if ((chunkend - MemStateGetOffset()) < 4)
+      return size;
+   MemStateRead((void *)&dramsize, 4, 1, stream);
+   if (dramsize > (u32)(chunkend - MemStateGetOffset())) {
+      YuiMsg("Save state: CART DRAM size %u larger than the chunk, ignored\n", dramsize);
+      return size;
+   }
+
+   if (dramsize != 0)
+   {
+      int dramend = MemStateGetOffset() + (int)dramsize;
+
+      if (dramsize == CartStateDramSize(newtype))
+      {
+         if ((newtype != CartridgeArea->carttype) && (CartStateChangeType(newtype) != 0))
+            return size;
+         if (CartridgeArea->dram != NULL)
+            MemStateRead((void *)CartridgeArea->dram, 1, dramsize, stream);
+      }
+      MemStateSetOffset(dramend);
+   }
+
+   /* ST-V blocks: only meaningful when the running cartridge is the ST-V
+      one (the state belongs to the game currently loaded). */
+   if ((newtype == CART_ROMSTV) && (CartridgeArea->carttype == CART_ROMSTV))
+      CartStvLoadBlocks(stream, chunkend);
 
    return size;
 }
