@@ -204,7 +204,7 @@ void UIMemoryEditor::on_pbSearchMemory_clicked()
       MemorySearch search( &memorySearch );
       QProgressDialog progress;
 
-      progress.setLabelText("Searching memory...");
+      progress.setLabelText(QtYabause::translate("Searching memory..."));
 
       connect(&search, SIGNAL(searchResult(bool, bool, u32)), this, SLOT(searchResult(bool, bool, u32)));
       connect(this, SIGNAL(killProgressDialog()), &progress, SLOT(accept()));
@@ -228,14 +228,14 @@ void UIMemoryEditor::searchResult(bool found, bool cancel, u32 address)
       {
          if (searchStartAddress != saMemoryEditor->getStartAddress())
          {
-            if (CommonDialogs::question("Finished searching up to end of memory, continue from the beginning?"))
+            if (CommonDialogs::question(QtYabause::translate("Finished searching up to end of memory, continue from the beginning?")))
             {
                //search->setStartAddress(saMemoryEditor->getStartAddress());
                //search->start();
             }
          }
          else
-            CommonDialogs::error( "No matches found." );
+            CommonDialogs::error( QtYabause::translate( "No matches found." ) );
       }
    }
 }
