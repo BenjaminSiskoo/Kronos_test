@@ -139,7 +139,7 @@ UIYabause::UIYabause( QWidget* parent )
 	teLog->setVerticalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
 	teLog->setHorizontalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
 	mLogDock = new QDockWidget( this );
-	mLogDock->setWindowTitle( "Log" );
+	mLogDock->setWindowTitle( QtYabause::translate( "Log" ) );
 	mLogDock->setWidget( teLog );
 	addDockWidget( Qt::BottomDockWidgetArea, mLogDock );
 	mLogDock->setVisible( false );
@@ -184,7 +184,7 @@ UIYabause::UIYabause( QWidget* parent )
 		if (action->text().isEmpty())
 			continue;
 
-		QString text = vs->value(QString("Shortcuts/") + action->text(), "").toString();
+		QString text = vs->value(QString("Shortcuts/") + QtYabause::sourceText(action), "").toString();
 		if (text.isEmpty())
 			continue;
 		action->setShortcut(text);
@@ -715,7 +715,7 @@ void UIYabause::openSettingsOnTabs(int index) {
 
 	YabauseLocker locker( mYabauseThread );
 	UISettings *settings = new UISettings(&translations, window() );
-	settings->setCurrentOpenedTab(4);
+	settings->setCurrentOpenedTab(index);
 	if ( settings->exec() )
 	{
 		VolatileSettings* vs = QtYabause::volatileSettings();
@@ -763,7 +763,10 @@ void UIYabause::openSettingsOnTabs(int index) {
 		if(newhash["General/Translation"] != hash["General/Translation"])
 		{
 			mini18n_close();
-			retranslateUi(this);
+			/* retranslateUi(this) is no longer called: it reset the main window
+			   to the texts of UIYabause.ui (title "Yabause Qt GUI", action texts
+			   changed at run time...), and the retranslation now works from the
+			   remembered English source of every text, in every open window. */
 			if ( QtYabause::setTranslationFile() == -1 )
 				qWarning( "Can't set translation file" );
 			QtYabause::retranslateApplication();
@@ -806,7 +809,8 @@ void UIYabause::openSettingsOnTabs(int index) {
 
 void UIYabause::on_aFileOpenSTV_triggered()
 {
-	openSettingsOnTabs(4);
+	// Tab 3 = "Cart/Memory" (wCartMemory), where the STV game is selected.
+	openSettingsOnTabs(3);
 }
 
 void UIYabause::on_aFileSettings_triggered()
@@ -964,7 +968,7 @@ void UIYabause::takeScreenshot(void) {
 			QImageWriter iw( s );
 			if ( !iw.write( screenshot ))
 			{
-				CommonDialogs::error( QtYabause::translate( "An error occur while writing the screenshot: " + iw.errorString()) );
+				CommonDialogs::error( QtYabause::translate( "An error occurred while writing the screenshot: " ) + iw.errorString() );
 			}
 		}
 }
