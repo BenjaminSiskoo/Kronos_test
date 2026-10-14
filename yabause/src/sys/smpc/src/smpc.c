@@ -1478,7 +1478,11 @@ int SmpcLoadState(const void * stream, int version, int size)
       else if ((size - 48) == 24)
          MemStateRead((void *)SmpcInternalVars, 24, 1, stream);
       else
-         MemStateSetOffset(size - 48);
+         /* FIX : saut RELATIF de la partie inconnue. L'ancien code faisait un
+          * positionnement ABSOLU a (size - 48), c'est-a-dire quelque part
+          * au debut du fichier, et toute la suite du chargement lisait des
+          * donnees sans rapport. */
+         MemStateSetOffset(MemStateGetOffset() + (size - 48));
    }
    else if (version == 2)
       MemStateRead((void *)SmpcInternalVars, internalsizev2, 1, stream);
@@ -1486,6 +1490,24 @@ int SmpcLoadState(const void * stream, int version, int size)
       MemStateRead((void *)SmpcInternalVars, sizeof(SmpcInternal), 1, stream);
 
    // Read ID's of currently emulated peripherals(fix me)
+
+   /* Etat interne hors sauvegarde (statiques de ce fichier) : il venait de
+    * la session precedente. Un CKCHG en attente (ckchg_start_pending)
+    * aurait par exemple remis a zero VDP1/VDP2/SCU juste apres le
+    * chargement. On repart sans operation differee. */
+   intback_wait_for_vblankout = 0;
+   vblankout_wait_frame = 0;
+   ckchg_reset_done = 0;
+   ckchg_start_pending = 0;
+   intback_sf_clear_pending = 0;
+   intback_sf_clear_line = 0;
+   /* Acquisition du statut INTBACK en cours dans l'etat charge : elle ne
+    * doit pas etre abandonnee au V-Blank IN (voir SmpcINTBACKEnd()). On la
+    * deduit des registres relus au lieu de garder la valeur de la session
+    * precedente. */
+   intback_status_pending = ((SmpcRegs->COMREG == 0x10) &&
+                             (SmpcInternalVars->timing > 0) &&
+                             ((SmpcRegs->IREG[0] & 0x81) == 0x01)) ? 1 : 0;
 
    return size;
 }
