@@ -57,6 +57,15 @@ typedef struct {
    int endLine;                       /* first line it no longer applies to:
                                          the line where the bank lost read
                                          access, or 0x7FFFFFFF (open) */
+   int lazy;                          /* 0: data holds the content.
+                                         1: not copied yet -- the bank has
+                                         not been written since 'line', so
+                                         its content is still the live one;
+                                         copied before the next write.
+                                         2: never copied, the frame was drawn
+                                         first: the live / compose VRAM is
+                                         the content. See vdp2.c,
+                                         Vdp2SnapshotDefer(). */
    u8  data[VDP2_VRAM_BANK_SIZE];
 } Vdp2VramBankSnapshot;
 
@@ -125,6 +134,12 @@ const u8 * Vdp2GetVramBankSnapshotField(int bank, int atLine, int oddFrame);
  * bank snapshots, which keep priority). Vdp2GetComposeVram() returns NULL
  * with 8 Mbit VRAM (VRSIZE bit 15), where the live VRAM is still read. */
 void Vdp2CaptureComposeVram(void);
+
+/* Number of displayed lines the renderers use to place line zones on
+ * screen: yabsys.VBlankLineCount minus one, since V-blank IN fires on the
+ * line after the last displayed one (Vdp2VBlankLine()). Dividing by
+ * VBlankLineCount itself put every zone boundary at a 224/225 scale. */
+int Vdp2ZoneLineCount(void);
 const u8 *Vdp2GetComposeVram(void);
 
 u8 FASTCALL     Vdp2RamReadByte(SH2_struct *context, u8*, u32);
