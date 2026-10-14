@@ -197,13 +197,13 @@
      <item>
       <widget class="QPushButton" name="pbViewer">
        <property name="text"><string>Viewer &amp;&amp; Registers...</string></property>
-       <property name="toolTip"><string>Ouvrir le visualiseur VDP2</string></property>
+       <property name="toolTip"><string>Open the VDP2 viewer</string></property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="pbNextButton">
        <property name="text"><string>Next Frame</string></property>
-       <property name="toolTip"><string>Avancer d'une frame</string></property>
+       <property name="toolTip"><string>Advance one frame</string></property>
       </widget>
      </item>
      <item>
