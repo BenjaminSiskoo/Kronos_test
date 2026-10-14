@@ -51,6 +51,11 @@ void RaxHostWrite(u16 data);
    stereo output to *l / *r. No-op when the board is absent. */
 void RaxRunSample(s32 *l, s32 *r);
 
+/* Main thread: save states ("RAX " block of the CART chunk, cs0.c).
+   Load returns 0 when applied (or when the state has no board). */
+void RaxSaveState(void **stream);
+int  RaxLoadState(const void *stream, int size);
+
 #ifdef __cplusplus
 }
 #endif
