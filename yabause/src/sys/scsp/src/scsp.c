@@ -6346,6 +6346,10 @@ int SoundSaveState(void ** stream)
 #ifdef IMPROVED_SAVESTATES
       MemStateWrite((void *)&scsp.slot[i].env, sizeof(s32), 1, stream);
 #endif
+      /* FIX : nextphase n'etait affecte que si enxt valait l'une des cinq
+       * fonctions connues ; sinon on ecrivait un octet non initialise
+       * (comportement indefini, etat non reproductible). */
+      nextphase = 0;
       if (scsp.slot[i].enxt == scsp_env_null_next)
         nextphase = 0;
       else if (scsp.slot[i].enxt == scsp_release_next)
