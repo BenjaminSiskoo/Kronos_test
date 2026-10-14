@@ -20,6 +20,7 @@
 #include "junzip.h"
 #include "yabause.h"
 #include "eeprom.h"
+#include "peripheral.h"
 #include "decrypt.h"
 #include "zlib.h"
 #include "rax.h"
@@ -109,10 +110,16 @@ void sanjeon_init(void) {
   }
 }
 
-void init_decathlt(void) {
+static void init_5838_variant(int variant) {
   decathleteProtEnabled = 1;
+  decathlt5838SetVariant(variant);
   decathlt5838Reset();
 }
+
+void init_decathlt(void)  { init_5838_variant(0); } /* 315-5838: DecAthlete */
+void init_5838_0229(void) { init_5838_variant(1); } /* Name Club 1/2 */
+void init_5838_0230(void) { init_5838_variant(2); } /* Print Club Pooh 2/3, Nightmare Before Christmas */
+void init_5838_0231(void) { init_5838_variant(3); } /* Print Club Love Love 1/2, Sony Creative 5/6 */
 
 /* MAME stv.cpp init_batmanfr / batmanfr machine config: Acclaim RAX sound
    board, fed by writes to 0x04800000 (see ROMSTVCs1Write* in cs0.c). */
@@ -867,7 +874,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0229,
     NULL,
     {
         GAME_WORD_BLOB, "ic22",			0x0200000, 0x0200000, 0xac23c648,
@@ -886,7 +893,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0229,
     NULL,
     {
         GAME_WORD_BLOB, "nclubv2.ic22",	0x0200000, 0x0200000, 0x7e81676d,
@@ -1452,7 +1459,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0231,
     NV_1P,
     {
         GAME_WORD_BLOB, "pclblove.ic22",	0x0200000, 0x0200000, 0x8cd25a0f,
@@ -1473,7 +1480,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0231,
     NV_1P,
     {
         GAME_WORD_BLOB, "ic22",			0x0200000, 0x0200000, 0xd7d968d6,
@@ -1617,7 +1624,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0230,
     NV_1P,
     {
         GAME_WORD_BLOB, "ic22.bin",    0x0200000, 0x0200000, 0x2cb33332,
@@ -1637,7 +1644,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0230,
     NV_1P,
     {
         GAME_WORD_BLOB, "ic22.bin",	0x0200000, 0x0200000, 0xefc83c4f,
@@ -2558,7 +2565,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0231,
     NV_1P,
     {
         GAME_WORD_BLOB, "pclub2_ic22",	0x0200000, 0x0200000, 0xa0e5d77f,
@@ -2579,7 +2586,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0231,
     NV_1P,
     {
         GAME_WORD_BLOB, "ic22.bin",	0x0200000, 0x0200000, 0x754890c3,
@@ -2742,7 +2749,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_5838_0230,
     NV_1P,
     {
         GAME_WORD_BLOB, "lh28f016sut-10.ic22",	0x0200000, 0x0200000, 0xb0207086,
@@ -3409,6 +3416,37 @@ int STVGetSingle(const char *pathfile, const char *biospath, char **romset){
   return nbGames;
 }
 
+/* Coin counter bookkeeping (PORT-D bits 0/1), persisted next to the EEPROM
+   as <romset>.coins ("<coin1> <coin2>"), loaded at game start and written at
+   STVDeInit(). A missing/unreadable file simply means 0 coins. */
+static char stv_coin_path[4096];
+
+static void STVCoinBookkeepingInit(const char *eepromdir, const char *romset) {
+  u32 c1 = 0, c2 = 0;
+  FILE *fp;
+  stv_coin_path[0] = 0;
+  if (eepromdir == NULL || romset == NULL) { PerSetCoinCounters(0, 0); return; }
+  snprintf(stv_coin_path, sizeof(stv_coin_path), "%s/%s.coins", eepromdir, romset);
+  fp = fopen(stv_coin_path, "r");
+  if (fp) {
+    unsigned a = 0, b = 0;
+    if (fscanf(fp, "%u %u", &a, &b) == 2) { c1 = a; c2 = b; }
+    fclose(fp);
+  }
+  PerSetCoinCounters(c1, c2);
+}
+
+static void STVCoinBookkeepingSave(void) {
+  FILE *fp;
+  if (stv_coin_path[0] == 0) return;
+  fp = fopen(stv_coin_path, "w");
+  if (fp) {
+    fprintf(fp, "%u %u\n", (unsigned)PerGetCoinCounter(0), (unsigned)PerGetCoinCounter(1));
+    fclose(fp);
+  }
+  stv_coin_path[0] = 0;
+}
+
 int STVSingleInit(const char *gamepath, const char *biospath, const char *eepromdir, int favorite_region) {
   int nbGame = 0;
   char *romset = NULL;
@@ -3421,6 +3459,7 @@ int STVSingleInit(const char *gamepath, const char *biospath, const char *eeprom
     char eeprom_path[4096];
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
+    STVCoinBookkeepingInit(eepromdir, romset);
     yabsys.isSTV = 1;
     return 0;
   }
@@ -3444,6 +3483,7 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
     char eeprom_path[4096];
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
+    STVCoinBookkeepingInit(eepromdir, romset);
     yabsys.isSTV = 1;
     LOGSTV("Load is ok\n");
     return 0;
@@ -3457,6 +3497,7 @@ int STVDeInit(){
   RaxShutdown();
   decathleteProtEnabled = 0;
   eeprom_deinit();
+  STVCoinBookkeepingSave();
   yabsys.isSTV = 0;
   return 0;
 }
