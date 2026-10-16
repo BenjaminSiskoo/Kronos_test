@@ -1893,7 +1893,7 @@ Game GameList[NB_STV_GAMES]={
     0,
     0,
     NULL,
-    NULL,
+    NV_2P,
     {
         GAME_WORD_BLOB, "mpr18341.7",    0x0200000, 0x0200000, 0xcc5e8646,
         GAME_WORD_BLOB, "mpr18340.2",    0x0400000, 0x0200000, 0x8db23212,
