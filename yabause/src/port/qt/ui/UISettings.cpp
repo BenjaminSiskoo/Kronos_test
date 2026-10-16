@@ -125,7 +125,8 @@ const Items mVideoFilterMode = Items()
 	<< Item("7", "Lanczos3")
 	<< Item("8", "Sharp Bilinear")
 	<< Item("9", "FXAA")
-	<< Item("10", "CRT (Aperture Grille)");
+	<< Item("10", "CRT (Aperture Grille)")
+	<< Item("12", "Cell Shading (Toon)");
 
 const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
@@ -140,7 +141,9 @@ const Items mUpscaleFilterMode = Items()
 const Items mResolutionMode = Items()
 	<< Item("1", "1x (original resolution of the Saturn)")
 	<< Item("8", "2x")
+	<< Item("128", "3x")
 	<< Item("32", "4x")
+	<< Item("256", "6x")
 	<< Item("64", "Native (current resolution of the window)");
 
 const Items mAspectRatio = Items()
@@ -159,7 +162,8 @@ const Items mBandingMode = Items()
 
 const Items mWireframe = Items()
 	<< Item("0", "Off")
-	<< Item("1", "On");
+	<< Item("1", "On (sprite colors)")
+	<< Item("2", "On (white)");
 
 UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 	: QDialog( p )
