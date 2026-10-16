@@ -379,6 +379,17 @@ void VIDCSFrameChangeVdp1(){
     VIDCSEraseWriteVdp1(_Ygl->readframe);
     clearVDP1Framebuffer(_Ygl->readframe);
   }
+  if ((_Ygl->wireframe_mode != 0) && (_Ygl->vdp1_pbo[0] != 0)) {
+    /* Wireframe: the outlines do not cover what is under them, so whatever the
+     * game did not erase itself (erase window, no erase...) would stay on screen
+     * frame after frame. The next draw frame therefore always starts empty. */
+    float col[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int limits[4] = {0, 0, 1023, 511};
+    int xdiv = (((Vdp1Regs->TVMR & 0x1) == 1) && (_Ygl->vdp1width > 512)) ? (_Ygl->vdp1width / 512) : 1;
+    vdp1_clear(_Ygl->readframe, col, col, xdiv, limits);
+    glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
+    clearVDP1Framebuffer(_Ygl->readframe);
+  }
   VIDCSRenderVDP1();
   current_drawframe = _Ygl->drawframe;
   _Ygl->drawframe = _Ygl->readframe;
