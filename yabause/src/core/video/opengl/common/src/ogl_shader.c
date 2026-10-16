@@ -30,6 +30,7 @@
 #include "scanline_shader.h"
 #include "embellish_shader.h"
 #include "crt_cgwg_shader.h"
+#include "cellshading_shader.h"
 #include "common_glshader.h"
 
 #undef YGLLOG
@@ -2095,10 +2096,11 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   const GLchar * fblit_fxaa_img_v[] = { fblit_head, fblitfxaa_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_crt_img_v[] = { fblit_head, fblitcrt_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_crtcgwg_img_v[] = { fblit_head, fblitcrtcgwg_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_cellshading_img_v[] = { fblit_head, fblitcellshading_img, fblit_img, fblit_img_end, NULL };
 
   int aamode = _Ygl->aamode;
   /* Unknown value (e.g. config written by a newer build): plain display */
-  if ((aamode < AA_NONE) || (aamode > AA_CRT_CGWG_FAST)) aamode = AA_NONE;
+  if ((aamode < AA_NONE) || (aamode > AA_CELL_SHADING)) aamode = AA_NONE;
 
   float const vertexPosition[] = {
     1.0f, -1.0f,
@@ -2244,6 +2246,9 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
       case AA_CRT_CGWG_FAST:
         glShaderSource(fshader, 4, fblit_crtcgwg_img_v, NULL);
         break;
+      case AA_CELL_SHADING:
+        glShaderSource(fshader, 4, fblit_cellshading_img_v, NULL);
+        break;
     }
     glCompileShader(fshader);
     glGetShaderiv(fshader, GL_COMPILE_STATUS, &compiled);
@@ -2313,7 +2318,8 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, tex);
   if ((aamode == AA_BILINEAR_FILTER) || (aamode == AA_SHARP_BILINEAR_FILTER) ||
-      (aamode == AA_FXAA_FILTER) || (aamode == AA_CRT_FILTER)) {
+      (aamode == AA_FXAA_FILTER) || (aamode == AA_CRT_FILTER) ||
+      (aamode == AA_CELL_SHADING)) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   } else {
