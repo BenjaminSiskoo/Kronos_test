@@ -2313,8 +2313,14 @@ void YglChangeResolution(int w, int h) {
     case RES_2X: //1080p
     scale = 2; //floor(540.0/(float)uh);
     break;
+    case RES_3X:
+    scale = 3;
+    break;
     case RES_4X: //2160
     scale = 4; //floor(1080/(float)uh);
+    break;
+    case RES_6X:
+    scale = 6;
     break;
     case RES_NATIVE: //Native
     scale = scaleLimit;
@@ -2328,6 +2334,27 @@ void YglChangeResolution(int w, int h) {
   if (scale == 0){
     scale = 1;
   };
+  {
+    // High factors can exceed what the GPU can allocate (a 704 wide hires
+    // picture at x6 is 4224 texels wide, VDP1 buffers 3072x1536). Lower the
+    // factor until every internal buffer fits in GL_MAX_TEXTURE_SIZE.
+    static GLint maxTexSize = 0;
+    if (maxTexSize <= 0) {
+      glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
+      if (maxTexSize <= 0) maxTexSize = 16384;
+    }
+    while (scale > 1) {
+      int need = uw;
+      if (uh > need) need = uh;
+      if ((int)(512 * _Ygl->vdp1wdensity) > (int)(256 * _Ygl->vdp1hdensity)) {
+        if ((int)(512 * _Ygl->vdp1wdensity) > need) need = (int)(512 * _Ygl->vdp1wdensity);
+      } else if ((int)(256 * _Ygl->vdp1hdensity) > need) {
+        need = (int)(256 * _Ygl->vdp1hdensity);
+      }
+      if (need * scale <= maxTexSize) break;
+      scale--;
+    }
+  }
   // if (scale > scaleLimit) {
   //   scale = scaleLimit;
   // }
