@@ -2309,7 +2309,6 @@ void YglChangeResolution(int w, int h) {
   if (scaleLimit == 0)scaleLimit = 1;
   // printf("Request resolution %d %d (%d) [%d %d]\n", _Ygl->resolution_mode, uh, h, uw, w);
   switch (_Ygl->resolution_mode) {
-    break;
     case RES_2X: //1080p
     scale = 2; //floor(540.0/(float)uh);
     break;
@@ -2327,9 +2326,9 @@ void YglChangeResolution(int w, int h) {
     break;
     case RES_ORIGINAL:
     case RES_SD:
-    case RES_1X: //720p
+    case RES_1X: //Saturn resolution, no upscale
     default:
-    scale = 1; //floor(360.0/(float)uh);
+    scale = 1;
   }
   if (scale == 0){
     scale = 1;
