@@ -48,42 +48,158 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbMaxLines, int nbLines, u32 
 static int getProgramLine(cmd_poly* cmd_pol, int type);
 static void apply_wireframe_type(vdp1cmd_struct* cmd);
 
-/* Wireframe debug mode: force sprite-type quads and polygons to
- * render as POLYLINE so only outlines are drawn. Central-pixel
- * VRAM offset computation included for completeness (used elsewhere
- * for color sampling). Shared by vdp1_add() and vdp1_add_upscale()
- * to avoid drift. */
+/* ---------------------------------------------------------------------
+ * Wireframe debug mode (VDP_SETTING_WIREFRAME, VDP1 commands only)
+ *
+ *   0 = off
+ *   1 = outlines, each primitive drawn in its own colour
+ *   2 = outlines, every primitive drawn in the same colour (white)
+ *
+ * Every drawable primitive (normal / scaled / distorted sprites, polygons)
+ * is turned into a POLYLINE, with no size heuristic, so the whole picture
+ * is consistently shown as outlines. LINE / POLYLINE commands are already
+ * outlines and are kept.
+ *
+ * A sprite carries a colour *bank* or a colour *LUT address* in CMDCOLR,
+ * not a displayable colour. Used as the line colour as is, the outline came
+ * out with a wrong colour or as 0 (transparent, so invisible). The colour of
+ * the outline is therefore the one the sprite itself would write in the frame
+ * buffer: the first opaque texel found around the centre of the sprite,
+ * combined with CMDCOLR according to the colour mode (VDP1 manual, CMDPMOD
+ * bits 5-3). Polygons already hold a real colour in CMDCOLR.
+ *
+ * The draw mode (CMDPMOD bits 2-0 shadow / half-luminance / half-transparent /
+ * gouraud, mesh, MON...) of a sprite makes no sense for an outline and could
+ * hide it, so it is reset to a plain replace. Only the user clipping bits
+ * (9-10) are kept.
+ * Shared by vdp1_add() and vdp1_add_upscale() to avoid drift.
+ * --------------------------------------------------------------------- */
+#define WIREFRAME_MODE_COLOR 1
+#define WIREFRAME_MODE_WHITE 2
+#define WIREFRAME_DEFAULT_COLOR 0xFFFFu
+
+/* Frame buffer colour the sprite would draw for texel (x, y).
+ * Returns 0 when the texel is transparent (or the colour is 0). */
+static u32 wireframe_read_texel(const vdp1cmd_struct* cmd, u32 x, u32 y) {
+    const u32 mode = (cmd->CMDPMOD >> 3) & 0x7u;
+    const u32 base = (cmd->CMDSRCA * 8u) & 0x7FFFFu;
+    u32 texel;
+    u32 color;
+
+    switch (mode) {
+        case 0: /* 4 bpp, color bank */
+        case 1: { /* 4 bpp, color LUT */
+            u32 b = T1ReadByte(Vdp1Ram, (base + y * (cmd->w / 2u) + x / 2u) & 0x7FFFFu);
+            texel = (x & 1u) ? (b & 0xFu) : ((b >> 4) & 0xFu);
+            break;
+        }
+        case 2: case 3: case 4: /* 8 bpp, 64 / 128 / 256 colours */
+            texel = T1ReadByte(Vdp1Ram, (base + y * cmd->w + x) & 0x7FFFFu);
+            break;
+        case 5: /* 16 bpp RGB */
+            texel = T1ReadWord(Vdp1Ram, (base + (y * cmd->w + x) * 2u) & 0x7FFFFu);
+            break;
+        default:
+            return 0;
+    }
+
+    /* SPD (CMDPMOD bit 7) = 0: texel 0 is transparent */
+    if (((cmd->CMDPMOD & 0x80u) == 0) && (texel == 0)) return 0;
+
+    switch (mode) {
+        case 0:  color = (cmd->CMDCOLR & 0xFFF0u) | texel; break;
+        case 1:  color = T1ReadWord(Vdp1Ram, ((cmd->CMDCOLR & 0xFFFCu) * 8u + texel * 2u) & 0x7FFFFu); break;
+        case 2:  color = (cmd->CMDCOLR & 0xFFC0u) | (texel & 0x3Fu); break;
+        case 3:  color = (cmd->CMDCOLR & 0xFF80u) | (texel & 0x7Fu); break;
+        case 4:  color = (cmd->CMDCOLR & 0xFF00u) | (texel & 0xFFu); break;
+        default: color = texel; break;
+    }
+    return color & 0xFFFFu;
+}
+
+/* Colour of a sprite outline: first opaque texel, centre first. */
+static u32 wireframe_sprite_color(const vdp1cmd_struct* cmd) {
+    /* sample positions in 12ths of the sprite size */
+    static const u8 grid[][2] = {
+        {6, 6},
+        {3, 3}, {9, 3}, {3, 9}, {9, 9},
+        {6, 3}, {6, 9}, {3, 6}, {9, 6},
+        {2, 2}, {10, 2}, {2, 10}, {10, 10}
+    };
+    u32 i;
+    if ((cmd->w == 0) || (cmd->h == 0)) return WIREFRAME_DEFAULT_COLOR;
+    for (i = 0; i < (sizeof(grid) / sizeof(grid[0])); i++) {
+        u32 x = (cmd->w * grid[i][0]) / 12u;
+        u32 y = (cmd->h * grid[i][1]) / 12u;
+        u32 color;
+        if (x >= cmd->w) x = cmd->w - 1u;
+        if (y >= cmd->h) y = cmd->h - 1u;
+        color = wireframe_read_texel(cmd, x, y);
+        if (color != 0) return color;
+    }
+    return WIREFRAME_DEFAULT_COLOR;
+}
+
+/* Many games clear the frame buffer by drawing a flat polygon over the whole
+ * system clip area instead of using the hardware erase. As an outline, such a
+ * polygon would no longer clear anything and the outlines of the previous
+ * frames would pile up ("trails"). It is therefore left untouched: a plain
+ * (no gouraud, no mesh, replace) POLYGON covering at least 90% of the system
+ * clip area in both directions is a clear / backdrop, not geometry. */
+static int wireframe_is_clear_polygon(const vdp1cmd_struct* cmd) {
+    s32 minx, maxx, miny, maxy;
+    s32 clipw = (s32)Vdp1Regs->systemclipX2 - (s32)Vdp1Regs->systemclipX1 + 1;
+    s32 cliph = (s32)Vdp1Regs->systemclipY2 - (s32)Vdp1Regs->systemclipY1 + 1;
+
+    if (cmd->type != POLYGON) return 0;
+    if ((cmd->CMDPMOD & 0x0107u) != 0) return 0; /* replace only: no CC / gouraud / mesh */
+    if ((clipw <= 0) || (cliph <= 0)) return 0;
+
+    minx = MIN(cmd->CMDXA, MIN(cmd->CMDXB, MIN(cmd->CMDXC, cmd->CMDXD)));
+    maxx = MAX(cmd->CMDXA, MAX(cmd->CMDXB, MAX(cmd->CMDXC, cmd->CMDXD)));
+    miny = MIN(cmd->CMDYA, MIN(cmd->CMDYB, MIN(cmd->CMDYC, cmd->CMDYD)));
+    maxy = MAX(cmd->CMDYA, MAX(cmd->CMDYB, MAX(cmd->CMDYC, cmd->CMDYD)));
+
+    return (((maxx - minx + 1) * 10) >= (clipw * 9))
+        && (((maxy - miny + 1) * 10) >= (cliph * 9));
+}
+
 static void apply_wireframe_type(vdp1cmd_struct* cmd) {
-    int pos = (cmd->CMDSRCA * 8) & 0x7FFFF;
+    const int mode = _Ygl->wireframe_mode;
+    int isSprite = 0;
+    u32 color;
+
+    if (wireframe_is_clear_polygon(cmd)) return;
+
     switch (cmd->type) {
         case DISTORTED:
-            switch ((cmd->CMDPMOD >> 3) & 0x7) {
-                case 0: /* 4bpp: see patch 05 for parens */
-                case 1:
-                    pos += (cmd->h/2) * (cmd->w/2) + cmd->w/4;
-                    break;
-                case 2: case 3: case 4: /* 8bpp */
-                    pos += (cmd->h/2) * cmd->w + cmd->w/2;
-                    break;
-                case 5: /* 16bpp */
-                    pos += (cmd->h/2) * cmd->w * 2 + cmd->w;
-                    break;
-            }
-            cmd->type = POLYLINE;
-            break;
-        case POLYGON:
-            cmd->type = POLYLINE;
-            break;
         case QUAD:
         case QUAD_POLY:
-            if ((abs(cmd->CMDXA - cmd->CMDXB) <= ((2*_Ygl->rwidth)/3))
-             && (abs(cmd->CMDYA - cmd->CMDYD) <= ((_Ygl->rheight)/2))) {
-                cmd->type = POLYLINE;
-            }
+            isSprite = 1;
             break;
-        default: break;
+        case POLYGON:
+        case POLYLINE:
+        case LINE:
+            break;
+        default: /* clipping commands... */
+            return;
     }
-    (void)pos; /* currently not exported — retained for future use */
+
+    if (mode == WIREFRAME_MODE_WHITE) color = WIREFRAME_DEFAULT_COLOR;
+    else if (isSprite) color = wireframe_sprite_color(cmd);
+    else color = cmd->CMDCOLR;
+
+    /* A colour of 0 would be invisible (8 bpp frame buffer: only the low byte counts) */
+    if (((Vdp1Regs->TVMR & 0x1) ? (color & 0xFFu) : color) == 0) color = WIREFRAME_DEFAULT_COLOR;
+
+    if (isSprite || (mode == WIREFRAME_MODE_WHITE)) {
+        cmd->CMDCOLR = color;
+        cmd->CMDPMOD = (cmd->CMDPMOD & 0x0600u) | 0x0080u; /* replace, SPD, keep clip bits */
+    } else {
+        cmd->CMDCOLR = color;
+    }
+
+    if (cmd->type != LINE) cmd->type = POLYLINE;
 }
 
 
