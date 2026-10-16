@@ -2040,32 +2040,6 @@ static const char fblitnear_interlace_img[] =
       "} \n";
 
 
-static const char fblitbilinear_img[] =
-  "// Function to get a texel data from a texture with GL_NEAREST property. \n"
-  "// Bi-Linear interpolation is implemented in this function with the  \n"
-  "// help of nearest four data. \n"
-  "vec4 Filter( sampler2D textureSampler_i, vec2 texCoord_i ) \n"
-  "{ \n"
-  "	float texelSizeX = 1.0 / fWidth; //size of one texel  \n"
-  "	float texelSizeY = 1.0 / fHeight; //size of one texel  \n"
-  "	int nX = int( texCoord_i.x * fWidth ); \n"
-  "	int nY = int( texCoord_i.y * fHeight ); \n"
-  "	vec2 texCoord_New = vec2( ( float( nX ) + 0.5 ) / fWidth, ( float( nY ) + 0.5 ) / fHeight ); \n"
-  "	// Take nearest two data in current row. \n"
-  "    vec4 p0q0 = texture(textureSampler_i, texCoord_New); \n"
-  "    vec4 p1q0 = texture(textureSampler_i, texCoord_New + vec2(texelSizeX, 0)); \n"
-  "	// Take nearest two data in bottom row. \n"
-  "    vec4 p0q1 = texture(textureSampler_i, texCoord_New + vec2(0, texelSizeY)); \n"
-  "    vec4 p1q1 = texture(textureSampler_i, texCoord_New + vec2(texelSizeX , texelSizeY)); \n"
-  "    float a = fract( texCoord_i.x * fWidth ); // Get Interpolation factor for X direction. \n"
-  "	// Fraction near to valid data. \n"
-  "	// Interpolation in X direction. \n"
-  "    vec4 pInterp_q0 = mix( p0q0, p1q0, a ); // Interpolates top row in X direction. \n"
-  "    vec4 pInterp_q1 = mix( p0q1, p1q1, a ); // Interpolates bottom row in X direction. \n"
-  "    float b = fract( texCoord_i.y * fHeight ); // Get Interpolation factor for Y direction. \n"
-  "    return mix( pInterp_q0, pInterp_q1, b ); // Interpolate in Y direction. \n"
-  "} \n";
-
 /////
 
 GLuint textureCoord_buf[2] = {0,0};
@@ -2081,7 +2055,10 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   const GLchar * fblit_img_v[] = { fblit_head, fblitnear_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_img_interlace_v[] = { fblit_head, fblitnear_interlace_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblitbilinear_img_v[] = { fblit_head, fblitnear_img, fblit_img, fblit_img_end, NULL };
-  const GLchar * fblitbilinear_img_interlace_v[] = { fblit_head, fblitnear_interlace_img, fblit_img, fblit_img_end, NULL };
+  /* Bilinear: GL_LINEAR is set on the source texture in YglBlitFramebuffer(), the
+   * filter itself is a plain texture() fetch. The interlaced variant must not
+   * use texelFetch() (nearest), otherwise "Bilinear" does nothing in interlace. */
+  const GLchar * fblitbilinear_img_interlace_v[] = { fblit_head, fblitnear_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblitbicubic_img_v[] = { fblit_head, fblitbicubic_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_img_scanline_is_v[] = { fblit_head, fblitnear_img, fblit_img, Yglprg_blit_scanline_is_f, fblit_img_end, NULL };
   const GLchar * fblit_img_scanline_is_interlace_v[] = { fblit_head, fblitnear_interlace_img, fblit_img, Yglprg_blit_scanline_interlace_is_f, fblit_img_end, NULL };
