@@ -403,7 +403,8 @@ typedef enum
   AA_SHARP_BILINEAR_FILTER,
   AA_FXAA_FILTER,
   AA_CRT_FILTER,
-  AA_CRT_CGWG_FAST
+  AA_CRT_CGWG_FAST,
+  AA_CELL_SHADING
 } AAMODE;
 
 typedef enum
@@ -440,7 +441,9 @@ typedef enum
     RES_1X = 0x4,
     RES_2X = 0x8,
     RES_4X = 0x20,
-    RES_NATIVE = 0x40
+    RES_NATIVE = 0x40,
+    RES_3X = 0x80,
+    RES_6X = 0x100
 } RESOLUTION_MODE;
 
 typedef enum
