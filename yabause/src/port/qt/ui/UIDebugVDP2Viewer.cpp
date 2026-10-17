@@ -354,13 +354,20 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
 
     // BMPNA/B
     d<<"\n=== Bitmap Palette Numbers ===\n";
-    // ST-058-R2 §3.11 : BMPNA[2:0]=N0 palette, BMPNA[10:8]=N0 special priority
-    //                    BMPNA[6:4]=N1 palette, BMPNA[14:12]=N1 special priority
+    // ST-058-R2 p.112-113 (Bit Map Palette Number Register) :
+    //   BMPNA (18002CH) : N0BMP6~4 = bits 2-0, N0BMCC = bit 4, N0BMPR = bit 5
+    //                     N1BMP6~4 = bits 10-8, N1BMCC = bit 12, N1BMPR = bit 13
+    //   BMPNB (18002EH) : R0BMP6~4 = bits 2-0, R0BMCC = bit 4, R0BMPR = bit 5
+    // BMP = 3 bits hauts du numero de palette (bits 6-4) ; adresse CRAM
+    // de base = BMP << 8 (en entrees de couleur, avant CRAOFx).
     d<<"  BMPNA=0x"<<HEX4(r.BMPNA)
-      <<"  N0-pal="<<DEC(r.BMPNA&7)<<"  N0-spr="<<DEC((r.BMPNA>>8)&7)
-      <<"  N1-pal="<<DEC((r.BMPNA>>4)&7)<<"  N1-spr="<<DEC((r.BMPNA>>12)&7)<<"\n";
-    // ST-058-R2 §3.11 : BMPNB[2:0]=RBG0 palette, BMPNB[10:8]=RBG0 special priority
-    d<<"  BMPNB=0x"<<HEX4(r.BMPNB)<<"  RBG0-pal="<<DEC(r.BMPNB&7)<<"  RBG0-spr="<<DEC((r.BMPNB>>8)&7)<<"\n";
+      <<"  N0: pal="<<DEC(r.BMPNA&7)<<"(CRAM+0x"<<HEX4((r.BMPNA&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNA>>4)&1)<<" pr="<<DEC((r.BMPNA>>5)&1)
+      <<"  N1: pal="<<DEC((r.BMPNA>>8)&7)<<"(CRAM+0x"<<HEX4(((r.BMPNA>>8)&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNA>>12)&1)<<" pr="<<DEC((r.BMPNA>>13)&1)<<"\n";
+    d<<"  BMPNB=0x"<<HEX4(r.BMPNB)
+      <<"  RBG0: pal="<<DEC(r.BMPNB&7)<<"(CRAM+0x"<<HEX4((r.BMPNB&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNB>>4)&1)<<" pr="<<DEC((r.BMPNB>>5)&1)<<"\n";
 
     // PNC
     d<<"\n=== Pattern Name Control ===\n";
