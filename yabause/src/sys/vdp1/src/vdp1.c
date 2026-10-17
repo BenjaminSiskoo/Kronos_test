@@ -909,6 +909,26 @@ u8 *Vdp1DebugGetFrameRam(void)
    return Vdp1DebugFrameValid ? Vdp1DebugFrameRam : NULL;
 }
 
+/* Memoire que lisent TOUTES les fonctions Vdp1Debug* : l'instantane pris au
+ * debut du dernier trace s'il existe, la VRAM vivante sinon.
+ *
+ * La capture existait (Vdp1DebugSetCapture / Vdp1DebugCaptureFrame) mais
+ * personne ne l'activait ni ne la lisait : l'interface parcourait toujours
+ * Vdp1Ram, c'est-a-dire l'etat de la VRAM a l'instant ou l'emulation a ete
+ * mise en pause, pas la liste effectivement tracee. Un jeu qui reecrit ses
+ * caracteres ou sa table pendant la trame montrait alors des textures qui
+ * n'etaient pas celles du trace (sprites vides, mauvais caracteres). */
+static u8 *Vdp1DebugMem(void)
+{
+   return Vdp1DebugFrameValid && (Vdp1DebugFrameRam != NULL)
+          ? Vdp1DebugFrameRam : Vdp1Ram;
+}
+
+u8 *Vdp1DebugGetRam(void)
+{
+   return Vdp1DebugMem();
+}
+
 static void Vdp1DebugCaptureFrame(void)
 {
    if (!Vdp1DebugCaptureEnabled || (Vdp1Ram == NULL))
@@ -2717,7 +2737,7 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
    u32 commandCounter = 0;
    u16 command;
 
-   command = T1ReadWord(Vdp1Ram, addr);
+   command = T1ReadWord(Vdp1DebugMem(), addr);
 
    while (!(command & 0x8000) && (commandCounter != number) && (commandCounter<2000))
    {
@@ -2728,13 +2748,13 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
             addr += 0x20;
             break;
          case 1: // ASSIGN, jump to CMDLINK
-            addr = T1ReadWord(Vdp1Ram, addr + 2) * 8;
+            addr = T1ReadWord(Vdp1DebugMem(), addr + 2) * 8;
             break;
          case 2: // CALL, call a subroutine
             if (returnAddr == 0xFFFFFFFF)
                returnAddr = addr + 0x20;
 
-            addr = T1ReadWord(Vdp1Ram, addr + 2) * 8;
+            addr = T1ReadWord(Vdp1DebugMem(), addr + 2) * 8;
             break;
          case 3: // RETURN, return from subroutine
             if (returnAddr != 0xFFFFFFFF) {
@@ -2748,7 +2768,7 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
 
       if (addr > 0x7FFE0)
          return 0xFFFFFFFF;
-      command = T1ReadWord(Vdp1Ram, addr);
+      command = T1ReadWord(Vdp1DebugMem(), addr);
       commandCounter++;
    }
 
@@ -2764,7 +2784,7 @@ Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr)
 {
    if (addr != 0xFFFFFFFF)
    {
-      const u16 command = T1ReadWord(Vdp1Ram, addr);
+      const u16 command = T1ReadWord(Vdp1DebugMem(), addr);
       if (command & 0x8000)
         return VDPCT_DRAW_END;
       else if ((command & 0x000F) < VDPCT_INVALID)
@@ -2783,6 +2803,67 @@ u32 Vdp1DebugGetCommandAddr(u32 number) {
   return Vdp1DebugGetCommandNumberAddr(number);
 }
 
+/* Parcourt la table de commandes UNE seule fois et range l'adresse de chaque
+ * commande (Draw End compris, en derniere position) dans addrs[].
+ *
+ * Remplir la liste de l'interface avec Vdp1DebugGetCommandAddr(i) pour
+ * i = 0..n reparcourait la table depuis l'adresse 0 a chaque entree : O(n^2),
+ * et plafonne a 2000 commandes par Vdp1DebugGetCommandNumberAddr(). La VRAM
+ * VDP1 (512 Ko) contient au plus 0x80000 / 0x20 = 16384 tables : c'est la
+ * borne naturelle, qui protege aussi contre une liste qui boucle sur
+ * elle-meme (ASSIGN vers sa propre adresse).
+ *
+ * Saut CALL/RETURN : un seul niveau, comme Vdp1DebugGetCommandNumberAddr()
+ * et le moteur de trace (ST-013-R3 �5 : pas d'imbrication de sous-routines).
+ * Renvoie le nombre d'adresses ecrites. */
+int Vdp1DebugGetCommandList(u32 *addrs, int maxCount)
+{
+   u8 *ram = Vdp1DebugMem();
+   u32 addr = 0;
+   u32 returnAddr = 0xFFFFFFFF;
+   int count = 0;
+
+   if ((ram == NULL) || (addrs == NULL) || (maxCount <= 0))
+      return 0;
+
+   while (count < maxCount)
+   {
+      u16 command = T1ReadWord(ram, addr);
+      addrs[count++] = addr;
+
+      if (command & 0x8000)
+         break; // Draw End
+
+      switch ((command & 0x3000) >> 12)
+      {
+         case 0: // NEXT
+            addr += 0x20;
+            break;
+         case 1: // ASSIGN
+            addr = T1ReadWord(ram, addr + 2) * 8;
+            break;
+         case 2: // CALL
+            if (returnAddr == 0xFFFFFFFF)
+               returnAddr = addr + 0x20;
+            addr = T1ReadWord(ram, addr + 2) * 8;
+            break;
+         case 3: // RETURN
+            if (returnAddr != 0xFFFFFFFF) {
+               addr = returnAddr;
+               returnAddr = 0xFFFFFFFF;
+            }
+            else
+               addr += 0x20;
+            break;
+      }
+
+      if (addr > 0x7FFE0)
+         break;
+   }
+
+   return count;
+}
+
 char *Vdp1DebugGetCommandRaw(u32 addr)
 {
    u16 command;
@@ -2792,7 +2873,7 @@ char *Vdp1DebugGetCommandRaw(u32 addr)
       return NULL;
 
    out = (char*)malloc(128*sizeof(char));
-   command = T1ReadWord(Vdp1Ram, addr);
+   command = T1ReadWord(Vdp1DebugMem(), addr);
 
    if (command & 0x8000) {
      snprintf(out, 128, "END");
@@ -2805,10 +2886,10 @@ char *Vdp1DebugGetCommandRaw(u32 addr)
       snprintf(out, 128, "NEXT 0x%x", addr+0x20);
       break;
    case 1: // ASSIGN, jump to CMDLINK
-      snprintf(out, 128, "ASSIGN 0x%x", T1ReadWord(Vdp1Ram, addr + 2) * 8);
+      snprintf(out, 128, "ASSIGN 0x%x", T1ReadWord(Vdp1DebugMem(), addr + 2) * 8);
       break;
    case 2: // CALL, call a subroutine
-      snprintf(out, 128, "CALL 0x%x", T1ReadWord(Vdp1Ram, addr + 2) * 8);
+      snprintf(out, 128, "CALL 0x%x", T1ReadWord(Vdp1DebugMem(), addr + 2) * 8);
       break;
    case 3: // RETURN, return from subroutine
       snprintf(out, 128, "RETURN");
@@ -2826,7 +2907,7 @@ char *Vdp1DebugGetCommandNumberName(u32 addr)
 
    if (addr != 0xFFFFFFFF)
    {
-      command = T1ReadWord(Vdp1Ram, addr);
+      command = T1ReadWord(Vdp1DebugMem(), addr);
 
       if (command & 0x8000)
          return "Draw End";
@@ -2885,7 +2966,7 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
    if (addr == 0xFFFFFFFF)
       return;
 
-   command = T1ReadWord(Vdp1Ram, addr);
+   command = T1ReadWord(Vdp1DebugMem(), addr);
 
    if (command & 0x8000)
    {
@@ -2900,7 +2981,7 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
       return;
    }
 
-   Vdp1ReadCommand(&cmd, addr, Vdp1Ram);
+   Vdp1ReadCommand(&cmd, addr, Vdp1DebugMem());
 
    if ((cmd.CMDCTRL & 0x000F) < 4) {
      cmd.w = ((cmd.CMDSIZE >> 8) & 0x3F) * 8;
@@ -3359,6 +3440,53 @@ static u32 ColorRamGetColor(u32 colorindex)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Couleur qu'affiche le VDP2 pour une donnee de sprite 16 bits, telle que le
+ * VDP1 l'ecrit dans le frame buffer (mode banque : CMDCOLR | code ; mode LUT :
+ * l'entree de la table ; mode RGB : le mot de texture ; polygone : CMDCOLR).
+ *
+ * Le VDP2 ne sait pas comment la donnee a ete produite. Il l'interprete selon
+ * SPCTL :
+ *   - bit 5 (SPCLMD) = 1 et MSB = 1 : couleur RGB 5:5:5 ;
+ *   - sinon donnee palette : le code couleur (DC) est extrait selon le type de
+ *     sprite (SPCTL bits 3-0), les bits au-dessus sont priorite / calcul de
+ *     couleur / ombre, puis le decalage SPCAOS (CRAOFB bits 6-4, x 0x100) est
+ *     ajoute pour former l'index en Color RAM.
+ *
+ * Largeur du DC par type : Saturn Technical Bulletin #25, tableau "Normal
+ * Shadow Data According to Sprite Type" (types 0-3 et 5 : 11 bits ; 4 et 6 :
+ * 10 ; 7 : 9 ; 8 : 7 ; 9-B : 6 ; C-F : 8). Bit SPCLMD : VDP2 User's Manual,
+ * registre SPCTL p.207 (absent du workspace ; meme decodage dans Mednafen et
+ * Ymir).
+ *
+ * Avant, l'apercu ajoutait le decalage a la donnee BRUTE (sans masque DC) et
+ * prenait tout mot a MSB = 1 pour du RGB, quel que soit SPCLMD : les bits de
+ * priorite d'une banque CMDCOLR deplacaient l'index, et un jeu en mode
+ * "palette seule" voyait ses texels a MSB = 1 affiches en RGB. */
+static const u16 Vdp1DebugSpriteDCMask[16] = {
+   0x7FF, 0x7FF, 0x7FF, 0x7FF, 0x3FF, 0x7FF, 0x3FF, 0x1FF,
+   0x07F, 0x03F, 0x03F, 0x03F, 0x0FF, 0x0FF, 0x0FF, 0x0FF
+};
+
+static int Vdp1DebugIsRgbData(u32 data)
+{
+   return ((Vdp2Regs->SPCTL & 0x20) != 0) && ((data & 0x8000) != 0);
+}
+
+static u32 Vdp1DebugPaletteIndex(u32 data)
+{
+   return (data & Vdp1DebugSpriteDCMask[Vdp2Regs->SPCTL & 0xF])
+          + ((Vdp2Regs->CRAOFB & 0x70) << 4);
+}
+
+static u32 Vdp1DebugFbDataColor(u32 data)
+{
+   if (Vdp1DebugIsRgbData(data))
+      return SAT2YAB1(0xFF, data);
+   return ColorRamGetColor(Vdp1DebugPaletteIndex(data));
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 static INLINE int CheckEndcode(int dot, int endcode, int *code)
 {
    if (dot == endcode)
@@ -3414,7 +3542,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
    if (addr == 0xFFFFFFFF)
       return NULL;
 
-   command = T1ReadWord(Vdp1Ram, addr);
+   command = T1ReadWord(Vdp1DebugMem(), addr);
 
    if (command & 0x8000)
       // Draw End
@@ -3424,7 +3552,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       // Command Skipped
       return NULL;
 
-   Vdp1ReadCommand(&cmd, addr, Vdp1Ram);
+   Vdp1ReadCommand(&cmd, addr, Vdp1DebugMem());
 
    switch (cmd.CMDCTRL & 0x000F)
    {
@@ -3456,10 +3584,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          if ((texture = (u32 *)malloc(sizeof(u32))) == NULL)
             return NULL;
 
-         if (cmd.CMDCOLR & 0x8000)
-            texture[0] = SAT2YAB1(0xFF, cmd.CMDCOLR);
-         else
-            texture[0] = ColorRamGetColor(cmd.CMDCOLR);
+         texture[0] = Vdp1DebugFbDataColor(cmd.CMDCOLR);
 
          return texture;
       case 8: // User Clipping
@@ -3485,7 +3610,6 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
           * ignores par le materiel (4 bits de code couleur ici). Le
           * shader masquait deja correctement, pas cette fonction. */
          u32 colorBank = cmd.CMDCOLR & 0xFFF0;
-         u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i;
 
          for(i = 0;i < h[0];i++)
@@ -3501,7 +3625,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                code = 0;
             while(j < w[0])
             {
-               dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               dot = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
 
                // Pixel 1
                if (isendcode && (ret = CheckEndcode(dot >> 4, 0xF, &code)) > 0)
@@ -3512,7 +3636,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                else
                {
                   if (((dot >> 4) == 0) && !SPD) *textdata++ = 0;
-                  else *textdata++ = ColorRamGetColor(((dot >> 4) | colorBank) + colorOffset);
+                  else *textdata++ = Vdp1DebugFbDataColor((dot >> 4) | colorBank);
                }
 
                j += 1;
@@ -3526,7 +3650,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                else
                {
                   if (((dot & 0xF) == 0) && !SPD) *textdata++ = 0;
-                  else *textdata++ = ColorRamGetColor(((dot & 0xF) | colorBank) + colorOffset);
+                  else *textdata++ = Vdp1DebugFbDataColor((dot & 0xF) | colorBank);
                }
 
                j += 1;
@@ -3543,6 +3667,12 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
           * comme dans le renderer (vdp1_prog_compute.h) et Mednafen
           * (ss/vdp1_sprite.c). */
          u32 colorLut = (cmd.CMDCOLR & 0xFFFC) * 8;
+         /* L'entree de LUT est ecrite telle quelle dans le frame buffer et
+          * interpretee par le VDP2 comme toute donnee de sprite
+          * (Vdp1DebugFbDataColor) : RGB si MSB = 1 en mode mixte, sinon
+          * palette avec masque DC et decalage SPCAOS. Ce dernier n'etait
+          * pas ajoute ici, contrairement aux modes banque : l'apercu
+          * prenait la mauvaise couleur des qu'un jeu utilise SPCAOS != 0. */
          u16 i;
 
          for(i = 0;i < h[0];i++)
@@ -3558,7 +3688,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                code = 0;
             while(j < w[0])
             {
-               dot = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               dot = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
 
                if (isendcode && (ret = CheckEndcode(dot >> 4, 0xF, &code)) > 0)
                {
@@ -3571,11 +3701,8 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                      *textdata++ = 0;
                   else
                   {
-                     temp = T1ReadWord(Vdp1Ram, ((dot >> 4) * 2 + colorLut) & 0x7FFFF);
-                     if (temp & 0x8000)
-                        *textdata++ = SAT2YAB1(0xFF, temp);
-                     else
-                        *textdata++ = ColorRamGetColor(temp);
+                     temp = T1ReadWord(Vdp1DebugMem(), ((dot >> 4) * 2 + colorLut) & 0x7FFFF);
+                     *textdata++ = Vdp1DebugFbDataColor(temp);
                   }
                }
 
@@ -3592,11 +3719,8 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                      *textdata++ = 0;
                   else
                   {
-                     temp = T1ReadWord(Vdp1Ram, ((dot & 0xF) * 2 + colorLut) & 0x7FFFF);
-                     if (temp & 0x8000)
-                        *textdata++ = SAT2YAB1(0xFF, temp);
-                     else
-                        *textdata++ = ColorRamGetColor(temp);
+                     temp = T1ReadWord(Vdp1DebugMem(), ((dot & 0xF) * 2 + colorLut) & 0x7FFFF);
+                     *textdata++ = Vdp1DebugFbDataColor(temp);
                   }
                }
 
@@ -3612,7 +3736,6 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          // 8 bpp(64 color) Bank mode
          /* ST-013-R3 §6.3 : 6 bits de code couleur -> CMDCOLR & 0xFFC0. */
          u32 colorBank = cmd.CMDCOLR & 0xFFC0;
-         u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
@@ -3627,7 +3750,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                code = 0;
             while(j < w[0])
             {
-               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               u32 raw = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
                /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
                 * code est FFH sur 8 bits. Il doit etre teste sur l'octet
                 * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
@@ -3654,7 +3777,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
-               else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+               else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
 
                j += 1;
             }
@@ -3666,7 +3789,6 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          // 8 bpp(128 color) Bank mode
          /* ST-013-R3 §6.3 : 7 bits de code couleur -> CMDCOLR & 0xFF80. */
          u32 colorBank = cmd.CMDCOLR & 0xFF80;
-         u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
@@ -3681,7 +3803,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                code = 0;
             while(j < w[0])
             {
-               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               u32 raw = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
                /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
                 * code est FFH sur 8 bits. Il doit etre teste sur l'octet
                 * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
@@ -3708,7 +3830,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
-               else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+               else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
 
                j += 1;
             }
@@ -3720,7 +3842,6 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          // 8 bpp(256 color) Bank mode
          /* ST-013-R3 §6.3 : 8 bits de code couleur -> CMDCOLR & 0xFF00. */
          u32 colorBank = cmd.CMDCOLR & 0xFF00;
-         u32 colorOffset = (Vdp2Regs->CRAOFB & 0x70) << 4;
          u16 i, j;
 
          for(i = 0;i < h[0];i++)
@@ -3735,7 +3856,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                code = 0;
             while(j < w[0])
             {
-               u32 raw = T1ReadByte(Vdp1Ram, charAddr & 0x7FFFF);
+               u32 raw = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
                /* ST-013-R3 §6.3 p.86 : en modes couleur 2, 3 et 4 l'end
                 * code est FFH sur 8 bits. Il doit etre teste sur l'octet
                 * BRUT, avant tout masquage : les masques 0x3F (mode 2) et
@@ -3762,7 +3883,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                charAddr++;
 
                if ((dot == 0) && !SPD) *textdata++ = 0;
-               else *textdata++ = ColorRamGetColor((dot | colorBank) + colorOffset);
+               else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
 
                j += 1;
             }
@@ -3780,7 +3901,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
             code = 0;
             for(j = 0;j < w[0];j++)
             {
-               dot = T1ReadWord(Vdp1Ram, charAddr & 0x7FFFF);
+               dot = T1ReadWord(Vdp1DebugMem(), charAddr & 0x7FFFF);
 
                if (isendcode && (ret = CheckEndcode(dot, 0x7FFF, &code)) > 0)
                {
@@ -3789,9 +3910,14 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                }
                else
                {
-                  //if (!(dot & 0x8000) && (Vdp2Regs->SPCTL & 0x20)) printf("mixed mode\n");
+                  /* Transparence : MSB = 0 avec SPD = 0, meme regle que le
+                   * moteur (vdp1_prog_compute*.h). Avec SPD = 1, un mot a
+                   * MSB = 0 est ecrit tel quel et le VDP2 le lit comme une
+                   * donnee PALETTE : il etait affiche ici comme une couleur
+                   * RGB. Vdp1DebugFbDataColor applique la lecture du VDP2
+                   * (RGB seulement si MSB = 1 et SPCLMD = 1). */
                   if (!(dot & 0x8000) && !SPD) *textdata++ = 0;
-                  else *textdata++ = SAT2YAB1(0xFF, dot);
+                  else *textdata++ = Vdp1DebugFbDataColor(dot);
                }
 
                charAddr += 2;
@@ -3818,7 +3944,7 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
    if (cmdAddress == 0xFFFFFFFF)
       return NULL;
 
-   cmdRaw = T1ReadWord(Vdp1Ram, cmdAddress);
+   cmdRaw = T1ReadWord(Vdp1DebugMem(), cmdAddress);
 
    if (cmdRaw & 0x8000)
       // Draw End
@@ -3828,7 +3954,7 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
       // Command Skipped
       return NULL;
 
-   Vdp1ReadCommand(&cmd, cmdAddress, Vdp1Ram);
+   Vdp1ReadCommand(&cmd, cmdAddress, Vdp1DebugMem());
 
    const int spriteCmdType = ((cmd.CMDPMOD >> 3) & 0x7);
    switch (cmd.CMDCTRL & 0x000F)
@@ -3898,13 +4024,295 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
    // Read texture data directly from VRAM.
    for (u32 i = 0; i < *numBytes; ++i)
    {
-     texture[ i ] = T1ReadByte(Vdp1Ram, ((cmd.CMDSRCA * 8) + i) & 0x7FFFF);
+     texture[ i ] = T1ReadByte(Vdp1DebugMem(), ((cmd.CMDSRCA * 8) + i) & 0x7FFFF);
    }
 
    return texture;
 }
 
 //////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+// Aide au debogage : couleur d'un texel et apercu de la trame complete.
+//
+// Ni l'une ni l'autre n'interviennent dans le rendu : elles ne lisent que
+// Vdp1DebugMem(), la Color RAM et les registres VDP2, pour l'interface.
+//////////////////////////////////////////////////////////////////////////////
+
+/* Decrit le chemin complet d'un code couleur de texel jusqu'a sa couleur
+ * finale : banque/LUT, decalage CRAOFB, index et contenu de la Color RAM.
+ * Meme arithmetique que Vdp1DebugTextureAtAddr (et donc que l'apercu).
+ * Renvoie le nombre de caracteres ecrits (0 si rien a dire). */
+int Vdp1DebugTexelColorText(u32 cmdAddr, u32 code, char *out, int outSize)
+{
+   u8 *ram = Vdp1DebugMem();
+   vdp1cmd_struct cmd;
+   u32 data = 0;
+   int n = 0;
+
+   if ((out == NULL) || (outSize <= 0)) return 0;
+   out[0] = '\0';
+   if ((ram == NULL) || (cmdAddr == 0xFFFFFFFF)) return 0;
+
+   Vdp1ReadCommand(&cmd, cmdAddr, ram);
+   if ((cmd.CMDCTRL & 0xC000) || ((cmd.CMDCTRL & 0xF) > 3)) return 0;
+
+   /* Donnee 16 bits que le VDP1 ecrit dans le frame buffer pour ce texel. */
+   switch ((cmd.CMDPMOD >> 3) & 0x7)
+   {
+      case 0: data = (code | (cmd.CMDCOLR & 0xFFF0)); break;
+      case 2: data = (code | (cmd.CMDCOLR & 0xFFC0)); break;
+      case 3: data = (code | (cmd.CMDCOLR & 0xFF80)); break;
+      case 4: data = (code | (cmd.CMDCOLR & 0xFF00)); break;
+      case 1:
+      {
+         u32 lutAddr = ((cmd.CMDCOLR & 0xFFFC) * 8 + code * 2) & 0x7FFFF;
+         data = T1ReadWord(ram, lutAddr);
+         n += snprintf(out + n, outSize - n, "LUT[0x%05X] -> ", lutAddr);
+         break;
+      }
+      case 5: data = code; break;
+      default:
+         return 0;
+   }
+   if (n >= outSize) return (int)strlen(out);
+
+   if (Vdp1DebugIsRgbData(data)) {
+      snprintf(out + n, outSize - n, "FB 0x%04X = RGB R=%d G=%d B=%d",
+               data, data & 0x1F, (data >> 5) & 0x1F, (data >> 10) & 0x1F);
+      return (int)strlen(out);
+   }
+
+   {
+      const int type = Vdp2Regs->SPCTL & 0xF;
+      const u32 mask = Vdp1DebugSpriteDCMask[type];
+      const u32 dc = data & mask;
+      const u32 full = Vdp1DebugPaletteIndex(data);
+      n += snprintf(out + n, outSize - n, "FB 0x%04X  type %X: DC 0x%03X + offset 0x%03X = CRAM idx 0x%03X",
+                    data, type, dc, full - dc, full & 0x7FF);
+      if (n < outSize) {
+         if (Vdp2Internal.ColorMode == 2) {
+            u32 a = (full << 2) & 0xFFF;
+            n += snprintf(out + n, outSize - n, "  [0x%03X] = 0x%04X%04X",
+                          a, T2ReadWord(Vdp2ColorRam, a), T2ReadWord(Vdp2ColorRam, a + 2));
+         } else {
+            u32 a = (full << 1) & 0xFFF;
+            u16 v = T2ReadWord(Vdp2ColorRam, a);
+            n += snprintf(out + n, outSize - n, "  [0x%03X] = 0x%04X  R=%d G=%d B=%d",
+                          a, v, v & 0x1F, (v >> 5) & 0x1F, (v >> 10) & 0x1F);
+         }
+      }
+      /* TB #25 : un DC egal a "tous les bits a 1 sauf le bit 0" est une
+       * donnee d'ombre normale pour le VDP2, pas une couleur. */
+      if ((n < outSize) && (dc == (mask & ~1u)))
+         snprintf(out + n, outSize - n, "  (normal shadow data, TB#25)");
+   }
+   return (int)strlen(out);
+}
+
+static void Vdp1DebugPlot(u32 *fb, int W, int H, int x, int y, u32 c)
+{
+   if ((x >= 0) && (y >= 0) && (x < W) && (y < H))
+      fb[y * W + x] = c;
+}
+
+static void Vdp1DebugDrawLine(u32 *fb, int W, int H, int x0, int y0, int x1, int y1, u32 c)
+{
+   int dx = abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
+   int dy = -abs(y1 - y0), sy = (y0 < y1) ? 1 : -1;
+   int err = dx + dy;
+   int guard = 0;
+   for (;;) {
+      Vdp1DebugPlot(fb, W, H, x0, y0, c);
+      if (((x0 == x1) && (y0 == y1)) || (++guard > 8192)) break;
+      int e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+   }
+}
+
+/* Plaque la texture tw x th sur le quadrilatere A B C D (A = coin haut
+ * gauche de la texture, B haut droit, C bas droit, D bas gauche) par
+ * echantillonnage direct : chaque point (u, v) est interpole bilineairement
+ * entre les coins puis trace. Ce n'est PAS le rasteriseur du VDP1 (pas de
+ * pas de Bresenham, pas de pixels "trous" ni de recouvrement identiques) :
+ * c'est un apercu, suffisant pour voir ou chaque commande se place. */
+static void Vdp1DebugDrawQuad(u32 *fb, int W, int H, const int *qx, const int *qy,
+                              const u32 *tex, int tw, int th, int flipH, int flipV)
+{
+   int lenU = MAX(MAX(abs(qx[1] - qx[0]), abs(qy[1] - qy[0])),
+                  MAX(abs(qx[2] - qx[3]), abs(qy[2] - qy[3])));
+   int lenV = MAX(MAX(abs(qx[3] - qx[0]), abs(qy[3] - qy[0])),
+                  MAX(abs(qx[2] - qx[1]), abs(qy[2] - qy[1])));
+   int nu = MIN(2048, MAX(tw, lenU) * 2 + 1);
+   int nv = MIN(2048, MAX(th, lenV) * 2 + 1);
+   int iu, iv;
+
+   for (iv = 0; iv <= nv; iv++) {
+      float v = (float)iv / (float)nv;
+      int ty = MIN(th - 1, (int)(v * th));
+      if (flipV) ty = th - 1 - ty;
+      for (iu = 0; iu <= nu; iu++) {
+         float u = (float)iu / (float)nu;
+         int tx = MIN(tw - 1, (int)(u * tw));
+         u32 c;
+         float topX, topY, botX, botY;
+         if (flipH) tx = tw - 1 - tx;
+         c = tex[ty * tw + tx];
+         if (c == 0) continue; // transparent
+         topX = qx[0] + (qx[1] - qx[0]) * u;  topY = qy[0] + (qy[1] - qy[0]) * u;
+         botX = qx[3] + (qx[2] - qx[3]) * u;  botY = qy[3] + (qy[2] - qy[3]) * u;
+         Vdp1DebugPlot(fb, W, H, (int)floorf(topX + (botX - topX) * v + 0.5f),
+                                 (int)floorf(topY + (botY - topY) * v + 0.5f), c);
+      }
+   }
+}
+
+/* Assemble toutes les commandes de addrs[] dans une image ARGB (meme format
+ * que Vdp1DebugTextureAtAddr, 0 = transparent) de la taille du clipping
+ * systeme (320x224 si aucune commande System Clipping ne le fixe).
+ *
+ * boxes[4*i .. 4*i+3] recoit x0, y0, x1, y1 (inclus, coordonnees ecran, avant
+ * clipping) de la commande i, ou x1 < x0 si elle ne trace rien.
+ *
+ * Pris en compte : coordonnees locales, inversions H/V, zoom point des
+ * scaled sprites (meme decomposition que Vdp1NormalSpriteDraw et voisins),
+ * quadrilateres des distorted sprites et polygones, polylignes et lignes,
+ * transparence et end codes (via Vdp1DebugTextureAtAddr).
+ * Ignores : calcul de couleur (demi-transparence, ombre, Gouraud), mesh,
+ * clipping utilisateur, HSS. */
+u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int *boxes)
+{
+   u8 *ram = Vdp1DebugMem();
+   int W = 320, H = 224;
+   s32 localX = 0, localY = 0;
+   u32 *fb;
+   int i;
+
+   if ((ram == NULL) || (addrs == NULL) || (count <= 0)) return NULL;
+
+   /* Taille de la toile : derniere commande System Clipping de la liste. */
+   for (i = 0; i < count; i++) {
+      u16 ctrl = T1ReadWord(ram, addrs[i]);
+      if (!(ctrl & 0xC000) && ((ctrl & 0xF) == 9)) {
+         W = (T1ReadWord(ram, addrs[i] + 0x14) & 0x3FF) + 1;
+         H = (T1ReadWord(ram, addrs[i] + 0x16) & 0x3FF) + 1;
+      }
+   }
+   W = MAX(8, MIN(1024, W));
+   H = MAX(8, MIN(512, H));
+
+   fb = (u32 *)calloc((size_t)W * H, sizeof(u32));
+   if (fb == NULL) return NULL;
+
+   for (i = 0; i < count; i++) {
+      vdp1cmd_struct cmd;
+      int qx[4], qy[4];
+      int type, k;
+      u32 *tex = NULL;
+      int tw = 0, th = 0;
+
+      if (boxes) { boxes[4*i] = 0; boxes[4*i+1] = 0; boxes[4*i+2] = -1; boxes[4*i+3] = -1; }
+
+      Vdp1ReadCommand(&cmd, addrs[i], ram);
+      if (cmd.CMDCTRL & 0x8000) break;       // Draw End
+      if (cmd.CMDCTRL & 0x4000) continue;    // commande sautee
+      type = cmd.CMDCTRL & 0xF;
+
+      CONVERTCMD(&cmd.CMDXA); CONVERTCMD(&cmd.CMDYA);
+      CONVERTCMD(&cmd.CMDXB); CONVERTCMD(&cmd.CMDYB);
+      CONVERTCMD(&cmd.CMDXC); CONVERTCMD(&cmd.CMDYC);
+      CONVERTCMD(&cmd.CMDXD); CONVERTCMD(&cmd.CMDYD);
+
+      if (type == 10) {                       // Local Coordinates
+         localX = cmd.CMDXA;
+         localY = cmd.CMDYA;
+         continue;
+      }
+      if (type > 7) continue;                 // clipping, invalide
+
+      tex = Vdp1DebugTextureAtAddr(addrs[i], &tw, &th);
+      if (tex == NULL) continue;
+
+      switch (type) {
+         case 0: // Normal Sprite
+            qx[0] = cmd.CMDXA;          qy[0] = cmd.CMDYA;
+            qx[1] = cmd.CMDXA + tw - 1; qy[1] = cmd.CMDYA;
+            qx[2] = cmd.CMDXA + tw - 1; qy[2] = cmd.CMDYA + th - 1;
+            qx[3] = cmd.CMDXA;          qy[3] = cmd.CMDYA + th - 1;
+            break;
+         case 1: // Scaled Sprite
+         {
+            int zp = (cmd.CMDCTRL >> 8) & 0xF;
+            int x0, x1, y0, y1;
+            if (zp == 0) {
+               x0 = cmd.CMDXA; y0 = cmd.CMDYA; x1 = cmd.CMDXC; y1 = cmd.CMDYC;
+            } else {
+               int rw = cmd.CMDXB, rh = cmd.CMDYB;
+               switch (zp & 3) {
+                  case 2:  x0 = cmd.CMDXA - rw / 2; x1 = cmd.CMDXA + (rw + 1) / 2; break;
+                  case 3:  x0 = cmd.CMDXA - rw;     x1 = cmd.CMDXA;                break;
+                  default: x0 = cmd.CMDXA;          x1 = cmd.CMDXA + rw;           break;
+               }
+               switch ((zp >> 2) & 3) {
+                  case 2:  y0 = cmd.CMDYA - rh / 2; y1 = cmd.CMDYA + (rh + 1) / 2; break;
+                  case 3:  y0 = cmd.CMDYA - rh;     y1 = cmd.CMDYA;                break;
+                  default: y0 = cmd.CMDYA;          y1 = cmd.CMDYA + rh;           break;
+               }
+            }
+            qx[0] = x0; qy[0] = y0; qx[1] = x1; qy[1] = y0;
+            qx[2] = x1; qy[2] = y1; qx[3] = x0; qy[3] = y1;
+            break;
+         }
+         default: // Distorted Sprite, Polygon, Polyline, Line
+            qx[0] = cmd.CMDXA; qy[0] = cmd.CMDYA;
+            qx[1] = cmd.CMDXB; qy[1] = cmd.CMDYB;
+            qx[2] = cmd.CMDXC; qy[2] = cmd.CMDYC;
+            qx[3] = cmd.CMDXD; qy[3] = cmd.CMDYD;
+            break;
+      }
+
+      for (k = 0; k < 4; k++) { qx[k] += localX; qy[k] += localY; }
+
+      if (boxes) {
+         int nk = (type == 6) ? 2 : 4;
+         boxes[4*i] = boxes[4*i+2] = qx[0];
+         boxes[4*i+1] = boxes[4*i+3] = qy[0];
+         for (k = 1; k < nk; k++) {
+            boxes[4*i]   = MIN(boxes[4*i],   qx[k]);
+            boxes[4*i+1] = MIN(boxes[4*i+1], qy[k]);
+            boxes[4*i+2] = MAX(boxes[4*i+2], qx[k]);
+            boxes[4*i+3] = MAX(boxes[4*i+3], qy[k]);
+         }
+      }
+
+      if (type == 0) {
+         /* Copie exacte texel a texel. */
+         int flipH = (cmd.CMDCTRL >> 4) & 1, flipV = (cmd.CMDCTRL >> 5) & 1;
+         int x, y;
+         for (y = 0; y < th; y++)
+            for (x = 0; x < tw; x++) {
+               u32 c = tex[(flipV ? th - 1 - y : y) * tw + (flipH ? tw - 1 - x : x)];
+               if (c != 0) Vdp1DebugPlot(fb, W, H, qx[0] + x, qy[0] + y, c);
+            }
+      } else if (type <= 4) {
+         /* Scaled/Distorted : texture ; Polygon : texture 1x1 de CMDCOLR. */
+         int flip = (type <= 3) ? cmd.CMDCTRL : 0;
+         Vdp1DebugDrawQuad(fb, W, H, qx, qy, tex, tw, th, (flip >> 4) & 1, (flip >> 5) & 1);
+      } else if (type == 6) {                  // Line
+         Vdp1DebugDrawLine(fb, W, H, qx[0], qy[0], qx[1], qy[1], tex[0]);
+      } else {                                 // Polyline
+         for (k = 0; k < 4; k++)
+            Vdp1DebugDrawLine(fb, W, H, qx[k], qy[k], qx[(k + 1) & 3], qy[(k + 1) & 3], tex[0]);
+      }
+
+      free(tex);
+   }
+
+   *outW = W;
+   *outH = H;
+   return fb;
+}
 
 void ToggleVDP1(void)
 {
