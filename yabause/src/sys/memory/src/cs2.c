@@ -1277,7 +1277,16 @@ static void Cs2Exec_unit(u32 timing) {
                      Cs2ScanStep();
                   Cs2Area->track = Cs2FADToTrack(Cs2Area->FAD);
                   Cs2Area->cdi->ReadAheadFAD(Cs2Area->FAD);
-                  Cs2SetTiming(1); //As we read one disc sector, we need to wait a while to simulate disc speed
+                  /* As we read one disc sector, we need to wait a while to
+                     simulate disc speed. For a CD-DA sector ScspReceiveCDDA
+                     has already set that wait from the amount of audio the
+                     SCSP has buffered (see CDDA_PERIOD_NOMINAL in scsp.c):
+                     resetting it to 40000 here made the CD-DA arrive faster
+                     than it was played, while the CD block clock ran 6-7 %
+                     fast, and the SCSP buffer overflowed after 25-30 s
+                     (Spot Goes to Hollywood, garbled in-game music). */
+                  if (!Cs2Area->isaudio)
+                     Cs2SetTiming(1);
                   if (Cs2SeekReading == 1)
                      Cs2SeekReading = 2;   /* first sector processed, this report still SEEK */
 

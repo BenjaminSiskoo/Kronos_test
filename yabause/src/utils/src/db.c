@@ -6,7 +6,7 @@
 #include "cs2.h"
 #include "db.h"
 
-#define NB_GAMES_DB 35
+#define NB_GAMES_DB 34
 
 static GameDB GameDBList[NB_GAMES_DB] = {
    // note : SNK games were developped for 1MB cart,
@@ -21,9 +21,16 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    { "T-1515G", 0, CART_DRAM8MBIT, NULL }, // Waku Waku 7
    { "T-3111G", 0, CART_DRAM8MBIT, NULL }, // Metal Slug
    { "GS-9107", 0, CART_DRAM8MBIT, NULL }, // Fighter's History Dynamite
-   { "T-16103H-09", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (FRENCH)
-   { "GS-9123", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (JAP)
-   { "T-16103H", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (USA)
+   // Die Hard Trilogy : cartouche 1 Mo. Verifie dans Kronos : la version
+   // Europe ne demarre pas sans elle (Mednafen, ss/db.cpp cartdb, indique
+   // au contraire un plantage avec une cartouche RAM).
+   // L'Europe a le meme code produit que les USA dans l'IP.BIN : T-16103H,
+   // zone "EAL" (verifie dans Kronos sur Die Hard Trilogy (Europe)
+   // (En,Fr,De,Es,It,Sv), redump ; Mednafen : "Europe/USA"). L'ancienne
+   // entree "T-16103H-09" (11 caracteres) ne pouvait jamais correspondre au
+   // champ de 10 caracteres de l'IP.BIN.
+   { "GS-9123", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (Japan)
+   { "T-16103H", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (Europe/USA)
    { "T-81", 0, CART_DRAM8MBIT, NULL }, // Destruction Derby Prototyp   
    // other games should be fine with 4MB cart
    { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Astra Superstars
@@ -235,29 +242,15 @@ int DBLookupLegacySH2FetchTimingForCode(const char *game_code)
 /* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
 int DBLookupLegacySH2FetchTiming(void)
 {
-   const char* game_code;
-   int i;
    Cs2GetIP(0);
-   game_code = Cs2GetCurrentGmaecode();
-   if (game_code == NULL) return 0;
-   for (i = 0; SH2LegacyFetchDBList[i] != NULL; i++) {
-      if (strcmp(SH2LegacyFetchDBList[i], game_code) == 0) return 1;
-   }
-   return 0;
+   return DBLookupLegacySH2FetchTimingForCode(Cs2GetCurrentGmaecode());
 }
 
 /* Retourne 1 si le jeu en cours figure dans SH2CacheDBList. */
 int DBLookupForceSH2Cache(void)
 {
-   const char* game_code;
-   int i;
    Cs2GetIP(0);
-   game_code = Cs2GetCurrentGmaecode();
-   if (game_code == NULL) return 0;
-   for (i = 0; SH2CacheDBList[i] != NULL; i++) {
-      if (strcmp(SH2CacheDBList[i], game_code) == 0) return 1;
-   }
-   return 0;
+   return DBListHasCode(SH2CacheDBList, Cs2GetCurrentGmaecode());
 }
 
 static int does_file_exist(const char *filename)

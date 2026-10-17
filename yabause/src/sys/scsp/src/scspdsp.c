@@ -39,7 +39,6 @@ static INLINE s32 saturate_24(s32 value)
 
 
 #define sign_x_to_s32(_bits, _value) (((int)((u32)(_value) << (32 - _bits))) >> (32 - _bits))
-#define min(a,b) (a<b)?a:b
 
 static INLINE unsigned clz(u32 v)
 {
@@ -115,7 +114,7 @@ void ScspDspExec(ScspDsp* dsp, int addr, u8 * sound_ram)
     if(ShifterOutput > 0x7FFFFF)
       ShifterOutput = 0x7FFFFF;
     else if(ShifterOutput < -0x800000)
-      ShifterOutput = 0x800000;
+      ShifterOutput = -0x800000;   /* was 0x800000: same 24 bits once masked */
   }
   ShifterOutput &= 0xFFFFFF;
 

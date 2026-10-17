@@ -970,6 +970,18 @@ u32 FASTCALL SmpcReadLong(SH2_struct *context, u8* mem, USED_IF_SMPC_DEBUG u32 a
 //////////////////////////////////////////////////////////////////////////////
 
 static void SmpcSetTiming(void) {
+   /* SMPC User's Manual (ST-169-R1) p.21 : "Result parameter OREG31 is set
+      when the SMPC begins command processing. The command code is output to
+      OREG31." Chaque fiche de commande (chapitre 2) donne OREG31 = code de la
+      commande, y compris pour les commandes de type A et B qui ne rendent
+      aucun autre resultat (Table 2.4 : "except for OREG31"). SSHON (02H),
+      SSHOFF (03H), CDON (08H), CDOFF (09H), CKCHG352 (0EH) et CKCHG320 (0FH)
+      laissaient OREG31 a la valeur de la commande precedente. L'INTBACK
+      (10H) garde son traitement propre ci-dessous : il passe aussi par ici
+      pour une demande "continuer", et les donnees peripheriques peuvent
+      ecraser OREG31. */
+   if (SmpcRegs->COMREG != 0x10)
+      SmpcRegs->OREG[31] = SmpcRegs->COMREG;
    switch(SmpcRegs->COMREG) {
       case 0x0:
          SMPCLOG("smpc\t: MSHON not implemented\n");
@@ -1073,10 +1085,12 @@ static void SmpcSetTiming(void) {
          SmpcInternalVars->timing = 1;
          return;
       case 0x2:
-         SmpcInternalVars->timing = 1;
-         return;
       case 0x3:
-         SmpcInternalVars->timing = 1;
+         /* SSHON / SSHOFF : 30 us minimum (ST-169-R1 Table 2.1 et fiches
+            NO. 2 et 3 ; le maximum n'est pas donne). timing est en us
+            (colonne SMPC de cycles[], yabause.c). Kronos les terminait en
+            1 us. */
+         SmpcInternalVars->timing = 30;
          return;
       case 0x6:
       case 0x7:

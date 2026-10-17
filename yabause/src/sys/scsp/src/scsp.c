@@ -147,12 +147,6 @@ static volatile int fps = 60;
 
 #include "sh2core.h"
 
-#if defined(__GNUC__)
-//#include <stdatomic.h>
-/*_Atomic*/ u32 m68kcycle = 0;
-#else
-u32 m68kcycle = 0;
-#endif
 
 YabSem * g_scsp_ready = NULL;
 YabSem * g_cpu_ready = NULL;
@@ -347,19 +341,25 @@ struct Scsp
 }new_scsp = {0};
 
 //samples per step through a 256 entry lfo table
+//
+// One LFO period is 256 steps, so a step lasts 44100 / (256 * f) samples,
+// f being the LFOF frequency of ST-077-R2 Table 4.21. Entries 9 and 0xA
+// were swapped (0x0BC = 0.92 Hz on LFOF 9, 0x0DC = 0.78 Hz on LFOF 0xA)
+// and 0xB was 0x08C (1.23 Hz); the table gives 0.78, 0.92 and 1.10 Hz,
+// i.e. 220.9, 187.2 and 156.6 samples per step: 0x0DC, 0x0BC, 0x09C.
 const int lfo_step_table[0x20] = {
-   0x3fc,//0
-   0x37c,//1
-   0x2fc,//2
-   0x27c,//3
-   0x1fc,//4
-   0x1bc,//5
-   0x17c,//6
-   0x13c,//7
-   0x0fc,//8
-   0x0bc,//9
-   0x0dc,//0xa
-   0x08c,//0xb
+   0x3fc,//0    0.17 Hz
+   0x37c,//1    0.19 Hz
+   0x2fc,//2    0.23 Hz
+   0x27c,//3    0.27 Hz
+   0x1fc,//4    0.34 Hz
+   0x1bc,//5    0.39 Hz
+   0x17c,//6    0.45 Hz
+   0x13c,//7    0.55 Hz
+   0x0fc,//8    0.68 Hz
+   0x0dc,//9    0.78 Hz
+   0x0bc,//0xa  0.92 Hz
+   0x09c,//0xb  1.10 Hz
    0x07c,//0xc
    0x06c,//0xd
    0x05c,//0xe
@@ -1976,10 +1976,6 @@ static u8 *scsp_isr;
 static u8 *scsp_ccr;
 static u8 *scsp_dcr;
 
-static s32 *scsp_bufL;
-static s32 *scsp_bufR;
-static u32 scsp_buf_len;
-static u32 scsp_buf_pos;
 
 static scsp_t   scsp;                         // SCSP structure
 
@@ -1991,7 +1987,68 @@ static union {
    u8 data[CDDA_NUM_BUFFERS*2352];
 } cddabuf;
 static unsigned int cdda_next_in=0;               // Next sector buffer offset to receive into
-static u32 cdda_out_left;                       // Bytes of CDDA left to output
+static volatile u32 cdda_out_left;              // Bytes of CDDA left to output
+static u32 cdda_rd_pos = 0;                     // Next byte to output (sound thread only)
+
+/* CD-DA ring buffer, single producer / single consumer.
+ *
+ * The producer is the main thread (Cs2ReadFilteredSector -> ScspReceiveCDDA,
+ * one 2352-byte sector at a time), the consumer is the sound thread
+ * (new_scsp_run_sample, 4 bytes per output sample). cdda_out_left was
+ * updated by both with plain "+= 2352" / "-= 4": a read-modify-write of one
+ * thread landing in the middle of the other's was lost, and the read
+ * position, recomputed from cdda_next_in - cdda_out_left, then jumped. The
+ * read position is now owned by the consumer (cdda_rd_pos), the write
+ * position by the producer (cdda_next_in), and only the fill level is
+ * shared, through atomic adds. */
+static INLINE u32 cdda_left_get(void)
+{
+#if defined(_MSC_VER)
+   return (u32)_InterlockedOr((volatile long *)&cdda_out_left, 0);
+#else
+   return __atomic_load_n(&cdda_out_left, __ATOMIC_ACQUIRE);
+#endif
+}
+
+static INLINE void cdda_left_add(s32 delta)
+{
+#if defined(_MSC_VER)
+   _InterlockedExchangeAdd((volatile long *)&cdda_out_left, (long)delta);
+#else
+   __atomic_fetch_add(&cdda_out_left, (u32)delta, __ATOMIC_ACQ_REL);
+#endif
+}
+
+/* CD-DA feed rate.
+ *
+ * ST-162 1.7 (d): CD-DA is always read at standard speed, 75 sectors per
+ * second, i.e. exactly the 44100 x 4 bytes per second the SCSP plays.
+ * The CD block clock used to run 6.4 % (PAL) / 7.2 % (NTSC) fast: the "CDB"
+ * column of the cycle table in yabause.c was handed out as 68 us per line
+ * (now converted to exact microseconds, see SubSystemUs in yabause.c).
+ * CD-DA sectors therefore arrived about 5 per second faster than the SCSP
+ * played them. ScspReceiveCDDA was meant
+ * to correct that (slower reads above 3/4 of the buffer), but the play loop
+ * in Cs2Exec_unit called Cs2SetTiming(1) right after it and put the period
+ * back to 40000: the 150-sector buffer filled up in 25-30 s, then every new
+ * sector overwrote audio not yet played (Spot Goes to Hollywood: in-game
+ * music fine at first, garbled after 20-30 s).
+ *
+ * The period of the next CD-DA sector is now adjusted around 40000
+ * (13333 us * 3, Cs2SetTiming) in proportion to the amount of audio
+ * buffered, so the buffer settles near CDDA_TARGET_SECTORS. With the CD
+ * clock now exact this only absorbs the rounding of the frame-sized bursts
+ * of the two threads, but it still holds for a clock error up to
+ * +/- 20 %. That keeps about 0.1 s of audio
+ * ahead of the SCSP: enough to ride out the frame-sized bursts of the sound
+ * thread, and the FAD reported to the game stays close to what is heard.
+ * Cs2Exec_unit no longer overrides this period for CD-DA sectors. */
+#define CDDA_SECTOR_BYTES     2352
+#define CDDA_PERIOD_NOMINAL   40000   /* 13333.333 us * 3, 75 sectors/s */
+#define CDDA_TARGET_SECTORS   8
+#define CDDA_PERIOD_STEP      1250    /* per sector away from the target */
+#define CDDA_PERIOD_MIN       32000   /* 1.25x */
+#define CDDA_PERIOD_MAX       48000   /* 0.83x */
 
 ////////////////////////////////////////////////////////////////
 
@@ -3257,72 +3314,10 @@ scsp_get_w (u32 a)
 ////////////////////////////////////////////////////////////////
 // Synth Slot
 //
-//      SCSPLOG("outL=%.8X bufL=%.8X disll=%d\n", outL, scsp_bufL[scsp_buf_pos], slot->disll);
-
-////////////////////////////////////////////////////////////////
-
-#ifdef WORDS_BIGENDIAN
-#define SCSP_GET_OUT_8B \
-  out = (s32) slot->buf8[(slot->fcnt >> SCSP_FREQ_LB)];
-#else
-#define SCSP_GET_OUT_8B \
-  out = (s32) slot->buf8[(slot->fcnt >> SCSP_FREQ_LB) ^ 1];
-#endif
-
-#define SCSP_GET_OUT_16B \
-  out = (s32) slot->buf16[slot->fcnt >> SCSP_FREQ_LB];
-
-#define SCSP_GET_ENV \
-  slot->env = scsp_env_table[slot->ecnt >> SCSP_ENV_LB] * slot->tl / 1024;
-
-#define SCSP_GET_ENV_LFO \
-  slot->env = (scsp_env_table[slot->ecnt >> SCSP_ENV_LB] * slot->tl / 1024) - \
-              (slot->lfoemw[(slot->lfocnt >> SCSP_LFO_LB) & SCSP_LFO_MASK] >> \
-               slot->lfoems);
-
-#define SCSP_OUT_8B_L \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufL[scsp_buf_pos] += out >> (slot->disll - 8); \
-    }
-
-#define SCSP_OUT_8B_R \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufR[scsp_buf_pos] += out >> (slot->dislr - 8); \
-    }
-
-#define SCSP_OUT_8B_LR \
-  if ((out) && (slot->env > 0))                            \
-    {                                                      \
-      out *= slot->env;                                    \
-      scsp_bufL[scsp_buf_pos] += out >> (slot->disll - 8); \
-      scsp_bufR[scsp_buf_pos] += out >> (slot->dislr - 8); \
-    }
-
-#define SCSP_OUT_16B_L \
-  if ((out) && (slot->env > 0))                      \
-    {                                                \
-      out *= slot->env;                              \
-      scsp_bufL[scsp_buf_pos] += out >> slot->disll; \
-    }
-
-#define SCSP_OUT_16B_R \
-  if ((out) && (slot->env > 0))                      \
-    {                                                \
-      out *= slot->env;                              \
-      scsp_bufR[scsp_buf_pos] += out >> slot->dislr; \
-    }
-
-#define SCSP_OUT_16B_LR \
-  if ((out) && (slot->env > 0))                    \
-  {                                                \
-    out *= slot->env;                              \
-    scsp_bufL[scsp_buf_pos] += out >> slot->disll; \
-    scsp_bufR[scsp_buf_pos] += out >> slot->dislr; \
-  }
+// Only the key-on part of the old slot generator is left: the per-sample
+// renderer (scsp_slot_update_* for 8/16-bit, LFO and panning variants, and
+// scsp_update() which mixed them with the CD-DA) was no longer called since
+// the new generator (generate_sample / new_scsp_run_sample) replaced it.
 
 #define SCSP_UPDATE_PHASE \
   if ((slot->fcnt += slot->finc) > slot->lea) \
@@ -3337,34 +3332,6 @@ scsp_get_w (u32 a)
         return;                               \
       }                                       \
   }
-
-#define SCSP_UPDATE_PHASE_LFO \
-  slot->fcnt +=                                                      \
-    ((slot->lfofmw[(slot->lfocnt >> SCSP_LFO_LB) & SCSP_LFO_MASK] << \
-      (slot->lfofms-7)) >> (slot->fsft+1));                          \
-  if ((slot->fcnt += slot->finc) > slot->lea)                        \
-    {                                                                \
-      if (slot->lpctl)                                               \
-        {                                                            \
-          slot->fcnt = slot->lsa;                                    \
-        }                                                            \
-      else                                                           \
-        {                                                            \
-          slot->ecnt = SCSP_ENV_DE;                                  \
-          return;                                                    \
-        }                                                            \
-    }
-
-#define SCSP_UPDATE_ENV \
-  if (slot->einc) slot->ecnt += *slot->einc; \
-  if (slot->ecnt >= slot->ecmp)              \
-    {                                        \
-      slot->enxt(slot);                      \
-      if (slot->ecnt >= SCSP_ENV_DE) return; \
-    }
-
-#define SCSP_UPDATE_LFO \
-  slot->lfocnt += slot->lfoinc;
 
 ////////////////////////////////////////////////////////////////
 
@@ -3390,702 +3357,6 @@ scsp_slot_update_keyon (slot_t *slot)
   SCSP_UPDATE_PHASE
 }
 
-////////////////////////////////////////////////////////////////
-
-static void
-scsp_slot_update_null (slot_t *slot)
-{
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_ENV
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Normal 8 bits
-
-static void
-scsp_slot_update_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      // env = [0..0x3FF] - slot->tl
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      // don't waste time if no sound...
-      SCSP_OUT_8B_L
-
-      // calculate new frequency (phase) counter and enveloppe counter
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_8B_LR(slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope LFO modulation 8 bits
-
-static void
-scsp_slot_update_E_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_8B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Frequency LFO modulation 8 bits
-
-static void
-scsp_slot_update_F_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_8B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Enveloppe & Frequency LFO modulation 8 bits
-
-static void
-scsp_slot_update_F_E_8B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_8B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void scsp_slot_update_F_E_8B_LR(slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_8B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_8B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Normal 16 bits
-
-static void
-scsp_slot_update_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-static void
-scsp_slot_update_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope LFO modulation 16 bits
-
-static void
-scsp_slot_update_E_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_E_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Frequency LFO modulation 16 bits
-
-static void
-scsp_slot_update_F_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Envelope & Frequency LFO modulation 16 bits
-
-static void
-scsp_slot_update_F_E_16B_L (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_L
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_16B_R (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_R
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-static void
-scsp_slot_update_F_E_16B_LR (slot_t *slot)
-{
-  s32 out;
-
-  for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-    {
-      SCSP_GET_OUT_16B
-      SCSP_GET_ENV_LFO
-
-      SCSP_OUT_16B_LR
-
-      SCSP_UPDATE_PHASE_LFO
-      SCSP_UPDATE_ENV
-      SCSP_UPDATE_LFO
-    }
-}
-
-////////////////////////////////////////////////////////////////
-// Update functions
-
-static void (*scsp_slot_update_p[2][2][2][2][2])(slot_t *slot) =
-{
-  // NO FMS
-  {  // NO EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_8B_L,
-          // RIGHT
-          scsp_slot_update_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_16B_L,
-          // RIGHT
-          scsp_slot_update_16B_LR
-        },
-      }
-    },
-    // EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_E_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_E_8B_L,
-          // RIGHT
-          scsp_slot_update_E_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_E_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_E_16B_L,
-          // RIGHT
-          scsp_slot_update_E_16B_LR
-        },
-      }
-    }
-  },
-  // FMS
-  {  // NO EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_8B_L,
-          // RIGHT
-          scsp_slot_update_F_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_16B_L,
-          // RIGHT
-          scsp_slot_update_F_16B_LR
-        },
-      }
-    },
-    // EMS
-    {  // 8 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_E_8B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_E_8B_L,
-          // RIGHT
-          scsp_slot_update_F_E_8B_LR
-        },
-      },
-      // 16 BITS
-      {  // NO LEFT
-        {  // NO RIGHT
-          scsp_slot_update_null,
-          // RIGHT
-          scsp_slot_update_F_E_16B_R
-        },
-        // LEFT
-        {  // NO RIGHT
-          scsp_slot_update_F_E_16B_L,
-          // RIGHT
-          scsp_slot_update_F_E_16B_LR
-        },
-      }
-    }
-  }
-};
-
-void
-scsp_update (s32 *bufL, s32 *bufR, u32 len)
-{
-   slot_t *slot;
-
-   scsp_bufL = bufL;
-   scsp_bufR = bufR;
-
-   for (slot = &(scsp.slot[0]); slot < &(scsp.slot[32]); slot++)
-   {
-      if (slot->ecnt >= SCSP_ENV_DE) continue; // enveloppe null...
-
-      if (slot->ssctl)
-      {
-         // Still not correct, but at least this fixes games
-         // that rely on Call Address information
-         scsp_buf_len = len;
-         scsp_buf_pos = 0;
-
-         for (; scsp_buf_pos < scsp_buf_len; scsp_buf_pos++)
-         {
-            if ((slot->fcnt += slot->finc) > slot->lea)
-            {
-               if (slot->lpctl) slot->fcnt = slot->lsa;
-               else
-               {
-                  slot->ecnt = SCSP_ENV_DE;
-                  break;
-               }
-            }
-         }
-
-         continue; // not yet supported!
-      }
-
-      scsp_buf_len = len;
-      scsp_buf_pos = 0;
-
-      // take effect sound volume if no direct sound volume...
-      if ((slot->disll == 31) && (slot->dislr == 31))
-      {
-         slot->disll = slot->efsll;
-         slot->dislr = slot->efslr;
-      }
-
-      // SCSPLOG("update : VL=%d  VR=%d CNT=%.8X STEP=%.8X\n", slot->disll, slot->dislr, slot->fcnt, slot->finc);
-
-      scsp_slot_update_p[(slot->lfofms == 31) ? 0 : 1]
-         [(slot->lfoems == 31) ? 0 : 1]
-      [(slot->pcm8b == 0) ? 1 : 0]
-      [(slot->disll == 31) ? 0 : 1]
-      [(slot->dislr == 31) ? 0 : 1](slot);
-   }
-
-   if (cdda_out_left > 0)
-   {
-      if (len > cdda_out_left / 4)
-         scsp_buf_len = cdda_out_left / 4;
-      else
-         scsp_buf_len = len;
-
-      scsp_buf_pos = 0;
-
-      /* May need to wrap around the buffer, so use nested loops */
-      while (scsp_buf_pos < scsp_buf_len)
-      {
-         s32 temp = cdda_next_in - cdda_out_left;
-         s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
-         u8 *buf = &cddabuf.data[outpos];
-
-         u32 scsp_buf_target;
-         u32 this_len = scsp_buf_len - scsp_buf_pos;
-         if (this_len > (sizeof(cddabuf.data) - outpos) / 4)
-            this_len = (sizeof(cddabuf.data) - outpos) / 4;
-         scsp_buf_target = scsp_buf_pos + this_len;
-
-         for (; scsp_buf_pos < scsp_buf_target; scsp_buf_pos++, buf += 4)
-         {
-            s32 out;
-
-            out = (s32)(s16)((buf[1] << 8) | buf[0]);
-
-            if (out)
-               scsp_bufL[scsp_buf_pos] += out;
-
-            out = (s32)(s16)((buf[3] << 8) | buf[2]);
-
-            if (out)
-               scsp_bufR[scsp_buf_pos] += out;
-         }
-
-         cdda_out_left -= this_len * 4;
-      }
-   }
-   else if (Cs2Area->isaudio)
-   {
-      SCSPLOG("WARNING: CDDA buffer underrun\n");
-   }
-}
 
 void
 scsp_update_monitor(void)
@@ -5031,11 +4302,18 @@ scu_interrupt_handler (void)
    revenait au debut de la RAM au lieu de rendre FF comme SoundRamReadWord /
    SoundRamReadLong, et une ecriture d'octet y modifiait la RAM alors que
    SoundRamWriteWord / SoundRamWriteLong l'ignorent. */
+void SyncSh2And68k(SH2_struct *context);
+
 u8 FASTCALL
 SoundRamReadByte (SH2_struct *context, u8* mem, u32 addr)
 {
   addr &= 0xFFFFF;
   u8 val = 0;
+
+  /* Same B-bus cost as the word and long reads (SyncSh2And68k): an SH-2
+     polling sound RAM byte by byte used to read it at Work RAM speed. The
+     bus is held whether or not the address is wired. */
+  if (context != NULL) SyncSh2And68k(context);
 
   // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
@@ -5164,13 +4442,13 @@ SoundRamReadWord (SH2_struct *context, u8* mem, u32 addr)
   addr &= 0xFFFFF;
   u16 val = 0;
 
+  /* bus cost charged for unwired addresses too, as in SoundRamReadLong */
+  if (context != NULL) SyncSh2And68k(context);
+
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
   else if (addr > 0x7FFFF)
     return 0xFFFF;
-
-  //SCSPLOG("SoundRamReadLong %08X:%08X time=%d", addr, val, MSH2->cycles);
-  if (context != NULL) SyncSh2And68k(context);
 
   val = T2ReadWord (mem, addr);
 
@@ -5204,19 +4482,14 @@ SoundRamReadLong (SH2_struct *context, u8* mem, u32 addr)
 {
   addr &= 0xFFFFF;
   u32 val;
-  u32 pre_cycle = m68kcycle;
+
+  if (context != NULL) SyncSh2And68k(context);
 
   // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
     addr &= 0x1FFFF;
-  else if (addr > 0x7FFFF) {
-     val = 0xFFFFFFFF;
-     if (context != NULL) SyncSh2And68k(context);
-     return val;
-  }
-
-  //SCSPLOG("SoundRamReadLong %08X:%08X time=%d PC=%08X", addr, val, MSH2->cycles, MSH2->regs.PC);
-  if (context != NULL) SyncSh2And68k(context);
+  else if (addr > 0x7FFFF)
+    return 0xFFFFFFFF;
 
   val = T2ReadLong(mem, addr);
 
@@ -5230,7 +4503,6 @@ void FASTCALL
 SoundRamWriteLong (SH2_struct *context, u8* mem, u32 addr, u32 val)
 {
   addr &= 0xFFFFF;
-  //u32 pre_cycle = m68kcycle;
 
   // MEM4MB = 0 : 1 Mbit (128 Ko) seulement, la RAM se repete tous les 128 Ko
   if (scsp.mem4b == 0)
@@ -5529,10 +4801,6 @@ void MM68KExec(s32 cycles)
 
 void new_scsp_run_sample()
 {
-   s32 temp = cdda_next_in - cdda_out_left;
-   s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
-   u8 *buf = &cddabuf.data[outpos];
-
    s16 out_l = 0;
    s16 out_r = 0;
 
@@ -5541,12 +4809,18 @@ void new_scsp_run_sample()
 
    s32 mix_l, mix_r;
 
-   if ((s32)cdda_out_left > 0)
+   /* consumer side of the CD-DA ring (see cdda_left_get) */
+   if (cdda_left_get() >= 4)
    {
+      const u8 *buf = &cddabuf.data[cdda_rd_pos];
+
       cd_in_l = (s16)((buf[1] << 8) | buf[0]);
       cd_in_r = (s16)((buf[3] << 8) | buf[2]);
 
-      cdda_out_left -= 4;
+      cdda_rd_pos += 4;
+      if (cdda_rd_pos >= sizeof(cddabuf.data))
+         cdda_rd_pos = 0;
+      cdda_left_add(-4);
    }
 
    scsp_update_timer(1);
@@ -5656,34 +4930,37 @@ ScspConvert32uto16s (s32 *srcL, s32 *srcR, s16 *dst, u32 len)
 void
 ScspReceiveCDDA (const u8 *sector)
 {
-   // If buffer is half empty or less, boost timing for a bit until we've buffered a few sectors
-   if (cdda_out_left < (sizeof(cddabuf.data) / 2))
+   u32 left = cdda_left_get();
+   s32 sectors;
+   s32 period;
+
+   /* producer side of the CD-DA ring (see cdda_left_get): never overwrite
+      audio the sound thread has not played yet. With the feed rate below
+      this only happens if the sound thread is stopped. */
+   if (left + CDDA_SECTOR_BYTES <= sizeof(cddabuf.data))
    {
-      Cs2Area->isaudio = 0;
-      Cs2SetTiming(1);
-		Cs2Area->isaudio = 1;
+      memcpy(cddabuf.data + cdda_next_in, sector, CDDA_SECTOR_BYTES);
+      if (sizeof(cddabuf.data) - cdda_next_in <= CDDA_SECTOR_BYTES)
+         cdda_next_in = 0;
+      else
+         cdda_next_in += CDDA_SECTOR_BYTES;
+      cdda_left_add(CDDA_SECTOR_BYTES);
+      left += CDDA_SECTOR_BYTES;
    }
-	else if (cdda_out_left > (sizeof(cddabuf.data) * 3 / 4 ))
-		Cs2SetTiming(0);
    else
    {
-      Cs2Area->isaudio = 1;
-      Cs2SetTiming(1);
+      SCSPLOG ("WARNING: CDDA buffer overrun, sector dropped\n");
    }
 
-  memcpy(cddabuf.data+cdda_next_in, sector, 2352);
-  if (sizeof(cddabuf.data)-cdda_next_in <= 2352)
-     cdda_next_in = 0;
-  else
-     cdda_next_in += 2352;
-
-  cdda_out_left += 2352;
-
-  if (cdda_out_left > sizeof(cddabuf.data))
-    {
-      SCSPLOG ("WARNING: CDDA buffer overrun\n");
-      cdda_out_left = sizeof(cddabuf.data);
-    }
+   /* period until the next CD-DA sector (see CDDA_PERIOD_NOMINAL); the
+      play loop in Cs2Exec_unit keeps it for CD-DA sectors */
+   sectors = (s32)(left / CDDA_SECTOR_BYTES);
+   period = CDDA_PERIOD_NOMINAL + (sectors - CDDA_TARGET_SECTORS) * CDDA_PERIOD_STEP;
+   if (period < CDDA_PERIOD_MIN)
+      period = CDDA_PERIOD_MIN;
+   else if (period > CDDA_PERIOD_MAX)
+      period = CDDA_PERIOD_MAX;
+   Cs2Area->_periodictiming = (u32)period;
 }
 
 
@@ -6860,6 +6137,15 @@ if (IsM68KRunning != newM68state) {
     if (version >= 3) {
       MemStateRead((void *)&cdda_next_in, sizeof(u32), 1, stream);
       MemStateRead((void *)&cdda_out_left, sizeof(u32), 1, stream);
+      /* the read position is not saved (state format unchanged): it is
+         where the unplayed audio starts, cdda_out_left bytes before the
+         write position */
+      if (cdda_next_in >= sizeof(cddabuf.data))
+         cdda_next_in = 0;
+      if (cdda_out_left > sizeof(cddabuf.data))
+         cdda_out_left = sizeof(cddabuf.data);
+      cdda_out_left &= ~3u;
+      cdda_rd_pos = (cdda_next_in + sizeof(cddabuf.data) - cdda_out_left) % sizeof(cddabuf.data);
       MemStateRead((void *)&scsp_mute_flags, sizeof(u32), 1, stream);
       MemStateRead((void *)&scspsoundlen, sizeof(u32), 1, stream);
       MemStateRead((void *)&scsplines, sizeof(u32), 1, stream);
