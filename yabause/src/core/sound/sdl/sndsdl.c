@@ -77,8 +77,9 @@ SNDSDLMidiOut
 #define NUMSOUNDBLOCKS  4
 
 static u16 *stereodata16;
-static u32 soundoffset;
-static volatile u32 soundpos;
+static u32 soundoffset;          /* write position (bytes), emulator side */
+static volatile u32 soundpos;    /* read position (bytes), SDL callback side */
+static volatile u32 soundfill;   /* bytes written and not played yet */
 static u32 soundlen;
 static u32 soundbufsize;
 static SDL_AudioSpec audiofmt;
@@ -87,17 +88,29 @@ static int muted = 0;
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* SDL audio callback (SDL holds the audio lock while it runs).
+ *
+ * It used to read the ring buffer round and round whether or not the
+ * emulator had written to it: when the emulation fell behind, the previous
+ * 4 frames were played again (a stutter of stale audio rather than a gap).
+ * Only the bytes written and not played yet (soundfill) are played now; the
+ * rest of the request is silence. */
 static void MixAudio(UNUSED void *userdata, Uint8 *stream, int len) {
 	int i;
 	Uint8* soundbuf = (Uint8*)stereodata16;
 
-	// original code
 	for (i = 0; i < len; i++)
 	{
+		if (soundbuf == NULL || soundfill == 0)
+		{
+			stream[i] = audiofmt.silence;
+			continue;
+		}
 		if (soundpos >= soundbufsize)
 			soundpos = 0;
 		stream[i] = muted ? audiofmt.silence : soundbuf[soundpos];
 		soundpos++;
+		soundfill--;
 	}
 }
 
@@ -145,6 +158,8 @@ static int SNDSDLInit(void)
    memset(stereodata16, 0, soundbufsize);
 
    soundpos = 0;
+   soundoffset = 0;
+   soundfill = 0;
 
    SDL_PauseAudio(0);
 
@@ -159,6 +174,7 @@ static void SNDSDLDeInit(void)
 
    if (stereodata16)
       free(stereodata16);
+   stereodata16 = NULL;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -170,8 +186,17 @@ static int SNDSDLReset(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* The buffer is replaced under the audio lock: the SDL callback could
+   otherwise read the freed one. The positions are reset too: soundoffset
+   was kept and, the PAL buffer (882 samples per block) being larger than
+   the NTSC one (735), switching from PAL to NTSC left it past the end of
+   the new buffer, where the next SNDSDLUpdateAudio wrote. */
 static int SNDSDLChangeVideoFormat(int vertfreq)
 {
+   int ret = 0;
+
+   SDL_LockAudio();
+
    soundlen = audiofmt.freq / vertfreq;
    soundbufsize = soundlen * NUMSOUNDBLOCKS * 2 * 2;
 
@@ -179,41 +204,66 @@ static int SNDSDLChangeVideoFormat(int vertfreq)
       free(stereodata16);
 
    if ((stereodata16 = (u16 *)malloc(soundbufsize)) == NULL)
-      return -1;
+      ret = -1;
+   else
+      memset(stereodata16, 0, soundbufsize);
 
-   memset(stereodata16, 0, soundbufsize);
+   soundpos = 0;
+   soundoffset = 0;
+   soundfill = 0;
 
-   return 0;
+   SDL_UnlockAudio();
+
+   return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Volume and 16-bit clamp. The scaled value used to be written back into
+   the source (the SCSP ring buffer, scspchannel[].data32): harmless as long
+   as every sample is sent once, but the buffer no longer held what the
+   SCSP produced. It is now computed in a local. */
 static void sdlConvert32uto16s(s32 *srcL, s32 *srcR, s16 *dst, u32 len) {
    u32 i;
 
    for (i = 0; i < len; i++)
    {
+      s32 v;
+
       // Left Channel
-      *srcL = ( *srcL *soundvolume ) /SDL_MIX_MAXVOLUME;
-      if (*srcL > 0x7FFF) *dst = 0x7FFF;
-      else if (*srcL < -0x8000) *dst = -0x8000;
-      else *dst = *srcL;
+      v = (*srcL * soundvolume) / SDL_MIX_MAXVOLUME;
+      if (v > 0x7FFF) *dst = 0x7FFF;
+      else if (v < -0x8000) *dst = -0x8000;
+      else *dst = (s16)v;
       srcL++;
       dst++;
       // Right Channel
-	  *srcR = ( *srcR *soundvolume ) /SDL_MIX_MAXVOLUME;
-      if (*srcR > 0x7FFF) *dst = 0x7FFF;
-      else if (*srcR < -0x8000) *dst = -0x8000;
-      else *dst = *srcR;
+      v = (*srcR * soundvolume) / SDL_MIX_MAXVOLUME;
+      if (v > 0x7FFF) *dst = 0x7FFF;
+      else if (v < -0x8000) *dst = -0x8000;
+      else *dst = (s16)v;
       srcR++;
       dst++;
-   } 
+   }
 }
 
 static void SNDSDLUpdateAudio(u32 *leftchanbuffer, u32 *rightchanbuffer, u32 num_samples)
 {
    u32 copy1size=0, copy2size=0;
+   u32 freebytes;
    SDL_LockAudio();
+
+   if (stereodata16 == NULL)
+   {
+      SDL_UnlockAudio();
+      return;
+   }
+
+   /* never write over bytes not played yet (the caller asks
+      SNDSDLGetAudioSpace first, this is only a guard) */
+   freebytes = soundbufsize - soundfill;
+   if (num_samples * sizeof(s16) * 2 > freebytes)
+      num_samples = freebytes / (sizeof(s16) * 2);
 
    if ((soundbufsize - soundoffset) < (num_samples * sizeof(s16) * 2))
    {
@@ -231,22 +281,25 @@ static void SNDSDLUpdateAudio(u32 *leftchanbuffer, u32 *rightchanbuffer, u32 num
    if (copy2size)
       sdlConvert32uto16s((s32 *)leftchanbuffer + (copy1size / sizeof(s16) / 2), (s32 *)rightchanbuffer + (copy1size / sizeof(s16) / 2), (s16 *)stereodata16, copy2size / sizeof(s16) / 2);
 
-   soundoffset += copy1size + copy2size;   
+   soundoffset += copy1size + copy2size;
    soundoffset %= soundbufsize;
+   soundfill += copy1size + copy2size;
 
    SDL_UnlockAudio();
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Free space in samples. It was computed from the two positions alone,
+   which cannot tell an empty buffer from a full one when they are equal
+   (it answered "full"); the fill level is now counted. */
 static u32 SNDSDLGetAudioSpace(void)
 {
-   u32 freespace=0;
+   u32 freespace;
 
-   if (soundoffset > soundpos)
-      freespace = soundbufsize - soundoffset + soundpos;
-   else
-      freespace = soundpos - soundoffset;
+   SDL_LockAudio();
+   freespace = soundbufsize - soundfill;
+   SDL_UnlockAudio();
 
    return (freespace / sizeof(s16) / 2);
 }
