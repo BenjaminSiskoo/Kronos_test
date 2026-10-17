@@ -1282,7 +1282,7 @@ static void Cs2Exec_unit(u32 timing) {
                      has already set that wait from the amount of audio the
                      SCSP has buffered (see CDDA_PERIOD_NOMINAL in scsp.c):
                      resetting it to 40000 here made the CD-DA arrive faster
-                     than it is played, since the CD block clock runs 6-7 %
+                     than it was played, while the CD block clock ran 6-7 %
                      fast, and the SCSP buffer overflowed after 25-30 s
                      (Spot Goes to Hollywood, garbled in-game music). */
                   if (!Cs2Area->isaudio)
