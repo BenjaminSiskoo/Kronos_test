@@ -1991,7 +1991,66 @@ static union {
    u8 data[CDDA_NUM_BUFFERS*2352];
 } cddabuf;
 static unsigned int cdda_next_in=0;               // Next sector buffer offset to receive into
-static u32 cdda_out_left;                       // Bytes of CDDA left to output
+static volatile u32 cdda_out_left;              // Bytes of CDDA left to output
+static u32 cdda_rd_pos = 0;                     // Next byte to output (sound thread only)
+
+/* CD-DA ring buffer, single producer / single consumer.
+ *
+ * The producer is the main thread (Cs2ReadFilteredSector -> ScspReceiveCDDA,
+ * one 2352-byte sector at a time), the consumer is the sound thread
+ * (new_scsp_run_sample, 4 bytes per output sample). cdda_out_left was
+ * updated by both with plain "+= 2352" / "-= 4": a read-modify-write of one
+ * thread landing in the middle of the other's was lost, and the read
+ * position, recomputed from cdda_next_in - cdda_out_left, then jumped. The
+ * read position is now owned by the consumer (cdda_rd_pos), the write
+ * position by the producer (cdda_next_in), and only the fill level is
+ * shared, through atomic adds. */
+static INLINE u32 cdda_left_get(void)
+{
+#if defined(_MSC_VER)
+   return (u32)_InterlockedOr((volatile long *)&cdda_out_left, 0);
+#else
+   return __atomic_load_n(&cdda_out_left, __ATOMIC_ACQUIRE);
+#endif
+}
+
+static INLINE void cdda_left_add(s32 delta)
+{
+#if defined(_MSC_VER)
+   _InterlockedExchangeAdd((volatile long *)&cdda_out_left, (long)delta);
+#else
+   __atomic_fetch_add(&cdda_out_left, (u32)delta, __ATOMIC_ACQ_REL);
+#endif
+}
+
+/* CD-DA feed rate.
+ *
+ * ST-162 1.7 (d): CD-DA is always read at standard speed, 75 sectors per
+ * second, i.e. exactly the 44100 x 4 bytes per second the SCSP plays.
+ * Kronos does not keep the two clocks in step: the CD block is run on the
+ * "CDB" column of the cycle table in yabause.c, which adds up to 68 us per
+ * line, 21284 us per PAL frame (20000 expected, +6.4 %) and 17884 us per
+ * NTSC frame (16683 expected, +7.2 %). CD-DA sectors therefore arrived about
+ * 5 per second faster than the SCSP played them. ScspReceiveCDDA was meant
+ * to correct that (slower reads above 3/4 of the buffer), but the play loop
+ * in Cs2Exec_unit called Cs2SetTiming(1) right after it and put the period
+ * back to 40000: the 150-sector buffer filled up in 25-30 s, then every new
+ * sector overwrote audio not yet played (Spot Goes to Hollywood: in-game
+ * music fine at first, garbled after 20-30 s).
+ *
+ * The period of the next CD-DA sector is now adjusted around 40000
+ * (13333 us * 3, Cs2SetTiming) in proportion to the amount of audio
+ * buffered, so the buffer settles near CDDA_TARGET_SECTORS whatever the
+ * error of the CD clock, within +/- 20 %. That keeps about 0.1 s of audio
+ * ahead of the SCSP: enough to ride out the frame-sized bursts of the sound
+ * thread, and the FAD reported to the game stays close to what is heard.
+ * Cs2Exec_unit no longer overrides this period for CD-DA sectors. */
+#define CDDA_SECTOR_BYTES     2352
+#define CDDA_PERIOD_NOMINAL   40000   /* 13333.333 us * 3, 75 sectors/s */
+#define CDDA_TARGET_SECTORS   8
+#define CDDA_PERIOD_STEP      1250    /* per sector away from the target */
+#define CDDA_PERIOD_MIN       32000   /* 1.25x */
+#define CDDA_PERIOD_MAX       48000   /* 0.83x */
 
 ////////////////////////////////////////////////////////////////
 
@@ -4041,10 +4100,11 @@ scsp_update (s32 *bufL, s32 *bufR, u32 len)
       [(slot->dislr == 31) ? 0 : 1](slot);
    }
 
-   if (cdda_out_left > 0)
+   if (cdda_left_get() > 0)
    {
-      if (len > cdda_out_left / 4)
-         scsp_buf_len = cdda_out_left / 4;
+      u32 left = cdda_left_get();
+      if (len > left / 4)
+         scsp_buf_len = left / 4;
       else
          scsp_buf_len = len;
 
@@ -4053,8 +4113,7 @@ scsp_update (s32 *bufL, s32 *bufR, u32 len)
       /* May need to wrap around the buffer, so use nested loops */
       while (scsp_buf_pos < scsp_buf_len)
       {
-         s32 temp = cdda_next_in - cdda_out_left;
-         s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
+         u32 outpos = cdda_rd_pos;
          u8 *buf = &cddabuf.data[outpos];
 
          u32 scsp_buf_target;
@@ -4078,7 +4137,10 @@ scsp_update (s32 *bufL, s32 *bufR, u32 len)
                scsp_bufR[scsp_buf_pos] += out;
          }
 
-         cdda_out_left -= this_len * 4;
+         cdda_rd_pos += this_len * 4;
+         if (cdda_rd_pos >= sizeof(cddabuf.data))
+            cdda_rd_pos = 0;
+         cdda_left_add(-(s32)(this_len * 4));
       }
    }
    else if (Cs2Area->isaudio)
@@ -5529,10 +5591,6 @@ void MM68KExec(s32 cycles)
 
 void new_scsp_run_sample()
 {
-   s32 temp = cdda_next_in - cdda_out_left;
-   s32 outpos = (temp < 0) ? temp + sizeof(cddabuf.data) : temp;
-   u8 *buf = &cddabuf.data[outpos];
-
    s16 out_l = 0;
    s16 out_r = 0;
 
@@ -5541,12 +5599,18 @@ void new_scsp_run_sample()
 
    s32 mix_l, mix_r;
 
-   if ((s32)cdda_out_left > 0)
+   /* consumer side of the CD-DA ring (see cdda_left_get) */
+   if (cdda_left_get() >= 4)
    {
+      const u8 *buf = &cddabuf.data[cdda_rd_pos];
+
       cd_in_l = (s16)((buf[1] << 8) | buf[0]);
       cd_in_r = (s16)((buf[3] << 8) | buf[2]);
 
-      cdda_out_left -= 4;
+      cdda_rd_pos += 4;
+      if (cdda_rd_pos >= sizeof(cddabuf.data))
+         cdda_rd_pos = 0;
+      cdda_left_add(-4);
    }
 
    scsp_update_timer(1);
@@ -5656,34 +5720,37 @@ ScspConvert32uto16s (s32 *srcL, s32 *srcR, s16 *dst, u32 len)
 void
 ScspReceiveCDDA (const u8 *sector)
 {
-   // If buffer is half empty or less, boost timing for a bit until we've buffered a few sectors
-   if (cdda_out_left < (sizeof(cddabuf.data) / 2))
+   u32 left = cdda_left_get();
+   s32 sectors;
+   s32 period;
+
+   /* producer side of the CD-DA ring (see cdda_left_get): never overwrite
+      audio the sound thread has not played yet. With the feed rate below
+      this only happens if the sound thread is stopped. */
+   if (left + CDDA_SECTOR_BYTES <= sizeof(cddabuf.data))
    {
-      Cs2Area->isaudio = 0;
-      Cs2SetTiming(1);
-		Cs2Area->isaudio = 1;
+      memcpy(cddabuf.data + cdda_next_in, sector, CDDA_SECTOR_BYTES);
+      if (sizeof(cddabuf.data) - cdda_next_in <= CDDA_SECTOR_BYTES)
+         cdda_next_in = 0;
+      else
+         cdda_next_in += CDDA_SECTOR_BYTES;
+      cdda_left_add(CDDA_SECTOR_BYTES);
+      left += CDDA_SECTOR_BYTES;
    }
-	else if (cdda_out_left > (sizeof(cddabuf.data) * 3 / 4 ))
-		Cs2SetTiming(0);
    else
    {
-      Cs2Area->isaudio = 1;
-      Cs2SetTiming(1);
+      SCSPLOG ("WARNING: CDDA buffer overrun, sector dropped\n");
    }
 
-  memcpy(cddabuf.data+cdda_next_in, sector, 2352);
-  if (sizeof(cddabuf.data)-cdda_next_in <= 2352)
-     cdda_next_in = 0;
-  else
-     cdda_next_in += 2352;
-
-  cdda_out_left += 2352;
-
-  if (cdda_out_left > sizeof(cddabuf.data))
-    {
-      SCSPLOG ("WARNING: CDDA buffer overrun\n");
-      cdda_out_left = sizeof(cddabuf.data);
-    }
+   /* period until the next CD-DA sector (see CDDA_PERIOD_NOMINAL); the
+      play loop in Cs2Exec_unit keeps it for CD-DA sectors */
+   sectors = (s32)(left / CDDA_SECTOR_BYTES);
+   period = CDDA_PERIOD_NOMINAL + (sectors - CDDA_TARGET_SECTORS) * CDDA_PERIOD_STEP;
+   if (period < CDDA_PERIOD_MIN)
+      period = CDDA_PERIOD_MIN;
+   else if (period > CDDA_PERIOD_MAX)
+      period = CDDA_PERIOD_MAX;
+   Cs2Area->_periodictiming = (u32)period;
 }
 
 
@@ -6860,6 +6927,15 @@ if (IsM68KRunning != newM68state) {
     if (version >= 3) {
       MemStateRead((void *)&cdda_next_in, sizeof(u32), 1, stream);
       MemStateRead((void *)&cdda_out_left, sizeof(u32), 1, stream);
+      /* the read position is not saved (state format unchanged): it is
+         where the unplayed audio starts, cdda_out_left bytes before the
+         write position */
+      if (cdda_next_in >= sizeof(cddabuf.data))
+         cdda_next_in = 0;
+      if (cdda_out_left > sizeof(cddabuf.data))
+         cdda_out_left = sizeof(cddabuf.data);
+      cdda_out_left &= ~3u;
+      cdda_rd_pos = (cdda_next_in + sizeof(cddabuf.data) - cdda_out_left) % sizeof(cddabuf.data);
       MemStateRead((void *)&scsp_mute_flags, sizeof(u32), 1, stream);
       MemStateRead((void *)&scspsoundlen, sizeof(u32), 1, stream);
       MemStateRead((void *)&scsplines, sizeof(u32), 1, stream);
