@@ -971,7 +971,13 @@ INLINE u32 VDP2COLOR(int id, u32 alpha, u32 priority, u32 cc_on, u32 cramindex) 
 #endif
 
 #if defined WORDS_BIGENDIAN
-#define SAT2YAB2(alpha,dot1,dot2)       ((dot2 & 0xFF << 24) | ((dot2 & 0xFF00) << 8) | ((dot1 & 0xFF) << 8) | alpha)
+/* Equivalent big-endian du chemin little-endian ci-dessous : octets R, G, B,
+ * A en memoire, soit R << 24 | G << 16 | B << 8 | A en valeur 32 bits.
+ * L'ancienne ecriture "(dot2 & 0xFF << 24)" valait dot2 & 0xFF000000 par
+ * priorite des operateurs, toujours nul pour un mot 16 bits : le rouge etait
+ * perdu. Le bleu garde le masque 0xFE du chemin little-endian (bit reserve a
+ * l'information d'ombre MSB). */
+#define SAT2YAB2(alpha,dot1,dot2)       (((dot2 & 0xFF) << 24) | ((dot2 & 0xFF00) << 8) | ((dot1 & 0xFE) << 8) | alpha)
 #else
 //Here FE is not accurate to get an extra bit for MSB shadow information...
 #define SAT2YAB2(alpha,dot1,dot2)       (alpha << 24 | ((dot1 & 0xFE) << 16) | (dot2 & 0xFF00) | (dot2 & 0xFF))
