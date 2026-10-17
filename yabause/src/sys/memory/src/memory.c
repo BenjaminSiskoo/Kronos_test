@@ -407,6 +407,53 @@ static void FASTCALL HighWramMemoryWriteLong(SH2_struct *context, u8* mem, u32 a
 
 static u32 lastLWRamBankCol = 0;
 
+/* Ecriture SH-2 en Work RAM-L (DRAM 1 Mo, ST-210 No.05).
+ *
+ * La Work RAM-L est sur l'aire CS0 du SH-2, bus de 16 bits (la taille de
+ * bus de l'aire 0 est fixee par les broches de mode, SH7604 Hardware
+ * Manual 7.2.2, note de BCR2) : un mot long y fait deux acces de bus, un
+ * octet ou un mot un seul (7.3.1, figure 7.3). Un acces a l'espace
+ * ordinaire dure 2 cycles sans attente (7.4.1, p.151) ; avec WCR = 5555H
+ * (valeur du BIOS, reprise par YabauseStartSlave() en BIOS emule), W01/W00
+ * = 01 ajoutent une attente et autorisent l'entree WAIT externe (7.2.3,
+ * p.140) : 3 cycles au minimum par acces, plus les attentes que le materiel
+ * Saturn insere pour cette DRAM, non documentees. Valeur retenue, celle de
+ * Mednafen (ss/ss.cpp, BusRW_DB_CS0, aire 00200000-003FFFFF : 7 cycles par
+ * acces, en lecture comme en ecriture).
+ * Le BSC a un tampon d'ecriture d'un niveau (7.11.2, p.211) : le CPU
+ * continue sans attendre la fin de l'ecriture externe, mais l'ecriture
+ * suivante attend que le bus soit libre.
+ *
+ * Kronos ne facturait que +4 cycles a chaque changement de rangee de 2 Ko,
+ * soit presque rien pour une suite d'ecritures. Die Hard Trilogy efface la
+ * Work RAM-L au demarrage (06046CCC-06046CD4 : MOV.L R2,@R3 ; ADD #4,R3 ;
+ * ADD #1,R1 ; CMP/GT R7,R1 ; BF, 3F800H mots longs) : 7 cycles par tour
+ * dans Kronos, 1070 lignes en PAL, au lieu d'environ 14 (deux acces de 7
+ * cycles, le bus limite la boucle). Le programme principal enchaine
+ * aussitot son INTBACK de statut puis la routine SSHOFF - temporisation -
+ * SSHON (06054526-06054558). Trop tot, celle-ci chevauchait en PAL le
+ * debut du dessin VDP1 de la ligne 0, dont le gestionnaire de fin de
+ * dessin confie une tache a l'esclave pas encore relance : le maitre
+ * attendait indefiniment (ecran de licence SEGA, version europeenne).
+ *
+ * Les lectures ne changent pas : elles passent par le modele du cache non
+ * emule (SH2UnemulatedCacheDataRead) ou par le changement de rangee
+ * ci-dessous. */
+#define SH2_LWRAM_ACCESS_CYCLES 7
+static u32 SH2LwramBusFree[2];
+static INLINE void SH2LwramWriteCost(SH2_struct *context, int units)
+{
+  const int i = (context == SSH2) ? 1 : 0;
+  u32 start = context->cycles;
+  const s32 wait = (s32)(SH2LwramBusFree[i] - start);
+  /* Le compteur de cycles repart de 0 a chaque trame : une fin d'ecriture
+     plus lointaine que deux acces appartient a la trame precedente. */
+  if ((wait > 0) && (wait <= 2 * SH2_LWRAM_ACCESS_CYCLES))
+    start += (u32)wait;
+  context->cycles = start;
+  SH2LwramBusFree[i] = start + (u32)(units * SH2_LWRAM_ACCESS_CYCLES);
+}
+
 static u8 FASTCALL LowWramMemoryReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
     int rowBank = ((addr>>11)&0x1FF);
@@ -445,11 +492,8 @@ static u32 FASTCALL LowWramMemoryReadLong(SH2_struct *context, UNUSED u8* memory
 
 static void FASTCALL LowWramMemoryWriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
 {
-  int rowBank = ((addr>>11)&0x1FF);
-  if (rowBank != lastLWRamBankCol) {
-   lastLWRamBankCol = rowBank;
-   if (context) context->cycles += 4;
-  }
+  lastLWRamBankCol = ((addr>>11)&0x1FF);
+  if (context) SH2LwramWriteCost(context, 1);
    T2WriteByte(memory, addr & 0xFFFFF, val);
 }
 
@@ -457,11 +501,8 @@ static void FASTCALL LowWramMemoryWriteByte(SH2_struct *context, UNUSED u8* memo
 
 static void FASTCALL LowWramMemoryWriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
 {
-  int rowBank = ((addr>>11)&0x1FF);
-  if (rowBank != lastLWRamBankCol) {
-   lastLWRamBankCol = rowBank;
-   if (context) context->cycles += 4;
-  }
+  lastLWRamBankCol = ((addr>>11)&0x1FF);
+  if (context) SH2LwramWriteCost(context, 1);
    T2WriteWord(memory, addr & 0xFFFFF, val);
 }
 
@@ -469,11 +510,8 @@ static void FASTCALL LowWramMemoryWriteWord(SH2_struct *context, UNUSED u8* memo
 
 static void FASTCALL LowWramMemoryWriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
 {
-  int rowBank = ((addr>>11)&0x1FF);
-  if (rowBank != lastLWRamBankCol) {
-   lastLWRamBankCol = rowBank;
-   if (context) context->cycles += 4;
-  }
+  lastLWRamBankCol = ((addr>>11)&0x1FF);
+  if (context) SH2LwramWriteCost(context, 2);
    T2WriteLong(memory, addr & 0xFFFFF, val);
 }
 
