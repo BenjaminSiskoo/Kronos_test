@@ -274,17 +274,19 @@ void resetSyncVideo(void) {
   resetFrameSkip();
 }
 
-// PAL
-// CLKTYPE_26MHZ
-// 28437500 * 15.0/16.0 / 50 /313 = 533203 cycles/313 lines = 1703 cycles/line => 38 ns/cycle
-// CLKTYPE_28MHZ
-// 28437500 * 1.0 / 50 /313 = 568750/313 lines = 1817 cycles => 35 ns/cycle
-//
-// NTSC
-// CLKTYPE_26MHZ
-// (39375000.0 / 11.0) * 8.0 * 15.0/16.0 / (60/1.001) / 263 = 447890/263 lines = 1703 cycles/line => 37ns/cycle
-// CLKTYPE_28MHZ
-// (39375000.0 / 11.0) * 8.0 * 1.0 / (60/1.001) / 263 = 477750cycles/263 lines = 1817 cycles/lines => 35ns/cycle
+/* SH-2 clock (SMPC User's Manual ST-169-R1, "DOT SEL OFF Status"): the PLL
+ * runs the SH-2, VDP1 and VDP2 at 26.8741 MHz (NTSC) / 26.6875 MHz (PAL) in
+ * 320 mode, and at 28.6364 MHz (NTSC) / 28.4375 MHz (PAL) after CKCHG352.
+ * Per frame (NTSC 60/1.001 Hz, PAL 50 Hz):
+ *   NTSC 320: 448350 cycles (1704.8 per line of 263)
+ *   NTSC 352: 477750 cycles (1816.5 per line)
+ *   PAL  320: 533750 cycles (1705.3 per line of 313)
+ *   PAL  352: 568750 cycles (1817.1 per line)
+ * See SH2CyclesForDeciline(). */
+#define SH2_CLOCK_NTSC_320 26874100
+#define SH2_CLOCK_NTSC_352 28636400
+#define SH2_CLOCK_PAL_320  26687500
+#define SH2_CLOCK_PAL_352  28437500
 #define MIN_STEP_RUN (32)
 
 #define DECILINE_STEP     (18)
@@ -316,6 +318,50 @@ static const u32 cycles[DECILINE_STEP][2][2] = {
   {{15,25},{1,1}}, // Vblankout on MaxLine
   {{155,260},{5,9}}
 };
+
+/* SH-2 time of a deciline (first column of cycles[]).
+ *
+ * The column adds up to 1702 per line in PAL and 1817 in NTSC, whatever the
+ * clock: CurSH2FreqType, set by CKCHG320/CKCHG352, was stored and never used.
+ * An NTSC game in 320 mode -- the default after the BIOS, and most games --
+ * ran its SH-2s 6.6 % too fast (1817 x 263 = 477871 cycles per frame instead
+ * of 448350), a PAL game in 352 mode 6.4 % too slow (1702 x 313 = 532726
+ * instead of 568750).
+ *
+ * The column is now only the share of the line given to each deciline, as
+ * the second column is for SubSystemUs(): SH2CyclesForDeciline() converts it
+ * into SH-2 cycles so that a frame gets exactly clock * frameRateDen /
+ * frameRateNum cycles, carrying the fraction from one deciline to the next.
+ * The fraction is cleared on a clock change (YabauseChangeTiming) and on a
+ * video format change. */
+static u64 sh2CycleFrac = 0;
+
+static u32 SH2WeightPerLine(int ntsc) {
+  u32 sum = 0;
+  int i;
+  for (i = 0; i < DECILINE_STEP; i++)
+    sum += cycles[i][0][ntsc];
+  return sum;
+}
+
+static u64 SH2ClockHz(void) {
+  const int is352 = (yabsys.CurSH2FreqType == CLKTYPE_28MHZ);
+  if (yabsys.IsPal)
+    return is352 ? SH2_CLOCK_PAL_352 : SH2_CLOCK_PAL_320;
+  return is352 ? SH2_CLOCK_NTSC_352 : SH2_CLOCK_NTSC_320;
+}
+
+static int SH2CyclesForDeciline(u32 weight) {
+  const int ntsc = !yabsys.IsPal;
+  const u64 den = (u64)SH2WeightPerLine(ntsc) * (u64)yabsys.MaxLineCount * frameRateNum;
+  u32 c;
+  if (den == 0)
+    return (int)weight;
+  sh2CycleFrac += (u64)weight * SH2ClockHz() * frameRateDen;
+  c = (u32)(sh2CycleFrac / den);
+  sh2CycleFrac -= (u64)c * den;
+  return (int)c;
+}
 
 /* SMPC and CD block time (second column of cycles[], in microseconds).
  *
@@ -357,6 +403,7 @@ void YabauseChangeTiming(int freqtype) {
    yabsys.DecilineCount = 0;
    yabsys.LineCount = 0;
    yabsys.CurSH2FreqType = freqtype;
+   sh2CycleFrac = 0;   /* SH2CyclesForDeciline(): new clock */
 
    MSH2->cycleFrac = 0;
    SSH2->cycleFrac = 0;
@@ -1149,7 +1196,9 @@ int YabauseEmulate(void) {
 
     THREAD_LOG("Unlock MSH2\n");
 
-    int nb_cycles = cycles[yabsys.DecilineCount][0][!yabsys.IsPal];
+    /* SH-2 cycles of this deciline for the current clock (see
+       SH2CyclesForDeciline) */
+    int nb_cycles = SH2CyclesForDeciline(cycles[yabsys.DecilineCount][0][!yabsys.IsPal]);
     while (nb_cycles > 0) {
       int cycles_to_run = (nb_cycles >= MIN_STEP_RUN)?MIN_STEP_RUN:nb_cycles;
       nb_cycles -= cycles_to_run;
@@ -1369,6 +1418,7 @@ void YabauseSetVideoFormat(int type) {
    frameTimeFrac = 0;
    scspSampleFrac = 0;
    subUsFrac = 0;
+   sh2CycleFrac = 0;
    /* TVSTAT bit 0 (PAL) is how a game learns which video standard it is
       running on. An OR can only ever set it: once the bit is 1 it stays 1,
       and VIDEOFORMATTYPE_NTSC is 0, so the NTSC branch of every caller ORs
