@@ -270,6 +270,20 @@ char *Vdp1DebugGetCommandRaw(u32 addr);
  * Vdp1DebugGetFrameRam() renvoie NULL tant qu'aucune trame n'a ete capturee. */
 void Vdp1DebugSetCapture(int enable);
 u8 *Vdp1DebugGetFrameRam(void);
+/* Memoire lue par toutes les fonctions Vdp1Debug* : l'instantane s'il existe,
+ * la VRAM vivante sinon (jamais NULL une fois le VDP1 initialise). */
+u8 *Vdp1DebugGetRam(void);
+/* Parcourt la table une seule fois et range l'adresse de chaque commande
+ * (Draw End compris) dans addrs[]. Renvoie le nombre d'adresses ecrites. */
+int Vdp1DebugGetCommandList(u32 *addrs, int maxCount);
+/* Chemin complet du code couleur 'code' d'un texel de la commande en cmdAddr
+ * (banque/LUT, decalage CRAOFB, index et contenu de Color RAM), en texte. */
+int Vdp1DebugTexelColorText(u32 cmdAddr, u32 code, char *out, int outSize);
+/* Apercu de la trame : toutes les commandes de addrs[] assemblees dans une
+ * image ARGB (0 = transparent) de la taille du clipping systeme. boxes recoit
+ * 4 entiers par commande (x0, y0, x1, y1 inclus ; x1 < x0 = rien de trace).
+ * L'appelant libere le buffer avec free(). */
+u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int *boxes);
 
 Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr);
 Vdp1CommandType Vdp1DebugGetCommandType(u32 number);
