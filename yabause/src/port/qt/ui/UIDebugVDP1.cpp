@@ -21,10 +21,20 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QColor>
+#include <QPainter>
+#include <QPixmap>
+#include <QPen>
+#include <QResizeEvent>
+#include <QSignalBlocker>
+#include <QGraphicsRectItem>
+#include <QGraphicsView>
+#include <QVBoxLayout>
+#include <QLabel>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 // VDP1 system headers
 extern "C" {
@@ -43,9 +53,10 @@ struct Vdp1CommandsCount
     size_t lines = 0;
 };
 
-void Vdp1CountCommands(u32 index, Vdp1CommandsCount& cmdCount)
+// Prend le type déjà lu plutôt qu'un rang : Vdp1DebugGetCommandType(rang)
+// reparcourait toute la table depuis l'adresse 0 à chaque appel.
+void Vdp1CountCommandType(Vdp1CommandType commandType, Vdp1CommandsCount& cmdCount)
 {
-    Vdp1CommandType commandType = Vdp1DebugGetCommandType(index);
     switch (commandType) {
     case VDPCT_DISTORTED_SPRITE:
     case VDPCT_DISTORTED_SPRITEN:
@@ -281,83 +292,104 @@ void UIDebugVDP1::updateVdp1Registers()
 void UIDebugVDP1::fillCommandList()
 {
     Vdp1CommandsCount cmdCount;
-    lwCommandList->clear();
-    lwCommandRaw->clear();
+    // Ligne sélectionnée avant le rafraîchissement : "Image suivante"
+    // ramenait systématiquement la sélection sur la commande 0, ce qui
+    // obligeait à re-cliquer le sprite étudié à chaque trame.
+    const int previousRow = lwCommandList->currentRow();
 
-    if (Vdp1Ram)
     {
-        // Plafond de sécurité : une liste de commandes VDP1 corrompue (jeu
-        // buggé, RAM non initialisée, etc.) pourrait ne jamais renvoyer de
-        // marqueur de fin (nameStr == NULL), ce qui bloquerait cette boucle
-        // et gèlerait toute l'interface de Yabause. Une vraie table de
-        // commandes ne s'approche jamais de cette taille.
-        const int kMaxCommands = 65536;
-        for (int i = 0; i < kMaxCommands; i++)
+        // Vider/remplir les listes émet itemSelectionChanged ; sans blocage,
+        // syncOnVdp1Entry était appelé avec des rangs qui ne correspondaient
+        // plus à rien pendant la reconstruction.
+        QSignalBlocker blockList(lwCommandList);
+        QSignalBlocker blockRaw(lwCommandRaw);
+        lwCommandList->clear();
+        lwCommandRaw->clear();
+        mCmdAddrs.clear();
+
+        if (Vdp1DebugGetRam())
         {
-            u32 addr = Vdp1DebugGetCommandAddr(i);
-            char *nameStr = Vdp1DebugGetCommandNumberName(addr);
-            if (nameStr == NULL) break;
+            // Un seul parcours de la table (au plus 16384 tables de 32 octets
+            // dans 512 Ko de VRAM). L'ancien remplissage appelait
+            // Vdp1DebugGetCommandAddr(i) puis Vdp1DebugGetCommandType(i) pour
+            // chaque i, soit deux parcours complets depuis l'adresse 0 par
+            // ligne (O(n^2)), plafonnés en silence à 2000 commandes.
+            mCmdAddrs.resize(16384);
+            const int n = Vdp1DebugGetCommandList(mCmdAddrs.data(), (int)mCmdAddrs.size());
+            mCmdAddrs.resize(n > 0 ? n : 0);
 
-            Vdp1CountCommands(i, cmdCount);
-            
-            QListWidgetItem *item = new QListWidgetItem(QtYabause::translate(nameStr));
-            Vdp1CommandType type = Vdp1DebugGetCommandType(i);
-
-            // Fix: this used to color by numeric range ("0x00..0x05" =
-            // green, etc.), which doesn't match Vdp1CommandType (vdp1.h) at
-            // all -- Polygon(4) and Polyline(5) fell inside the "sprite"
-            // range and were colored green, the comment on type 6 said
-            // "Polygons" but 6 is actually Line, and Local
-            // Coordinates/PolylineN/User Clipping N had no color at all.
-            // Switching on the real enum makes this impossible to drift
-            // out of sync again, and gives every command type a color
-            // instead of the five that happened to fall in-range before.
-            switch (type)
+            for (size_t i = 0; i < mCmdAddrs.size(); i++)
             {
-                case VDPCT_NORMAL_SPRITE:
-                case VDPCT_SCALED_SPRITE:
-                case VDPCT_DISTORTED_SPRITE:
-                case VDPCT_DISTORTED_SPRITEN:
-                    item->setForeground(Qt::darkGreen); // Sprites
-                    break;
-                case VDPCT_POLYGON:
-                    item->setForeground(Qt::blue); // Polygon
-                    break;
-                case VDPCT_POLYLINE:
-                case VDPCT_POLYLINEN:
-                    item->setForeground(Qt::darkCyan); // Polyline
-                    break;
-                case VDPCT_LINE:
-                    item->setForeground(QColor(180, 90, 0)); // Line (dark orange)
-                    break;
-                case VDPCT_USER_CLIPPING_COORDINATES:
-                case VDPCT_USER_CLIPPING_COORDINATESN:
-                case VDPCT_SYSTEM_CLIPPING_COORDINATES:
-                case VDPCT_LOCAL_COORDINATES:
-                    item->setForeground(Qt::gray); // Clipping / local coords
-                    break;
-                case VDPCT_INVALID:
-                    item->setForeground(Qt::red); // Invalid command word
-                    break;
-                default:
-                    break; // VDPCT_DRAW_END: leave at the default text color
-            }
-                
-            lwCommandList->addItem(item);
+                const u32 addr = mCmdAddrs[i];
+                char *nameStr = Vdp1DebugGetCommandNumberName(addr);
+                if (nameStr == NULL) { mCmdAddrs.resize(i); break; }
 
-            char *rawStr = Vdp1DebugGetCommandRaw(addr);
-            if (rawStr) {
-                lwCommandRaw->addItem(rawStr);
+                const Vdp1CommandType type = Vdp1DebugGetCommandTypeAtAddr(addr);
+                Vdp1CountCommandType(type, cmdCount);
+
+                QListWidgetItem *item = new QListWidgetItem(QtYabause::translate(nameStr));
+
+                // Couleur par type réel (enum Vdp1CommandType, vdp1.h).
+                switch (type)
+                {
+                    case VDPCT_NORMAL_SPRITE:
+                    case VDPCT_SCALED_SPRITE:
+                    case VDPCT_DISTORTED_SPRITE:
+                    case VDPCT_DISTORTED_SPRITEN:
+                        item->setForeground(Qt::darkGreen); // Sprites
+                        break;
+                    case VDPCT_POLYGON:
+                        item->setForeground(Qt::blue); // Polygon
+                        break;
+                    case VDPCT_POLYLINE:
+                    case VDPCT_POLYLINEN:
+                        item->setForeground(Qt::darkCyan); // Polyline
+                        break;
+                    case VDPCT_LINE:
+                        item->setForeground(QColor(180, 90, 0)); // Line (dark orange)
+                        break;
+                    case VDPCT_USER_CLIPPING_COORDINATES:
+                    case VDPCT_USER_CLIPPING_COORDINATESN:
+                    case VDPCT_SYSTEM_CLIPPING_COORDINATES:
+                    case VDPCT_LOCAL_COORDINATES:
+                        item->setForeground(Qt::gray); // Clipping / local coords
+                        break;
+                    case VDPCT_INVALID:
+                        item->setForeground(Qt::red); // Invalid command word
+                        break;
+                    default:
+                        break; // VDPCT_DRAW_END: leave at the default text color
+                }
+
+                // Adresse VRAM en infobulle : permet de rapprocher une ligne
+                // de l'export brut ou d'un point d'arrêt mémoire.
+                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper());
+                lwCommandList->addItem(item);
+
+                // Une ligne par commande dans les DEUX listes, toujours : les
+                // barres de défilement et les rangs sont synchronisés.
+                char *rawStr = Vdp1DebugGetCommandRaw(addr);
+                lwCommandRaw->addItem(rawStr ? QString::fromLatin1(rawStr) : QString());
                 free(rawStr);
             }
         }
     }
 
-    lVDP1Info->setText(QString::fromStdString(buildInfoLabel(cmdCount)));
-    
-    if (lwCommandList->count() > 0) 
-        syncOnVdp1Entry(0);
-    else 
+    QString info = QString::fromStdString(buildInfoLabel(cmdCount));
+    if (!info.isEmpty()) info += "   |   ";
+    info += Vdp1DebugGetFrameRam()
+        ? QtYabause::translate("Source: VRAM captured at draw start")
+        : QtYabause::translate("Source: live VRAM (Next frame captures the drawn list)");
+    lVDP1Info->setText(info);
+
+    // Avant syncOnVdp1Entry : celui-ci place le cadre de sélection dans
+    // l'aperçu, qui doit déjà correspondre à la nouvelle liste.
+    if (mFrameDlg && mFrameDlg->isVisible())
+        refreshFramePreview();
+
+    if (lwCommandList->count() > 0)
+        syncOnVdp1Entry((previousRow >= 0 && previousRow < lwCommandList->count()) ? previousRow : 0);
+    else
         clearVdp1Display();
 
     updateVdp1Registers();
@@ -369,6 +401,8 @@ void UIDebugVDP1::clearVdp1Display()
     if (vdp1texture) { free(vdp1texture); vdp1texture = NULL; }
     if (vdp1RawTexture) { free(vdp1RawTexture); vdp1RawTexture = NULL; }
     vdp1RawNumBytes = 0;
+    vdp1RawW = vdp1RawH = 0;
+    mCurIsSprite = false;
     currentTextureImage = QImage();
     lTextureInfo->setText(QtYabause::translate("No texture"));
     lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
@@ -381,12 +415,44 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
 {
     setupUi(this);
     QGraphicsScene *scene = new QGraphicsScene(this);
-    // Damier de transparence, comme UIDebugVDP2Viewer::gvScreen : un sprite
-    // VDP1 utilise très souvent la couleur 0 (ou SPD=0) comme code de
-    // transparence, et sur le fond uni précédent un pixel transparent était
-    // indiscernable d'un pixel opaque de la même couleur que la fenêtre.
-    scene->setBackgroundBrush(Qt::Dense7Pattern);
+    // Damier de transparence.
+    //
+    // Il était posé en fond de SCÈNE (setBackgroundBrush(Qt::Dense7Pattern)).
+    // Le fond de scène est peint en coordonnées de scène, donc agrandi par
+    // le zoom comme la texture elle-même : avec fitInView sur un sprite 8x8,
+    // chaque point du motif Dense7 devenait un gros carré noir de la taille
+    // d'un texel, sur toute la vue -- y compris hors de la texture. On ne
+    // distinguait plus le motif des pixels du sprite.
+    //
+    // Le damier est maintenant peint en coordonnées ÉCRAN, dans le filtre
+    // Paint du viewport (eventFilter), AVANT que QGraphicsView ne dessine la
+    // scène : cases de 8 px fixes quel que soit le zoom, gris clair/gris
+    // moyen, jamais confondables avec un texel noir. Le styleSheet du .ui
+    // ("background-color: transparent") empêche de passer par la palette du
+    // viewport, d'où le filtre plutôt que QPalette::Base.
+    {
+        QPixmap tile(16, 16);
+        tile.fill(QColor(0xCC, 0xCC, 0xCC));
+        QPainter tp(&tile);
+        tp.fillRect(0, 0, 8, 8, QColor(0x99, 0x99, 0x99));
+        tp.fillRect(8, 8, 8, 8, QColor(0x99, 0x99, 0x99));
+        tp.end();
+        mCheckerBrush = QBrush(tile);
+    }
+    scene->setBackgroundBrush(Qt::NoBrush);
+    gvTexture->setBackgroundBrush(Qt::NoBrush);
     gvTexture->setScene(scene);
+    // Un défilement par blit (viewport->scroll) déplacerait le damier avec
+    // le contenu et le désalignerait de la grille écran : tout repeindre.
+    gvTexture->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+    // Texels nets : pas de lissage quand on agrandit un sprite.
+    gvTexture->setRenderHint(QPainter::SmoothPixmapTransform, false);
+
+    // Capture de la VRAM VDP1 au début de chaque tracé tant que la fenêtre
+    // est ouverte (vdp1.c, Vdp1DebugCaptureFrame). Toutes les fonctions
+    // Vdp1Debug* lisent cet instantané dès qu'il existe -- c'est-à-dire
+    // après le premier "Image suivante" -- au lieu de la VRAM vivante.
+    Vdp1DebugSetCapture(1);
 
     connect(lwCommandList->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandRaw->verticalScrollBar(), &QScrollBar::setValue);
@@ -408,55 +474,183 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
 
 UIDebugVDP1::~UIDebugVDP1()
 {
+    // Détruire l'aperçu AVANT la fin de ce destructeur : son viewport a ce
+    // dialogue pour filtre d'événements, et la destruction automatique des
+    // enfants (après ~UIDebugVDP1) lui enverrait encore des événements
+    // alors que l'objet est déjà à moitié détruit.
+    if (mFrameDlg) {
+        mFrameView->viewport()->removeEventFilter(this);
+        delete mFrameDlg;
+        mFrameDlg = nullptr;
+        mFrameView = nullptr;
+        mFrameSel = nullptr;
+        mFrameInfo = nullptr;
+    }
     clearVdp1Display();
+    // L'émulation est encore suspendue par le YabauseLocker de l'appelant
+    // (UIYabause : UIDebugVDP1(NULL, &locker).exec()) : libérer l'instantané
+    // ici ne peut pas croiser un Vdp1DebugCaptureFrame().
+    Vdp1DebugSetCapture(0);
 }
 
 void UIDebugVDP1::syncOnVdp1Entry(int cursel)
 {
-    if (cursel < 0 || cursel >= lwCommandList->count()) return;
+    if (cursel < 0 || cursel >= lwCommandList->count() ||
+        cursel >= (int)mCmdAddrs.size()) return;
+
+    const u32 addr = mCmdAddrs[cursel];
 
     char tempstr[2048];
-    // Garantir la null-termination même si Vdp1DebugCommand remplit le
-    // buffer en entier ou ne le termine pas explicitement (même précaution
-    // que celle déjà appliquée côté UIDebugVDP2::updateInfoDisplay()).
+    // Garantir la null-termination même si Vdp1DebugCommandAtAddr remplit
+    // le buffer en entier ou ne le termine pas explicitement.
     memset(tempstr, 0, sizeof(tempstr));
-    lwCommandRaw->setCurrentRow(cursel);
-    lwCommandList->setCurrentRow(cursel);
+    {
+        QSignalBlocker blockList(lwCommandList);
+        QSignalBlocker blockRaw(lwCommandRaw);
+        lwCommandRaw->setCurrentRow(cursel);
+        lwCommandList->setCurrentRow(cursel);
+    }
 
-    Vdp1DebugCommand(cursel, tempstr);
+    // Variantes adressées : l'adresse relevée par fillCommandList, pas un
+    // rang re-résolu en reparcourant la table à chaque clic.
+    Vdp1DebugCommandAtAddr(addr, tempstr);
     tempstr[sizeof(tempstr) - 1] = '\0';
-    pteCommandInfo->setPlainText(QtYabause::translate(tempstr));
+    QString info = QString("Command address = 0x%1\n").arg(addr, 5, 16, QChar('0')).toUpper()
+                 + QtYabause::translate(tempstr);
+    pteCommandInfo->setPlainText(info);
 
     // Nettoyage avant nouvelle allocation
     if (vdp1texture) { free(vdp1texture); vdp1texture = NULL; }
     if (vdp1RawTexture) { free(vdp1RawTexture); vdp1RawTexture = NULL; }
+    vdp1RawNumBytes = 0;
+    vdp1RawW = vdp1RawH = 0;
 
-    vdp1texture    = Vdp1DebugTexture(cursel, &vdp1texturew, &vdp1textureh);
-    vdp1RawTexture = Vdp1DebugRawTexture(cursel, &vdp1texturew, &vdp1textureh, &vdp1RawNumBytes);
+    vdp1texture    = Vdp1DebugTextureAtAddr(addr, &vdp1texturew, &vdp1textureh);
+    vdp1RawTexture = Vdp1DebugRawTextureAtAddr(addr, &vdp1RawW, &vdp1RawH, &vdp1RawNumBytes);
+
+    // Paramètres utiles à l'inspecteur de pixel (CMDCTRL +0, CMDPMOD +4).
+    mCurIsSprite = false;
+    u8 *ram = Vdp1DebugGetRam();
+    if (ram && addr != 0xFFFFFFFF) {
+        const u16 ctrl = T1ReadWord(ram, addr);
+        const u16 pmod = T1ReadWord(ram, addr + 4);
+        mCurIsSprite  = !(ctrl & 0xC000) && ((ctrl & 0xF) <= 3);
+        mCurColorMode = (pmod >> 3) & 0x7;
+        mCurEndCode   = !(pmod & 0x0080);
+        mCurSPD       =  (pmod & 0x0040) != 0;
+    }
 
     pbSaveBitmap->setEnabled(vdp1texture != NULL);
     pbSaveRawSprite->setEnabled(vdp1RawTexture != NULL);
+
+    QGraphicsScene *sc = gvTexture->scene();
+    sc->clear();
 
     if (vdp1texture) {
         QImage img((uchar *)vdp1texture, vdp1texturew, vdp1textureh, QImage::Format_ARGB32);
         // .copy() : vdp1texture est libéré au prochain syncOnVdp1Entry (ou
         // dans le destructeur) -- sans copie profonde, currentTextureImage
-        // se retrouverait à pointer sur de la mémoire déjà libérée dès la
-        // sélection suivante, ce qui aurait planté l'inspecteur de pixel.
+        // pointerait sur de la mémoire libérée dès la sélection suivante.
         currentTextureImage = img.rgbSwapped().copy();
-        QPixmap pixmap = QPixmap::fromImage(currentTextureImage);
-        gvTexture->scene()->clear();
-        gvTexture->scene()->addPixmap(pixmap);
-        gvTexture->scene()->setSceneRect(gvTexture->scene()->itemsBoundingRect());
-        gvTexture->fitInView(gvTexture->scene()->itemsBoundingRect(), Qt::KeepAspectRatio);
-        lTextureInfo->setText(QString("%1 x %2 px").arg(vdp1texturew).arg(vdp1textureh));
+
+        const QRectF r(0, 0, vdp1texturew, vdp1textureh);
+        // Cadre autour de l'emprise de la texture, sous le pixmap : sans lui
+        // un sprite entièrement transparent (code 0 partout, SPD = 0) ne
+        // laissait voir que le fond, sans aucune idée de sa taille.
+        QPen framePen(QColor(255, 0, 255));
+        framePen.setCosmetic(true);
+        framePen.setWidth(2);
+        QGraphicsRectItem *frame = sc->addRect(r, framePen, Qt::NoBrush);
+        frame->setZValue(-1);
+
+        QGraphicsPixmapItem *pix = sc->addPixmap(QPixmap::fromImage(currentTextureImage));
+        pix->setTransformationMode(Qt::FastTransformation); // texels nets
+        sc->setSceneRect(r);
+        fitTexture();
+
+        int transparent = 0;
+        for (int y = 0; y < currentTextureImage.height(); y++) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(currentTextureImage.constScanLine(y));
+            for (int x = 0; x < currentTextureImage.width(); x++)
+                if (qAlpha(line[x]) == 0) transparent++;
+        }
+        const int total = vdp1texturew * vdp1textureh;
+        QString t = QtYabause::translate("%1 x %2 px").arg(vdp1texturew).arg(vdp1textureh);
+        if (mCurIsSprite) {
+            t += "  -  " + QtYabause::translate("%1 / %2 transparent pixels").arg(transparent).arg(total);
+            if (transparent == total)
+                t += "\n" + QtYabause::translate("Fully transparent texture (every pixel is a transparent or end code)");
+        }
+        lTextureInfo->setText(t);
     } else {
         currentTextureImage = QImage();
+        sc->setSceneRect(QRectF());
+        gvTexture->resetTransform();
         lTextureInfo->setText(QtYabause::translate(
             "No texture for this command (draw end, skipped, clipping,\n"
             "local coordinates, or an invalid command word)"));
     }
     lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
+    updateFrameSelection();
+}
+
+// Zoom d'ajustement : facteur ENTIER dès que la texture tient au moins une
+// fois dans la vue, pour que chaque texel occupe exactement N x N pixels
+// écran (fitInView donnait un facteur fractionnaire, d'où des texels de
+// tailles inégales).
+void UIDebugVDP1::fitTexture()
+{
+    gvTexture->resetTransform();
+    if (!gvTexture->scene() || currentTextureImage.isNull()) return;
+
+    const QRectF r(0, 0, currentTextureImage.width(), currentTextureImage.height());
+    const QSize vp = gvTexture->viewport()->size();
+    const double margin = 6.0;
+    const double sx = (vp.width()  - 2 * margin) / r.width();
+    const double sy = (vp.height() - 2 * margin) / r.height();
+    double s = std::min(sx, sy);
+    if (s >= 1.0) s = std::floor(s);
+    else if (s <= 0.0) s = 1.0;
+    gvTexture->scale(s, s);
+    gvTexture->centerOn(r.center());
+}
+
+void UIDebugVDP1::resizeEvent(QResizeEvent *event)
+{
+    QDialog::resizeEvent(event);
+    fitTexture();
+}
+
+// Code couleur brut (tel que lu en VRAM) du texel (x, y), à partir du buffer
+// renvoyé par Vdp1DebugRawTextureAtAddr. 4 bpp : deux texels par octet, le
+// premier dans le quartet fort ; 16 bpp : mot big-endian.
+bool UIDebugVDP1::rawCodeAt(int x, int y, u32 *code) const
+{
+    if (!mCurIsSprite || !vdp1RawTexture || x < 0 || y < 0 ||
+        x >= vdp1RawW || y >= vdp1RawH) return false;
+
+    const int idx = y * vdp1RawW + x;
+    switch (mCurColorMode) {
+    case 0:
+    case 1: {
+        const int b = idx / 2;
+        if (b >= vdp1RawNumBytes) return false;
+        *code = (idx & 1) ? (vdp1RawTexture[b] & 0xF) : (vdp1RawTexture[b] >> 4);
+        return true;
+    }
+    case 2:
+    case 3:
+    case 4:
+        if (idx >= vdp1RawNumBytes) return false;
+        *code = vdp1RawTexture[idx];
+        return true;
+    case 5:
+        if (2 * idx + 1 >= vdp1RawNumBytes) return false;
+        *code = ((u32)vdp1RawTexture[2 * idx] << 8) | vdp1RawTexture[2 * idx + 1];
+        return true;
+    default:
+        return false;
+    }
 }
 
 void UIDebugVDP1::wheelEvent(QWheelEvent *event)
@@ -480,9 +674,7 @@ void UIDebugVDP1::wheelEvent(QWheelEvent *event)
 
 void UIDebugVDP1::on_pbResetZoom_clicked()
 {
-    gvTexture->resetTransform();
-    if (gvTexture->scene())
-        gvTexture->fitInView(gvTexture->scene()->sceneRect(), Qt::KeepAspectRatio);
+    fitTexture();
 }
 
 // ============================================================
@@ -492,9 +684,67 @@ void UIDebugVDP1::on_pbResetZoom_clicked()
 // ============================================================
 bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
 {
+    if (mFrameView && watched == mFrameView->viewport())
+    {
+        switch (event->type())
+        {
+        case QEvent::Paint:
+        {
+            QPainter p(mFrameView->viewport());
+            p.fillRect(static_cast<QPaintEvent*>(event)->rect(), mCheckerBrush);
+            break;
+        }
+        case QEvent::Resize:
+            fitFrame();
+            break;
+        case QEvent::Wheel:
+        {
+            QWheelEvent *we = static_cast<QWheelEvent*>(event);
+            if (we->modifiers() & Qt::ControlModifier) {
+                const double f = (we->angleDelta().y() > 0) ? 1.15 : 1.0 / 1.15;
+                mFrameView->scale(f, f);
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseMove:
+        case QEvent::MouseButtonPress:
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            const QPointF sp = mFrameView->mapToScene(me->pos());
+            const int x = (int)std::floor(sp.x()), y = (int)std::floor(sp.y());
+            const int idx = commandAtFramePoint(x, y);
+            if (event->type() == QEvent::MouseButtonPress) {
+                if (me->button() == Qt::LeftButton && idx >= 0)
+                    syncOnVdp1Entry(idx);
+            } else {
+                QString t = QString("(%1, %2)").arg(x).arg(y);
+                if (idx >= 0 && idx < lwCommandList->count())
+                    t += "   " + QtYabause::translate("Command #%1 at 0x%2: %3")
+                            .arg(idx)
+                            .arg(mCmdAddrs[idx], 5, 16, QChar('0'))
+                            .arg(lwCommandList->item(idx)->text());
+                mFrameInfo->setText(t);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        return QDialog::eventFilter(watched, event);
+    }
+
     if (watched == gvTexture->viewport())
     {
-        if (event->type() == QEvent::MouseMove)
+        if (event->type() == QEvent::Paint)
+        {
+            // Damier en coordonnées écran, peint avant la scène (le
+            // gestionnaire Paint de QGraphicsView s'exécute après ce filtre
+            // puisqu'on renvoie false). Voir le constructeur.
+            QPainter p(gvTexture->viewport());
+            p.fillRect(static_cast<QPaintEvent*>(event)->rect(), mCheckerBrush);
+        }
+        else if (event->type() == QEvent::MouseMove)
         {
             QMouseEvent *me = static_cast<QMouseEvent*>(event);
             QPointF scenePos = gvTexture->mapToScene(me->pos());
@@ -505,9 +755,42 @@ bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
                 px < currentTextureImage.width() && py < currentTextureImage.height())
             {
                 QColor c = currentTextureImage.pixelColor(px, py);
-                lTexturePixelInfo->setText(QtYabause::translate("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
+                QString t = QtYabause::translate("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
                     .arg(px).arg(py)
-                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
+                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+                // Code brut lu en VRAM : indispensable pour savoir si un texel
+                // transparent l'est par son code (0, ou MSB = 0 en RGB, avec
+                // SPD = 0), par un end code, ou parce qu'il suit le second end
+                // code de sa ligne.
+                u32 code;
+                if (rawCodeAt(px, py, &code)) {
+                    const int digits = (mCurColorMode <= 1) ? 1 : (mCurColorMode <= 4 ? 2 : 4);
+                    t += "\n" + QtYabause::translate("Raw code = 0x%1")
+                                    .arg(code, digits, 16, QChar('0')).toUpper();
+                    const u32 endCode = (mCurColorMode <= 1) ? 0xF
+                                      : (mCurColorMode <= 4 ? 0xFF : 0x7FFF);
+                    // Même règle que Vdp1DebugTextureAtAddr et le moteur
+                    // (vdp1_prog_compute*.h) : code 0 transparent en modes
+                    // palette, MSB = 0 transparent en mode RGB.
+                    const bool transp = !mCurSPD &&
+                        ((mCurColorMode == 5) ? !(code & 0x8000) : (code == 0));
+                    if (mCurEndCode && code == endCode)
+                        t += "  " + QtYabause::translate("(end code)");
+                    else if (transp)
+                        t += "  " + QtYabause::translate("(transparent code)");
+                    else if (c.alpha() == 0)
+                        t += "  " + QtYabause::translate("(after the 2nd end code of the line)");
+                    // Chemin complet jusqu'à la couleur : banque ou LUT,
+                    // décalage CRAOFB, index et contenu de la Color RAM.
+                    const int row = lwCommandList->currentRow();
+                    if (!transp && !(mCurEndCode && code == endCode) &&
+                        row >= 0 && row < (int)mCmdAddrs.size()) {
+                        char ctext[256];
+                        if (Vdp1DebugTexelColorText(mCmdAddrs[row], code, ctext, sizeof(ctext)) > 0)
+                            t += "\n" + QString::fromLatin1(ctext);
+                    }
+                }
+                lTexturePixelInfo->setText(t);
             }
             else
             {
@@ -520,6 +803,143 @@ bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QDialog::eventFilter(watched, event);
+}
+
+// ============================================================
+//  Aperçu de la trame
+//
+//  Chaque ligne de la liste n'est qu'un morceau de l'image : un personnage
+//  est souvent découpé en plusieurs sprites 8x8 ou 8x32 (Mickey : 10 à 19
+//  commandes selon l'animation). Cette fenêtre assemble toutes les commandes
+//  à leurs coordonnées, avec la commande sélectionnée encadrée, pour voir à
+//  quoi correspond chaque ligne. Cliquer un sprite sélectionne sa commande.
+//
+//  Ce n'est pas le rendu du VDP1 : pas de calcul de couleur (demi-
+//  transparence, ombre, Gouraud), ni mesh, ni clipping utilisateur ; les
+//  scaled/distorted sprites sont plaqués par échantillonnage direct. Voir
+//  Vdp1DebugRenderFrame (vdp1.c).
+// ============================================================
+void UIDebugVDP1::on_pbFramePreview_clicked()
+{
+    if (!mFrameDlg)
+    {
+        mFrameDlg = new QDialog(this);
+        mFrameDlg->setWindowTitle(QtYabause::translate("VDP1 Frame Preview"));
+        mFrameDlg->resize(700, 560);
+
+        QVBoxLayout *lay = new QVBoxLayout(mFrameDlg);
+        mFrameView = new QGraphicsView(mFrameDlg);
+        mFrameView->setScene(new QGraphicsScene(mFrameDlg));
+        mFrameView->setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
+        mFrameView->setRenderHint(QPainter::SmoothPixmapTransform, false);
+        mFrameView->setMouseTracking(true);
+        mFrameView->viewport()->setMouseTracking(true);
+        mFrameView->viewport()->installEventFilter(this);
+        mFrameView->setToolTip(QtYabause::translate("Ctrl+wheel to zoom, click a sprite to select its command"));
+        lay->addWidget(mFrameView, 1);
+
+        mFrameInfo = new QLabel(mFrameDlg);
+        mFrameInfo->setWordWrap(true);
+        lay->addWidget(mFrameInfo);
+    }
+
+    refreshFramePreview();
+    mFrameDlg->show();
+    mFrameDlg->raise();
+    mFrameDlg->activateWindow();
+    fitFrame();
+}
+
+void UIDebugVDP1::refreshFramePreview()
+{
+    if (!mFrameDlg) return;
+
+    QGraphicsScene *sc = mFrameView->scene();
+    sc->clear();
+    mFrameSel = nullptr;
+    mFrameImage = QImage();
+    mFrameBoxes.assign(mCmdAddrs.size() * 4, 0);
+
+    int w = 0, h = 0;
+    u32 *fb = mCmdAddrs.empty() ? NULL
+        : Vdp1DebugRenderFrame(mCmdAddrs.data(), (int)mCmdAddrs.size(), &w, &h, mFrameBoxes.data());
+    if (fb)
+    {
+        QImage img((uchar *)fb, w, h, QImage::Format_ARGB32);
+        mFrameImage = img.rgbSwapped().copy(); // fb libéré juste après
+        free(fb);
+
+        const QRectF r(0, 0, w, h);
+        QPen border(QColor(128, 128, 128));
+        border.setCosmetic(true);
+        sc->addRect(r, border, Qt::NoBrush)->setZValue(-1);
+        QGraphicsPixmapItem *pix = sc->addPixmap(QPixmap::fromImage(mFrameImage));
+        pix->setTransformationMode(Qt::FastTransformation);
+
+        QPen selPen(QColor(255, 0, 255));
+        selPen.setCosmetic(true);
+        selPen.setWidth(2);
+        mFrameSel = sc->addRect(QRectF(), selPen, Qt::NoBrush);
+        mFrameSel->setZValue(10);
+        mFrameSel->setVisible(false);
+        sc->setSceneRect(r);
+
+        mFrameInfo->setText(QtYabause::translate("%1 x %2 px (system clipping)").arg(w).arg(h)
+            + "   |   "
+            + QtYabause::translate("Approximation: no color calculation, mesh or user clipping"));
+    }
+    else
+    {
+        sc->setSceneRect(QRectF());
+        mFrameInfo->setText(QtYabause::translate("Nothing to draw"));
+    }
+    updateFrameSelection();
+}
+
+void UIDebugVDP1::updateFrameSelection()
+{
+    if (!mFrameDlg || !mFrameSel) return;
+    const int row = lwCommandList->currentRow();
+    if (row < 0 || (size_t)(4 * row + 3) >= mFrameBoxes.size() ||
+        mFrameBoxes[4 * row + 2] < mFrameBoxes[4 * row])
+    {
+        mFrameSel->setVisible(false);
+        return;
+    }
+    const int *b = &mFrameBoxes[4 * row];
+    mFrameSel->setRect(QRectF(b[0], b[1], b[2] - b[0] + 1, b[3] - b[1] + 1));
+    mFrameSel->setVisible(true);
+    // Sprite hors du clipping système : le cadre reste visible, la vue
+    // s'étend pour l'inclure plutôt que de le perdre hors champ.
+    mFrameView->scene()->setSceneRect(
+        QRectF(0, 0, mFrameImage.width(), mFrameImage.height()).united(mFrameSel->rect()));
+    mFrameView->ensureVisible(mFrameSel->rect(), 8, 8);
+}
+
+void UIDebugVDP1::fitFrame()
+{
+    if (!mFrameView) return;
+    mFrameView->resetTransform();
+    if (mFrameImage.isNull()) return;
+    const QSize vp = mFrameView->viewport()->size();
+    const double s0 = std::min((vp.width() - 12.0) / mFrameImage.width(),
+                               (vp.height() - 12.0) / mFrameImage.height());
+    const double s = (s0 >= 1.0) ? std::floor(s0) : (s0 > 0.0 ? s0 : 1.0);
+    mFrameView->scale(s, s);
+    mFrameView->centerOn(mFrameImage.width() / 2.0, mFrameImage.height() / 2.0);
+}
+
+// Commande dessinée en dernier (donc visible au-dessus) dont l'emprise
+// contient (x, y). -1 si aucune.
+int UIDebugVDP1::commandAtFramePoint(int x, int y) const
+{
+    for (int i = (int)mFrameBoxes.size() / 4 - 1; i >= 0; i--)
+    {
+        const int *b = &mFrameBoxes[4 * i];
+        if (b[2] >= b[0] && x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])
+            return i;
+    }
+    return -1;
 }
 
 void UIDebugVDP1::on_lwCommandRaw_itemSelectionChanged()
@@ -649,7 +1069,12 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
        (system clip, user clip, local coords, background sprite, frame sprite,
        draw end). */
     ts << "########## VDP1 RAM 0x00000-0x00200 et 0x01000-0x010C0 (raw) ##########\n\n";
-    if (Vdp1Ram) {
+    // Même mémoire que la liste affichée : l'instantané pris au début du
+    // tracé s'il existe, la VRAM vivante sinon.
+    u8 *dumpRam = Vdp1DebugGetRam();
+    ts << (Vdp1DebugGetFrameRam() ? "Source: VRAM captured at draw start\n\n"
+                                  : "Source: live VRAM\n\n");
+    if (dumpRam) {
         /* Deux fenetres : la tete de liste, et 0x1000 -- la cible du stub
            "call" que le jeu depose parfois en 0x00000. Sans la seconde on ne
            peut pas dire si la liste reelle vit la-bas ou si l'adresse ne
@@ -663,10 +1088,10 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
         for (u32 a = kWindows[w]; a < kWindows[w] + kSizes[w]; a += 16) {
             ts << QString("%1  ").arg(a, 5, 16, QChar('0')).toUpper();
             for (int i = 0; i < 16; i += 2)
-                ts << QString("%1 ").arg(T1ReadWord(Vdp1Ram, a + i),
+                ts << QString("%1 ").arg(T1ReadWord(dumpRam, a + i),
                                          4, 16, QChar('0')).toUpper();
             if ((a & 0x1F) == 0) {
-                u16 ctrl = T1ReadWord(Vdp1Ram, a);
+                u16 ctrl = T1ReadWord(dumpRam, a);
                 ts << "  <- cmd @" << QString("%1").arg(a, 5, 16, QChar('0')).toUpper();
                 if (ctrl & 0x8000)
                     ts << "  END";
@@ -692,7 +1117,7 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
               "CMDGRDA (dummy). CMDCTRL bit15 = END, bits 13-12 = JP\n"
               "(0 next, 1 assign, 2 call, 3 return), bits 3-0 = command type.\n\n";
     } else {
-        ts << "Vdp1Ram is NULL.\n\n";
+        ts << "VDP1 RAM is NULL.\n\n";
     }
 
     const int cur = lwCommandList->currentRow();

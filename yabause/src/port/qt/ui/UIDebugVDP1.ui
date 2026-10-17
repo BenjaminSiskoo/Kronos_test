@@ -266,6 +266,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="pbFramePreview">
+       <property name="toolTip">
+        <string>Show every command of the list assembled at its screen position; click a sprite to select its command</string>
+       </property>
+       <property name="text">
+        <string>Frame Preview...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QDialogButtonBox" name="dbbButtons">
        <property name="standardButtons">
         <set>QDialogButtonBox::Close</set>
