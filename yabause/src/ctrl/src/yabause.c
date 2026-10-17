@@ -209,6 +209,9 @@ static u64 frameTimeFrac = 0;
    59.94 Hz: the output buffer slowly ran dry. */
 static u64 scspSampleFrac = 0;
 
+/* Microseconds handed to the SMPC and the CD block, see SubSystemUs(). */
+static u64 subUsFrac = 0;
+
 /* The OS sleep is only precise to about a millisecond (Windows timer
    granularity, scheduler latency elsewhere): sleep until SYNC_SPIN_US before
    the deadline, then yield until the deadline itself. */
@@ -313,6 +316,41 @@ static const u32 cycles[DECILINE_STEP][2][2] = {
   {{15,25},{1,1}}, // Vblankout on MaxLine
   {{155,260},{5,9}}
 };
+
+/* SMPC and CD block time (second column of cycles[], in microseconds).
+ *
+ * The column adds up to 68 per line, in PAL and in NTSC, and was handed out
+ * as is: 68 x 313 = 21284 us per PAL frame instead of 20000 (+6.4 %),
+ * 68 x 263 = 17884 us per NTSC frame instead of 16683 (+7.2 %). The SMPC
+ * commands and the CD block (sector rate, periodic reports, seeks) therefore
+ * ran 6 to 7 % faster than the SH-2, the VDPs and the SCSP; CD-DA sectors
+ * arrived faster than the SCSP played them (see CDDA_PERIOD_NOMINAL in
+ * scsp.c). A line lasts 20000 / 313 = 63.9 us in PAL and 16683 / 263 =
+ * 63.4 us in NTSC, which integers per deciline cannot give.
+ *
+ * The column is now only the share of the line given to each deciline:
+ * SubSystemUs() converts it into microseconds so that a frame gets exactly
+ * 1000000 * frameRateDen / frameRateNum us (20000 in PAL, 16683.3 in NTSC),
+ * carrying the fraction from one deciline to the next like scspSampleFrac. */
+static u32 SubSystemWeightPerLine(int ntsc) {
+  u32 sum = 0;
+  int i;
+  for (i = 0; i < DECILINE_STEP; i++)
+    sum += cycles[i][1][ntsc];
+  return sum;
+}
+
+static u32 SubSystemUs(u32 weight) {
+  const int ntsc = !yabsys.IsPal;
+  const u64 den = (u64)SubSystemWeightPerLine(ntsc) * (u64)yabsys.MaxLineCount * frameRateNum;
+  u32 us;
+  if (den == 0)
+    return weight;
+  subUsFrac += (u64)weight * 1000000 * frameRateDen;
+  us = (u32)(subUsFrac / den);
+  subUsFrac -= (u64)us * den;
+  return us;
+}
 
 void YabauseChangeTiming(int freqtype) {
 
@@ -1124,12 +1162,17 @@ int YabauseEmulate(void) {
       PROFILE_STOP("SCU");
     }
 
-    PROFILE_START("SMPC");
-    SmpcExec(cycles[yabsys.DecilineCount][1][!yabsys.IsPal]);
-    PROFILE_STOP("SMPC");
-    PROFILE_START("CDB");
-    Cs2Exec(cycles[yabsys.DecilineCount][1][!yabsys.IsPal]);
-    PROFILE_STOP("CDB");
+    {
+      /* SMPC and CD block time of this deciline, in exact microseconds
+         (see SubSystemUs) */
+      const u32 sub_us = SubSystemUs(cycles[yabsys.DecilineCount][1][!yabsys.IsPal]);
+      PROFILE_START("SMPC");
+      SmpcExec(sub_us);
+      PROFILE_STOP("SMPC");
+      PROFILE_START("CDB");
+      Cs2Exec(sub_us);
+      PROFILE_STOP("CDB");
+    }
     // }
       // printf("Deciline %d line %d\n", yabsys.DecilineCount, yabsys.LineCount);
       yabsys.DecilineCount  = (yabsys.DecilineCount+1)%DECILINE_STEP;
@@ -1325,6 +1368,7 @@ void YabauseSetVideoFormat(int type) {
    frameTimeRem = (yabsys.tickfreq * frameRateDen) % frameRateNum;
    frameTimeFrac = 0;
    scspSampleFrac = 0;
+   subUsFrac = 0;
    /* TVSTAT bit 0 (PAL) is how a game learns which video standard it is
       running on. An OR can only ever set it: once the bit is 1 it stays 1,
       and VIDEOFORMATTYPE_NTSC is 0, so the NTSC branch of every caller ORs
