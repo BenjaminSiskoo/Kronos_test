@@ -59,9 +59,30 @@ static void SH2next(SH2_struct * sh)
 }
 
 //////////////////////////////////////////////////////////////////////////////
+static void SH2bra(SH2_struct * sh, u32 disp);
+
+/* "bra $" (0xAFFE), installe a la place du BRA ordinaire par le seul coeur
+ * Performance (SH2KronosInterpreterInit).
+ *
+ * L'ancienne version sautait directement en fin de tranche sans jamais
+ * executer l'instruction du delay slot. Une boucle "bra $" n'en sort que par
+ * une interruption, mais chaque tour execute le slot : si ce n'est pas un NOP
+ * (compteur de temps libre, lecture d'un registre a effet de bord, ecriture),
+ * son effet etait perdu. On ne raccourcit donc la boucle que si le slot est un
+ * NOP ; sinon on execute un vrai tour (BRA + slot), comme le coeur Debug.
+ *
+ * Le saut en fin de tranche ne doit pas non plus faire reculer le compteur :
+ * la boucle d'execution peut appeler l'instruction avec cycles >= target_cycles
+ * (doNotInterrupt), et l'ancienne affectation ramenait alors cycles en arriere. */
 void SH2InfiniteLoop(SH2_struct * sh)
 {
-  sh->cycles = sh->target_cycles;
+  const u32 slot = sh->regs.PC + 2;
+  if (krfetchlist[(slot >> 20) & 0xFFF](sh, slot) != 0x0009) {
+    SH2bra(sh, 0xFFE);
+    return;
+  }
+  if (sh->cycles < sh->target_cycles)
+    sh->cycles = sh->target_cycles;
 }
 
 void SH2undecoded(SH2_struct * sh)
@@ -2322,8 +2343,14 @@ static void SH2xtrct(SH2_struct * sh, u32 n, u32 m)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* SLEEP : le PC reste sur l'instruction tant qu'aucune interruption n'est
+ * acceptee. isSleeping indique a SH2HandleInterrupts() que l'adresse a empiler
+ * est celle de l'instruction suivante (SH7604 Hardware Manual, mode veille :
+ * la sortie par interruption reprend apres SLEEP). Avant, c'etait
+ * SH2KronosNotifyInterrupt() qui relisait le mot en PC pour reconnaitre SLEEP. */
 static void SH2sleep(SH2_struct * sh)
 {
+   sh->isSleeping = 1;
    sh->cycles += 3;
 }
 
