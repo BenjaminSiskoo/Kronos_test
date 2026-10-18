@@ -135,6 +135,10 @@ typedef struct
    int wireframe_mode;
    int stvInputType;
    int vdp1cycles;
+   /* Taille, en cycles, de la tranche d'entrelacement des deux SH-2 dans
+      YabauseEmulate() ; 0 = MIN_STEP_RUN. Reglee par jeu (ST-V : init du
+      jeu dans stv.c), remise a 0 au chargement de chaque jeu ST-V. */
+   int sh2StepRun;
 } yabsys_struct;
 
 extern yabsys_struct yabsys;
