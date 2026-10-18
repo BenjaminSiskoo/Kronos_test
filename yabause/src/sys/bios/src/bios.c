@@ -30,6 +30,7 @@
 #include "smpc.h"
 #include "yabause.h"
 #include "error.h"
+#include "yui.h"
 
 static u8 sh2masklist[0x20] = {
 0xF0, 0xE0, 0xD0, 0xC0, 0xB0, 0xA0, 0x90, 0x80,
@@ -946,6 +947,9 @@ void FASTCALL BiosBUPFormat(SH2_struct * sh)
    SH2GetRegisters(sh, &sh->regs);
 
    LOG_BUP("BiosBUPFormat. PR = %08X\n", sh->regs.PR);
+   /* Evenement rare et destructeur : toujours journalise, avec l'appelant
+    * (jeu ou gestionnaire de memoire du BIOS). */
+   YuiMsg("BUP_Format(device %d) called from %08X\n", (int)sh->regs.R[4], (unsigned int)sh->regs.PR);
 
    {
       u32 size, addr, blocksize;
@@ -1026,7 +1030,20 @@ void FASTCALL BiosBUPStatus(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
+static void BiosBUPWriteBody(SH2_struct * sh);
+
+/* BUP_Write ecrit la RAM de sauvegarde avec le contexte du SH-2 appelant
+ * (SH2MappedMemoryWriteByte). BupHleAccess indique a memory.c que ces
+ * ecritures sont legitimes, pour les distinguer des ecritures egarees d'un
+ * jeu dans la zone "extended backup" (BupRamMemoryWriteByte()). */
 void FASTCALL BiosBUPWrite(SH2_struct * sh)
+{
+   BupHleAccess = 1;
+   BiosBUPWriteBody(sh);
+   BupHleAccess = 0;
+}
+
+static void BiosBUPWriteBody(SH2_struct * sh)
 {
    u32 size;
    u32 addr;
@@ -2028,8 +2045,29 @@ int BupDeleteSave(u32 device, const char *savename)
 //////////////////////////////////////////////////////////////////////////////
 extern FILE * pbackup;
 
+/* Copie de securite avant formatage. Formater efface tout : si le jeu
+ * formate a tort (memoire jugee non formatee apres une corruption, ou
+ * mauvais peripherique), le contenu precedent reste recuperable dans
+ * "<fichier>.preformat-<date>" (memory.c, BackupDumpCopy()). Uniquement si
+ * le peripherique etait formate : une memoire vide n'a rien a garder. */
+static void BupKeepCopyBeforeFormat(u32 device)
+{
+   u32 size, addr, blocksize;
+   if (CheckHeader(device) != 0)
+      return;
+   if (GetDeviceStats(device, &size, &addr, &blocksize) != 0)
+      return;
+   if (device == 0)
+      BackupDumpCopy(BupRam, backup_file_size, BackupGetFileName(), "preformat");
+   else if ((device == 1) && (CartridgeArea != NULL) && (CartridgeArea->bupram != NULL))
+      BackupDumpCopy(CartridgeArea->bupram, 0x40000 << (CartridgeArea->cartid & 0x0F),
+                     CartridgeArea->filename, "preformat");
+}
+
 void BupFormat(u32 device)
 {
+   BupKeepCopyBeforeFormat(device);
+
    switch (device)
    {
       case 0:
