@@ -28,6 +28,9 @@
 #include "peripheral.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QStringList>
 #include <QDebug>
 
@@ -76,6 +79,8 @@ void YabauseThread::deInitEmulation()
 {
 	YabauseDeInit();
 	mInit = -1;
+	/* Le coeur est arrete : plus aucun pointeur vers les chaines remplacees. */
+	freeRetiredStrings();
 }
 
 bool YabauseThread::pauseEmulation( bool pause, bool reset )
@@ -106,7 +111,7 @@ bool YabauseThread::pauseEmulation( bool pause, bool reset )
 	if (vs->value("autostart").toBool())
 	{
 		if (vs->value("autorun/load").toBool()) {
-			YabLoadStateSlot( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString().toLatin1().constData(), vs->value("autorun/load/slot").toInt() );
+			YabLoadStateSlot( QFile::encodeName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString() ).constData(), vs->value("autorun/load/slot").toInt() );
 		}
 	}
 
@@ -359,11 +364,72 @@ void YabauseThread::reloadClock()
 	}
 }
 
+/* Chaines de mYabauseConf.
+ *
+ * reloadSettings() refaisait un strdup() de chaque chemin a chaque appel sans
+ * jamais liberer l'ancien (resetYabauseConf() les effacait par memset) : une
+ * fuite a chaque rechargement des reglages. On ne peut pas non plus les
+ * liberer tout de suite : le coeur garde certains pointeurs tant qu'il tourne
+ * (CartridgeArea->filename = cartpath, smpcfilename = smpcpath, eepromdir...).
+ *
+ * confString() reutilise la chaine precedente quand la valeur n'a pas change
+ * (cas normal : plus aucune allocation) ; une chaine remplacee est mise de
+ * cote et liberee seulement quand le coeur est arrete (deInitEmulation()). */
+const char *YabauseThread::confString( const char *previous, const QByteArray &value )
+{
+	if ( previous && ( strcmp( previous, value.constData() ) == 0 ) )
+		return previous;
+	return strdup( value.constData() );
+}
+
+/* Chemin de fichier pour fopen() du coeur : encodage du systeme de fichiers
+   (page de code ANSI sous Windows). toLatin1() remplacait par '?' tout
+   caractere hors Latin-1 (dossier utilisateur, nom de jeu...), et le fichier
+   n'etait plus trouve. */
+QByteArray YabauseThread::pathBytes( const QVariant &value )
+{
+	return QFile::encodeName( value.toString() );
+}
+
+void YabauseThread::retireConfStrings( const yabauseinit_struct &previous )
+{
+	const char * const before[] = {
+		previous.stvgame, previous.biospath, previous.cdpath, previous.buppath,
+		previous.smpcpath, previous.mpegpath, previous.cartpath, previous.eepromdir,
+		previous.modemip, previous.modemport };
+	const char * const after[] = {
+		mYabauseConf.stvgame, mYabauseConf.biospath, mYabauseConf.cdpath, mYabauseConf.buppath,
+		mYabauseConf.smpcpath, mYabauseConf.mpegpath, mYabauseConf.cartpath, mYabauseConf.eepromdir,
+		mYabauseConf.modemip, mYabauseConf.modemport };
+	for ( unsigned i = 0; i < sizeof( before ) / sizeof( before[0] ); i++ )
+	{
+		bool used = false;
+		if ( before[i] == NULL )
+			continue;
+		for ( unsigned j = 0; j < sizeof( after ) / sizeof( after[0] ); j++ )
+			if ( after[j] == before[i] )
+				used = true;
+		if ( !used && !mRetiredStrings.contains( (char *)before[i] ) )
+			mRetiredStrings.append( (char *)before[i] );
+	}
+}
+
+void YabauseThread::freeRetiredStrings()
+{
+	foreach ( char *str, mRetiredStrings )
+		free( str );
+	mRetiredStrings.clear();
+}
+
 void YabauseThread::reloadSettings()
 {
 	//QMutexLocker l( &mMutex );
 	// get settings pointer
 	VolatileSettings* vs = QtYabause::volatileSettings();
+
+	/* Chaines actuelles : reutilisees si leur valeur ne change pas, voir
+	   confString(). */
+	const yabauseinit_struct prev = mYabauseConf;
 
 	// reset yabause conf
 	resetYabauseConf();
@@ -382,7 +448,7 @@ void YabauseThread::reloadSettings()
 	mYabauseConf.cdcoretype = vs->value( "General/CdRom", mYabauseConf.cdcoretype ).toInt();
 	mYabauseConf.carttype = vs->value( "Cartridge/Type", mYabauseConf.carttype ).toInt();
 	if (mYabauseConf.carttype == CART_ROMSTV) mYabauseConf.cdcoretype = CDCORE_DUMMY;
-	mYabauseConf.stvgame = strdup( vs->value( "Cartridge/STVGame", mYabauseConf.stvgame ).toString().toLatin1().constData());
+	mYabauseConf.stvgame = confString( prev.stvgame, vs->value( "Cartridge/STVGame" ).toString().toLatin1() );
 	mYabauseConf.regionid = 0;
 	const QString r = vs->value( "STV/Region", mYabauseConf.regionid ).toString();
 	if ( r.isEmpty() || r == "Auto" )
@@ -414,27 +480,43 @@ void YabauseThread::reloadSettings()
 		}
 	}
 	if (vs->value("General/EnableEmulatedBios", false).toBool())
-		mYabauseConf.biospath = strdup( "" );
+		mYabauseConf.biospath = confString( prev.biospath, QByteArray( "" ) );
 	else
-		mYabauseConf.biospath = strdup( vs->value( "General/Bios", mYabauseConf.biospath ).toString().toLatin1().constData() );
+		mYabauseConf.biospath = confString( prev.biospath, pathBytes( vs->value( "General/Bios" ) ) );
 
-	mYabauseConf.smpcpath = strdup( vs->value( "General/BiosSettings", mYabauseConf.smpcpath ).toString().toLatin1().constData() );
-	mYabauseConf.cdpath = strdup( vs->value( "General/CdRomISO", mYabauseConf.cdpath ).toString().toLatin1().constData() );
+	mYabauseConf.smpcpath = confString( prev.smpcpath, pathBytes( vs->value( "General/BiosSettings" ) ) );
+	mYabauseConf.cdpath = confString( prev.cdpath, pathBytes( vs->value( "General/CdRomISO" ) ) );
 	QtYabause::updateTitle();
 	showFPS = vs->value( "General/ShowFPS", false ).toBool();
 	mYabauseConf.vsyncon = vs->value("General/EnableVSync", true).toBool();
 	mYabauseConf.usecache = vs->value("General/SH2Cache", false).toBool();
-	mYabauseConf.buppath = strdup( vs->value( "Memory/Path", mYabauseConf.buppath ).toString().toLatin1().constData() );
-	mYabauseConf.mpegpath = strdup( vs->value( "MpegROM/Path", mYabauseConf.mpegpath ).toString().toLatin1().constData() );
+	{
+		/* Meme valeur par defaut que la fenetre de reglages (UISettings.cpp,
+		   "Memory/Path" = <donnees>/bkram.bin). Ici la valeur par defaut etait
+		   mYabauseConf.buppath, NULL apres resetYabauseConf() : tant que les
+		   reglages n'avaient jamais ete valides, le chemin etait vide, la RAM
+		   de sauvegarde etait formatee a chaque lancement et jamais ecrite
+		   (T123Save() ignore un nom vide) - toutes les sauvegardes perdues a
+		   la fermeture. */
+		QString bupPath = vs->value( "Memory/Path" ).toString();
+		if ( bupPath.isEmpty() )
+			bupPath = getDataDirPath().append( "/bkram.bin" );
+		QDir().mkpath( QFileInfo( bupPath ).absolutePath() );
+		/* QFile::encodeName : encodage du systeme de fichiers (toLatin1()
+		   rendait '?' pour un caractere hors Latin-1 dans le chemin, par
+		   exemple dans le nom d'utilisateur Windows). */
+		mYabauseConf.buppath = confString( prev.buppath, QFile::encodeName( bupPath ) );
+	}
+	mYabauseConf.mpegpath = confString( prev.mpegpath, pathBytes( vs->value( "MpegROM/Path" ) ) );
 	if (vs->value("Memory/ExtendMemory", true).toBool()) {
 		mYabauseConf.extend_backup = 1;
 	} else {
 		mYabauseConf.extend_backup = 0;
 	}
-	mYabauseConf.cartpath = strdup( vs->value("Cartridge/Path", mYabauseConf.cartpath ).toString().toLatin1().constData() );
-	mYabauseConf.eepromdir = strdup( mYabauseConf.cartpath );
-	mYabauseConf.modemip = strdup( vs->value( "Cartridge/ModemIP", mYabauseConf.modemip ).toString().toLatin1().constData() );
-	mYabauseConf.modemport = strdup( vs->value( "Cartridge/ModemPort", mYabauseConf.modemport ).toString().toLatin1().constData() );
+	mYabauseConf.cartpath = confString( prev.cartpath, pathBytes( vs->value( "Cartridge/Path" ) ) );
+	mYabauseConf.eepromdir = confString( prev.eepromdir, QByteArray( mYabauseConf.cartpath ) );
+	mYabauseConf.modemip = confString( prev.modemip, vs->value( "Cartridge/ModemIP" ).toString().toLatin1() );
+	mYabauseConf.modemport = confString( prev.modemport, vs->value( "Cartridge/ModemPort" ).toString().toLatin1() );
 
 	mYabauseConf.video_filter_type = vs->value("Video/filter_type", mYabauseConf.video_filter_type).toInt();
 	mYabauseConf.video_upscale_type = vs->value("Video/upscale_type", mYabauseConf.video_upscale_type).toInt();
@@ -451,6 +533,9 @@ void YabauseThread::reloadSettings()
 	emit requestSize( QSize( vs->value( "Video/WinWidth", 0 ).toInt(), vs->value( "Video/WinHeight", 0 ).toInt() ) );
 	// emit requestFullscreen( vs->value( "Video/Fullscreen", false ).toBool() );
 	emit requestVolumeChange( vs->value( "Sound/Volume", 100 ).toInt() );
+
+	/* Chaines de l'ancienne configuration qui ne sont plus utilisees. */
+	retireConfStrings( prev );
 
 	reloadClock();
 	reloadControllers();
@@ -475,7 +560,12 @@ void YabauseThread::OpenTray(){
 int YabauseThread::CloseTray(){
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	mYabauseConf.cdcoretype = vs->value("General/CdRom", mYabauseConf.cdcoretype).toInt();
-	mYabauseConf.cdpath = strdup(vs->value("General/CdRomISO", mYabauseConf.cdpath).toString().toLatin1().constData());
+	{
+		const char *previous = mYabauseConf.cdpath;
+		mYabauseConf.cdpath = confString( previous, pathBytes( vs->value( "General/CdRomISO" ) ) );
+		if ( previous && ( previous != mYabauseConf.cdpath ) && !mRetiredStrings.contains( (char *)previous ) )
+			mRetiredStrings.append( (char *)previous );
+	}
 
 	return (Cs2ForceCloseTray(mYabauseConf.cdcoretype, mYabauseConf.cdpath)==0);
 }
