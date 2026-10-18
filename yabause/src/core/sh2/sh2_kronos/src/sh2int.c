@@ -46,6 +46,7 @@ extern void SH2InfiniteLoop(SH2_struct * sh);
 
 static void SH2KronosNotifyInterrupt(SH2_struct *context);
 static void insertInterruptReturnHandling(SH2_struct *context);
+static int isCodeHook(opcode_func f);
 
 static void BUPDetectInit(SH2_struct *context);
 
@@ -352,18 +353,17 @@ void decode(SH2_struct *context) {
   opcodeTable[opcode](context);
 }
 
+/* Execute l'instruction du PC courant a la place d'un crochet (decodeInt,
+ * outOfInt) et remet son decodage dans le cache.
+ *
+ * L'ancienne version relisait PC apres le fetch et, s'il avait change,
+ * redecodait a la nouvelle adresse ("There was an interrupt to execute").
+ * Rien ne s'execute entre la sauvegarde de oldPC et ce test : le fetch ne
+ * modifie pas regs.PC. Ce code mort est retire. */
 static void executeLastPC(SH2_struct *context) {
   int id = (context->regs.PC >> 20) & 0xFFF;
   u16 opcode = krfetchlist[id](context, context->regs.PC);
-  u32 oldPC = context->regs.PC;
   cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[opcode];
-  if (context->regs.PC != oldPC) {
-    //There was an interrupt to execute
-    //Update the command to execute
-    id = (context->regs.PC >> 20) & 0xFFF;
-    opcode = krfetchlist[id](context, context->regs.PC);
-    cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[opcode];
-  }
   context->instruction = opcode;
   if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER) {
     SH2HandleBackTrace(context);
@@ -390,7 +390,11 @@ static void decodeInt(SH2_struct *context) {
     if (context->interruptReturnAddress == 0) {
       const int addr = context->regs.PC >> 1;
       const int id = (addr >> 19) & 0xFFF;
-      cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]] = decodeInt;
+      opcode_func *entry = &cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]];
+      /* Pas sur un crochet BUP : il serait perdu (voir isCodeHook()).
+       * L'interruption reste en attente et sera prise au debut de la
+       * tranche suivante (SH2HandleInterrupts). */
+      if (!isCodeHook(*entry)) *entry = decodeInt;
     }
     return;
   }
@@ -401,6 +405,28 @@ static void decodeInt(SH2_struct *context) {
 static void outOfInt(SH2_struct *context) {
   context->interruptReturnAddress = 0;
   executeLastPC(context);
+}
+
+/* Entrees du cache de decodage qui ne sont pas une instruction decodee mais
+ * un crochet a usage unique : detection de BUP_Init (BUPDetectInit), pose
+ * des crochets au retour de BUP_Init (BUPInstallHooks), fonctions de la
+ * bibliotheque de sauvegarde emulees (BUPEntries[]) et retour
+ * d'interruption (outOfInt).
+ *
+ * decodeInt est pose en ecrasant l'entree de l'adresse visee, puis
+ * executeLastPC() y remet opcodeTable[opcode]. Pose sur un de ces crochets,
+ * il le faisait disparaitre pour toute la session : un BUP_xxx dont le point
+ * d'entree suivait un LDC/LDS/STC/STS (branche doNotInterrupt de decodeInt)
+ * ou se trouvait en PC+2 au moment d'une interruption executait alors la
+ * vraie bibliotheque en Work RAM au lieu de l'emulation. */
+static int isCodeHook(opcode_func f)
+{
+  int i;
+  if ((f == BUPDetectInit) || (f == BUPInstallHooks) || (f == outOfInt) || (f == decodeInt))
+    return 1;
+  for (i = 0; i < 10; i++)
+    if (f == BUPEntries[i]) return 1;
+  return 0;
 }
 
 /* Fonction d'origine de 0xAFFE (bra $), relevee au premier Init.
@@ -702,10 +728,15 @@ FASTCALL void SH2KronosInterpreterExecSave(SH2_struct *context, u32 cycles, sh2r
     int id = (context->regs.PC >> 20) & 0xFFF;
     // if (context == SSH2) YuiMsg("%x\n", context->regs.PC);
     u16 opcode = krfetchlist[id](context, context->regs.PC);
+    (void)SH2TakeInstructionCommit(context);
     if(context->isBlocked == 0) opcodeTable[opcode](context);
     if(context->isBlocked != 0) {
       context->cycles = context->target_cycles;
-      memcpy(&context->regs, oldRegs, sizeof(sh2regs_struct));
+      /* Instruction dont l'effet ne doit pas etre refait (lancement d'un
+         SCU-DMA par DxEN, voir SH2CommitCurrentInstruction()) : elle reste
+         executee, seul le reste de la tranche est perdu. */
+      if (!SH2TakeInstructionCommit(context))
+        memcpy(&context->regs, oldRegs, sizeof(sh2regs_struct));
       context->target_cycles = 0;
       return;
     }
@@ -812,6 +843,7 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
            l'interruption sera prise par la boucle normale. */
         if (cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] != decodeInt)
           cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[context->instruction];
+        (void)SH2TakeInstructionCommit(context);
         if(context->isBlocked == 0) {
           SH2HandleBackTrace(context);
           SH2HandleStepOverOut(context);
@@ -821,7 +853,10 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
       }
       if(context->isBlocked != 0) {
         context->cycles = context->target_cycles;
-        memcpy(&context->regs, oldRegs, sizeof(sh2regs_struct));
+        /* Voir SH2KronosInterpreterExecSave() et
+           SH2CommitCurrentInstruction() (sh2core.c). */
+        if (!SH2TakeInstructionCommit(context))
+          memcpy(&context->regs, oldRegs, sizeof(sh2regs_struct));
         return;
       }
       if (context->bp.inbreakpoint) {
@@ -1141,8 +1176,11 @@ static void SH2KronosNotifyInterrupt(SH2_struct *context) {
       addr = context->regs.PC>>1;
 
     int id = (addr >> 19) & 0xFFF;
-  context->itTriggerCycles = context->cycles + INTERRUPT_HANDLING_DELAY;
-    cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]] = decodeInt;
+    opcode_func *entry = &cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]];
+    context->itTriggerCycles = context->cycles + INTERRUPT_HANDLING_DELAY;
+    /* Voir isCodeHook() : on ne remplace pas un crochet BUP. L'interruption
+     * latchee est alors prise au debut de la tranche suivante. */
+    if (!isCodeHook(*entry)) *entry = decodeInt;
   }
 }
 
