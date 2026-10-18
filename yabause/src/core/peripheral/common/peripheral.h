@@ -90,6 +90,18 @@ extern u16 FASTCALL IOPortReadWord(SH2_struct *context, UNUSED u8* memory, u32 a
 extern void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 addr, UNUSED u8 val);
 
 /**
+ * @brief Critter Crusher / Tatacot (critcrsh, tatacot) hammer cabinet.
+ *
+ * The hammer position (6 bits per axis) is read on PORT-A (X) and PORT-B (Y)
+ * of the I/O gate array, the hit on PORT-C bit 4 (see IOPortReadByte()).
+ * PerCritcrshMove() takes a position in emulated screen pixels (the host
+ * mouse), PerCritcrshHammer() the host mouse button.
+ */
+int PerCritcrshEnabled(void);
+void PerCritcrshMove(s32 x, s32 y);
+void PerCritcrshHammer(int pressed);
+
+/**
  * @brief Advance the medal/ticket hopper simulation by one frame.
  *
  * Games using the PATOCAR/MICROMBC extension I/O layout (patocar,
