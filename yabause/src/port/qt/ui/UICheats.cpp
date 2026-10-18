@@ -16,6 +16,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+#include <QFile>
 #include "UICheats.h"
 #include "UICheatAR.h"
 #include "UICheatRaw.h"
@@ -177,14 +178,14 @@ void UICheats::on_pbSaveFile_clicked()
 {
     const QString s = CommonDialogs::getSaveFileName( ".", QtYabause::translate( "Choose a cheat file to save to" ), QtYabause::translate( "Kronos Cheat Files (*.yct);;All Files (*)" ) );
     if ( !s.isEmpty() )
-        if ( CheatSave( s.toLatin1().constData() ) != 0 )
+        if ( CheatSave( QFile::encodeName( s ).constData() ) != 0 )
             CommonDialogs::error( QtYabause::translate( "Unable to save file" ) );
 }
 
 void UICheats::on_pbLoadFile_clicked()
 {
     const QString s = CommonDialogs::getOpenFileName( ".", QtYabause::translate( "Choose a cheat file to open" ), QtYabause::translate( "Kronos Cheat Files (*.yct);;All Files (*)" ) );
-    if ( !s.isEmpty() && CheatLoad( s.toLatin1().constData() ) == 0 )
+    if ( !s.isEmpty() && CheatLoad( QFile::encodeName( s ).constData() ) == 0 )
     {
         twCheats->clear();
         int cheatsCount;
