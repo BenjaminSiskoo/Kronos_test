@@ -3277,6 +3277,48 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
        *
        * Le transfert est donc mene a son terme en une seule fois. La borne
        * evite qu un TCR aberrant ne fasse deborder le budget. */
+      /* Remplissage memoire en requete automatique (AR = CHCR.9 = 1) avec
+       * adresse source FIXE (SM1-SM0 = CHCR.13-12 = 00) dans la Work RAM.
+       *
+       * Le DMAC relit la meme adresse a chaque unite : la seule valeur que
+       * le programme entend recopier est celle presente au lancement. En
+       * mode cycle-steal Kronos decoupe le transfert sur plusieurs trames et
+       * laisse tourner le CPU et ses interruptions entre deux tranches ; si
+       * la source est une variable locale, la pile est reutilisee pendant
+       * le transfert et le DMAC recopie ce qui y est empile.
+       *
+       * Resident Evil (EUR) : effacement de toute la VRAM-A par le canal 0
+       * du maitre, SAR = R15 = 060FFA00 (variable locale nulle), DAR =
+       * 25E00000, TCR = 10000H long mots, CHCR = 4A01 (cycle-steal). Le
+       * transfert durait plus d'une trame ; les interruptions (lignes 1, 4,
+       * 241, 311) empilaient 06045A4C / 06016628 a cette adresse et ces
+       * valeurs finissaient dans le bitmap NBG1 : traits orange a l'ecran
+       * (releve re_vram.log). Ymir execute tout transfert DMAC du SH-2 en
+       * une fois (sh2.cpp, AdvanceDMA) et affiche un ecran noir.
+       *
+       * Le transfert est donc mene a son terme en une seule fois, comme en
+       * mode rafale ci-dessous, mais uniquement dans ce cas : une source
+       * fixe hors Work RAM (FIFO du CD-block, registre) et les copies a
+       * source incrementee gardent le decoupage en tranches (cf. Tennis
+       * Arena plus haut). La duree reelle d'un transfert cycle-steal vers
+       * le B-Bus n'est pas documentee dans les manuels disponibles. */
+      {
+         const u32 sa = *dmac->SAR & 0x1FFFFFFF;
+         const int srcWorkRam = ((sa >= 0x06000000) && (sa < 0x08000000))   /* Work RAM-H */
+                             || ((sa >= 0x00200000) && (sa < 0x00300000));  /* Work RAM-L */
+         const int memFill = ((*dmac->CHCR & 0x0200) != 0) &&
+                             ((*dmac->CHCR & 0x3000) == 0x0000) && srcWorkRam;
+         if (memFill && ((*dmac->CHCR & 0x210) != 0x210)) {
+            u32 remaining = *dmac->TCR & 0xFFFFFF;
+            s64 budget;
+
+            if (remaining == 0) remaining = 0x1000000;   /* TCR = 0 => maximum */
+            budget = (s64)remaining * (s64)eat;
+            if (budget > 0x20000000) budget = 0x20000000;
+            if (budget > (s64)dmac->copy_clock) dmac->copy_clock = (int)budget;
+         }
+      }
+
       if ((*dmac->CHCR & 0x210) == 0x210) {
          u32 remaining = *dmac->TCR & 0xFFFFFF;
          s64 budget;
