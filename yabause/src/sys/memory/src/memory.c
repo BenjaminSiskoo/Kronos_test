@@ -29,6 +29,8 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <string.h>
+#include <time.h>
 
 #include "memory.h"
 #include "cs0.h"
@@ -98,7 +100,25 @@ static INLINE void SH2DMABusPenaltyFast(SH2_struct *context) {
 
 u32 backup_file_addr = EXTENDED_BACKUP_ADDR;
 u32 backup_file_size = EXTENDED_BACKUP_SIZE;
-static const char *bupfilename = NULL;
+/* Copie du chemin (strdup) : on gardait le pointeur de l'appelant. */
+static char *bupfilename = NULL;
+/* 1 : le fichier existe mais n'a pas pu etre lu. On ne le remplace jamais
+ * par une memoire formatee (voir BackupLoadFile()). */
+static int bupSaveDisabled = 0;
+/* Trames restant avant l'ecriture differee (BackupAutoFlush()). */
+static int bupFlushDelay = 0;
+/* Contenu different du fichier (memoire recuperee du .bak ou formatee au
+ * demarrage, ecriture pas encore enregistree). */
+static int bupDirty = 0;
+
+/* Mis a 1 par les fonctions BUP de haut niveau (bios.c) pendant qu'elles
+ * ecrivent dans la RAM de sauvegarde avec un contexte SH-2. */
+u8 BupHleAccess = 0;
+
+/* Mode "extended backup" : SRAM de 32 Ko presentee en 00180000H, voir
+ * BupShadowMemoryReadByte(). NULL en mode standard. */
+static u8 *BupShadowRam = NULL;
+#define BUP_SHADOW_SIZE 0x8000
 
 u8 *HighWram;
 u8 *LowWram;
@@ -642,6 +662,27 @@ static void FASTCALL BupRamMemoryWriteByte(SH2_struct *context, UNUSED u8* memor
     BupRamWritten = 1;
   }
 #endif
+  /* Mode "extended backup" : la RAM de sauvegarde est placee en 08000000H,
+   * une zone qui n'existe pas sur Saturn (ST-097 Fig. 1.3 : rien entre
+   * 07FFFFFFH, fin des miroirs de la Work RAM-H, et la zone suivante). Aucun
+   * programme Saturn n'y ecrit volontairement : seules les fonctions BUP de
+   * haut niveau (bios.c, BupHleAccess = 1) et les acces sans contexte CPU
+   * (DMAMappedMemory*, utilises par ces memes fonctions) y ont acces.
+   * Une ecriture CPU ou DMA SH-2 egaree d'un jeu (pointeur hors de la
+   * Work RAM-H, adresse 08xxxxxx/18xxxxxx/28xxxxxx qui tombent toutes sur
+   * cette page) se perdait dans le vide sur la console mais ecrasait ici la
+   * memoire de sauvegarde, puis le fichier a l'ecriture suivante : en-tete
+   * detruit, memoire "non formatee", sauvegardes perdues. Ces ecritures
+   * sont maintenant ignorees et signalees. */
+  if ((context != NULL) && (BupHleAccess == 0) && (backup_file_addr == EXTENDED_BACKUP_ADDR)) {
+    static int reported = 0;
+    if (reported < 16) {
+      reported++;
+      YuiMsg("Backup RAM: stray %s write %08X = %02X at PC %08X ignored (extended backup area)\n",
+             (context->isslave ? "SSH2" : "MSH2"), (unsigned int)addr, val, (unsigned int)context->regs.PC);
+    }
+    return;
+  }
   addr = addr & ((backup_file_size<<1) - 1);
   if (addr & 0x1) {
     T1WriteByte(memory, addr>>1, val);
@@ -668,6 +709,73 @@ static void FASTCALL BupRamMemoryWriteLong(SH2_struct *context, UNUSED u8* memor
    addr &= ~0x3;
    BupRamMemoryWriteByte(context, memory, addr | 0x1, (val>>16) & 0xFF);
    BupRamMemoryWriteByte(context, memory, addr | 0x3, val & 0xFF);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+/* RAM de sauvegarde interne en 00180000H quand le mode "extended backup" est
+ * actif.
+ *
+ * En mode etendu, la memoire de sauvegarde est placee en 08000000H et seules
+ * les fonctions BUP de haut niveau (bios.c) y accedent. 00180000H-0018FFFFH
+ * n'etait alors plus cable du tout (UnhandledMemoryRead* : 0) alors que c'est
+ * l'emplacement materiel de la SRAM (ST-097 Fig. 1.3, IC8 du schema Main
+ * C.B 4/6). Tout acces direct, en particulier celui du BIOS reel qui verifie
+ * la memoire interne, y lisait des 0 : en-tete "BackUpRam Format" absent,
+ * memoire vue comme non formatee.
+ *
+ * On y presente une SRAM de 32 Ko a part, cablee comme la vraie (octets
+ * impairs, 0xFF sur les octets pairs, voir BupRamMemoryReadByte), initialisee
+ * formatee et vide. Elle n'est PAS la memoire etendue : un logiciel qui
+ * l'ecrit directement ne peut pas corrompre les sauvegardes etendues (dont
+ * les listes de blocs depassent 32 Ko). Son contenu n'est pas enregistre ; le
+ * premier acces en ecriture est signale pour indiquer de repasser en mode
+ * standard si un jeu sauvegarde de cette facon. */
+static u8 FASTCALL BupShadowMemoryReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr)
+{
+  addr &= (BUP_SHADOW_SIZE << 1) - 1;
+  if ((addr & 0x1) && (memory != NULL))
+    return T1ReadByte(memory, addr >> 1);
+  return 0xFF;
+}
+
+static u16 FASTCALL BupShadowMemoryReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
+{
+  return (u16)(0xFF00 | BupShadowMemoryReadByte(context, memory, (addr & ~0x1) | 0x1));
+}
+
+static u32 FASTCALL BupShadowMemoryReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
+{
+  addr &= ~0x3;
+  return 0xFF00FF00 |
+         ((u32)BupShadowMemoryReadByte(context, memory, addr | 0x1) << 16) |
+          (u32)BupShadowMemoryReadByte(context, memory, addr | 0x3);
+}
+
+static void FASTCALL BupShadowMemoryWriteByte(SH2_struct *context, UNUSED u8* memory, u32 addr, u8 val)
+{
+  static int reported = 0;
+  addr &= (BUP_SHADOW_SIZE << 1) - 1;
+  if (!(addr & 0x1) || (memory == NULL))
+    return;
+  T1WriteByte(memory, addr >> 1, val);
+  if (!reported) {
+    reported = 1;
+    YuiMsg("Backup RAM: direct write to the internal backup RAM (00180000H) at PC %08X while the extended backup is enabled: "
+           "this area is not saved, disable the extended backup if a game saves this way\n",
+           (context != NULL) ? (unsigned int)context->regs.PC : 0u);
+  }
+}
+
+static void FASTCALL BupShadowMemoryWriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
+{
+  BupShadowMemoryWriteByte(context, memory, (addr & ~0x1) | 0x1, val & 0xFF);
+}
+
+static void FASTCALL BupShadowMemoryWriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
+{
+  addr &= ~0x3;
+  BupShadowMemoryWriteByte(context, memory, addr | 0x1, (val >> 16) & 0xFF);
+  BupShadowMemoryWriteByte(context, memory, addr | 0x3, val & 0xFF);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -858,6 +966,17 @@ void MappedMemoryInit()
      &BupRamMemoryWriteWord,
      &BupRamMemoryWriteLong,
      &BupRam);
+
+   /* Mode etendu : SRAM de 32 Ko a l'adresse materielle, voir
+      BupShadowMemoryReadByte(). */
+   if (BupShadowRam != NULL)
+     FillMemoryArea(0x018, 0x018, &BupShadowMemoryReadByte,
+                                  &BupShadowMemoryReadWord,
+                                  &BupShadowMemoryReadLong,
+                                  &BupShadowMemoryWriteByte,
+                                  &BupShadowMemoryWriteWord,
+                                  &BupShadowMemoryWriteLong,
+                                  &BupShadowRam);
 }
 
 /* Recable la zone CS0 (cartouche) sans toucher au reste de la carte memoire.
@@ -1860,9 +1979,226 @@ int isBackupHandled(u32 addr) {
    return( ((addr & 0xFFFFF) == 0x7d600) || (((addr & 0xFFFFF) >= 0x0384 && (addr & 0xFFFFF) <= 0x03A8) || ((addr & 0xFFFFF) == 0x358) ));
 }
 
+/* ---------------------------------------------------------------------------
+ * Fichiers de sauvegarde (RAM interne et cartouche de sauvegarde).
+ *
+ * Deux defauts faisaient perdre toutes les sauvegardes :
+ *
+ * 1. Ecriture non atomique. T123Save() ouvre le fichier en "wb+", ce qui le
+ *    vide, puis ecrit tout (8 Mo en mode "extended") ; elle est appelee apres
+ *    chaque BUP_Write. Un arret pendant l'ecriture (fermeture, plantage,
+ *    disque plein, antivirus ou synchronisation cloud qui bloque le fichier)
+ *    laissait un fichier tronque. Au lancement suivant, BackupInit() voyait
+ *    une taille ni standard ni etendue et FORMATAIT la memoire, puis
+ *    l'ecrivait par-dessus : tout etait perdu.
+ *    Correction : ecriture dans "<fichier>.tmp", puis la version precedente
+ *    devient "<fichier>.bak" et le .tmp prend la place du fichier.
+ *
+ * 2. Echec de lecture = formatage. Si le fichier existait mais ne se lisait
+ *    pas (verrouille, taille fausse, lecture incomplete), la memoire etait
+ *    formatee et ce contenu vide remplacait le fichier a la premiere
+ *    ecriture. Correction : on essaie "<fichier>.bak" ; sinon le fichier
+ *    illisible est mis de cote ("<fichier>.bad-<date>") avant de repartir
+ *    d'une memoire formatee, et un fichier present mais impossible a ouvrir
+ *    n'est jamais remplace pendant la session.
+ * ------------------------------------------------------------------------- */
+
+static int BackupFileExists(const char *filename)
+{
+   struct stat sb;
+   if ((filename == NULL) || (filename[0] == 0))
+      return 0;
+   return (stat(filename, &sb) == 0);
+}
+
+static char *BackupFileName(const char *filename, const char *suffix)
+{
+   size_t len = strlen(filename) + strlen(suffix) + 1;
+   char *name = (char *)malloc(len);
+   if (name != NULL)
+      snprintf(name, len, "%s%s", filename, suffix);
+   return name;
+}
+
+static char *BackupStampedName(const char *filename, const char *tag)
+{
+   char stamp[64];
+   time_t now = time(NULL);
+   struct tm *t = localtime(&now);
+   if (t != NULL)
+      strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", t);
+   else
+      snprintf(stamp, sizeof(stamp), "%lu", (unsigned long)now);
+   {
+      char suffix[96];
+      snprintf(suffix, sizeof(suffix), ".%s-%s", tag, stamp);
+      return BackupFileName(filename, suffix);
+   }
+}
+
+/* Ecrit 'size' octets de 'mem' (memoire T1, octet par octet) dans 'name'.
+ * Rend 0 si tout a ete ecrit et le fichier ferme sans erreur. */
+static int BackupWriteRaw(const u8 *mem, u32 size, const char *name)
+{
+   FILE *fp;
+   u8 *buffer;
+   u32 i;
+   int ok;
+
+   if ((buffer = (u8 *)malloc(size)) == NULL)
+      return -1;
+   for (i = 0; i < size; i++)
+      buffer[i] = T1ReadByte((u8 *)mem, i);
+
+   if ((fp = fopen(name, "wb")) == NULL) {
+      free(buffer);
+      return -1;
+   }
+   ok = (fwrite(buffer, 1, size, fp) == size);
+   ok = (fflush(fp) == 0) && ok;
+   ok = (fclose(fp) == 0) && ok;
+   free(buffer);
+   return ok ? 0 : -1;
+}
+
+/* Sauvegarde atomique. Rend 0 si rien n'est a ecrire (pas de fichier) ou
+ * si l'ecriture a reussi. */
+int BackupSaveFile(const u8 *mem, u32 size, const char *filename)
+{
+   char *tmp, *bak;
+   int ret = -1;
+
+   if ((mem == NULL) || (filename == NULL) || (filename[0] == 0))
+      return 0;
+
+   tmp = BackupFileName(filename, ".tmp");
+   bak = BackupFileName(filename, ".bak");
+   if ((tmp == NULL) || (bak == NULL))
+      goto end;
+
+   if (BackupWriteRaw(mem, size, tmp) != 0) {
+      remove(tmp);
+      YuiMsg("Backup RAM: can not write %s, %s left untouched\n", tmp, filename);
+      goto end;
+   }
+
+   /* La version precedente devient le .bak (seulement si elle existe : un
+    * fichier mis de cote par BackupLoadFile() ne doit pas faire perdre un
+    * .bak valide). rename() ne remplace pas une destination existante sous
+    * Windows, d'ou le remove() prealable. */
+   if (BackupFileExists(filename)) {
+      remove(bak);
+      if (rename(filename, bak) != 0) {
+         /* Impossible de deplacer l'ancien fichier (verrouille ?) : on ne
+          * le detruit pas, la sauvegarde sera retentee plus tard. */
+         YuiMsg("Backup RAM: can not rename %s, save postponed\n", filename);
+         remove(tmp);
+         goto end;
+      }
+   }
+   if (rename(tmp, filename) != 0) {
+      YuiMsg("Backup RAM: can not rename %s to %s\n", tmp, filename);
+      /* On remet l'ancienne version en place. */
+      rename(bak, filename);
+      goto end;
+   }
+   ret = 0;
+
+end:
+   free(tmp);
+   free(bak);
+   return ret;
+}
+
+/* Copie de securite horodatee du contenu en memoire ("<fichier>.<tag>-<date>"). */
+void BackupDumpCopy(const u8 *mem, u32 size, const char *filename, const char *tag)
+{
+   char *name;
+   if ((mem == NULL) || (filename == NULL) || (filename[0] == 0))
+      return;
+   if ((name = BackupStampedName(filename, tag)) == NULL)
+      return;
+   if (BackupWriteRaw(mem, size, name) == 0)
+      YuiMsg("Backup RAM: copy of the previous content kept in %s\n", name);
+   else
+      remove(name);
+   free(name);
+}
+
+static int BackupLoadExact(u8 *mem, u32 size, const char *name, int exact)
+{
+   int fsize = TSize(name);
+   if (fsize < 0)
+      return -1;
+   if (exact && ((u32)fsize != size))
+      return -1;
+   return T123Load(mem, size, 1, name);
+}
+
+/* Charge la memoire de sauvegarde.
+ *   0  : chargee depuis le fichier ;
+ *   1  : chargee depuis "<fichier>.bak" (le fichier est a reecrire) ;
+ *  -1  : aucun fichier valide, l'appelant formate ; un fichier illisible a
+ *        ete mis de cote ;
+ *  -2  : le fichier existe mais ne peut pas etre ouvert (verrouille) : NE
+ *        PAS l'ecraser pendant cette session.
+ * exact : la taille du fichier doit etre exactement 'size'. */
+int BackupLoadFile(u8 *mem, u32 size, const char *filename, int exact)
+{
+   char *bak, *bad;
+   int ret;
+
+   if ((filename == NULL) || (filename[0] == 0))
+      return -1;
+
+   if (!BackupFileExists(filename)) {
+      /* Plus de fichier principal mais un .bak (arret entre les deux
+       * rename() de BackupSaveFile()) : on le reprend. */
+      bak = BackupFileName(filename, ".bak");
+      ret = -1;
+      if ((bak != NULL) && (BackupLoadExact(mem, size, bak, exact) == 0)) {
+         YuiMsg("Backup RAM: %s missing, restored from %s\n", filename, bak);
+         ret = 1;
+      }
+      free(bak);
+      return ret;
+   }
+
+   if (BackupLoadExact(mem, size, filename, exact) == 0)
+      return 0;
+
+   if (TSize(filename) < 0) {
+      YuiMsg("Backup RAM: %s exists but can not be opened, it will NOT be overwritten during this session\n", filename);
+      return -2;
+   }
+
+   bak = BackupFileName(filename, ".bak");
+   if ((bak != NULL) && (BackupLoadExact(mem, size, bak, exact) == 0)) {
+      YuiMsg("Backup RAM: %s is damaged (size %d, %u expected), restored from %s\n",
+             filename, TSize(filename), (unsigned int)size, bak);
+      ret = 1;
+   } else {
+      ret = -1;
+   }
+   free(bak);
+
+   /* Le fichier endommage est garde pour analyse ou recuperation manuelle. */
+   if ((bad = BackupStampedName(filename, "bad")) != NULL) {
+      if (rename(filename, bad) == 0)
+         YuiMsg("Backup RAM: damaged %s moved to %s\n", filename, bad);
+      free(bad);
+   }
+   return ret;
+}
+
 int BackupInit(const char* path, int extended) {
   int currentSaveSize = TSize(path);
-  int forceFormat = 0;
+  int status;
+
+  bupSaveDisabled = 0;
+  bupFlushDelay = 0;
+  bupDirty = 0;
+
   if (currentSaveSize != -1) {
     int isNormalSize = (currentSaveSize == 0x8000);
     int isExtendedSize = (currentSaveSize == EXTENDED_BACKUP_SIZE);
@@ -1875,8 +2211,9 @@ int BackupInit(const char* path, int extended) {
       YuiMsg("Internal backup file format is detected as extended save format - Force to use extended save format\n");
     }
     if (!((!extended && isNormalSize)||(extended && isExtendedSize))) {
-      YuiMsg("Internal backup file format is bad - Force format to %s save format\n", (extended?"extended":"standard") );
-      forceFormat =1; //Size is not the good one - Format
+      /* Plus de formatage direct ici : BackupLoadFile() essaie le .bak et
+       * met le fichier de cote. */
+      YuiMsg("Internal backup file %s has a bad size (%d bytes)\n", path, currentSaveSize);
     }
   }
   if (!extended) {
@@ -1890,18 +2227,70 @@ int BackupInit(const char* path, int extended) {
   if ((BupRam = T1MemoryInit(backup_file_size)) == NULL)
        return -1;
 
-  if ((LoadBackupRam(path) != 0) || (forceFormat))
-       FormatBackupRam(BupRam, backup_file_size);
+  if (BupShadowRam != NULL) {
+    T1MemoryDeInit(BupShadowRam);
+    BupShadowRam = NULL;
+  }
+  if (extended) {
+    if ((BupShadowRam = T1MemoryInit(BUP_SHADOW_SIZE)) != NULL)
+      FormatBackupRam(BupShadowRam, BUP_SHADOW_SIZE);
+  }
+
+  if ((path == NULL) || (path[0] == 0))
+    YuiMsg("Backup RAM: no file name, the internal backup RAM will NOT be saved\n");
+
+  status = BackupLoadFile(BupRam, backup_file_size, path, 1);
+  if (status < 0) {
+    FormatBackupRam(BupRam, backup_file_size);
+    if (status == -2)
+      bupSaveDisabled = 1;
+  }
+  bupDirty = (status != 0);
+
+  free(bupfilename);
+  bupfilename = ((path != NULL) && (path[0] != 0)) ? strdup(path) : NULL;
+
   BupRamWritten = 0;
-  bupfilename = path;
   return 0;
+}
+
+const char *BackupGetFileName(void) {
+  return bupfilename;
 }
 
 void BackupFlush() {
   if (BupRam)
   {
-      if (T123Save(BupRam, backup_file_size, 1, bupfilename) != 0)
+      BupRamWritten = 0;
+      bupFlushDelay = 0;
+      bupDirty = 0;
+      if (bupSaveDisabled) {
+        YuiMsg("Backup RAM: %s was not readable at start-up, not overwritten\n", bupfilename ? bupfilename : "");
+        return;
+      }
+      if (BackupSaveFile(BupRam, backup_file_size, bupfilename) != 0) {
+        bupDirty = 1;   /* nouvel essai a la fermeture */
         YabSetError(YAB_ERR_FILEWRITE, (void *)bupfilename);
+      }
+  }
+}
+
+/* Appele une fois par trame (YabauseEmulate()). Les ecritures qui ne
+ * passent pas par les fonctions BUP de haut niveau (BIOS reel, jeux qui
+ * ecrivent directement en 00180000H, gestionnaire de memoire du BIOS) n'etaient
+ * enregistrees qu'a la sortie, et le portage Qt n'appelle jamais
+ * YabauseDeInit() en quittant : elles etaient perdues. On ecrit le fichier
+ * une seconde apres la derniere ecriture. */
+void BackupAutoFlush(void) {
+  if (BupRam == NULL)
+    return;
+  if (BupRamWritten) {
+    BupRamWritten = 0;
+    bupDirty = 1;
+    bupFlushDelay = 60;
+  } else if (bupFlushDelay > 0) {
+    if (--bupFlushDelay == 0)
+      BackupFlush();
   }
 }
 
@@ -1911,11 +2300,21 @@ void BackupExtended() {
 void BackupDeinit() {
    if (BupRam)
    {
-       if (T123Save(BupRam, backup_file_size, 1, bupfilename) != 0)
-        YabSetError(YAB_ERR_FILEWRITE, (void *)bupfilename);
+       /* Seulement si le contenu a change depuis la derniere ecriture :
+        * reecrire un contenu identique ferait du .bak une simple copie. */
+       if (bupDirty || BupRamWritten || (bupFlushDelay > 0))
+          BackupFlush();
        T1MemoryDeInit(BupRam);
    }
    BupRam = NULL;
+   if (BupShadowRam != NULL)
+       T1MemoryDeInit(BupShadowRam);
+   BupShadowRam = NULL;
+   free(bupfilename);
+   bupfilename = NULL;
+   bupSaveDisabled = 0;
+   bupFlushDelay = 0;
+   bupDirty = 0;
 }
 
 
