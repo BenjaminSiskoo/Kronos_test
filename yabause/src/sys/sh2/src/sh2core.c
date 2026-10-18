@@ -408,6 +408,45 @@ int SH2InstructionWillBeReplayed(SH2_struct *context) {
          (SH2InExecSave[context->isslave ? 1 : 0] != 0);
 }
 
+/* Instruction a ne pas rejouer.
+ *
+ * SH2Core->ExecSave() annule l'instruction qui a bloque le CPU (registres
+ * restaures, PC inchange) et la rejoue quand le CPU est debloque. C'est sans
+ * risque pour une lecture sans effet de bord, mais pas pour une ecriture qui
+ * declenche quelque chose : l'effet a deja eu lieu et le rejeu le refait.
+ *
+ * Cas concret : l'ecriture de DxEN/DxGO (25FE0010/30/50) lance un SCU-DMA ;
+ * si la source ou la destination est sur le bus CPU, setupBusConcurrency()
+ * arme A_BUS_ACCESS et le CPU qui vient d'ecrire devient bloque PENDANT son
+ * propre store. Quand ce CPU tournait deja dans ExecSave (verrou VRAM VDP2
+ * arme de la ligne 1 au H-blank IN suivant, ou autre DMA en cours), le store
+ * etait annule puis rejoue : le meme DMA partait deux fois. Grand Slam (USA)
+ * charge ses modules un secteur par commande (Get Sector Data 1 secteur,
+ * SCU-DMA 2048 octets depuis 25818000) : le second passage relisait le port
+ * de donnees deja vide et ecrasait le secteur par 2048 octets nuls
+ * (kronos_cd.log : "EMPTY READ ... cdwnum=2048" juste apres un CMD 61 en
+ * ligne 0, zones 06009800/0600C000/06057800/0605A000/0605C800 a zero, puis
+ * opcode invalide en sautant dedans).
+ *
+ * Sur le materiel l'ecriture est terminee quand le DMA prend le bus : le CPU
+ * attend ensuite son prochain acces, il ne refait pas l'ecriture. Le code
+ * qui realise un tel effet appelle SH2CommitCurrentInstruction() ; ExecSave
+ * garde alors l'instruction executee (PC et registres avances) et se contente
+ * de terminer la tranche comme pour un blocage ordinaire. */
+static u8 SH2InstructionCommitted[2];
+
+void SH2CommitCurrentInstruction(SH2_struct *context) {
+  if (context == NULL) return;
+  SH2InstructionCommitted[context->isslave ? 1 : 0] = 1;
+}
+
+int SH2TakeInstructionCommit(SH2_struct *context) {
+  const int i = context->isslave ? 1 : 0;
+  const int r = SH2InstructionCommitted[i];
+  SH2InstructionCommitted[i] = 0;
+  return r;
+}
+
 
 void SH2SetCPUConcurrency(SH2_struct *context, u8 mask) {
   if ((context->SH2InterruptibleExec != SH2BlockableExec) || !(context->blockingMask & mask)) {
@@ -3345,6 +3384,14 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
          default: destInc = 0; break;
       }
 
+      /* Pas de SH2WriteNotify() global en fin de tranche ou de transfert.
+       * Les anciens appels couvraient [DAR - i*destInc, DAR) ou i ne compte
+       * que les unites de l'appel courant : pour un transfert decoupe en
+       * plusieurs tranches (cycle-steal), la plage ne couvrait que la
+       * derniere tranche, et pour une destination fixe (destInc = 0) elle
+       * etait vide. Ils etaient de toute facon redondants :
+       * DMAMappedMemoryWrite{Byte,Word,Long}() (memory.c) appellent deja
+       * SH2WriteNotify() pour chaque unite ecrite, sur les deux CPU. */
       switch (type) {
          case 0:
             while( dmac->copy_clock >= 0 )  {
@@ -3360,7 +3407,6 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -3381,7 +3427,6 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -3403,7 +3448,6 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                   *dmac->CHCR |= 0x2;
                   *dmac->CHCRM |= 0x2;
                   SH2EvaluateInterrupt(context);
-                  SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                   return;
                }
             }
@@ -3462,13 +3506,11 @@ void DMATransferCycles(SH2_struct *context, Dmac * dmac, int cycles ){
                *dmac->CHCR |= 0x2;
                *dmac->CHCRM |= 0x2;
                SH2EvaluateInterrupt(context);
-               SH2WriteNotify(context, destInc<0 ? *dmac->DAR : *dmac->DAR - i*destInc, i*abs(destInc));
                return;
              }
            }
            break;
       }
-      SH2WriteNotify(context, destInc<0?*dmac->DAR:*dmac->DAR-i*destInc,i*abs(destInc));
    }
 
 }
