@@ -1550,6 +1550,35 @@ static void FASTCALL ROMSTVCs1WriteLong(SH2_struct *context, UNUSED u8* memory, 
 // General Cart functions
 //////////////////////////////////////////////////////////////////////////////
 
+/* Chargement de la cartouche de sauvegarde : meme protection que la RAM
+ * interne (memory.c, BackupLoadFile()). Un fichier present mais illisible
+ * provoquait un formatage puis son remplacement par la memoire vide a la
+ * premiere ecriture (CartFlush()/CartDeInit()). */
+static int cartBupSaveDisabled = 0;
+
+static void CartBupLoad(u8 *bupram, u32 size, const char *filename)
+{
+   int status = BackupLoadFile(bupram, size, filename, 0);
+   cartBupSaveDisabled = 0;
+   if (status < 0) {
+      FormatBackupRam(bupram, size);
+      if (status == -2)
+         cartBupSaveDisabled = 1;
+   }
+}
+
+static void CartBupSave(u8 *bupram, u32 size, const char *filename)
+{
+   if (cartBupSaveDisabled) {
+      YuiMsg("Backup cartridge: %s was not readable at start-up, not overwritten\n", filename ? filename : "");
+      return;
+   }
+   /* Ecriture atomique (fichier temporaire puis renommage, version
+    * precedente gardee en .bak) : voir BackupSaveFile(), memory.c. */
+   if (BackupSaveFile(bupram, size, filename) != 0)
+      YabSetError(YAB_ERR_FILEWRITE, (void *)filename);
+}
+
 int CartInit(const char * filename, int type)
 {
    if ((CartridgeArea = (cartridge_struct *)calloc(1, sizeof(cartridge_struct))) == NULL)
@@ -1621,8 +1650,7 @@ int CartInit(const char * filename, int type)
          CartridgeArea->cartid = 0x21;
 
          // Load Backup Ram data from file
-         if (T123Load(CartridgeArea->bupram, CART_BUP4MBIT_SIZE, 1, filename) != 0)
-            FormatBackupRam(CartridgeArea->bupram, CART_BUP4MBIT_SIZE);
+         CartBupLoad(CartridgeArea->bupram, CART_BUP4MBIT_SIZE, filename);
 
          // Setup Functions
          CartridgeArea->Cs1ReadByte = &BUP4MBITCs1ReadByte;
@@ -1641,8 +1669,7 @@ int CartInit(const char * filename, int type)
          CartridgeArea->cartid = 0x22;
 
          // Load Backup Ram data from file
-         if (T123Load(CartridgeArea->bupram, CART_BUP8MBIT_SIZE, 1, filename) != 0)
-            FormatBackupRam(CartridgeArea->bupram, CART_BUP8MBIT_SIZE);
+         CartBupLoad(CartridgeArea->bupram, CART_BUP8MBIT_SIZE, filename);
 
          // Setup Functions
          CartridgeArea->Cs1ReadByte = &BUP8MBITCs1ReadByte;
@@ -1661,8 +1688,7 @@ int CartInit(const char * filename, int type)
          CartridgeArea->cartid = 0x23;
 
          // Load Backup Ram data from file
-         if (T123Load(CartridgeArea->bupram, CART_BUP16MBIT_SIZE, 1, filename) != 0)
-            FormatBackupRam(CartridgeArea->bupram, CART_BUP16MBIT_SIZE);
+         CartBupLoad(CartridgeArea->bupram, CART_BUP16MBIT_SIZE, filename);
 
          // Setup Functions
          CartridgeArea->Cs1ReadByte = &BUP16MBITCs1ReadByte;
@@ -1680,8 +1706,7 @@ int CartInit(const char * filename, int type)
 
          CartridgeArea->cartid = 0x24;
          // Load Backup Ram data from file
-         if (T123Load(CartridgeArea->bupram, CART_BUP32MBIT_SIZE, 1, filename) != 0)
-            FormatBackupRam(CartridgeArea->bupram, CART_BUP32MBIT_SIZE);
+         CartBupLoad(CartridgeArea->bupram, CART_BUP32MBIT_SIZE, filename);
          // Setup Functions
          CartridgeArea->Cs1ReadByte = &BUP32MBITCs1ReadByte;
          CartridgeArea->Cs1ReadWord = &BUP32MBITCs1ReadWord;
@@ -1927,8 +1952,7 @@ void CartFlush(void){
 
          if (size != 0)
          {
-            if (T123Save(CartridgeArea->bupram, size, 1, CartridgeArea->filename) != 0)
-               YabSetError(YAB_ERR_FILEWRITE, (void *)CartridgeArea->filename);
+            CartBupSave(CartridgeArea->bupram, size, CartridgeArea->filename);
          }
       }
    }
@@ -1985,8 +2009,7 @@ void CartDeInit(void)
 
          if (size != 0)
          {
-            if (T123Save(CartridgeArea->bupram, size, 1, CartridgeArea->filename) != 0)
-               YabSetError(YAB_ERR_FILEWRITE, (void *)CartridgeArea->filename);
+            CartBupSave(CartridgeArea->bupram, size, CartridgeArea->filename);
 
             T1MemoryDeInit(CartridgeArea->bupram);
          }
