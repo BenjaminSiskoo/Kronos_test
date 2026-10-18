@@ -16,6 +16,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+#include <QFile>
 #include "UIHexEditor.h"
 #include "Settings.h"
 #include <QApplication>
@@ -1045,7 +1046,7 @@ bool UIHexEditorWnd::saveTab(QString filename)
 
 bool UIHexEditorWnd::saveMemory(QString filename, u32 startAddress, u32 endAddress)
 {
-	FILE *fp = fopen(filename.toLatin1(), "wb");
+	FILE *fp = fopen(QFile::encodeName(filename).constData(), "wb");
 	u32 size = (u32)(endAddress - startAddress);
 
 	if (fp == NULL)
