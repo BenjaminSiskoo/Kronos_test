@@ -18,6 +18,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+#include <QFile>
 #include "UISettings.h"
 #include "../Settings.h"
 #include "../CommonDialogs.h"
@@ -259,7 +260,9 @@ void UISettings::requestSTVFolder( const QString& c, QLineEdit* e, QString propo
 	if ( !existingDirectoryPath.isNull() ) {
 		e->setText( existingDirectoryPath );
 	}
-	int const nbGames = STVGetRomList(existingDirectoryPath.toStdString().c_str(), 1);
+	/* toStdString() donne de l'UTF-8, que fopen() de Windows ne comprend pas
+	   pour un caractere non ASCII : encodage du systeme de fichiers. */
+	int const nbGames = STVGetRomList(QFile::encodeName(existingDirectoryPath).constData(), 1);
 	cbSTVGame->clear();
 	for(int i = 0; i< nbGames; i++){
 		cbSTVGame->addItem(getSTVGameName(i),getSTVRomset(i));
@@ -520,7 +523,7 @@ void UISettings::on_cbCartridge_currentIndexChanged( int index )
 	leCartridgeModemPort->setVisible(cart.ipFlag);
 	if (cart.pathFlag) {
 		QString const & str = leCartridge->text();
-		int const nbGames = STVGetRomList(str.toStdString().c_str(), 0);
+		int const nbGames = STVGetRomList(QFile::encodeName(str).constData(), 0);
 		cbSTVGame->clear();
 		for(int i = 0; i < nbGames; i++){
 			cbSTVGame->addItem(getSTVGameName(i),getSTVRomset(i));
@@ -767,7 +770,8 @@ void UISettings::loadSettings()
   cbSTVGame->setCurrentIndex( cbSTVGame->findData( s->value( "Cartridge/STVGame" ).toString() ) );
 	leMemory->setText( s->value( "Memory/Path", getDataDirPath().append( "/bkram.bin" ) ).toString() );
 	leMpegROM->setText( s->value( "MpegROM/Path" ).toString() );
-	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory").toBool());
+	/* Meme valeur par defaut que YabauseThread::reloadSettings() (true). */
+	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", true).toBool());
   	//the path needs to go into the volatile settings since we keep only one cartridge path there to keep things simple.
 
 	// input
