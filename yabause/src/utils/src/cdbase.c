@@ -1896,6 +1896,26 @@ static int CDSectorHeadLooksValid(const u8 *head)
    return 0;
 }
 
+/* Lecture de 'len' octets a la position 'pos' d'une piste, qu'elle soit un
+   fichier ouvert (fp) ou un fichier decompresse depuis un .zip (tr). Le
+   pointeur de fichier n'est pas restaure : l'appelant (ISOCDReadSectorFAD)
+   repositionne toujours avant de lire le secteur. */
+static long BinTrackReadAt(track_info_struct *track, long pos, u8 *buf, long len)
+{
+   if (pos < 0 || len <= 0) return 0;
+   if (track->isZip == 1)
+   {
+      ZipEntry *z = track->tr;
+      if (z == NULL || z->zipBuffer == NULL || pos >= (long)z->size) return 0;
+      if (pos + len > (long)z->size) len = (long)z->size - pos;
+      memcpy(buf, z->zipBuffer + pos, (size_t)len);
+      return len;
+   }
+   if (track->fp == NULL) return 0;
+   if (fseek(track->fp, pos, SEEK_SET) != 0) return 0;
+   return (long)fread(buf, 1, (size_t)len, track->fp);
+}
+
 static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
    int i,j;
    size_t num_read = 0;
@@ -1970,27 +1990,35 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
       bounded (a few sectors either side, which is all a pregap
       mismatch can ever amount to) so a genuinely corrupt image is still
       reported instead of being papered over. */
-   if (!currentTrack->sync_checked && currentTrack->isZip != 1 &&
-       currentTrack->fp != NULL && (currentTrack->ctl_addr & 0x40) &&
+   if (!currentTrack->sync_checked &&
+       ((currentTrack->isZip != 1 && currentTrack->fp != NULL) ||
+        (currentTrack->isZip == 1 && tr != NULL && tr->zipBuffer != NULL)) &&
+       (currentTrack->ctl_addr & 0x40) &&
        (currentTrack->sector_size == 2352 || currentTrack->sector_size == 2448))
    {
+      /* Meme verification pour une piste lue dans un .zip : elle etait
+         reservee aux fichiers ouverts par fopen() (condition isZip != 1).
+         Un .bin zippe dont l'offset de depart est faux ou dont les secteurs
+         sont stockes brouilles etait donc lu de travers, alors que le meme
+         .bin decompresse etait corrige. La lecture passe maintenant par
+         BinTrackReadAt(), qui sert le fichier ou le tampon decompresse. */
       static const u8 sync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
       const int window = 8 * 2352;            /* +/- 8 sectors */
       long base = (long)currentTrack->file_offset;
       long from = base - window; long to = base + window;
+      long trackSize = (currentTrack->isZip == 1) ? (long)tr->size : (long)currentTrack->file_size;
       u8 *buf; long span; long syncpos = -1; long i;
 
       currentTrack->sync_checked = 1;
 
       if (from < 0) from = 0;
-      if (to > (long)currentTrack->file_size - 12) to = (long)currentTrack->file_size - 12;
+      if (to > trackSize - 12) to = trackSize - 12;
       span = to - from + 12;
 
       if (span > 0 && (buf = (u8 *)malloc((size_t)span)) != NULL)
       {
-         fseek(currentTrack->fp, from, SEEK_SET);
-         span = (long)fread(buf, 1, (size_t)span, currentTrack->fp);
+         span = BinTrackReadAt(currentTrack, from, buf, span);
 
          /* Prefer the candidate closest to the computed offset. A candidate
             only counts when the NEXT sector starts with the sync pattern
@@ -2024,10 +2052,8 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
       if (syncpos >= 0)
       {
          u8 head[24];
-         long keep = ftell(currentTrack->fp);
 
-         fseek(currentTrack->fp, syncpos, SEEK_SET);
-         if (fread(head, 1, 24, currentTrack->fp) == 24 && !CDSectorHeadLooksValid(head))
+         if (BinTrackReadAt(currentTrack, syncpos, head, 24) == 24 && !CDSectorHeadLooksValid(head))
          {
             const u8 *tbl = CDScramblerTable();
             u8 test[24];
@@ -2049,7 +2075,6 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
                       currentTrack->fad_start, currentTrack->fad_end, head[15]);
             }
          }
-         fseek(currentTrack->fp, keep, SEEK_SET);
       }
       else
       {
