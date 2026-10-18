@@ -24,6 +24,9 @@
 #include <QThread>
 #include <QSize>
 #include <QMutexLocker>
+#include <QList>
+#include <QByteArray>
+#include <QVariant>
 
 #include "QtYabause.h"
 
@@ -54,6 +57,13 @@ protected:
 
 	void deInitEmulation();
 	void resetYabauseConf();
+
+	/* Chaines de mYabauseConf, voir YabauseThread.cpp. */
+	const char *confString( const char *previous, const QByteArray &value );
+	static QByteArray pathBytes( const QVariant &value );
+	void retireConfStrings( const yabauseinit_struct &previous );
+	void freeRetiredStrings();
+	QList<char *> mRetiredStrings;
 	bool mIsCdIn;
 	bool mIsCDDirty;
 
