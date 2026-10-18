@@ -294,6 +294,13 @@ void UIYabause::leaveEvent( QEvent* e )
 
 void UIYabause::mousePressEvent( QMouseEvent* e )
 {
+	/* Critter Crusher / Tatacot: the left button is the hammer hit (see
+	   PerCritcrshMove() in peripheral.c). */
+	if (PerCritcrshEnabled() && (e->button() == Qt::LeftButton))
+	{
+		PerCritcrshHammer( 1 );
+		return;
+	}
 	if (emulateMouse && !mouseCaptured)
 	{
 		if (!cursorShown) this->setCursor(Qt::BlankCursor);
@@ -306,6 +313,11 @@ void UIYabause::mousePressEvent( QMouseEvent* e )
 
 void UIYabause::mouseReleaseEvent( QMouseEvent* e )
 {
+	if (PerCritcrshEnabled() && (e->button() == Qt::LeftButton))
+	{
+		PerCritcrshHammer( 0 );
+		return;
+	}
 	PerKeyUp( (1 << 31) | e->button() );
 }
 
@@ -453,6 +465,18 @@ void UIYabause::mouseMoveEvent( QMouseEvent* e )
 {
 	int midX = (centralWidget()->size().width()/2); // widget global x
 	int midY = centralWidget()->size().height()/2; // widget global y
+
+	/* Critter Crusher / Tatacot: the hammer follows the host mouse, in
+	   emulated screen pixels (same conversion as the visible-cursor gun
+	   branch below), with no capture needed. */
+	if (PerCritcrshEnabled())
+	{
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		if ((mouseXRatio > 0.0f) && (mouseYRatio > 0.0f))
+			PerCritcrshMove( (int)((e->x()-mouseXUp)/mouseXRatio), (int)((e->y()-mouseYUp)/mouseYRatio) );
+		this->setCursor(Qt::CrossCursor);
+		return;
+	}
 
 
 	if (mouseCaptured) {
