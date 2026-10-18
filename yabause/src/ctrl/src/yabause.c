@@ -1092,6 +1092,10 @@ int YabauseEmulate(void) {
 
    DoMovie();
 
+   /* Ecriture differee du fichier de RAM de sauvegarde apres une ecriture
+    * directe (hors fonctions BUP de haut niveau), voir memory.c. */
+   BackupAutoFlush();
+
    MSH2->cycles = 0;
    MSH2->divcycles = 0;
    MSH2->frtcycles = 0;
