@@ -300,15 +300,25 @@ int VIDCSEraseWriteVdp1(int id) {
 
   _Ygl->vdp1_stencil_mode = 0;
 
-  color = Vdp1Regs->EWDR;
+  /* VDP1 User's Manual ST-013-R3 Table 4.1 p.34 : EWDR, EWLR et EWRR sont
+   * pris en compte au changement de frame buffer ("Frame buffer SW
+   * timing"). L'effacement est differe ici (shallVdp1Erase leve par
+   * Vdp1EraseWrite(), execute au swap suivant ou a la premiere relecture
+   * CPU du buffer) : il doit donc utiliser les valeurs verrouillees au
+   * dernier swap par Vdp1LatchEraseParameters() (vdp1.c, appele APRES
+   * Vdp1FrameChange()), et non les registres courants, qu'un jeu peut deja
+   * avoir reprogrammes pour l'ecran suivant. Meme modele que Mednafen
+   * (EraseParams rempli au swap) et Ymir (LatchEraseParameters). */
+  u16 ewlr = 0, ewrr = 0;
+  Vdp1GetEraseLatch(&color, &ewlr, &ewrr);
 
   int shift = ((Vdp1Regs->TVMR & 0x1) == 1)?4:3;
   int limits[4] = {0};
-  limits[0] = ((Vdp1Regs->EWLR>>9)&0x3F)<<shift;
-  limits[1] = ((Vdp1Regs->EWLR)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
+  limits[0] = ((ewlr>>9)&0x3F)<<shift;
+  limits[1] = ((ewlr)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
 
-  limits[2] = (((Vdp1Regs->EWRR>>9)&0x7F)<<shift) - 1;
-  limits[3] = ((Vdp1Regs->EWRR)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
+  limits[2] = (((ewrr>>9)&0x7F)<<shift) - 1;
+  limits[3] = ((ewrr)&0x1FF); /* VDP1 §4.3: 9-bit Y covers both 256/512 modes */
 
   //Prohibited value - Example Quake first screens
   if ((limits[2] == -1)||(limits[3] == 0)) return 0;
