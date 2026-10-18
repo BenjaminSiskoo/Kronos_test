@@ -470,6 +470,69 @@ static void IOPortReleased(int key) {
 }
 
 
+/* Critter Crusher / Tatacot (critcrsh, tatacot): hammer cabinet.
+
+   No joystick on this cabinet. The I/O gate array returns the hammer
+   position on PORT-A (X) and PORT-B (Y), 6 bits each, with the hit on bit 2
+   of both bytes, and the hit itself on PORT-C bit 4 (active low). Reference:
+   MAME src/mame/sega/stv.cpp, critcrsh_ioga_r() and INPUT_PORTS critcrsh:
+     res = bitswap<8>(LIGHTX or LIGHTY, 2,3,0,1,6,7,5,4) & 0xf3;
+     res |= (PORTC & 0x10) ? 0x0 : 0x4;   // x/y hit latch
+   LIGHTX: 0x00-0x3f, LIGHTY: 0x02-0x2e, each spread linearly over the whole
+   screen (PORT_CROSSHAIR scale 1.0, offset 0).
+
+   Kronos had the CRITCRSH input type but no handler: PORT-A and PORT-B
+   returned the joystick bytes, 0xff at rest, i.e. the hit bit always set
+   and the hammer stuck in a corner, so the game never showed its blue
+   cross-hair. The position now comes from the host mouse
+   (PerCritcrshMove(), UIYabause::mouseMoveEvent()) and the hit from the left
+   mouse button or the P1 Start key (PORT-C bit 4, like MAME's "Hammer Hit"). */
+static u8 critcrsh_x = 0x20;
+static u8 critcrsh_y = 0x18;
+static u8 critcrsh_hammer = 0;
+
+int PerCritcrshEnabled(void) {
+  return (yabsys.isSTV != 0) && (yabsys.stvInputType == CRITCRSH);
+}
+
+void PerCritcrshMove(s32 x, s32 y) {
+  s32 w = _Ygl->rwidth;
+  s32 h = _Ygl->rheight;
+  s32 v;
+  if (w <= 0 || h <= 0) return;
+  if (x < 0) x = 0;
+  if (x >= w) x = w - 1;
+  if (y < 0) y = 0;
+  if (y >= h) y = h - 1;
+  v = (x * 0x40) / w;                    /* 0x00-0x3f */
+  critcrsh_x = (u8)((v > 0x3f) ? 0x3f : v);
+  v = 0x02 + (y * (0x2e - 0x02 + 1)) / h; /* 0x02-0x2e */
+  critcrsh_y = (u8)((v > 0x2e) ? 0x2e : v);
+}
+
+void PerCritcrshHammer(int pressed) {
+  critcrsh_hammer = (pressed != 0);
+}
+
+/* PORT-C as seen by the game: the mouse button acts on the hammer bit too. */
+static u8 PerCritcrshPortC(void) {
+  u8 val = IOPORT[PORT_C];
+  if (critcrsh_hammer) val &= ~0x10;
+  return val;
+}
+
+static u8 PerCritcrshRead(int axis) {
+  const u8 in = axis ? critcrsh_y : critcrsh_x;
+  /* bitswap<8>(in, 2,3,0,1,6,7,5,4): output bit 7 = input bit 2, ... */
+  u8 res = (u8)((((in >> 2) & 1) << 7) | (((in >> 3) & 1) << 6) |
+                (((in >> 0) & 1) << 5) | (((in >> 1) & 1) << 4) |
+                (((in >> 6) & 1) << 3) | (((in >> 7) & 1) << 2) |
+                (((in >> 5) & 1) << 1) | (((in >> 4) & 1) << 0));
+  res &= 0xf3;
+  if (!(PerCritcrshPortC() & 0x10)) res |= 0x04;
+  return res;
+}
+
 /* Mahjong Panel row-scan read: ANDs together every MJPORT[player*5+row] row
    currently selected by mj_mux_data (as written to PORT-E, offset 0x09,
    below), exactly like MAME's stvmp_ioga_r(). Active-low, so a deselected
@@ -508,6 +571,11 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
 */
    addr = addr&0x1F;
    u8 val = 0x0;
+   if (PerCritcrshEnabled()) {
+     if (addr == 0x01) return PerCritcrshRead(0); // hammer X
+     if (addr == 0x03) return PerCritcrshRead(1); // hammer Y
+     if (addr == 0x05) return PerCritcrshPortC(); // SYSTEM, bit 4 = hammer hit
+   }
    switch(addr) {
      case 0x01: // P1
        if (PerMahjongPanelEnabled() && !(m_port_direction & PORT_DIR_E_INPUT)) {
@@ -565,15 +633,23 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
       m_system_output = val;
       PerHopperMotorWrite(val);
       break;
-    case 0x09: // P3 / Mahjong Panel row select
+    case 0x09: // PORT-E: Mahjong Panel row select, billboard otherwise
       if (PerMahjongPanelEnabled()) {
         mj_mux_data = val ^ 0xff; // active-low on the real mux register, like MAME's stvmp_ioga_w()
         break;
       }
-      IOPORT[PORT_F] = val;
-      IOPORT[PORT_G] = val;
+      /* Otherwise an output (MAME ioga_w(): m_billboard->write(), not
+         emulated here). This used to copy the value into IOPORT[PORT_F]
+         and IOPORT[PORT_G], the input state of the extra 6-button keys
+         (P1 X/Y/Z, P2 buttons 4-6) and of PORT-G: a game writing its
+         billboard overwrote those inputs until the next key event. */
       break;
-    case 0x0b: IOPORT[PORT_E] = val; break; // P4
+    case 0x0b:
+      /* PORT-F: no input side effect in MAME (ioga_w() ignores it;
+         critcrsh_ioga_w() drives the 2-digit 7-segment score display with
+         it). This used to overwrite IOPORT[PORT_E], the P3 inputs read
+         back at 0x09. */
+      break;
     case 0x0d:
       //port-g
       if (!(val & 0x80)) { // bit 7 == 0 resets the counters (re-latch the baseline), like MAME
