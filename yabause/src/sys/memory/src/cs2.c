@@ -5996,6 +5996,11 @@ u8 Cs2GetIP(int autoregion) {
                                (buf[0xF2] << 8) | buf[0xF3];
          cdip->firstprogsize = (buf[0xF4] << 24) | (buf[0xF5] << 16) |
                                (buf[0xF6] << 8) | buf[0xF7];
+#endif
+         /* Valeurs par defaut et corrections des piles, communes aux deux
+            ordres d'octets : elles etaient dans la branche #else de
+            WORDS_BIGENDIAN, donc ignorees sur un hote big-endian, ou un
+            STACK-M/STACK-S a 0 restait a 0. */
 //Real bios is copying data at the firstprogaddr which correspond to the entry point (MSH2->PC) of the game.
 // ST-040-R4-051795.pdf is describing a bit the mechanism, look at 1st READ ADDRESS
          if (cdip->msh2stack == 0 )
@@ -6054,7 +6059,6 @@ u8 Cs2GetIP(int autoregion) {
          {
             cdip->ssh2stack = 0x06000000 + (cdip->ssh2stack & 0x0000FFFF);
          }
-#endif
 
          if (autoregion)
          {
