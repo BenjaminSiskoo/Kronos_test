@@ -124,6 +124,12 @@ void SH2HandleInterrupts(SH2_struct *context)
   }
   if (context->intPriority != 0x0)
   {
+    /* Interruption acceptee pendant SLEEP : on reprend a l'instruction qui
+     * suit SLEEP (voir SH2sleep()). */
+    if (context->isSleeping) {
+      context->regs.PC += 2;
+      context->isSleeping = 0;
+    }
     u32 oldpc = context->regs.PC;
     u32 persr = context->regs.SR.part.I;
     context->regs.R[15] -= 4;
@@ -153,7 +159,6 @@ void SH2HandleInterrupts(SH2_struct *context)
       if (context->stepOverOut.enabled && context->stepOverOut.type == SH2ST_STEPOUT)
         context->stepOverOut.levels++;
     }
-    context->isSleeping = 0;
   }
   UNLOCK(context);
 }
@@ -368,8 +373,27 @@ static void executeLastPC(SH2_struct *context) {
   opcodeTable[opcode](context);
 }
 
+/* Prise d'une interruption en cours de tranche (crochet pose par
+ * SH2KronosNotifyInterrupt()).
+ *
+ * LDC, LDC.L, LDS, LDS.L, STC, STC.L, STS et STS.L sont des instructions qui
+ * interdisent les interruptions : une interruption n'est pas acceptee entre
+ * elles et l'instruction suivante (SH7095/SH7604, section 4.6, table 4.10).
+ * Ces instructions levent doNotInterrupt (SH2next()), et les boucles
+ * d'execution ne terminent jamais une tranche dessus ; decodeInt l'ignorait et
+ * pouvait prendre l'interruption juste apres, par exemple entre
+ * "LDS.L @R15+,PR" et le RTS qui suit. Dans ce cas le crochet est repose sur
+ * l'instruction suivante, qui s'execute avant la prise de l'interruption. */
 static void decodeInt(SH2_struct *context) {
   executeLastPC(context);
+  if (context->doNotInterrupt != 0) {
+    if (context->interruptReturnAddress == 0) {
+      const int addr = context->regs.PC >> 1;
+      const int id = (addr >> 19) & 0xFFF;
+      cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]] = decodeInt;
+    }
+    return;
+  }
   if (context->itTriggerCycles >= context->cycles) SH2KronosNotifyInterrupt(context);
   else SH2HandleInterrupts(context);
 }
@@ -379,15 +403,27 @@ static void outOfInt(SH2_struct *context) {
   executeLastPC(context);
 }
 
+/* Fonction d'origine de 0xAFFE (bra $), relevee au premier Init.
+ *
+ * opcodeTable[] est commune aux deux coeurs Kronos. L'Init du coeur
+ * Performance y installait SH2InfiniteLoop et rien ne la remettait : apres un
+ * passage de "SH2 Performance" a "SH2 Debug" sans relancer Kronos, le coeur
+ * Debug gardait le raccourci. Chaque Init pose maintenant la valeur propre a
+ * son coeur. */
+static opcode_func braSelfOpcode = NULL;
+
 int SH2KronosInterpreterInit(void)
 {
 
    int i,j;
    SH2SetExecSet(0);
+   if (braSelfOpcode == NULL) braSelfOpcode = opcodeTable[0xAFFE];
    if (SH2Core->id == SH2CORE_KRONOS_INTERPRETER) {
      //Optimize while(1) loop
      opcodeTable[0xAFFE] = SH2InfiniteLoop;
-  }
+   } else {
+     opcodeTable[0xAFFE] = braSelfOpcode;
+   }
 
    for (i = 0; i < 8; i++) {
        for (j = 0; j < cacheSize[i]; j++) {
@@ -532,6 +568,14 @@ void SH2KronosInterpreterPostLoadState(SH2_struct *context)
   context->branchDepth = 0;
   context->isDelayed = 0;
 
+  /* isSleeping n'est pas dans l'etat : un CPU sauve pendant SLEEP a son PC
+   * sur l'instruction (SH2sleep() ne l'avance pas). Lecture hors execution,
+   * sans effet sur le bus ; le tableau de donnees (C0000000) n'est pas
+   * adressable par ce chemin. */
+  context->isSleeping = 0;
+  if (((context->regs.PC >> 29) != 0x6) && ((context->regs.PC >> 29) != 0x4))
+    context->isSleeping = (DMAMappedMemoryReadWord(context->regs.PC) == 0x001B);
+
   if (context->BUPTableAddr != 0) {
     const u32 startTableAdress = context->BUPTableAddr + 0x4;
     for (i = 0; i < 10; i++) {
@@ -563,8 +607,26 @@ void SH2KronosInterpreterDeInit(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
-void SH2KronosInterpreterReset(UNUSED SH2_struct *context)
+/* Appele par SH2Reset() : demarrage, mais aussi SSHON/SSHOFF pour l'esclave.
+ *
+ * interruptReturnAddress n'etait remis a zero qu'a l'initialisation. Un
+ * esclave remis a zero pendant qu'il executait un gestionnaire d'interruption
+ * gardait donc un interruptReturnAddress != 0 : SH2KronosNotifyInterrupt() ne
+ * posait plus decodeInt et ses interruptions n'etaient prises qu'en debut de
+ * tranche, tant que le PC ne repassait pas par l'ancienne adresse de retour,
+ * ou le crochet outOfInt restait pose. */
+void SH2KronosInterpreterReset(SH2_struct *context)
 {
+  if (context->interruptReturnAddress != 0) {
+    const int addr = context->interruptReturnAddress >> 1;
+    const int id = (addr >> 19) & 0xFFF;
+    opcode_func *entry = &cacheCode[context->isslave][cacheId[id]][addr & cacheMask[cacheId[id]]];
+    if (*entry == outOfInt) *entry = decode;
+  }
+  context->interruptReturnAddress = 0;
+  context->branchDepth = 0;
+  context->isDelayed = 0;
+  context->isSleeping = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -745,7 +807,11 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
       // Execute it
       if (shallExecute != 0) {
         context->instruction = krfetchlist[id](context, context->regs.PC);
-        cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[context->instruction];
+        /* Comme SH2KronosInterpreterExecSave() (coeur Performance), qui ne
+           touche pas cacheCode : un crochet decodeInt reste en place et
+           l'interruption sera prise par la boucle normale. */
+        if (cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] != decodeInt)
+          cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[context->instruction];
         if(context->isBlocked == 0) {
           SH2HandleBackTrace(context);
           SH2HandleStepOverOut(context);
@@ -854,6 +920,23 @@ FASTCALL void SH2KronosDebugInterpreterExec(SH2_struct *context, u32 cycles)
       if (cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] == outOfInt) {
         //OutOfInt
         context->interruptReturnAddress = 0;
+      }
+      /* Interruption en cours de tranche, comme le coeur Performance.
+       *
+       * SH2EvaluateInterrupt() -> SH2KronosNotifyInterrupt() pose decodeInt
+       * sur la prochaine instruction ; le coeur Performance l'execute, puis
+       * prend l'interruption des que INTERRUPT_HANDLING_DELAY cycles sont
+       * ecoules. Cette boucle ecrasait le crochet sans l'appeler : le coeur
+       * Debug ne prenait les interruptions qu'en debut de tranche
+       * (SH2HandleInterrupts() en tete de fonction), jusqu'a MIN_STEP_RUN
+       * cycles plus tard, et ne servait pas de reference pour la latence. */
+      if ((shallExecute != 0) &&
+          (cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] == decodeInt)) {
+        shallExecute = 0;
+        decodeInt(context);
+        if (context->bp.inbreakpoint) {
+          return;
+        }
       }
       // Execute it
       if (shallExecute != 0) {
@@ -1040,15 +1123,21 @@ void SH2KronosUpdateInterruptDebugReturnHandling(SH2_struct *context) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Pose le crochet decodeInt sur la prochaine instruction executee.
+ *
+ * L'ancienne version relisait le mot en PC par SH2MappedMemoryReadWord() pour
+ * reconnaitre SLEEP (0x001B) et avancait alors le PC. Cette lecture est faite
+ * hors de l'execution du CPU (souvent depuis le SCU ou l'autre CPU) et passe
+ * par le chemin d'acces CPU : cycles factures, LRU du cache emule, drapeaux
+ * d'acces au bus A, penalite DMAC. SH2sleep() leve maintenant isSleeping et
+ * SH2HandleInterrupts() avance le PC au moment ou l'interruption est
+ * acceptee, ce qui est aussi correct pour une interruption masquee (le CPU
+ * ne doit pas sortir de veille). Pendant SLEEP, la prochaine instruction
+ * executee est SLEEP elle-meme : le crochet est pose sur le PC. */
 static void SH2KronosNotifyInterrupt(SH2_struct *context) {
-  if (SH2MappedMemoryReadWord(context, context->regs.PC) == 0x1B) {
-    //SH2 on a sleep command, wake it up
-    context->regs.PC+=2;
-  }
-
   if (context->interruptReturnAddress == 0) {
     int addr = (context->regs.PC + 2)>>1;
-    if (context->target_cycles == 0)
+    if ((context->target_cycles == 0) || context->isSleeping)
       addr = context->regs.PC>>1;
 
     int id = (addr >> 19) & 0xFFF;
