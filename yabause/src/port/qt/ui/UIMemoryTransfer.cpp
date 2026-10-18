@@ -16,6 +16,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+#include <QFile>
 #include "UIMemoryTransfer.h"
 #include "UIHexInput.h"
 #include "../CommonDialogs.h"
@@ -143,12 +144,12 @@ void UIMemoryTransfer::accept()
    if (rbDownload->isChecked())
    {
       // Let's do a ram dump
-      MappedMemorySave(MSH2, leFile->text().toLatin1(), startAddress, endAddress - startAddress);
+      MappedMemorySave(MSH2, QFile::encodeName(leFile->text()).constData(), startAddress, endAddress - startAddress);
    }
    else
    {
       // upload to ram and possibly execute
-       MappedMemoryLoad(MSH2, leFile->text().toLatin1(), startAddress);
+       MappedMemoryLoad(MSH2, QFile::encodeName(leFile->text()).constData(), startAddress);
    }
 
 	QDialog::accept();
