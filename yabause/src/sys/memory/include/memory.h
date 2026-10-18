@@ -448,7 +448,13 @@ extern "C" {
 
   int BackupInit(const char* path, int extended);
   void BackupFlush();
+  void BackupAutoFlush(void);
   void BackupDeinit();
+  const char *BackupGetFileName(void);
+  int BackupSaveFile(const u8 *mem, u32 size, const char *filename);
+  int BackupLoadFile(u8 *mem, u32 size, const char *filename, int exact);
+  void BackupDumpCopy(const u8 *mem, u32 size, const char *filename, const char *tag);
+  extern u8 BupHleAccess;
 
 #ifdef __cplusplus
 }
