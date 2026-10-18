@@ -500,21 +500,6 @@ void Cs2ForceOpenTray();
 int Cs2ForceCloseTray( int coreid, const char * cdpath );
 int Cs2ReadDiscGameCode(char *code, size_t size);
 
-//////////////////////////////////////////////////////////////////////////////
-// Human readable dump of the whole CD block state (host interface registers,
-// drive status, current play range, authentication, the 24 selectors and
-// their partitions, MPEG state) into a single text file.
-//
-// UIDebugSCSP.cpp already offered an "Export CD Block Report" button calling
-// this, but nothing defined it, so the Qt port did not link. There is no
-// dedicated CD block debug window yet; the button lives in the SCSP debugger
-// because the case it is meant for -- CD-DA staying silent while the SCSP mix
-// itself looks correct -- is diagnosed from both sides at once.
-//
-// Returns 0 on success, -1 if the file cannot be written or if the CD block
-// is not initialised.
-int Cs2SaveDebugReport(const char *filename);
-
 #ifdef __cplusplus
 }
 #endif
