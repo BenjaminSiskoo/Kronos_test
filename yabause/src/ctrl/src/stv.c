@@ -116,6 +116,28 @@ static void init_5838_variant(int variant) {
   decathlt5838Reset();
 }
 
+/* Final Arch / Super Major League : tranche d'entrelacement des SH-2 de
+   8 cycles au lieu de 32 (yabsys.sh2StepRun, YabauseEmulate()).
+
+   En fin d'image, le maitre (06064DFA-06064E1C) ecrit la commande 4 dans la
+   file de l'esclave SANS avancer son pointeur d'ecriture 060FFC48, attend
+   que le pointeur de lecture de l'esclave 060FFC44 l'ait rattrape, puis
+   remet 060FFC48 au debut de la file (260EF6A4). L'esclave qui vient de
+   finir une commande ecrit 060FFC44 (060627F8) puis relit 060FFC48 a
+   l'instruction suivante (060627FA) : s'il y voit deja le pointeur remis au
+   debut, il croit que la file a fait le tour et repart du debut sans
+   executer la commande 4. Le drapeau d'image prete 060FFCA8 n'est alors
+   jamais pose, le gestionnaire V-Blank OUT (060647FE) recharge sans fin le
+   compteur 060FFC13 que le maitre attend en 06064D60 : jeu fige, musique
+   qui continue.
+
+   Sur la console les deux SH-2 tournent en meme temps et l'esclave relit
+   060FFC48 quelques cycles apres son ecriture. Avec des tranches de 32
+   cycles, le maitre (qui passe en premier) pouvait faire lecture,
+   comparaison et remise a zero (9 cycles comptes) entre ces deux
+   instructions de l'esclave. Mesure : 32 et 16 figent, 8 et 4 non. */
+void init_sh2_step8(void) { yabsys.sh2StepRun = 8; }
+
 void init_decathlt(void)  { init_5838_variant(0); } /* 315-5838: DecAthlete */
 void init_5838_0229(void) { init_5838_variant(1); } /* Name Club 1/2 */
 void init_5838_0230(void) { init_5838_variant(2); } /* Print Club Pooh 2/3, Nightmare Before Christmas */
@@ -574,7 +596,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_JP,
     0,
     0,
-    NULL,
+    init_sh2_step8,
     NULL,
     {
         HEADER_BLOB,	"finlarch.13",	0x0000001, 0x0100000, 0x4505fa9e,
@@ -2128,7 +2150,7 @@ Game GameList[NB_STV_GAMES]={
     STV_REGION_US,
     0,
     0,
-    NULL,
+    init_sh2_step8,
     NULL,
     {
         HEADER_BLOB,	"epr18777.13",	0x0000001, 0x0080000, 0x8d180866,
@@ -3209,6 +3231,8 @@ int loadGame(const char *romset){
      the 0x7FFFF0-0x7FFFF8 CS0 interception. */
   RaxShutdown();
   decathleteProtEnabled = 0;
+  /* Idem pour la tranche d'entrelacement des SH-2 (init_sh2_step8). */
+  yabsys.sh2StepRun = 0;
 
   if(!(fp = fopen(availableGames[gameId].path, "rb"))) {
         LOGSTV("Couldn't open \"%s\"!\n", availableGames[gameId].path);
@@ -3496,6 +3520,7 @@ int STVDeInit(){
   if (CartridgeArea == NULL || CartridgeArea->carttype != CART_ROMSTV) return 0;
   RaxShutdown();
   decathleteProtEnabled = 0;
+  yabsys.sh2StepRun = 0;
   eeprom_deinit();
   STVCoinBookkeepingSave();
   yabsys.isSTV = 0;
