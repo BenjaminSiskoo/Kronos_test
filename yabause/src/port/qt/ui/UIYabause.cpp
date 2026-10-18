@@ -18,6 +18,7 @@
 	along with Yabause; if not, write to the Free Software
 	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
+#include <QFile>
 #include "UIYabause.h"
 #include "UISettings.h"
 #include "../Settings.h"
@@ -74,8 +75,10 @@ void UIYabause::sendThreadReset()
 void UIYabause::threadInitialized() {
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	if (vs->value( "Cartridge/Type") == CART_ROMSTV) {
-		char *path = strdup( vs->value("Cartridge/Path").toString().toLatin1().constData() );
-		STVGetRomList(path, 0);
+		/* Plus de strdup() jamais libere ; chemin dans l'encodage du systeme de
+		   fichiers (toLatin1() cassait les caracteres hors Latin-1). */
+		const QByteArray path = QFile::encodeName( vs->value("Cartridge/Path").toString() );
+		STVGetRomList(path.constData(), 0);
 	}
 }
 
@@ -231,6 +234,14 @@ void UIYabause::showEvent( QShowEvent* e )
 void UIYabause::closeEvent( QCloseEvent* e )
 {
 	aEmulationPause->trigger();
+
+	/* La fenetre principale n'est jamais detruite (QtYabause::mainWindow(),
+	   new sans delete) : ~YabauseThread() -> YabauseDeInit() -> BackupDeinit()
+	   ne s'execute pas a la fermeture. Les ecritures en RAM de sauvegarde (et
+	   cartouche) faites depuis la derniere ecriture du fichier etaient donc
+	   perdues. L'emulation tourne dans ce thread (YabauseGL::event()), rien
+	   ne s'execute en parallele. */
+	YabFlushBackups();
 
 	if (isFullScreen())
 		// Need to switch out of full screen or the geometry settings get saved
@@ -904,14 +915,14 @@ void UIYabause::on_aFileOpenCDRom_triggered()
 }
 
 void UIYabause::saveSlot(int a) {
-	if ( YabSaveStateSlot( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString().toLatin1().constData(), a ) != 0 )
+	if ( YabSaveStateSlot( QFile::encodeName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString() ).constData(), a ) != 0 )
 		CommonDialogs::error( QtYabause::translate( "Couldn't save state file" ) );
 	else
 		refreshStatesActions();
 }
 
 void UIYabause::loadSlot(int a) {
-	if ( YabLoadStateSlot( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString().toLatin1().constData(), a ) != 0 )
+	if ( YabLoadStateSlot( QFile::encodeName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString() ).constData(), a ) != 0 )
 		CommonDialogs::error( QtYabause::translate( "Couldn't load state file" ) );
 }
 
@@ -919,7 +930,7 @@ void UIYabause::saveSlotAs() {
 	const QString fn = CommonDialogs::getSaveFileName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString(), QtYabause::translate( "Choose a file to save your state" ), QtYabause::translate( "Kronos Save State (*.yss)" ) );
 	if ( fn.isNull() )
 		return;
-	if ( YabSaveState( fn.toLatin1().constData() ) != 0 )
+	if ( YabSaveState( QFile::encodeName( fn ).constData() ) != 0 )
 		CommonDialogs::error( QtYabause::translate( "Couldn't save state file" ) );
 }
 
@@ -927,7 +938,7 @@ void UIYabause::loadSlotAs() {
 	const QString fn = CommonDialogs::getOpenFileName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString(), QtYabause::translate( "Select a file to load your state" ), QtYabause::translate( "Kronos Save State (*.yss)" ) );
 	if ( fn.isNull() )
 		return;
-	if ( YabLoadState( fn.toLatin1().constData() ) != 0 )
+	if ( YabLoadState( QFile::encodeName( fn ).constData() ) != 0 )
 		CommonDialogs::error( QtYabause::translate( "Couldn't load state file" ) );
 	else
 		aEmulationRun->trigger();
