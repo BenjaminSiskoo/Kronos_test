@@ -1200,7 +1200,13 @@ int YabauseEmulate(void) {
        SH2CyclesForDeciline) */
     int nb_cycles = SH2CyclesForDeciline(cycles[yabsys.DecilineCount][0][!yabsys.IsPal]);
     while (nb_cycles > 0) {
-      int cycles_to_run = (nb_cycles >= MIN_STEP_RUN)?MIN_STEP_RUN:nb_cycles;
+      /* Les deux SH-2 s'executent a tour de role, le maitre d'abord, par
+         tranches de step_run cycles : un CPU peut donc voir une ecriture de
+         l'autre jusqu'a une tranche "dans le futur". Les jeux dont la
+         synchronisation maitre/esclave ne tolere pas cet ecart demandent une
+         tranche plus courte (yabsys.sh2StepRun, voir stv.c). */
+      const int step_run = (yabsys.sh2StepRun > 0) ? yabsys.sh2StepRun : MIN_STEP_RUN;
+      int cycles_to_run = (nb_cycles >= step_run)?step_run:nb_cycles;
       nb_cycles -= cycles_to_run;
       sh2ExecuteSync(MSH2, cycles_to_run);
       if (yabsys.IsSSH2Running) {
