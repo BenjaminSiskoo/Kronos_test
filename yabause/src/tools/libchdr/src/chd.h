@@ -204,10 +204,12 @@ extern "C" {
 
 #define CHD_CODEC_NONE 0
 #define CHD_CODEC_ZLIB				CHD_MAKE_TAG('z','l','i','b')
+#define CHD_CODEC_ZSTD				CHD_MAKE_TAG('z','s','t','d')
 /* general codecs with CD frontend */
 #define CHD_CODEC_CD_ZLIB			CHD_MAKE_TAG('c','d','z','l')
 #define CHD_CODEC_CD_LZMA			CHD_MAKE_TAG('c','d','l','z')
 #define CHD_CODEC_CD_FLAC			CHD_MAKE_TAG('c','d','f','l')
+#define CHD_CODEC_CD_ZSTD			CHD_MAKE_TAG('c','d','z','s')
 
 /* A/V codec configuration parameters */
 #define AV_CODEC_COMPRESS_CONFIG	1
