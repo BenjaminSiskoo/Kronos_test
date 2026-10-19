@@ -351,6 +351,49 @@ static void FASTCALL UnhandledMemoryWriteLong(SH2_struct *context, UNUSED u8* me
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Modele de temps des acces du SH-2 (voir SH2ExtBusCost() plus bas).
+   KRONOS_NO_BUS_COST retablit l'ancien comportement sans recompiler. */
+static int sh2BusCostOn = -1;
+static INLINE int SH2BusCostEnabled(void)
+{
+   if (sh2BusCostOn < 0) sh2BusCostOn = (getenv("KRONOS_NO_BUS_COST") == NULL);
+   return sh2BusCostOn;
+}
+
+/* Ecriture du SH-2 en Work RAM-H (SDRAM, CS3, bus de 32 bits).
+ *
+ * Le cache du SH-2 est en ecriture immediate (SH7604 Hardware Manual 8.4.2) :
+ * chaque ecriture, en zone cache ou non, part sur le bus externe. Kronos ne
+ * facturait que +2 a chaque changement de rangee de 1 Ko, donc presque rien
+ * pour les empilements d'un gestionnaire d'interruption ou d'un prologue de
+ * fonction (le chemin du maitre de Photo Genic entre V-Blank OUT et sa
+ * lecture de VCNT compte 143 ecritures pour 1008 instructions).
+ *
+ * Les manuels disponibles ne donnent pas le nombre d'attentes de la SDRAM
+ * du Saturn. Valeur de Mednafen (ss/sh7095.inc, BSC_BusWrite, CS3) : 2
+ * cycles par ecriture, et la SDRAM reste occupee 2 cycles de plus ; une
+ * ecriture qui suit attend cette fin, soit 4 cycles par ecriture en rafale.
+ * Suivi par CPU, comme le BSC de chaque SH-2 dans Mednafen. */
+static u32 SH2HwramWriteFree[2];
+
+static INLINE void SH2HwramWriteCost(SH2_struct *context, u32 rowChanged)
+{
+   if (!SH2BusCostEnabled()) {
+      if (rowChanged) context->cycles += 2;   /* ancien modele */
+      return;
+   }
+   {
+      const int i = (context == SSH2) ? 1 : 0;
+      const s32 wait = (s32)(SH2HwramWriteFree[i] - context->cycles);
+      /* le compteur repart de 0 a chaque trame : une fin d'ecriture plus
+         lointaine que la plus longue attente vient de la trame precedente */
+      if ((wait > 0) && (wait <= 2))
+         context->cycles += (u32)wait;
+      context->cycles += 2;
+      SH2HwramWriteFree[i] = context->cycles + 2;
+   }
+}
+
 static u32 lastHWRamBankCol = 0;
 
 static u8 FASTCALL HighWramMemoryReadByte(SH2_struct *context, u8* mem, u32 addr)
@@ -391,11 +434,10 @@ static u32 FASTCALL HighWramMemoryReadLong(SH2_struct *context, u8* mem, u32 add
 
 static void FASTCALL HighWramMemoryWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val)
 {
-  int rowBank = ((addr>>10)&0x3FF);
-  if (rowBank != lastHWRamBankCol) {
-   lastHWRamBankCol = rowBank;
-   if (context) context->cycles += 2;
-  }
+  const int rowBank = ((addr>>10)&0x3FF);
+  const u32 rowChanged = (rowBank != (int)lastHWRamBankCol);
+  lastHWRamBankCol = rowBank;
+  if (context) SH2HwramWriteCost(context, rowChanged);
    T2WriteByte(mem, addr & 0xFFFFF, val);
 }
 
@@ -403,11 +445,10 @@ static void FASTCALL HighWramMemoryWriteByte(SH2_struct *context, u8* mem, u32 a
 
 static void FASTCALL HighWramMemoryWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val)
 {
-  int rowBank = ((addr>>10)&0x3FF);
-  if (rowBank != lastHWRamBankCol) {
-   lastHWRamBankCol = rowBank;
-   if (context) context->cycles += 2;
-  }
+  const int rowBank = ((addr>>10)&0x3FF);
+  const u32 rowChanged = (rowBank != (int)lastHWRamBankCol);
+  lastHWRamBankCol = rowBank;
+  if (context) SH2HwramWriteCost(context, rowChanged);
    T2WriteWord(mem, addr & 0xFFFFF, val);
 }
 
@@ -415,11 +456,10 @@ static void FASTCALL HighWramMemoryWriteWord(SH2_struct *context, u8* mem, u32 a
 
 static void FASTCALL HighWramMemoryWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val)
 {
-  int rowBank = ((addr>>10)&0x3FF);
-  if (rowBank != lastHWRamBankCol) {
-   lastHWRamBankCol = rowBank;
-   if (context) context->cycles += 2;
-  }
+  const int rowBank = ((addr>>10)&0x3FF);
+  const u32 rowChanged = (rowBank != (int)lastHWRamBankCol);
+  lastHWRamBankCol = rowBank;
+  if (context) SH2HwramWriteCost(context, rowChanged);
    T2WriteLong(mem, addr & 0xFFFFF, val);
 }
 
@@ -1027,6 +1067,96 @@ void switchFB8bit()
  * (voir scu.h, ScuForceDMAFinish). Seuls les acces qui sortent reellement
  * sur le bus sont concernes : les ecritures (write-through) et les lectures
  * hors cache. Les acces DMA (context == NULL) ne passent pas par ici. */
+/* Cout des acces du SH-2 aux registres et memoires hors Work RAM.
+ *
+ * Kronos ne facturait rien pour un acces du CPU aux registres du SCU, au
+ * bus B (VDP1, VDP2, SCSP) ou a la fenetre MINIT/SINIT : une ecriture dans
+ * un registre du SCU ou une lecture de TVSTAT coutait le cycle de
+ * l'instruction. Seuls le CD-block (Cs2ABusCost), la Work RAM-L et les
+ * changements de rangee DRAM etaient factures.
+ *
+ * Les manuels disponibles ne donnent pas ces durees (le SCU insere ses
+ * propres attentes sur le bus du SH-2). Valeurs reprises de Mednafen
+ * (ss/scu.inc, ABus/BBusRW_DB et registres SCU ; ss/ss.cpp, BusRW_DB_CS0
+ * pour la fenetre FRT), acces du CPU seulement, pas des DMA :
+ *   registres SCU (25FE0000-25FEFFFF) : lecture 8, ecriture 4 ;
+ *   fenetre MINIT/SINIT (21000000-21FFFFFF) : 8 ;
+ *   bus B, par demi-mot de 16 bits (un mot long en fait deux) :
+ *     VDP1 (25C00000-25D7FFFF) : lecture 14,
+ *     VDP2 (25E00000-25FBFFFF) : lecture 20,
+ *     SCSP (25A00000-25BFFFFF) : lecture 24 ;
+ *   ecritures sur le bus B : 2 cycles, puis le tampon d'ecriture du SCU
+ *   reste occupe 9 (VDP1), 3 (VDP2) ou 17 (SCSP) cycles ; le demi-mot
+ *   suivant d'un mot long n'ajoute que 0/1, 1 ou 13 cycles a cette
+ *   occupation. Un acces suivant au bus B attend que le tampon soit libre.
+ *
+ * Photo Genic (ecran NOW LOADING) : entre le V-Blank OUT et la lecture de
+ * VCNT qui decide si son interpreteur de script redessine (0603762C, seuil
+ * VCNT > C7H), le maitre executait 1008 instructions en 1408 cycles, moins
+ * d'une ligne (1705 cycles en NTSC 320) ; il lisait toujours 1FFH et
+ * redessinait apres chaque instruction du script : une boucle de 2049
+ * tours prenait plusieurs minutes au lieu de quelques trames.
+ *
+ * KRONOS_NO_BUS_COST retablit l'ancien comportement sans recompiler. */
+static u32 SH2BBusWriteFree[2];
+
+static INLINE void SH2BBusWait(SH2_struct *context, int i)
+{
+   const s32 wait = (s32)(SH2BBusWriteFree[i] - context->cycles);
+   /* compteur de cycles remis a zero a chaque trame : une fin d'ecriture
+      plus lointaine que le tampon le plus long appartient a la precedente */
+   if ((wait > 0) && (wait <= 40))
+      context->cycles += (u32)wait;
+}
+
+static void SH2ExtBusCostSlow(SH2_struct *context, u32 addr, int size, int write)
+{
+   const u32 a = addr & 0x0FFFFFFF;
+   const int i = (context == SSH2) ? 1 : 0;
+   int rd, wr, wr2, halves, h;
+
+   if (a >= 0x05FE0000 && a <= 0x05FEFFFF) {          /* registres SCU */
+      context->cycles += write ? 4 : 8;
+      return;
+   }
+   if (a >= 0x01000000 && a <= 0x01FFFFFF) {          /* MINIT / SINIT */
+      context->cycles += 8;
+      return;
+   }
+   if (a >= 0x05C00000 && a <= 0x05D7FFFF) {          /* VDP1 */
+      rd = 14; wr = 9; wr2 = (a & 0x100000) ? 0 : 1;
+   } else if (a >= 0x05E00000 && a <= 0x05FBFFFF) {   /* VDP2 */
+      rd = 20; wr = 3; wr2 = 1;
+   } else if (a >= 0x05A00000 && a <= 0x05BFFFFF) {   /* SCSP */
+      rd = 24; wr = 17; wr2 = 13;
+   } else {
+      return;
+   }
+
+   halves = (size == 4) ? 2 : 1;
+   for (h = 0; h < halves; h++) {
+      if (h == 0) {
+         SH2BBusWait(context, i);
+         if (write) {
+            context->cycles += 2;
+            SH2BBusWriteFree[i] = context->cycles;
+         }
+      }
+      if (write)
+         SH2BBusWriteFree[i] += (u32)((h == 0) ? wr : wr2);
+      else
+         context->cycles += rd;
+   }
+}
+
+static INLINE void SH2ExtBusCost(SH2_struct *context, u32 addr, int size, int write)
+{
+   if ((context == NULL) || ((addr >> 29) > 1)) return;
+   /* Work RAM, CD-block, cartouche : deja factures ailleurs, sortie rapide */
+   if (((addr & 0x0F000000) != 0x05000000) && ((addr & 0x0F000000) != 0x01000000)) return;
+   if (SH2BusCostEnabled()) SH2ExtBusCostSlow(context, addr, size, write);
+}
+
 static INLINE void SH2WaitScuDmaOnABBus(SH2_struct *context, u32 addr) {
   if ((context != NULL) && ScuDmaIsRunning() && ScuIsSH2ABBusAddress(addr))
     ScuForceDMAFinish();
@@ -1073,6 +1203,7 @@ static int SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region)
 static INLINE void SH2UnemulatedCacheWrite(SH2_struct *context, u32 addr);
 
 u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr) {
+   SH2ExtBusCost(context, addr, 1, 0);
 CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    int id = addr >> 29;
    if (context == NULL) id = 1;
@@ -1233,6 +1364,7 @@ LOG("Unhandled Word R %x\n", addr);
 
 u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
 {
+   SH2ExtBusCost(context, addr, 2, 0);
 #ifdef SH2_TRAP_ADDRESS_ERROR
    if ((addr & 1) && (context != NULL)) SH2AddressError(context, addr, 16, 0);
 #endif
@@ -1547,6 +1679,7 @@ u32 FASTCALL DMAMappedMemoryReadLong(u32 addr)
 
 u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
 {
+  SH2ExtBusCost(context, addr, 4, 0);
   int id = addr >> 29;
   if (context == NULL) id =1;
 #ifdef SH2_TRAP_ADDRESS_ERROR
@@ -1635,6 +1768,7 @@ void FASTCALL DMAMappedMemoryWriteByte(u32 addr, u8 val)
 
 void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
 {
+   SH2ExtBusCost(context, addr, 1, 1);
    int id = addr >> 29;
    if (context == NULL) id =1;
    SH2WriteNotify(context, addr, 1);
@@ -1717,6 +1851,7 @@ void FASTCALL DMAMappedMemoryWriteWord(u32 addr, u16 val)
 
 void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
 {
+   SH2ExtBusCost(context, addr, 2, 1);
    int id = addr >> 29;
    if (context == NULL) id =1;
 #ifdef SH2_TRAP_ADDRESS_ERROR
@@ -1804,6 +1939,7 @@ void FASTCALL DMAMappedMemoryWriteLong(u32 addr, u32 val)
 
 void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
 {
+   SH2ExtBusCost(context, addr, 4, 1);
    int id = addr >> 29;
    if (context == NULL) id =1;
 #ifdef SH2_TRAP_ADDRESS_ERROR
