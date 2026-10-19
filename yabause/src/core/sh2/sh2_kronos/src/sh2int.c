@@ -64,6 +64,9 @@ extern void BiosBUPSetDate(SH2_struct * context);
 //SH2 hardware manual says that interrupt takes 13 cycles at least before execution due to decoding process
 #define INTERRUPT_HANDLING_DELAY 13
 
+/* SH7604 Hardware Manual, tableau 5.8 : 5 + m1 + m2 + m3, m = 1 */
+#define SH2_INT_EXCEPTION_CYCLES 8
+
 void decode(SH2_struct *context);
 
 //////////////////////////////////////////////////////////////////////////////
@@ -133,6 +136,15 @@ void SH2HandleInterrupts(SH2_struct *context)
     }
     u32 oldpc = context->regs.PC;
     u32 persr = context->regs.SR.part.I;
+    /* Traitement d'exception de l'interruption (SH7604 Hardware Manual,
+     * 5.5, tableau 5.8) : 5 etats plus m1 (sauvegarde de SR), m2
+     * (sauvegarde de PC) et m3 (lecture du vecteur) avant le premier fetch
+     * du gestionnaire, soit 8 au minimum avec m = 1. Rien n'etait facture :
+     * le gestionnaire demarrait au cycle ou la demande etait prise. Le delai
+     * de prise (comparaison du niveau, fin de l'instruction en cours) reste
+     * modelise par INTERRUPT_HANDLING_DELAY ; les acces de la sauvegarde
+     * ajoutent leur propre cout memoire au-dela du minimum. */
+    context->cycles += SH2_INT_EXCEPTION_CYCLES;
     context->regs.R[15] -= 4;
     SH2MappedMemoryWriteLong(context, context->regs.R[15], context->regs.SR.all);
     context->regs.R[15] -= 4;
