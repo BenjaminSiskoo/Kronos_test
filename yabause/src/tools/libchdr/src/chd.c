@@ -2138,6 +2138,16 @@ static chd_error header_read(chd_file *chd, chd_header *header)
 		memcpy(header->parentsha1, &rawheader[104], CHD_SHA1_BYTES);
 		memcpy(header->rawsha1, &rawheader[64], CHD_SHA1_BYTES);
 
+		/* V5 has no flags field: bytes 16-19, read as flags above, are the first codec's tag. A tag
+		   ending in an odd byte ('cdzs') set CHDFLAGS_HAS_PARENT and the CHD was refused with
+		   "requires parent". A V5 CHD has a parent when its parent SHA1 is not null. */
+		{
+			static const UINT8 nullsha1[CHD_SHA1_BYTES] = { 0 };
+			header->flags = 0;
+			if (memcmp(header->parentsha1, nullsha1, CHD_SHA1_BYTES) != 0)
+				header->flags |= CHDFLAGS_HAS_PARENT;
+		}
+
 		/* determine properties of map entries */
 		header->mapentrybytes = compressed(header) ? 12 : 4;
 
