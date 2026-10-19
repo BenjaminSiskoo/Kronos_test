@@ -1496,6 +1496,10 @@ void Vdp2VBlankOUT(void) {
  * attendu que VCNT quitte 0x1FF puis verifie qu'il vaut 0 ou 1 (06018540) ;
  * avec 0x106 la lecture etait sautee a chaque trame et Start ne passait
  * pas la video. */
+/* Deciligne ou VCNT avance : doit rester egale a VBLANKOUT_IT_STEP
+   (ctrl/src/yabause.c), voir Vdp2HwVCounter(). */
+#define VDP2_VCNT_STEP 15
+
 static u16 Vdp2HwVCounter(void)
 {
    /* debut de la synchro verticale selon PAL/NTSC et VRESO (Mednafen,
@@ -1506,6 +1510,27 @@ static u16 Vdp2HwVCounter(void)
    const int pal = yabsys.IsPal ? 1 : 0;
    const int vres = (Vdp2Regs->TVMD >> 4) & 0x3;
    u32 v = (u32)yabsys.LineCount;
+
+   /* Le compteur avance en fin de suppression horizontale, pas au debut de
+    * la ligne Kronos (deciligne 0). C'est aussi l'instant du V-Blank OUT :
+    * il est leve quand le compteur passe sur la derniere ligne (Ymir,
+    * vdp.cpp : BeginHPhaseLeftBorder -> IncrementVCounter ->
+    * BeginVPhaseLastLine ; Mednafen, vdp2.cpp : IncVCounter au debut de la
+    * synchro horizontale, Out_VB retombe quand VCounter atteint la
+    * derniere ligne). Kronos leve le V-Blank OUT a la deciligne
+    * VBLANKOUT_IT_STEP de l'avant-derniere ligne ; le compteur avance donc
+    * a cette meme deciligne de chaque ligne.
+    *
+    * Sans ce decalage, VCNT valait encore 1FEH au V-Blank OUT et ne
+    * revenait a 0 que 1,18 ligne plus tard au lieu d'une. Photo Genic
+    * (NOW LOADING) relit VCNT environ une ligne apres le V-Blank OUT et ne
+    * fait progresser son script sans redessiner que si VCNT <= C7H : il
+    * lisait toujours 1FFH et redessinait une trame entiere apres chaque
+    * instruction de son script (chargement de plusieurs minutes). */
+   if (yabsys.DecilineCount >= VDP2_VCNT_STEP) {
+      v++;
+      if ((int)v >= yabsys.MaxLineCount) v = 0;
+   }
 
    if ((int)v >= vsync_start[pal][vres])
       v = v + 0x200 - (u32)total[pal];
