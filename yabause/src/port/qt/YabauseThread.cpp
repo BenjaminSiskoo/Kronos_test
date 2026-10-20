@@ -575,7 +575,10 @@ void YabauseThread::resetYabauseConf()
 	// free structure
 	memset( &mYabauseConf, 0, sizeof( yabauseinit_struct ) );
 	// fill default structure
-	mYabauseConf.m68kcoretype = M68KCORE_C68K;
+	// Same default as the settings dialog (UISettings shows and saves default68kCore() when
+	// Advanced/68kCore is unset), so a session started without ever opening the settings runs
+	// the same 68k core as one where they were opened and saved.
+	mYabauseConf.m68kcoretype = QtYabause::default68kCore().id;
 	mYabauseConf.percoretype = QtYabause::defaultPERCore().id;
 	mYabauseConf.sh2coretype = SH2CORE_DEFAULT;
 	mYabauseConf.vidcoretype = QtYabause::defaultVIDCore().id;
