@@ -88,6 +88,12 @@ extern PerInterface_struct PERDummy;
 extern u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory, u32 addr);
 extern u16 FASTCALL IOPortReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr);
 extern void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 addr, UNUSED u8 val);
+/* Word/long access to the IOGA: the chip sits on the odd byte lanes of the
+   32-bit bus (MAME umask32(0x00ff00ff)), so a word reaches its low byte and
+   a long reaches the low byte of each of its two words. */
+extern u32 FASTCALL IOPortReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr);
+extern void FASTCALL IOPortWriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val);
+extern void FASTCALL IOPortWriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val);
 
 /**
  * @brief Critter Crusher / Tatacot (critcrsh, tatacot) hammer cabinet.
