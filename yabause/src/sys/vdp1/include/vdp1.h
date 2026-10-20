@@ -315,6 +315,44 @@ void Vdp1SwitchFrame(void);
  * manuel ou V-blank (cf. vdp1.c, Vdp1LatchEraseParameters). */
 void Vdp1GetEraseLatch(u16 *ewdr, u16 *ewlr, u16 *ewrr);
 
+/* Statistiques de charge VDP1 pour le debogueur (fenetre VDP1).
+ *
+ * Ce sont les chiffres du MODELE de cycles de l'emulateur (getNormalCycles,
+ * getScaledCycles, getDistortedCycles, getPolygonCycles, 16 cycles par table
+ * lue, 70 cycles par commande avortee, cycles voles par les acces CPU), pas
+ * une mesure du materiel. Ils donnent un ordre de grandeur de l'utilisation
+ * de la capacite de trace, pas une valeur exacte.
+ *
+ * budgetCycles = cycles par ligne (rasterValue) x nombre de lignes de la
+ * periode, lignes bloquees comprises : c'est la capacite theorique, pas ce
+ * que l'emulateur a effectivement accorde. */
+typedef struct {
+   u64 cmdCycles;      /* cycles consommes par l'interpreteur de commandes */
+   u64 cpuCycles;      /* cycles retires au trace par les acces CPU/DMA     */
+   u64 budgetCycles;   /* capacite theorique de la periode                  */
+   u32 cyclesPerLine;  /* rasterValue en fin de periode                     */
+   u32 lines;          /* lignes ecoulees                                   */
+   u32 blockedLines;   /* lignes sans budget (concurrence DMA)              */
+   u32 fields;         /* champs ecoules (1 = 60 fps, 2 = 30 fps, ...)      */
+   u32 commands;       /* commandes executees (non sautees)                 */
+   u32 skipped;        /* commandes sautees (bit JP skip)                   */
+   u32 lists;          /* listes demarrees                                  */
+   u32 listsEnded;     /* listes terminees par le bit de fin                */
+   u32 listsAborted;   /* listes interrompues (PTMR, bascule PTMR=2, ...)   */
+   u32 runningAtSwap;  /* image : liste encore en cours a la bascule        */
+} Vdp1CycleStats;
+
+#define VDP1_CYCLE_HISTORY 64
+
+/* lastFrame : periode entre les deux dernieres bascules du frame buffer.
+ * lastField : dernier champ complet (1/60 s ou 1/50 s).
+ * avgPermille / peakPermille : moyenne et maximum, en pour mille, de
+ * (cmdCycles + cpuCycles) / budgetCycles sur les VDP1_CYCLE_HISTORY
+ * dernieres images (historyCount = nombre d'images reellement enregistrees).
+ * Chaque pointeur peut etre NULL. */
+void Vdp1DebugGetCycleStats(Vdp1CycleStats *lastFrame, Vdp1CycleStats *lastField,
+                            int *avgPermille, int *peakPermille, int *historyCount);
+
 #ifdef __cplusplus
 }
 #endif
