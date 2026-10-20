@@ -314,6 +314,41 @@ SHADER_VERSION_COMPUTE
 "  return 0u;\n"
 "}\n"
 
+/* One step of isOnAQuadLine: the line of Saturn pixels from A to B, each
+ * pixel being upscale x upscale internal pixels (A, B: top-left corners).
+ * The segment used to go from the centre of A's pixel to the centre of B's,
+ * so the projection test (0 <= d.z <= 1) dropped the internal pixels
+ * between the centre and the outer edge of the first and last Saturn
+ * pixels: half a Saturn pixel minus half an internal pixel at each end
+ * (one internal pixel at 2x). Two distorted sprites or polygons side by
+ * side (B + 1 = next A, as games build them) then left a gap of one whole
+ * Saturn pixel between them (Astal at 2x: vertical line through the hero
+ * and his shadow). At 1x the extension is 0 and nothing changes.
+ * The segment is now extended along its direction to the outer edges of
+ * the end pixels, in the max norm (a 45 degree line reaches the corner
+ * pixel). uv.x is d.z on that segment: the Saturn pixel k of a 1:1 line
+ * reads texel k on every internal pixel. uv.y keeps the projection on the
+ * centre segment (clamped), as before. */
+"vec4 lineStepTest(vec2 P, vec2 A, vec2 B){\n"
+"  vec2 A2 = A + upscale/2.0;\n"
+"  vec2 B2 = B + upscale/2.0;\n"
+"  vec2 dv = B2 - A2;\n"
+"  float m = max(abs(dv.x), abs(dv.y));\n"
+"  vec2 Ae = A2;\n"
+"  vec2 Be = B2;\n"
+"  if (m > 0.0) {\n"
+"    vec2 e = (dv / m) * (upscale/2.0 - vec2(0.5));\n"
+"    Ae -= e;\n"
+"    Be += e;\n"
+"  }\n"
+"  vec3 d = antiAliasedPoint(P+vec2(0.5), Ae, Be);\n"
+"  if ((distance(d.xy, P+vec2(0.5)) < (length(upscale/2.0)+0.25)) && (d.z>=0.0) && (d.z<=1.0)) {\n"
+"    float dz0 = clamp(antiAliasedPoint(P+vec2(0.5), A2, B2).z, 0.0, 1.0);\n"
+"    return vec4(1.0, d.z, dz0, 0.0);\n"
+"  }\n"
+"  return vec4(0.0);\n"
+"}\n"
+
 /* Avec useStepHull, les extremites de chaque pas viennent de stAB[] (memes
  * additions successives que A += sA / B += sB ci-dessous, faites une fois
  * par groupe dans main()) et seuls les pas de l'intervalle de la rangee sont
@@ -332,11 +367,11 @@ SHADER_VERSION_COMPUTE
 "      else uv.y = (float(i)+0.5)/float(step+1);\n"
 "      return 1u;\n"
 "    }\n"
-"    vec3 d = antiAliasedPoint(P+vec2(0.5), A+upscale/2.0, B+upscale/2.0);\n"
-"    if(((distance(d.xy, P+vec2(0.5))) < (length(upscale/2.0)+0.25)) && (d.z>=0.0) && (d.z<=1.0) ){\n"
-"      vec2 PTop = V0 + d.z*(V1 - V0);\n"
-"      vec2 PDown = V3 + d.z*(V2 - V3);\n"
-"      uv.x = d.z;\n"
+"    vec4 t = lineStepTest(P, A, B);\n"
+"    if (t.x != 0.0) {\n"
+"      vec2 PTop = V0 + t.z*(V1 - V0);\n"
+"      vec2 PDown = V3 + t.z*(V2 - V3);\n"
+"      uv.x = t.y;\n"
 "      if (any(notEqual(upscale, vec2(1.0)))) uv.y = length(P - PTop)/(length(PDown - PTop) + length(floor(upscale/2.0)*2.0));\n"
 "      else uv.y = (float(i)+0.5)/float(step+1);\n"
 "      return 1u;\n"
@@ -361,11 +396,11 @@ SHADER_VERSION_COMPUTE
 "      else uv.y = (float(i)+0.5)/float(step+1);\n"
 "      return 1u;\n"
 "    }\n"
-"    vec3 d = antiAliasedPoint(P+vec2(0.5), A+upscale/2.0, B+upscale/2.0);\n" //Get the projection of the point P to the line segment
-"    if(((distance(d.xy, P+vec2(0.5))) < (length(upscale/2.0)+0.25)) && (d.z>=0.0) && (d.z<=1.0) ){\n" //Test the distance between the projection on line and the center of the pixel
-"      vec2 PTop = V0 + d.z*(V1 - V0);\n"
-"      vec2 PDown = V3 + d.z*(V2 - V3);\n"
-"      uv.x = d.z;\n" //u is the relative distance from first point to projected position
+"    vec4 t = lineStepTest(P, A, B);\n" //Projection of P on the step's line, extended to the outer pixel edges
+"    if (t.x != 0.0) {\n" //Distance to the line and projection inside the segment
+"      vec2 PTop = V0 + t.z*(V1 - V0);\n"
+"      vec2 PDown = V3 + t.z*(V2 - V3);\n"
+"      uv.x = t.y;\n" //u is the relative distance from first point to projected position
 "      if (any(notEqual(upscale, vec2(1.0)))) uv.y = length(P - PTop)/(length(PDown - PTop) + length(floor(upscale/2.0)*2.0));\n" //uy is the ratio between P postion and the length of the line at this ux postion.
 "      else uv.y = (float(i)+0.5)/float(step+1);\n"
 "      return 1u;\n"
@@ -376,7 +411,17 @@ SHADER_VERSION_COMPUTE
 "  return ret;\n"
 "}\n"
 
-"uint isOnAQuad(vec2 P, vec2 V0, vec2 V1, out vec2 uv) {\n"
+/* A and C: vertices A and C of a normal or scaled sprite, times upscale.
+ * Both are drawn (inclusive, like the 1x path, which draws the sprite as
+ * lines from A to B), so each axis covers the Saturn pixels from
+ * min(A, C) to max(A, C). V0 is the outer edge of A's pixel, V1 the outer
+ * edge of C's pixel: when C < A (sprite mirrored by its coordinates) the
+ * outer edge of A is one Saturn pixel (upscale) to the right of / below A.
+ * uv is then 0 at A and 1 at C whatever the orientation. */
+"uint isOnAQuad(vec2 P, vec2 A, vec2 C, out vec2 uv) {\n"
+"  bvec2 rev = lessThan(C, A);\n"
+"  vec2 V0 = A + mix(vec2(0.0), upscale, rev);\n"
+"  vec2 V1 = C + mix(upscale, vec2(0.0), rev);\n"
 "  if (any(lessThan(P, min(V0,V1))) || any(greaterThanEqual(P, max(V0,V1)))) return 0u;\n"
 " uv = (P + vec2(0.5) - V0)/(V1 - V0);\n"
 " return 1u;\n"
@@ -408,7 +453,7 @@ SHADER_VERSION_COMPUTE
 "    return isOnAQuadLine(Pin, Quad[0], Quad[1], Quad[2], Quad[3], vec2(cmd[0].uAstepx, cmd[0].uAstepy)*upscale, vec2(cmd[0].uBstepx, cmd[0].uBstepy)*upscale, uint(float(cmd[0].nbStep)), uv);\n"
 "  } else {\n"
 "    if ((cmd[0].type == "Stringify(QUAD)")  || (cmd[0].type == "Stringify(QUAD_POLY)")) {\n"
-"     return isOnAQuad(Pin, Quad[0], Quad[2]+upscale, uv);\n"
+"     return isOnAQuad(Pin, Quad[0], Quad[2], uv);\n"
 "    } else if (cmd[0].type == "Stringify(POLYLINE)") {\n"
 "      if (isOnALine(Pin, Quad[0], Quad[1], uv) != 0u) return 1u;\n"
 "      if (isOnALine(Pin, Quad[1], Quad[2], uv) != 0u) return 1u;\n"
@@ -714,7 +759,10 @@ SHADER_VERSION_COMPUTE
  * dans le rectangle du segment elargi de ce rayon. On garde, par rangee du
  * groupe, l'intervalle des pas dont ce rectangle (elargi d'un pixel de plus
  * par securite) touche la rangee et les colonnes du groupe, plus ceux du
- * cas (a). Au-dela de UPS_STEP_MAX pas, la boucle d'origine est utilisee. */
+ * cas (a). Au-dela de UPS_STEP_MAX pas, la boucle d'origine est utilisee.
+ * lineStepTest() prolonge le segment de upscale/2 - 0.5 a chaque bout
+ * (norme max) : le rayon recoit 0.5 * max(upscale) de plus pour rester un
+ * majorant. */
 " if (((cmd[0].type == "Stringify(DISTORTED)") || (cmd[0].type == "Stringify(POLYGON)")) && (uint(float(cmd[0].nbStep)) < UPS_STEP_MAX)) {\n"
 "  uint step = uint(float(cmd[0].nbStep));\n"
 "  if (lid == 0u) {\n"
@@ -731,7 +779,7 @@ SHADER_VERSION_COMPUTE
 "  if (lid < gl_WorkGroupSize.y) { stLo[lid] = 0xFFFFFFFFu; stHiP1[lid] = 0u; }\n"
 "  memoryBarrierShared();\n"
 "  barrier();\n"
-"  float rad = length(upscale/2.0) + 0.25 + 1.0;\n"
+"  float rad = length(upscale/2.0) + 0.25 + 1.0 + 0.5*max(upscale.x, upscale.y);\n"
 "  float gx0 = float(wgOrigin.x) + 0.5;\n"
 "  float gx1 = float(wgOrigin.x + wgW - 1) + 0.5;\n"
 "  bool col0 = (float(wgOrigin.x) < upscale.x + 1.0) && (wgOrigin.x + wgW > -1);\n"
@@ -781,16 +829,16 @@ SHADER_VERSION_COMPUTE
 "  texel = OriginTexel;\n"
 "  if (alive) alive = (pixIsInside(texel, uv, pixFB) != 0);\n"
 "  pixcmd = cmd[0];\n"
-"  if (alive && any(greaterThan(pos,sysClip*upscale))) { \n"
+"  if (alive && any(greaterThanEqual(vec2(pos),vec2(sysClip+ivec2(1))*upscale))) { \n"
 "    alive = false;\n"
 "  }"
 "  if (alive && (((pixcmd.CMDPMOD >> 9) & 0x3u) == 2u)) {\n"
 "//Draw inside\n"
-"    if (any(lessThan(pos,usrClip.xy*upscale)) || any(greaterThan(pos,usrClip.zw*upscale))) alive = false;\n"
+"    if (any(lessThan(vec2(pos),vec2(usrClip.xy)*upscale)) || any(greaterThanEqual(vec2(pos),vec2(usrClip.zw+ivec2(1))*upscale))) alive = false;\n"
 "  }\n"
 "  if (alive && (((pixcmd.CMDPMOD >> 9) & 0x3u) == 3u)) {\n"
 "//Draw outside\n"
-"    if (all(greaterThanEqual(pos,usrClip.xy*upscale)) && all(lessThanEqual(pos,usrClip.zw*upscale))) alive = false;\n"
+"    if (all(greaterThanEqual(vec2(pos),vec2(usrClip.xy)*upscale)) && all(lessThan(vec2(pos),vec2(usrClip.zw+ivec2(1))*upscale))) alive = false;\n"
 "  }\n"
 "  texcoord = uv;\n"
 "  gouraudcoord = texcoord;\n"
