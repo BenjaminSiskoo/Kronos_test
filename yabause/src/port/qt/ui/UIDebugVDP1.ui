@@ -43,7 +43,7 @@
         <item>
          <widget class="QLabel" name="lCommandColorLegend">
           <property name="text">
-           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;</string>
+           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;&lt;br&gt;Color calc: SH Shadow · HL Half-luminance · HT Half-transparency · G Gouraud · G+HL · G+HT · CC5! prohibited · &lt;b&gt;bold&lt;/b&gt; = MSB On · Mesh</string>
           </property>
           <property name="textFormat">
            <enum>Qt::RichText</enum>
@@ -240,14 +240,20 @@
     </layout>
    </item>
    <item>
+    <widget class="QLabel" name="lVDP1Info">
+     <property name="text">
+      <string>TextLabel</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="textInteractionFlags">
+      <set>Qt::TextSelectableByMouse</set>
+     </property>
+    </widget>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="horizontalLayout_7">
-     <item>
-      <widget class="QLabel" name="lVDP1Info">
-       <property name="text">
-        <string>TextLabel</string>
-       </property>
-      </widget>
-     </item>
      <item>
       <widget class="QPushButton" name="pbNextButton">
         <property name="text">
@@ -274,6 +280,19 @@
         <string>Frame Preview...</string>
        </property>
       </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="dbbButtons">
