@@ -113,6 +113,11 @@ target_compile_options(lzma-static PRIVATE -D_7ZIP_ST)
 list(APPEND CHDR_INCLUDES deps/lzma-16.04/C)
 list(APPEND CHDR_LIBS lzma-static)
 
+# zstd (decompression only: zstd's own single-file decoder, build/single_file_libs/zstddeclib.c of zstd 1.5.6)
+add_library(zstd-static STATIC deps/zstd-1.5.6/zstddeclib.c)
+list(APPEND CHDR_INCLUDES deps/zstd-1.5.6)
+list(APPEND CHDR_LIBS zstd-static)
+
 # zlib
 add_subdirectory(deps/zlib-1.2.11 EXCLUDE_FROM_ALL)
 list(APPEND CHDR_INCLUDES deps/zlib-1.2.11 ${CMAKE_CURRENT_BINARY_DIR}/deps/zlib-1.2.11)
