@@ -46,4 +46,14 @@
         <file>icons/kronos.icns</file>
         <file>icons/kronos.png</file>
     </qresource>
+    <qresource prefix="/hopper">
+        <file alias="button.png">icons/hopper/button.png</file>
+        <file alias="coin.png">icons/hopper/coin.png</file>
+        <file alias="door.png">icons/hopper/door.png</file>
+        <file alias="magnet.png">icons/hopper/magnet.png</file>
+        <file alias="medal.png">icons/hopper/medal.png</file>
+        <file alias="power.png">icons/hopper/power.png</file>
+        <file alias="sensor.png">icons/hopper/sensor.png</file>
+        <file alias="trackball.png">icons/hopper/trackball.png</file>
+    </qresource>
 </RCC>
