@@ -1970,9 +1970,13 @@ Game GameList[NB_STV_GAMES]={
     0,
     0,
     NULL,
-    NV_2P,
+    NV_1P,
     {
-        HEADER_BLOB, "epr-20091.ic8", 0x0000001, 0x008000, 0x59ed40f4,
+        /* MAME's sackids set is ic22-ic36 only (cart 0x0000000-0x01fffff
+           left 0xFF, like rsgun). This entry used to require epr-20091.ic8
+           as a HEADER_BLOB: that file is the "jp1" BIOS, which lives in
+           stvbios.zip and is never in sackids.zip, so the set never
+           matched and the game was missing from the ST-V list. */
         GAME_WORD_BLOB, "ic22.bin",   0x0200000, 0x200000, 0x4d9d1870,
         GAME_WORD_BLOB, "ic24.bin",   0x0400000, 0x200000, 0x39fca3e5,
         GAME_WORD_BLOB, "ic26.bin",   0x0600000, 0x200000, 0xf38c79b6,
