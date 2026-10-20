@@ -30,6 +30,8 @@
 #include <QGraphicsView>
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QFont>
+#include <QStringList>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
@@ -82,6 +84,100 @@ void Vdp1CountCommandType(Vdp1CommandType commandType, Vdp1CommandsCount& cmdCou
     }
 }
 
+// Calcul couleur des commandes de tracé, lu dans CMDPMOD (+04h) :
+//   bit 15    = MON  (MSB On : seul le bit 15 du pixel du frame buffer est écrit)
+//   bit 8     = Mesh
+//   bits 2-0  = CCB  0 Replace, 1 Shadow, 2 Half-luminance, 3 Half-transparency,
+//                    4 Gouraud, 5 interdit, 6 Gouraud + Half-luminance,
+//                    7 Gouraud + Half-transparency
+// (même codage que Vdp1DebugCommandAtAddr dans vdp1.c).
+struct Vdp1ColorCalcCount
+{
+    size_t ccb[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    size_t msbOn = 0;
+    size_t mesh = 0;
+};
+
+bool isVdp1DrawCommand(Vdp1CommandType type)
+{
+    switch (type) {
+    case VDPCT_NORMAL_SPRITE:
+    case VDPCT_SCALED_SPRITE:
+    case VDPCT_DISTORTED_SPRITE:
+    case VDPCT_DISTORTED_SPRITEN:
+    case VDPCT_POLYGON:
+    case VDPCT_POLYLINE:
+    case VDPCT_POLYLINEN:
+    case VDPCT_LINE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const char *const kCcbTag[8]  = { "", "SH", "HL", "HT", "G", "CC5!", "G+HL", "G+HT" };
+const char *const kCcbName[8] = { "Replace", "Shadow", "Half-luminance", "Half-transparency",
+                                  "Gouraud", "Setting prohibited (5)",
+                                  "Gouraud + Half-luminance", "Gouraud + Half-transparency" };
+
+// Teinte de fond par mode : alpha faible pour rester lisible en thème clair
+// comme en thème sombre ; la couleur du texte reste celle du type.
+QColor ccbBackground(int ccb)
+{
+    switch (ccb) {
+    case 1:  return QColor(128, 128, 128, 70); // Shadow
+    case 2:  return QColor(255, 190,   0, 70); // Half-luminance
+    case 3:  return QColor(160,  80, 255, 70); // Half-transparency
+    case 4:  return QColor(  0, 180, 255, 60); // Gouraud
+    case 5:  return QColor(255,   0,   0, 80); // interdit
+    case 6:  return QColor(140, 220,   0, 70); // Gouraud + HL
+    case 7:  return QColor(255,  80, 170, 70); // Gouraud + HT
+    default: return QColor();                  // Replace : pas de teinte
+    }
+}
+
+// Étiquette ajoutée au nom de la commande, ex. "[G+HT, MSB]". Vide si rien
+// d'autre que Replace sans MSB On ni Mesh.
+QString colorCalcTag(u16 pmod)
+{
+    QStringList parts;
+    const int ccb = pmod & 0x7;
+    if (ccb != 0) parts << QString::fromLatin1(kCcbTag[ccb]);
+    if (pmod & 0x8000) parts << QStringLiteral("MSB");
+    if (pmod & 0x0100) parts << QStringLiteral("Mesh");
+    return parts.isEmpty() ? QString() : QStringLiteral("[") + parts.join(QStringLiteral(", ")) + QStringLiteral("]");
+}
+
+std::string buildColorCalcLabel(const Vdp1ColorCalcCount &cc)
+{
+    bool previous = false;
+    std::stringstream out;
+    auto addStat = [&](const char *label, size_t count) {
+        if (count > 0) {
+            if (previous) out << ", ";
+            out << label << ": " << count;
+            previous = true;
+        }
+    };
+    // Toujours affiché, Replace compris : une liste entièrement en Replace
+    // donnait un résumé vide, impossible à distinguer d'une absence de
+    // relevé (aucune commande de tracé lue).
+    size_t drawCmds = 0;
+    for (int i = 0; i < 8; i++) drawCmds += cc.ccb[i];
+    if (drawCmds == 0) return "Color calc: no draw command";
+    addStat("Replace", cc.ccb[0]);
+    addStat("HL", cc.ccb[2]);
+    addStat("HT", cc.ccb[3]);
+    addStat("Gouraud", cc.ccb[4]);
+    addStat("G+HL", cc.ccb[6]);
+    addStat("G+HT", cc.ccb[7]);
+    addStat("Shadow", cc.ccb[1]);
+    addStat("Prohibited CC", cc.ccb[5]);
+    addStat("MSB On", cc.msbOn);
+    addStat("Mesh", cc.mesh);
+    return "Color calc: " + out.str();
+}
+
 std::string buildInfoLabel(Vdp1CommandsCount& cmdCount)
 {
     bool previous = false;
@@ -103,6 +199,39 @@ std::string buildInfoLabel(Vdp1CommandsCount& cmdCount)
     addStat("Lines", cmdCount.lines);
 
     return infoLabel.str();
+}
+
+// Charge VDP1 d'une période (vdp1.c, Vdp1DebugGetCycleStats) : cycles des
+// commandes + cycles volés par le CPU, rapportés à la capacité théorique
+// (cycles/ligne x lignes). Chiffres du modèle de l'émulateur, pas du matériel.
+double vdp1LoadPercent(const Vdp1CycleStats &st)
+{
+    if (st.budgetCycles == 0) return 0.0;
+    return 100.0 * (double)(st.cmdCycles + st.cpuCycles) / (double)st.budgetCycles;
+}
+
+void appendCyclePeriod(std::stringstream &s, const char *title, const Vdp1CycleStats &st, bool isFrame)
+{
+    s << "  " << title << ": ";
+    if (st.budgetCycles == 0) {
+        s << "n/a (no complete period yet)\n";
+        return;
+    }
+    s << st.fields << (st.fields > 1 ? " fields, " : " field, ")
+      << st.lines << " lines x " << st.cyclesPerLine << " cyc\n";
+    s << "    used   = " << st.cmdCycles << " (commands) + " << st.cpuCycles
+      << " (CPU stolen) = " << (st.cmdCycles + st.cpuCycles) << " cyc\n";
+    s << "    budget = " << st.budgetCycles << " cyc  ->  load "
+      << std::fixed << std::setprecision(1) << vdp1LoadPercent(st) << " %\n";
+    s.unsetf(std::ios::floatfield);
+    s << "    commands: " << st.commands << " executed, " << st.skipped << " skipped"
+      << "   lists: " << st.lists << " started, " << st.listsEnded << " ended, "
+      << st.listsAborted << " aborted\n";
+    if (st.blockedLines)
+        s << "    blocked lines (DMA concurrency, no budget granted): " << st.blockedLines << "\n";
+    if (isFrame)
+        s << "    list still drawing at frame change: "
+          << (st.runningAtSwap ? "YES (overrun)" : "no") << "\n";
 }
 
 } // anonymous namespace
@@ -286,12 +415,31 @@ void UIDebugVDP1::updateVdp1Registers()
     s << std::hex;
     s << "  current cmd cursor (addr): 0x" << std::setw(5) << Vdp1Regs->addr << std::dec << "\n";
 
+    // --- Charge VDP1 : total des cycles utilisés par image, comparé à la
+    // capacité de tracé de la période. Modèle de cycles de l'émulateur
+    // (vdp1.c getNormalCycles/getScaledCycles/...), donc une orientation,
+    // pas une mesure exacte du matériel.
+    {
+        Vdp1CycleStats frame, field;
+        int avgPm = 0, peakPm = 0, histCount = 0;
+        Vdp1DebugGetCycleStats(&frame, &field, &avgPm, &peakPm, &histCount);
+        s << std::dec << std::setfill(' ');
+        s << "\n--- VDP1 cycle load (emulator cycle model, not hardware-measured) ---\n";
+        appendCyclePeriod(s, "Last frame (between FB changes)", frame, true);
+        appendCyclePeriod(s, "Last field", field, false);
+        if (histCount > 0)
+            s << "  Last " << histCount << " frames: average "
+              << (avgPm / 10) << "." << (avgPm % 10) << " %, peak "
+              << (peakPm / 10) << "." << (peakPm % 10) << " %\n";
+    }
+
     pteVdp1Regs->setPlainText(QString::fromStdString(s.str()));
 }
 
 void UIDebugVDP1::fillCommandList()
 {
     Vdp1CommandsCount cmdCount;
+    Vdp1ColorCalcCount ccCount;
     // Ligne sélectionnée avant le rafraîchissement : "Image suivante"
     // ramenait systématiquement la sélection sur la commande 0, ce qui
     // obligeait à re-cliquer le sprite étudié à chaque trame.
@@ -327,7 +475,31 @@ void UIDebugVDP1::fillCommandList()
                 const Vdp1CommandType type = Vdp1DebugGetCommandTypeAtAddr(addr);
                 Vdp1CountCommandType(type, cmdCount);
 
-                QListWidgetItem *item = new QListWidgetItem(QtYabause::translate(nameStr));
+                QString itemText = QtYabause::translate(nameStr);
+                QString ccTooltip;
+                int itemCcb = 0;
+                bool itemMsb = false;
+                if (isVdp1DrawCommand(type)) {
+                    const u16 pmod = T1ReadWord(Vdp1DebugGetRam(), (addr + 4) & 0x7FFFF);
+                    itemCcb = pmod & 0x7;
+                    itemMsb = (pmod & 0x8000) != 0;
+                    ccCount.ccb[itemCcb]++;
+                    if (itemMsb) ccCount.msbOn++;
+                    if (pmod & 0x0100) ccCount.mesh++;
+                    const QString tag = colorCalcTag(pmod);
+                    if (!tag.isEmpty()) itemText += QStringLiteral("  ") + tag;
+                    ccTooltip = QStringLiteral("\nColor calc: ") + QString::fromLatin1(kCcbName[itemCcb]);
+                    if (itemMsb) ccTooltip += QStringLiteral("\nMSB On");
+                    if (pmod & 0x0100) ccTooltip += QStringLiteral("\nMesh");
+                }
+
+                QListWidgetItem *item = new QListWidgetItem(itemText);
+                if (itemCcb != 0) item->setBackground(ccbBackground(itemCcb));
+                if (itemMsb) {
+                    QFont f = item->font();
+                    f.setBold(true);
+                    item->setFont(f);
+                }
 
                 // Couleur par type réel (enum Vdp1CommandType, vdp1.h).
                 switch (type)
@@ -363,7 +535,7 @@ void UIDebugVDP1::fillCommandList()
 
                 // Adresse VRAM en infobulle : permet de rapprocher une ligne
                 // de l'export brut ou d'un point d'arrêt mémoire.
-                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper());
+                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper() + ccTooltip);
                 lwCommandList->addItem(item);
 
                 // Une ligne par commande dans les DEUX listes, toujours : les
@@ -375,12 +547,35 @@ void UIDebugVDP1::fillCommandList()
         }
     }
 
-    QString info = QString::fromStdString(buildInfoLabel(cmdCount));
-    if (!info.isEmpty()) info += "   |   ";
-    info += Vdp1DebugGetFrameRam()
+    // Une ligne par rubrique (types, calcul couleur, charge, source) : le
+    // bandeau occupe désormais toute la largeur, sous les panneaux.
+    QStringList infoLines;
+    {
+        const std::string types = buildInfoLabel(cmdCount);
+        if (!types.empty()) infoLines << QString::fromStdString(types);
+    }
+    infoLines << QString::fromStdString(buildColorCalcLabel(ccCount));
+    QString info;
+    {
+        // Résumé de la charge VDP1 de la dernière image (détail dans le
+        // panneau des registres).
+        Vdp1CycleStats frame;
+        Vdp1DebugGetCycleStats(&frame, nullptr, nullptr, nullptr, nullptr);
+        if (frame.budgetCycles != 0) {
+            info += QtYabause::translate("VDP1 load: %1 % (%2 / %3 cycles, %4 field(s))")
+                        .arg(vdp1LoadPercent(frame), 0, 'f', 1)
+                        .arg((qulonglong)(frame.cmdCycles + frame.cpuCycles))
+                        .arg((qulonglong)frame.budgetCycles)
+                        .arg(frame.fields);
+            if (frame.runningAtSwap)
+                info += QtYabause::translate(" OVERRUN");
+            infoLines << info;
+        }
+    }
+    infoLines << (Vdp1DebugGetFrameRam()
         ? QtYabause::translate("Source: VRAM captured at draw start")
-        : QtYabause::translate("Source: live VRAM (Next frame captures the drawn list)");
-    lVDP1Info->setText(info);
+        : QtYabause::translate("Source: live VRAM (Next frame captures the drawn list)"));
+    lVDP1Info->setText(infoLines.join(QStringLiteral("\n")));
 
     // Avant syncOnVdp1Entry : celui-ci place le cadre de sélection dans
     // l'aperçu, qui doit déjà correspondre à la nouvelle liste.
@@ -453,6 +648,8 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     // Vdp1Debug* lisent cet instantané dès qu'il existe -- c'est-à-dire
     // après le premier "Image suivante" -- au lieu de la VRAM vivante.
     Vdp1DebugSetCapture(1);
+
+    // wordWrap du bandeau : fixé dans UIDebugVDP1.ui (ligne pleine largeur).
 
     connect(lwCommandList->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandRaw->verticalScrollBar(), &QScrollBar::setValue);
