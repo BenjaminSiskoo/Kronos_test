@@ -155,10 +155,26 @@ void YabauseThread::reloadControllers()
 		QStringList ids = settings->childGroups();
 		settings->endGroup();
 
+		/* --port1 / --port2 (Arguments.cpp): "Input/Override/PortN" holds one
+		   controller type per slot, e.g. "2,2,22". It replaces the controllers
+		   saved in the settings for that port; the key bindings are still the
+		   ones saved in the settings for the slot and the type. */
+		const QVariant portOverride = QtYabause::volatileSettings()->value( QString( "Input/Override/Port%1" ).arg( port ) );
+		QStringList overrideTypes;
+		if ( portOverride.isValid() )
+		{
+			overrideTypes = portOverride.toString().split( ',' );
+			ids.clear();
+			for ( int slot = 1; slot <= overrideTypes.size(); slot++ )
+				ids << QString::number( slot );
+		}
+
 		ids.sort();
 		foreach ( const QString& id, ids )
 		{
-			uint type = settings->value( QString( UIPortManager::mSettingsType ).arg( port ).arg( id ) ).toUInt();
+			uint type = portOverride.isValid()
+				? overrideTypes.at( id.toInt() - 1 ).toUInt()
+				: settings->value( QString( UIPortManager::mSettingsType ).arg( port ).arg( id ) ).toUInt();
 			switch ( type )
 			{
                                 case PERCABINET:
@@ -344,7 +360,9 @@ static struct tm *localtime_qt(const QDateTime &input, struct tm *result)
 void YabauseThread::reloadClock()
 {
 	QString tmp;
-	Settings* s = QtYabause::settings();
+	/* Volatile settings fall back to the saved ones, and let --clock-sync /
+	   --base-time override them for this run. */
+	VolatileSettings* s = QtYabause::volatileSettings();
 
 	if (mYabauseConf.basetime == 0)
 		tmp = "";
@@ -575,10 +593,7 @@ void YabauseThread::resetYabauseConf()
 	// free structure
 	memset( &mYabauseConf, 0, sizeof( yabauseinit_struct ) );
 	// fill default structure
-	// Same default as the settings dialog (UISettings shows and saves default68kCore() when
-	// Advanced/68kCore is unset), so a session started without ever opening the settings runs
-	// the same 68k core as one where they were opened and saved.
-	mYabauseConf.m68kcoretype = QtYabause::default68kCore().id;
+	mYabauseConf.m68kcoretype = M68KCORE_C68K;
 	mYabauseConf.percoretype = QtYabause::defaultPERCore().id;
 	mYabauseConf.sh2coretype = SH2CORE_DEFAULT;
 	mYabauseConf.vidcoretype = QtYabause::defaultVIDCore().id;
