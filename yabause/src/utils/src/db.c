@@ -6,7 +6,7 @@
 #include "cs2.h"
 #include "db.h"
 
-#define NB_GAMES_DB 34
+#define NB_GAMES_DB 36
 
 static GameDB GameDBList[NB_GAMES_DB] = {
    // note : SNK games were developped for 1MB cart,
@@ -31,7 +31,8 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    // champ de 10 caracteres de l'IP.BIN.
    { "GS-9123", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (Japan)
    { "T-16103H", 0, CART_DRAM8MBIT, NULL }, // Die Hard Trilogy (Europe/USA)
-   { "T-81", 0, CART_DRAM8MBIT, NULL }, // Destruction Derby Prototyp   
+   { "T-81", 0, CART_DRAM8MBIT, NULL }, // Destruction Derby Prototype
+   { "T-14423G", 0, CART_DRAM8MBIT, NULL }, // Sol Divide (Japan)  
    // other games should be fine with 4MB cart
    { "T-1521G", 0, CART_DRAM32MBIT, NULL }, // Astra Superstars
    { "T-9904G", 0, CART_DRAM32MBIT, NULL }, // Magical Night Dreams - Cotton 2
@@ -94,7 +95,15 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    regresserait avec le cache emule doit en etre retire. */
 static const char * const SH2CacheDBList[] = {
    // verifie dans Kronos
-   "T-17703G",   // Tennis Arena (Japan) -- ecran noir apres le BIOS
+   "191x76", // Astal (Brazil)
+   "MK-81019", // Astal (USA)
+   "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
+   "T-27810G", // Device Reign (Japan)
+   "T-26408G", // Fully Cowled Mini Yonku - Super Factory (Japan)
+   "T-22303G", // Ginga Eiyuu Densetsu Plus (Japan)
+   "T-7645G", // Ishin no Arashi (Japan)
+   "GS-9019", // Kisuishou Densetsu Astal (Japan)  
+   "T-17703G", // Tennis Arena (Japan)
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
    "MK-81005",   // Virtua Fighter (USA)
@@ -144,16 +153,14 @@ static const char * const SH2CacheDBList[] = {
    B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
    jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
 static const char * const SH2LegacyFetchDBList[] = {
-   "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
    "T-10310G", // DX Jinsei Game II
    "T-22303G", // Ginga Eiyuu Densetsu Plus
    "T-7645G", // Ishin no Arashi
    "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
-   "T-8119G",    // Space Jam (Japan)
-   "T-8125H",    // Space Jam (USA)
-   "T-8125H-50", // Space Jam (Europe)
+   "T-9109G", // Moon Cradle
    "T-27808G", // Yuukyuu Gensoukyoku ensemble
-   "T-31601G", // Zero Divide - The Final Conflict (Japan)
+   "T-31501G", // Vatlva
+   "T-9103G", // Wangan Dead Heat + Real Arrange
    NULL
 };
 
