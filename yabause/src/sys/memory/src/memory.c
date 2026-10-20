@@ -881,12 +881,15 @@ void MappedMemoryInit()
                                 &LowWramMemoryWriteWord,
                                 &LowWramMemoryWriteLong,
                                 &LowWram);
+   /* ST-V IOGA: 8-bit chip on the odd byte lanes of the 32-bit bus
+      (MAME stv_mem: umask32(0x00ff00ff)). Word and long accesses reach it
+      too; they used to go to UnhandledMemory* (write lost, long read 0). */
    FillMemoryArea(0x040, 0x041, &IOPortReadByte,
                                 &IOPortReadWord,
-                                &UnhandledMemoryReadLong,
+                                &IOPortReadLong,
                                 &IOPortWriteByte,
-                                &UnhandledMemoryWriteWord,
-                                &UnhandledMemoryWriteLong,
+                                &IOPortWriteWord,
+                                &IOPortWriteLong,
                                 &VoidMem);
    /* MINIT / SINIT : l'input capture du FRT de l'autre CPU est declenchee par
       n'importe quelle ecriture dans la fenetre, quelle que soit sa taille.
