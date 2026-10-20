@@ -288,6 +288,15 @@ static u16 IOPORT_COUNTER_BASE[4]; /* value latched when PORT-G bit 7 is written
    analog wiring here), so treat this step as an approximate starting
    point to taste rather than a verified hardware value. */
 #define TRACKBALL_STEP 96
+/* Maximum movement accumulated between two game latches (PORT-G bit 7
+   written as 0). supgoal (PC 06011AC6..06011AE2) latches only every
+   2 frames and treats the per-poll delta as a signed 8-bit value: with
+   96/frame it got 0x00C0 = +192, i.e. -64 once sign-extended, so holding
+   Right moved left (and Up moved down). Saturating the delta since the
+   last latch at the signed 8-bit limit keeps the direction correct
+   whatever the game's poll rate, and is harmless for games reading the
+   full 16-bit word. */
+#define TRACKBALL_MAX_DELTA 127
 
 static u8 trackball_up = 0, trackball_down = 0, trackball_left = 0, trackball_right = 0;
 
@@ -297,18 +306,26 @@ static int PerTrackballEnabled(void) {
   return (yabsys.stvInputType == PATOCAR);
 }
 
+/* Move one counter by `step`, saturating its delta since the last latch
+   (IOPORT_COUNTER_BASE) to +/-TRACKBALL_MAX_DELTA. */
+static void PerTrackballNudge(int axis, s32 step) {
+  s32 delta;
+  if (step == 0)
+    return;
+  delta = (s32)(s16)(u16)(IOPORT_COUNTER[axis] - IOPORT_COUNTER_BASE[axis]) + step;
+  if (delta > TRACKBALL_MAX_DELTA)
+    delta = TRACKBALL_MAX_DELTA;
+  else if (delta < -TRACKBALL_MAX_DELTA)
+    delta = -TRACKBALL_MAX_DELTA;
+  IOPORT_COUNTER[axis] = (u16)(IOPORT_COUNTER_BASE[axis] + delta);
+}
+
 void PerTrackballExec(void) {
   if (!PerTrackballEnabled())
     return;
 
-  if (trackball_right)
-    IOPORT_COUNTER[TRACKBALL_X] += TRACKBALL_STEP;
-  if (trackball_left)
-    IOPORT_COUNTER[TRACKBALL_X] -= TRACKBALL_STEP;
-  if (trackball_down)
-    IOPORT_COUNTER[TRACKBALL_Y] += TRACKBALL_STEP;
-  if (trackball_up)
-    IOPORT_COUNTER[TRACKBALL_Y] -= TRACKBALL_STEP;
+  PerTrackballNudge(TRACKBALL_X, (trackball_right ? TRACKBALL_STEP : 0) - (trackball_left ? TRACKBALL_STEP : 0));
+  PerTrackballNudge(TRACKBALL_Y, (trackball_down ? TRACKBALL_STEP : 0) - (trackball_up ? TRACKBALL_STEP : 0));
 }
 
 /* Sega Mahjong Panel row-scan matrix: one global MJPORT[] byte per row,
