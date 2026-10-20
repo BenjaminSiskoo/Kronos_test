@@ -1149,10 +1149,16 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 		B.x = MAX(B.x, 0);
 		B.y = MAX(B.y, 0);
 
+		/* A and B are inclusive Saturn pixels: Saturn pixel X covers the
+		 * internal pixels X*tex_ratio .. (X+1)*tex_ratio-1, so the last
+		 * one of B is (B+1)*tex_ratio-1. With B*tex_ratio the dispatch
+		 * only reached the first internal pixel of the last Saturn
+		 * column/row; the rest was drawn only when the work group
+		 * rounding happened to cover it. */
 		A.x *= tex_ratio;
 		A.y *= tex_ratio;
-		B.x *= tex_ratio;
-		B.y *= tex_ratio;
+		B.x = (B.x + 1) * tex_ratio - 1;
+		B.y = (B.y + 1) * tex_ratio - 1;
 
 		/* A and B are built as corner-wise MIN/MAX of the four vertices
 		 * (see above), and clipping preserves the ordering — so
