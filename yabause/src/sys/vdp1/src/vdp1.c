@@ -1,4 +1,4 @@
-
+/*
     Copyright 2004 Lawrence Sebald
     Copyright 2004-2006 Theo Berkau
  
