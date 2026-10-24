@@ -325,11 +325,21 @@ void Vdp1GetEraseLatch(u16 *ewdr, u16 *ewlr, u16 *ewrr);
  *
  * budgetCycles = cycles par ligne (rasterValue) x nombre de lignes de la
  * periode, lignes bloquees comprises : c'est la capacite theorique, pas ce
- * que l'emulateur a effectivement accorde. */
+ * que l'emulateur a effectivement accorde.
+ *
+ * est* : estimation detaillee, purement observationnelle (elle ne regle pas
+ * vdp1_clock). Le manuel VDP1 ST-013-R3 ne donne que "1 pixel par cycle"
+ * (§2.5 p.20) ; le detail (cout par ligne, relecture du frame buffer, pixels
+ * d'antialiasing, pixels hors zone parcourus) reprend le modele de Mednafen
+ * (ss/vdp1*.c), faute de valeurs documentees. Voir vdp1.c, vdp1EstQuad. */
 typedef struct {
    u64 cmdCycles;      /* cycles consommes par l'interpreteur de commandes */
    u64 cpuCycles;      /* cycles retires au trace par les acces CPU/DMA     */
    u64 budgetCycles;   /* capacite theorique de la periode                  */
+   u64 estCycles;      /* estimation detaillee (lecture des tables comprise)*/
+   u64 estPixels;      /* pixels parcourus, antialiasing compris            */
+   u64 estRmwPixels;   /* dont pixels avec relecture du frame buffer        */
+   u64 estLines;       /* lignes tracees                                    */
    u32 cyclesPerLine;  /* rasterValue en fin de periode                     */
    u32 lines;          /* lignes ecoulees                                   */
    u32 blockedLines;   /* lignes sans budget (concurrence DMA)              */
@@ -342,7 +352,7 @@ typedef struct {
    u32 runningAtSwap;  /* image : liste encore en cours a la bascule        */
 } Vdp1CycleStats;
 
-#define VDP1_CYCLE_HISTORY 64
+#define VDP1_CYCLE_HISTORY 120
 
 /* lastFrame : periode entre les deux dernieres bascules du frame buffer.
  * lastField : dernier champ complet (1/60 s ou 1/50 s).
@@ -352,6 +362,29 @@ typedef struct {
  * Chaque pointeur peut etre NULL. */
 void Vdp1DebugGetCycleStats(Vdp1CycleStats *lastFrame, Vdp1CycleStats *lastField,
                             int *avgPermille, int *peakPermille, int *historyCount);
+
+/* Historique image par image, du plus ancien au plus recent, pour le graphe :
+ * charge du modele de l'emulateur et charge estimee, en pour mille (cycles
+ * des commandes + cycles voles par le CPU, divises par le budget), et 1 si la
+ * liste etait encore en cours au changement de frame buffer. Chaque tableau
+ * peut etre NULL. Renvoie le nombre d'images ecrites (<= maxCount). */
+int Vdp1DebugGetLoadHistory(int *kronosPermille, int *estPermille, u8 *overrun, int maxCount);
+
+/* Cout d'une commande pour le trace correspondant a l'instantane du
+ * debogueur (Vdp1DebugGetFrameRam). Rempli seulement tant que la capture est
+ * active. Une commande appelee plusieurs fois (CALL) cumule ses passages. */
+typedef struct {
+   u32 kronosCycles;   /* modele de l'emulateur                            */
+   u32 estCycles;      /* estimation detaillee, lecture de la table comprise */
+   u32 lines;          /* lignes tracees                                   */
+   u32 pixels;         /* pixels parcourus, antialiasing compris           */
+   u32 rmwPixels;      /* dont pixels avec relecture du frame buffer       */
+   u32 executions;     /* nombre de passages dans ce trace                 */
+} Vdp1CommandCost;
+
+/* Renvoie 1 et remplit *out si la commande en addr a ete executee dans le
+ * trace capture, 0 sinon (liste interrompue avant elle, capture inactive). */
+int Vdp1DebugGetCommandCost(u32 addr, Vdp1CommandCost *out);
 
 #ifdef __cplusplus
 }
