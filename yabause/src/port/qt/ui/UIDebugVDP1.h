@@ -25,6 +25,7 @@
 #include <QImage>
 #include <QBrush>
 #include <vector>
+#include <string>
 
 class QGraphicsView;
 class QGraphicsRectItem;
@@ -78,6 +79,12 @@ protected:
     QGraphicsRectItem *mFrameSel = nullptr;
     QImage mFrameImage;
     std::vector<int> mFrameBoxes; // 4 entiers par commande : x0 y0 x1 y1
+
+    // Graphe de charge VDP1 (Vdp1LoadGraph, défini dans UIDebugVDP1.cpp) et
+    // texte des commandes les plus coûteuses, calculé par fillCommandList et
+    // affiché par updateVdp1Registers.
+    QWidget *mLoadGraph = nullptr;
+    std::string mTopCostText;
 
     void fillCommandList();
     void updateVdp1Registers();
