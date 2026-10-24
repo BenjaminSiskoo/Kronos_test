@@ -146,9 +146,18 @@ int CONVERTCMD(s32 *A) {
  * Statistiques de charge VDP1 (debogueur, Vdp1DebugGetCycleStats).
  *
  * Purement observationnel : rien ici ne modifie vdp1_clock ni le deroulement
- * du trace. Les compteurs suivent les cycles deja calcules par le modele
- * (yabsys.vdp1cycles, consomme en un seul point dans Vdp1DrawCommands) et
- * ceux retires par vdp1BusAccess / vdp1BusRead pendant le trace.
+ * du trace. Deux mesures sont tenues en parallele :
+ *
+ *  - cmdCycles : le modele de l'emulateur (yabsys.vdp1cycles, consomme en un
+ *    seul point dans Vdp1DrawCommands), celui qui regle vdp1_clock ;
+ *  - estCycles : une estimation detaillee (vdp1EstQuad / vdp1EstLines plus
+ *    bas). Le manuel VDP1 ST-013-R3 ne donne que "1 pixel par cycle" (§2.5
+ *    p.20) et aucun cout par ligne ni par mode de calcul couleur ; le detail
+ *    reprend donc le modele de Mednafen (ss/vdp1.c, vdp1_common.h,
+ *    vdp1_sprite.c, vdp1_poly.c, vdp1_line.c).
+ *
+ * Les cycles retires par vdp1BusAccess / vdp1BusRead pendant le trace
+ * (cpuCycles) s'ajoutent aux deux.
  *
  * Deux periodes :
  *  - le champ : d'une ligne MaxLineCount-1 a la suivante (Vdp1HBlankIN) ;
@@ -159,47 +168,118 @@ static Vdp1CycleStats vdp1StatField;      /* champ en cours        */
 static Vdp1CycleStats vdp1StatFrame;      /* image en cours        */
 static Vdp1CycleStats vdp1StatLastField;  /* dernier champ complet */
 static Vdp1CycleStats vdp1StatLastFrame;  /* derniere image        */
-static int vdp1StatHistory[VDP1_CYCLE_HISTORY]; /* charge en pour mille */
+static int vdp1StatHistory[VDP1_CYCLE_HISTORY];    /* modele emulateur, pour mille */
+static int vdp1StatEstHistory[VDP1_CYCLE_HISTORY]; /* estimation, pour mille       */
+static u8  vdp1StatOverrunHistory[VDP1_CYCLE_HISTORY];
 static int vdp1StatHistoryPos = 0;
 static int vdp1StatHistoryCount = 0;
- 
+
+/* Estimation de la commande en cours : remplie par les fonctions de trace,
+ * consommee (et remise a zero) par vdp1StatsCmd. */
+typedef struct {
+  u32 cycles;
+  u32 lines;
+  u32 pixels;
+  u32 rmwPixels;
+} Vdp1Est;
+static Vdp1Est vdp1EstCur;
+
+/* Cout par commande du trace capture par le debogueur : une entree par
+ * adresse de table possible (CMDLINK x 8 -> pas de 8 octets, 512 Ko de VRAM).
+ * N'existe que pendant la capture (Vdp1DebugSetCapture). */
+#define VDP1_CMD_COST_ENTRIES (0x80000 >> 3)
+static Vdp1CommandCost *vdp1CmdCost = NULL;
+
+static void vdp1CmdCostEnable(int enable) {
+  if (enable) {
+    if (vdp1CmdCost == NULL)
+      vdp1CmdCost = (Vdp1CommandCost *)calloc(VDP1_CMD_COST_ENTRIES, sizeof(Vdp1CommandCost));
+  } else {
+    free(vdp1CmdCost);
+    vdp1CmdCost = NULL;
+  }
+}
+
+static void vdp1CmdCostClear(void) {
+  if (vdp1CmdCost != NULL)
+    memset(vdp1CmdCost, 0, VDP1_CMD_COST_ENTRIES * sizeof(Vdp1CommandCost));
+}
+
+int Vdp1DebugGetCommandCost(u32 addr, Vdp1CommandCost *out) {
+  const Vdp1CommandCost *c;
+  if (vdp1CmdCost == NULL) return 0;
+  c = &vdp1CmdCost[(addr & 0x7FFFF) >> 3];
+  if (c->executions == 0) return 0;
+  if (out) *out = *c;
+  return 1;
+}
+
 static void vdp1StatsReset(void) {
   memset(&vdp1StatField, 0, sizeof(vdp1StatField));
   memset(&vdp1StatFrame, 0, sizeof(vdp1StatFrame));
   memset(&vdp1StatLastField, 0, sizeof(vdp1StatLastField));
   memset(&vdp1StatLastFrame, 0, sizeof(vdp1StatLastFrame));
   memset(vdp1StatHistory, 0, sizeof(vdp1StatHistory));
+  memset(vdp1StatEstHistory, 0, sizeof(vdp1StatEstHistory));
+  memset(vdp1StatOverrunHistory, 0, sizeof(vdp1StatOverrunHistory));
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
   vdp1StatHistoryPos = 0;
   vdp1StatHistoryCount = 0;
+  vdp1CmdCostClear();
 }
- 
-static INLINE void vdp1StatsCmd(int cycles, int skipped) {
+
+/* Fin d'une commande (sautee ou non). addr = adresse de sa table. */
+static INLINE void vdp1StatsCmd(u32 addr, int cycles, int skipped) {
+  /* Lecture de la table de commande : 16 cycles, commande sautee comprise
+   * (Mednafen ss/vdp1.c DoDrawing, VDP1_EAT_CLOCKS(16) avant tout test). */
+  const u32 est = vdp1EstCur.cycles + 16;
+
   vdp1StatField.cmdCycles += (u64)cycles;
   vdp1StatFrame.cmdCycles += (u64)cycles;
+  vdp1StatField.estCycles += est;
+  vdp1StatFrame.estCycles += est;
+  vdp1StatField.estPixels += vdp1EstCur.pixels;
+  vdp1StatFrame.estPixels += vdp1EstCur.pixels;
+  vdp1StatField.estRmwPixels += vdp1EstCur.rmwPixels;
+  vdp1StatFrame.estRmwPixels += vdp1EstCur.rmwPixels;
+  vdp1StatField.estLines += vdp1EstCur.lines;
+  vdp1StatFrame.estLines += vdp1EstCur.lines;
   if (skipped) { vdp1StatField.skipped++;  vdp1StatFrame.skipped++;  }
   else         { vdp1StatField.commands++; vdp1StatFrame.commands++; }
+
+  if (vdp1CmdCost != NULL) {
+    Vdp1CommandCost *c = &vdp1CmdCost[(addr & 0x7FFFF) >> 3];
+    c->kronosCycles += (u32)cycles;
+    c->estCycles    += est;
+    c->lines        += vdp1EstCur.lines;
+    c->pixels       += vdp1EstCur.pixels;
+    c->rmwPixels    += vdp1EstCur.rmwPixels;
+    c->executions++;
+  }
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
 }
- 
+
 static INLINE void vdp1StatsCpu(int cycles) {
   vdp1StatField.cpuCycles += (u64)cycles;
   vdp1StatFrame.cpuCycles += (u64)cycles;
 }
- 
+
 static INLINE void vdp1StatsListStart(void) {
   vdp1StatField.lists++;
   vdp1StatFrame.lists++;
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
 }
- 
+
 static INLINE void vdp1StatsListEnd(void) {
   vdp1StatField.listsEnded++;
   vdp1StatFrame.listsEnded++;
 }
- 
+
 static INLINE void vdp1StatsListAbort(void) {
   vdp1StatField.listsAborted++;
   vdp1StatFrame.listsAborted++;
 }
- 
+
 /* Budget d'une ligne : raster = cycles par ligne theoriques (rasterValue),
  * blocked = Vdp1External.blocked (la ligne n'accorde alors aucun cycle). */
 static void vdp1StatsLine(int raster, int blocked) {
@@ -211,32 +291,38 @@ static void vdp1StatsLine(int raster, int blocked) {
   vdp1StatFrame.cyclesPerLine = (u32)raster;
   if (blocked) { vdp1StatField.blockedLines++; vdp1StatFrame.blockedLines++; }
 }
- 
-static int vdp1StatsPermille(const Vdp1CycleStats *st) {
-  u64 used;
-  if (st->budgetCycles == 0) return 0;
-  used = st->cmdCycles + st->cpuCycles;
-  return (int)((used * 1000 + st->budgetCycles / 2) / st->budgetCycles);
+
+static int vdp1StatsPermilleOf(u64 used, u64 budget) {
+  if (budget == 0) return 0;
+  return (int)((used * 1000 + budget / 2) / budget);
 }
- 
+
+static int vdp1StatsPermille(const Vdp1CycleStats *st) {
+  return vdp1StatsPermilleOf(st->cmdCycles + st->cpuCycles, st->budgetCycles);
+}
+
 static void vdp1StatsEndField(void) {
   vdp1StatField.fields = 1;
   vdp1StatLastField = vdp1StatField;
   memset(&vdp1StatField, 0, sizeof(vdp1StatField));
   vdp1StatFrame.fields++;
 }
- 
+
 static void vdp1StatsEndFrame(int runningAtSwap) {
   vdp1StatFrame.runningAtSwap = (u32)(runningAtSwap != 0);
   vdp1StatLastFrame = vdp1StatFrame;
   memset(&vdp1StatFrame, 0, sizeof(vdp1StatFrame));
   if (vdp1StatLastFrame.budgetCycles != 0) {
     vdp1StatHistory[vdp1StatHistoryPos] = vdp1StatsPermille(&vdp1StatLastFrame);
+    vdp1StatEstHistory[vdp1StatHistoryPos] =
+        vdp1StatsPermilleOf(vdp1StatLastFrame.estCycles + vdp1StatLastFrame.cpuCycles,
+                            vdp1StatLastFrame.budgetCycles);
+    vdp1StatOverrunHistory[vdp1StatHistoryPos] = (u8)vdp1StatLastFrame.runningAtSwap;
     vdp1StatHistoryPos = (vdp1StatHistoryPos + 1) % VDP1_CYCLE_HISTORY;
     if (vdp1StatHistoryCount < VDP1_CYCLE_HISTORY) vdp1StatHistoryCount++;
   }
 }
- 
+
 void Vdp1DebugGetCycleStats(Vdp1CycleStats *lastFrame, Vdp1CycleStats *lastField,
                             int *avgPermille, int *peakPermille, int *historyCount) {
   int i, sum = 0, peak = 0;
@@ -249,6 +335,213 @@ void Vdp1DebugGetCycleStats(Vdp1CycleStats *lastFrame, Vdp1CycleStats *lastField
   if (avgPermille)  *avgPermille  = vdp1StatHistoryCount ? (sum + vdp1StatHistoryCount / 2) / vdp1StatHistoryCount : 0;
   if (peakPermille) *peakPermille = peak;
   if (historyCount) *historyCount = vdp1StatHistoryCount;
+}
+
+int Vdp1DebugGetLoadHistory(int *kronosPermille, int *estPermille, u8 *overrun, int maxCount) {
+  int i, n = vdp1StatHistoryCount;
+  /* Indice du plus ancien : si le tampon n'est pas plein, c'est 0. */
+  const int first = (vdp1StatHistoryCount < VDP1_CYCLE_HISTORY) ? 0 : vdp1StatHistoryPos;
+  int skip;
+  if (maxCount <= 0) return 0;
+  skip = (n > maxCount) ? (n - maxCount) : 0;   /* garder les plus recents */
+  for (i = skip; i < n; i++) {
+    const int src = (first + i) % VDP1_CYCLE_HISTORY;
+    if (kronosPermille) kronosPermille[i - skip] = vdp1StatHistory[src];
+    if (estPermille)    estPermille[i - skip]    = vdp1StatEstHistory[src];
+    if (overrun)        overrun[i - skip]        = vdp1StatOverrunHistory[src];
+  }
+  return n - skip;
+}
+
+/* ---------------------------------------------------------------------------
+ * Estimation detaillee du cout d'une commande de trace.
+ *
+ * Le manuel ne documente pas ces couts : chaque valeur ci-dessous est celle de
+ * Mednafen (references entre parentheses). Le VDP1 trace un quadrilatere
+ * (sprite normal, agrandi, deforme, polygone) comme une suite de LIGNES entre
+ * les aretes AD et BC, et non comme une surface :
+ *
+ *  - nombre de lignes = max(|dx|,|dy|) des aretes AD et BC, + 1
+ *    (vdp1_sprite.c / vdp1_poly.c, dmax) ;
+ *  - par ligne : 8 cycles, + 4 si le pre-clipping est actif (Pclp = 0)
+ *    (vdp1.c VDP1_SetupDrawLine) ;
+ *  - une ligne entierement hors de la zone de clipping, pre-clipping actif,
+ *    n'est pas tracee (sauf la derniere, reduite a un point) ;
+ *  - par pixel : 1 cycle, 6 si le pixel du frame buffer doit etre relu --
+ *    MSB On, ombre, demi-transparence, Gouraud + demi-transparence, c'est-a-
+ *    dire CCB bit 0 = 1 (vdp1_common.h VDP1_PlotPixel, "ret += 5") ;
+ *  - les pixels hors zone sont parcourus jusqu'a la sortie de la zone ; une
+ *    ligne qui ne la traverse jamais est parcourue en entier (VDP1_PBODY) ;
+ *  - quadrilateres : un pixel d'antialiasing a chaque pas en diagonale, soit
+ *    min(|dx|,|dy|) pixels de plus par ligne ; pas pour les lignes et
+ *    polylignes (AA = 0 dans vdp1_line.c) ;
+ *  - surcout de +48/256 (frame buffer 16 bits) ou +24/256 (8 bits) sur les
+ *    cycles de pixels (vdp1_common.h VDP1_AdjustDrawTiming) ;
+ *  - par commande : 16 cycles de lecture de table (ajoutes par
+ *    vdp1StatsCmd), + 4 pour la table Gouraud (sprites, polygones), + 16
+ *    pour une table de couleurs (mode couleur 1, sprites), + 2 par ligne de
+ *    polyligne en Gouraud.
+ *
+ * Ce qui n'est pas modelise : les codes de fin (ECD) qui abregent une ligne,
+ * le double entrelacement, et l'attente du VDP1 quand le CPU accede a la VRAM
+ * (deja comptee dans cpuCycles).
+ * ------------------------------------------------------------------------- */
+typedef struct { int x0, y0, x1, y1; } Vdp1EstRect;
+
+/* Zone de clipping du trace : la zone utilisateur si le clipping
+ * utilisateur est actif en mode "dedans" (Clip = 1, Cmod = 0), la zone
+ * systeme sinon (Mednafen, VDP1_SetupDrawLine et VDP1_PBODY). */
+static void vdp1EstClipRect(u16 pmod, Vdp1EstRect *r) {
+  if ((pmod & 0x0400) && !(pmod & 0x0200)) {
+    r->x0 = Vdp1Regs->userclipX1; r->y0 = Vdp1Regs->userclipY1;
+    r->x1 = Vdp1Regs->userclipX2; r->y1 = Vdp1Regs->userclipY2;
+  } else {
+    r->x0 = 0; r->y0 = 0;
+    r->x1 = Vdp1Regs->systemclipX2; r->y1 = Vdp1Regs->systemclipY2;
+  }
+}
+
+static INLINE int vdp1EstOutside(int x0, int y0, int x1, int y1, const Vdp1EstRect *r) {
+  return (x0 < r->x0 && x1 < r->x0) || (x0 > r->x1 && x1 > r->x1) ||
+         (y0 < r->y0 && y1 < r->y0) || (y0 > r->y1 && y1 > r->y1);
+}
+
+static INLINE int vdp1EstInside(int x, int y, const Vdp1EstRect *r) {
+  return (x >= r->x0) && (x <= r->x1) && (y >= r->y0) && (y <= r->y1);
+}
+
+/* Pixels parcourus sur une ligne de n pixels qui coupe la zone : jusqu'au
+ * premier pixel hors zone apres la sortie (Liang-Barsky sur le segment). */
+static u32 vdp1EstWalked(int x0, int y0, int x1, int y1, const Vdp1EstRect *r, u32 n) {
+  const double dx = (double)(x1 - x0), dy = (double)(y1 - y0);
+  const double p[4] = { -dx, dx, -dy, dy };
+  const double q[4] = { (double)(x0 - r->x0), (double)(r->x1 - x0),
+                        (double)(y0 - r->y0), (double)(r->y1 - y0) };
+  double t0 = 0.0, t1 = 1.0;
+  u32 walked;
+  int k;
+  for (k = 0; k < 4; k++) {
+    if (p[k] == 0.0) {
+      if (q[k] < 0.0) return n;          /* parallele et dehors : jamais dedans */
+    } else {
+      const double t = q[k] / p[k];
+      if (p[k] < 0.0) { if (t > t1) return n; if (t > t0) t0 = t; }
+      else            { if (t < t0) return n; if (t < t1) t1 = t; }
+    }
+  }
+  if (t1 >= 1.0) return n;               /* finit dans la zone */
+  walked = (u32)(t1 * (double)(n - 1)) + 2;
+  return (walked < n) ? walked : n;
+}
+
+/* Une ligne : ajoute son cout a vdp1EstCur. Renvoie les cycles de pixels
+ * (avant le surcout VDP1_AdjustDrawTiming, applique par l'appelant). */
+static u32 vdp1EstOneLine(int x0, int y0, int x1, int y1, int aa, int isQuad, int last,
+                          int preclip, int fullyInside, int perPix, const Vdp1EstRect *r) {
+  u32 n, aaPix;
+  int adx, ady;
+  vdp1EstCur.cycles += 8 + (preclip ? 4 : 0);
+  vdp1EstCur.lines++;
+  if (preclip && vdp1EstOutside(x0, y0, x1, y1, r)) {
+    /* Reduite a un point ; un quadrilatere ne trace pas une ligne
+     * pre-clippee, sauf la derniere (vdp1_sprite.c, "|| !iter"). */
+    if (isQuad && !last) return 0;
+    vdp1EstCur.pixels += 1;
+    if (perPix > 1) vdp1EstCur.rmwPixels += 1;
+    return (u32)perPix;
+  }
+  adx = abs(x1 - x0);
+  ady = abs(y1 - y0);
+  n = (u32)((adx > ady) ? adx : ady) + 1;
+  aaPix = aa ? (u32)((adx < ady) ? adx : ady) : 0;
+  if (!fullyInside && !(vdp1EstInside(x0, y0, r) && vdp1EstInside(x1, y1, r))) {
+    const u32 walked = vdp1EstWalked(x0, y0, x1, y1, r, n);
+    aaPix = (u32)(((u64)aaPix * walked) / n);
+    n = walked;
+  }
+  n += aaPix;
+  vdp1EstCur.pixels += n;
+  if (perPix > 1) vdp1EstCur.rmwPixels += n;
+  return n * (u32)perPix;
+}
+
+static INLINE int vdp1EstPerPixel(u16 pmod) {
+  return ((pmod & 0x8000) || (pmod & 0x0001)) ? 6 : 1;
+}
+
+static INLINE u32 vdp1EstAdjust(u32 pixCycles) {
+  /* VDP1_AdjustDrawTiming : +48/256 en 16 bits, +24/256 en 8 bits. */
+  return pixCycles + (u32)(((u64)pixCycles * ((Vdp1Regs->TVMR & 0x1) ? 24 : 48)) >> 8);
+}
+
+/* Quadrilatere A B C D (coordonnees finales, coordonnees locales appliquees).
+ * textured = sprite (normal, agrandi, deforme), 0 = polygone. */
+static void vdp1EstQuad(const vdp1cmd_struct *cmd, int textured) {
+  const u16 pmod = cmd->CMDPMOD;
+  const int preclip = !(pmod & 0x0800);
+  const int perPix = vdp1EstPerPixel(pmod);
+  const int xa = cmd->CMDXA, ya = cmd->CMDYA, xb = cmd->CMDXB, yb = cmd->CMDYB;
+  const int xc = cmd->CMDXC, yc = cmd->CMDYC, xd = cmd->CMDXD, yd = cmd->CMDYD;
+  Vdp1EstRect r;
+  int dmax, i, fullyInside, minx, maxx, miny, maxy;
+  u32 pix = 0;
+
+  vdp1EstClipRect(pmod, &r);
+  dmax = abs(xd - xa);
+  if (abs(yd - ya) > dmax) dmax = abs(yd - ya);
+  if (abs(xc - xb) > dmax) dmax = abs(xc - xb);
+  if (abs(yc - yb) > dmax) dmax = abs(yc - yb);
+  dmax &= 0xFFF;
+
+  minx = MIN(MIN(xa, xb), MIN(xc, xd)); maxx = MAX(MAX(xa, xb), MAX(xc, xd));
+  miny = MIN(MIN(ya, yb), MIN(yc, yd)); maxy = MAX(MAX(ya, yb), MAX(yc, yd));
+  fullyInside = (minx >= r.x0) && (maxx <= r.x1) && (miny >= r.y0) && (maxy <= r.y1);
+
+  if ((pmod & 0x8004) == 0x0004) vdp1EstCur.cycles += 4;              /* table Gouraud */
+  if (textured && (((pmod >> 3) & 0x7) == 1)) vdp1EstCur.cycles += 16; /* table de couleurs */
+
+  if (preclip && (maxx < r.x0 || minx > r.x1 || maxy < r.y0 || miny > r.y1)) {
+    /* Tout le quadrilatere est hors zone : toutes les lignes sont
+     * pre-clippees, seule la derniere est tracee (un point). */
+    vdp1EstCur.cycles += (u32)(dmax + 1) * 12;
+    vdp1EstCur.lines  += (u32)(dmax + 1);
+    vdp1EstCur.pixels += 1;
+    if (perPix > 1) vdp1EstCur.rmwPixels += 1;
+    vdp1EstCur.cycles += vdp1EstAdjust((u32)perPix);
+    return;
+  }
+
+  for (i = 0; i <= dmax; i++) {
+    int x0, y0, x1, y1;
+    if (dmax == 0) { x0 = xa; y0 = ya; x1 = xb; y1 = yb; }
+    else {
+      x0 = xa + (int)(((s64)(xd - xa) * i) / dmax);
+      y0 = ya + (int)(((s64)(yd - ya) * i) / dmax);
+      x1 = xb + (int)(((s64)(xc - xb) * i) / dmax);
+      y1 = yb + (int)(((s64)(yc - yb) * i) / dmax);
+    }
+    pix += vdp1EstOneLine(x0, y0, x1, y1, 1, 1, i == dmax, preclip, fullyInside, perPix, &r);
+  }
+  vdp1EstCur.cycles += vdp1EstAdjust(pix);
+}
+
+/* Ligne (1 segment A-B) ou polyligne (A-B, B-C, C-D, D-A), sans antialiasing. */
+static void vdp1EstLines(const vdp1cmd_struct *cmd, int nlines) {
+  const u16 pmod = cmd->CMDPMOD;
+  const int preclip = !(pmod & 0x0800);
+  const int perPix = vdp1EstPerPixel(pmod);
+  const int X[4] = { cmd->CMDXA, cmd->CMDXB, cmd->CMDXC, cmd->CMDXD };
+  const int Y[4] = { cmd->CMDYA, cmd->CMDYB, cmd->CMDYC, cmd->CMDYD };
+  Vdp1EstRect r;
+  u32 pix = 0;
+  int i;
+  vdp1EstClipRect(pmod, &r);
+  for (i = 0; i < nlines; i++) {
+    const int j = (i + 1) & 3;
+    if ((pmod & 0x8004) == 0x0004) vdp1EstCur.cycles += 2;           /* Gouraud */
+    pix += vdp1EstOneLine(X[i], Y[i], X[j], Y[j], 0, 0, 1, preclip, 0, perPix, &r);
+  }
+  vdp1EstCur.cycles += vdp1EstAdjust(pix);
 }
  
 static void RequestVdp1ToDraw() {
@@ -1013,6 +1306,8 @@ static int Vdp1DebugFrameValid = 0;
 void Vdp1DebugSetCapture(int enable)
 {
    Vdp1DebugCaptureEnabled = enable;
+   /* Couts par commande du trace capture (vdp1StatsCmd). */
+   vdp1CmdCostEnable(enable);
    if (!enable) {
       free(Vdp1DebugFrameRam);
       Vdp1DebugFrameRam = NULL;
@@ -1055,6 +1350,9 @@ static void Vdp1DebugCaptureFrame(void)
       return;
    memcpy(Vdp1DebugFrameRam, Vdp1Ram, 0x80000);
    Vdp1DebugFrameValid = 1;
+   /* Nouveau trace : les couts par commande repartent de zero, pour
+    * correspondre a la table qui vient d'etre capturee. */
+   vdp1CmdCostClear();
 }
  
 static void Vdp1TryDraw(void) {
@@ -1237,165 +1535,169 @@ static int emptyCmd(vdp1cmd_struct *cmd) {
  
 //////////////////////////////////////////////////////////////////////////////
  
-static int getNormalCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: "data for 1 pixel is drawn in sync with
-     * the 28MHz CPU operating clock" → 1 cycle = 1 pixel drawn.
-     *
-     * The bottleneck depends on color mode (CMDPMOD bits 5-3):
-     *   mode 0/1 (4bpp):  2 pixels per VRAM word read  → texture read
-     *                     is rw/2 cycles; FB write is rw cycles (16bpp FB)
-     *                     → bottleneck = FB write = rw cycles
-     *   mode 2/3/4 (8bpp):1 pixel per VRAM word read  → texture read
-     *                     is rw cycles; 8bpp FB write = rw/2 cycles
-     *                     → bottleneck = texture read = rw cycles
-     *                     BUT when TVMR bit 0 = 1 (8bpp FB):
-     *                     FB write costs rw/2 cycles (2px/word)
-     *                     → total dominated by texture read
-     *   mode 5 (16bpp):   1 pixel per 2 VRAM words; FB write = rw cycles
-     *                     → bottleneck = max(texture, FB write) = rw cycles
-     *
-     * When TVMR bit 0 = 1 (8bpp frame buffer mode, hi-res/rotation):
-     *   Each FB write stores 2 pixels per word → half the write cycles.
-     *   VDP1 Manual §4.3 p.49: "erase/write is performed 2 pixels at a time"
-     *   This halves effective throughput for the FB write path.
-     *   The texture read path dominates for 8bpp color modes.
-     *
-     * Conservative model: cycles = rw * h (1 cycle per output pixel)
-     * with 8bpp-FB correction already accounted via >>1.
-     */
-    int rw = MAX(cmd->w, 1);
-    /* VDP1 Manual §4.3: in 8bpp FB mode (TVMR bit 0 = 1),
-     * 2 pixels are written per bus cycle → effective rate doubles,
-     * so the per-line pixel budget is halved for FB write. */
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-    return rw * MAX(cmd->h, 1);
-}
- 
+/* ---------------------------------------------------------------------------
+ * Modele de cycles de l'emulateur : c'est lui qui regle vdp1_clock, donc la
+ * duree du trace emule (transfer-over, fin de liste, EDSR.CEF...).
+ *
+ * Base : VDP1 Manual ST-013-R3 §2.5 p.20, "the data for 1 pixel is drawn in
+ * sync with" l'horloge de 28 MHz -> 1 cycle par pixel ecrit.
+ *
+ * Corrections :
+ *
+ *  - Frame buffer 8 bits : la largeur n'est plus divisee par 2. Le "erase/
+ *    write is performed 2 pixels at a time when the frame buffer depth is 8
+ *    bits/pixel" du manuel (p.46) concerne l'EFFACEMENT seulement ; rien
+ *    n'indique que le trace ecrive deux pixels par cycle (Mednafen compte
+ *    1 cycle par pixel dans les deux profondeurs, vdp1_common.h
+ *    VDP1_PlotPixel). Les jeux en 8 bits (haute resolution, rotation)
+ *    etaient sous-estimes de moitie.
+ *
+ *  - Pre-clipping : la zone de reference est la zone de trace "specified by
+ *    the CPU" (ST-013-SP1 p.2-3, Pre-Clipping Disable) : la zone utilisateur
+ *    quand le clipping utilisateur est actif en mode interieur (CMDPMOD
+ *    Clip = 1, Cmod = 0), la zone systeme sinon. Les sommets etaient bornes
+ *    par la zone utilisateur meme clipping utilisateur desactive : un jeu qui
+ *    laissait une petite zone utilisateur rendait ses commandes presque
+ *    gratuites.
+ *
+ *  - Calcul couleur : MSB On, ombre, demi-transparence et Gouraud + demi-
+ *    transparence (CCB bit 0 = 1) relisent le pixel du frame buffer avant de
+ *    l'ecrire. Le manuel ne chiffre pas ce cout ; la valeur est celle de
+ *    Mednafen (VDP1_PlotPixel, "ret += 5" : 6 cycles par pixel au lieu de 1).
+ *
+ *  - Lignes et polylignes : comptees (getLineCycles) ; elles ne coutaient
+ *    aucun cycle.
+ *
+ * Non modelise ici (voir l'estimation detaillee vdp1EstQuad, observationnelle) :
+ * le cout fixe par ligne (dont "up to five CPU clock cycles for one line" de
+ * detection de pre-clipping, ST-013-SP1 p.3), les pixels d'antialiasing et
+ * le parcours des pixels hors zone.
+ * ------------------------------------------------------------------------- */
 #define CAP(L,A,H) (((A)<(L))?(L):(((A)>(H))?(H):(A)))
- 
+
+/* Zone de trace de la commande (pre-clipping, lignes). */
+static void getDrawArea(const vdp1cmd_struct *cmd, int *lx, int *hx, int *ly, int *hy) {
+    if ((cmd->CMDPMOD & 0x0400) && !(cmd->CMDPMOD & 0x0200)) {
+        *lx = Vdp1Regs->userclipX1; *hx = Vdp1Regs->userclipX2;
+        *ly = Vdp1Regs->userclipY1; *hy = Vdp1Regs->userclipY2;
+    } else {
+        *lx = 0; *hx = Vdp1Regs->systemclipX2;
+        *ly = 0; *hy = Vdp1Regs->systemclipY2;
+    }
+}
+
+/* Cycles par pixel ecrit : 6 si le frame buffer est relu (MSB On, ou
+ * CCB bit 0 = 1 : ombre, demi-transparence, Gouraud + demi-transparence). */
+static INLINE int getPixelCycles(const vdp1cmd_struct *cmd) {
+    return ((cmd->CMDPMOD & 0x8000) || (cmd->CMDPMOD & 0x0001)) ? 6 : 1;
+}
+
+/* Diviseur de lecture de texture (CMDPMOD bits 5-3) : mots VRAM de 16 bits.
+ * 4 bpp -> 4 texels par mot, 8 bpp -> 2, 16 bpp -> 1. */
+static INLINE int getTextureWords(const vdp1cmd_struct *cmd, int texels) {
+    switch ((cmd->CMDPMOD >> 3) & 0x7) {
+        case 0: case 1: return texels >> 2;
+        case 2: case 3: case 4: return texels >> 1;
+        default: return texels;
+    }
+}
+
+static int getNormalCycles(vdp1cmd_struct *cmd) {
+    /* Sprite normal : w x h pixels ecrits, sans agrandissement. */
+    return MAX(cmd->w, 1) * MAX(cmd->h, 1) * getPixelCycles(cmd);
+}
+
 static int getScaledCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
-     * For scaled sprites the output size is (rw × rh) pixels.
-     * The texture read cost depends on the color mode and HSS:
-     *
-     * VDP1 Manual §6.3 HSS (bit 12 of CMDPMOD, p.81):
-     *   When HSS=1 AND output_width < texture_width (reduction):
-     *   only even/odd texture columns are sampled → texture read
-     *   is halved: cmdW >>= 1.
-     *   When HSS=0: all texture columns sampled regardless of scaling.
-     *
-     * Color mode (CMDPMOD bits 5-3):
-     *   0/1 (4bpp):  4px per word → cmdW = w/4
-     *   2/3/4 (8bpp): 2px per word → cmdW = w/2
-     *   5 (16bpp):   1px per word (as 2-byte word) → cmdW = w
-     *
-     * VDP1 Manual §4.3 Table 4.4 (p.49): 8bpp FB halves write cycles.
-     *
-     * Effective cycles = max(output_write_cycles, texture_read_cycles)
-     * where output_write_cycles = rw (16bpp FB) or rw/2 (8bpp FB)
-     * and   texture_read_cycles = cmdW (after HSS and color-mode divisor)
-     */
+    /* Sprite agrandi : rw x rh pixels ecrits. La lecture de texture (cmdW
+     * mots par ligne, divisee par 2 en reduction avec HSS = 1, ST-013-SP1
+     * p.2) borne le cout par le bas quand le sprite est fortement reduit. */
     int ax = cmd->CMDXA;
     int ay = cmd->CMDYA;
     int bx = cmd->CMDXB;
     int dy = cmd->CMDYD;
-    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping enabled (Pclp=0) */
-        int lx = Vdp1Regs->userclipX1;
-        int hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1;
-        int hy = Vdp1Regs->userclipY2;
+    int cmdW, rw, rh;
+    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping actif (Pclp = 0) */
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx);
         bx = CAP(lx,bx,hx);
         ay = CAP(ly,ay,hy);
         dy = CAP(ly,dy,hy);
     }
-    int cmdW = MAX(cmd->w, 1);
-    /* VDP1 Manual §6.3 color mode divisor (CMDPMOD bits 5-3):
-     * mode 0/1 (4bpp) : 4 pixels per 16-bit VRAM word → divide by 4
-     * mode 2/3/4 (8bpp): 2 pixels per 16-bit VRAM word → divide by 2
-     * mode 5 (16bpp)  : 1 pixel per 16-bit VRAM word  → no division */
-    switch ((cmd->CMDPMOD >> 3) & 0x7) {
-        case 0: case 1: cmdW >>= 2; break;   /* 4bpp: 4px/word */
-        case 2: case 3: case 4: cmdW >>= 1; break; /* 8bpp: 2px/word */
-        default: break;                        /* 16bpp: 1px/word */
-    }
-    int rh  = abs(dy - ay);
-    int rw  = abs(bx - ax);
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1; /* 8bpp FB: 2px/write-cycle */
-    /* VDP1 Manual §6.3 HSS p.81: when shrinking (rw_screen < texture_w)
-     * and HSS=1, texture read is at half resolution → cmdW halved again. */
+    cmdW = getTextureWords(cmd, MAX(cmd->w, 1));
+    rh = abs(dy - ay);
+    rw = abs(bx - ax);
     if (((cmd->CMDPMOD >> 12) & 0x1) && (rw < cmd->w)) cmdW >>= 1;
-    return MAX(rw, cmdW) * MAX(rh, 1);
+    return MAX(rw * getPixelCycles(cmd), cmdW) * MAX(rh, 1);
 }
- 
+
 static int getDistortedCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
-     * Distorted sprite uses same pipeline as scaled sprite (§6.2 p.83).
-     * rw_screen = average horizontal output width across all scan lines.
-     * VDP1 Manual §6.3 Pre-clipping (Pclp bit 11, p.83):
-     *   "overhead required for detection = up to 5 CPU clock cycles per line"
-     *   When Pclp=0 (pre-clipping enabled), clip to user-clip rect first. */
+    /* Sprite deforme : largeur moyenne des aretes AB et DC x hauteur
+     * maximale ; meme borne de lecture de texture que le sprite agrandi. */
     int ax = cmd->CMDXA, ay = cmd->CMDYA;
     int bx = cmd->CMDXB, by = cmd->CMDYB;
     int cx = cmd->CMDXC, cy = cmd->CMDYC;
     int dx = cmd->CMDXD, dy = cmd->CMDYD;
+    int rw_screen, cmdW, rw, rh;
     if (!(cmd->CMDPMOD & 0x800)) {
-        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
         cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
         ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
         cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
     }
-    /* Average horizontal screen width (AB edge + DC edge) / 2 */
-    int rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
-    if (Vdp1Regs->TVMR & 0x1) rw_screen >>= 1; /* 8bpp FB */
-    int cmdW = MAX(cmd->w, 1);
-    /* VDP1 Manual §6.3 color mode (CMDPMOD bits 5-3):
-     * 4bpp→ /4, 8bpp→ /2, 16bpp→ /1 (words per texture pixel) */
-    switch ((cmd->CMDPMOD >> 3) & 0x7) {
-        case 0: case 1: cmdW >>= 2; break;
-        case 2: case 3: case 4: cmdW >>= 1; break;
-        default: break;
-    }
-    /* VDP1 Manual HSS p.81: shrink + HSS=1 → half texture reads */
+    rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
+    cmdW = getTextureWords(cmd, MAX(cmd->w, 1));
     if (((cmd->CMDPMOD >> 12) & 0x1) && (rw_screen < cmd->w))
         cmdW >>= 1;
-    int rw = MAX(rw_screen, cmdW);
-    int rh = MAX(abs(ay - dy), abs(cy - by));
+    rw = MAX(rw_screen * getPixelCycles(cmd), cmdW);
+    rh = MAX(abs(ay - dy), abs(cy - by));
     return MAX(rw, 1) * MAX(rh, 1);
 }
- 
+
 static int getPolygonCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §6.1 Table 6.1 p.71: Polygon/Polyline/Line are
-     * NON-TEXTURED draw commands — no VRAM texture read, only FB write.
-     * VDP1 Manual §2.5 p.20: 1 cycle = 1 pixel written at 28MHz.
-     * Average width = ((XB-XA) + (XC-XD)) / 2  (top + bottom edges).
-     * VDP1 Manual §4.3: 8bpp FB (TVMR bit 0=1) → 2px per write cycle.
-     * Pre-clipping (Pclp bit 11): clamp vertices to user-clip rect.
-     * Note: CMDPMOD color mode bits are irrelevant for non-textured
-     * commands — there is no texture to read. Color is flat from CMDCOLR.
-     */
+    /* Polygone : pas de texture, seulement l'ecriture des pixels. */
     int ax = cmd->CMDXA, ay = cmd->CMDYA;
     int bx = cmd->CMDXB, by = cmd->CMDYB;
     int cx = cmd->CMDXC, cy = cmd->CMDYC;
     int dx = cmd->CMDXD, dy = cmd->CMDYD;
-    if (!(cmd->CMDPMOD & 0x800)) { /* pre-clipping enabled */
-        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+    int rw, rh;
+    if (!(cmd->CMDPMOD & 0x800)) {
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
         cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
         ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
         cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
     }
-    /* Average horizontal width over the quadrilateral */
-	int rw = (abs(bx - ax) + abs(cx - dx)) / 2;
-    /* VDP1 Manual §4.3: 8bpp FB → 2 pixels per bus write cycle */
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-    /* VDP1 Manual §6.2 p.83 Pre-clipping note: "up to 5 CPU clock cycles
-     * per line" overhead for detection, but no texture read penalty. */
-	int rh = MAX(abs(ay - dy), abs(cy - by));
-    return MAX(rw, 1) * MAX(rh, 1);
+    rw = (abs(bx - ax) + abs(cx - dx)) / 2;
+    rh = MAX(abs(ay - dy), abs(cy - by));
+    return MAX(rw, 1) * MAX(rh, 1) * getPixelCycles(cmd);
+}
+
+static int getLineCycles(vdp1cmd_struct *cmd, int nlines) {
+    /* Ligne (1 segment A-B) ou polyligne (A-B, B-C, C-D, D-A) : chaque
+     * segment ecrit max(|dx|, |dy|) + 1 pixels. Avec le pre-clipping actif,
+     * un segment entierement d'un meme cote de la zone de trace n'est pas
+     * trace (ST-013-SP1 p.3 : "can be detected in advance ... by not
+     * allowing the drawing to be started") ; on lui compte 1 cycle. */
+    const int X[4] = { cmd->CMDXA, cmd->CMDXB, cmd->CMDXC, cmd->CMDXD };
+    const int Y[4] = { cmd->CMDYA, cmd->CMDYB, cmd->CMDYC, cmd->CMDYD };
+    const int preclip = !(cmd->CMDPMOD & 0x800);
+    int lx, hx, ly, hy, i, total = 0;
+    getDrawArea(cmd, &lx, &hx, &ly, &hy);
+    for (i = 0; i < nlines; i++) {
+        const int j = (i + 1) & 3;
+        if (preclip &&
+            ((X[i] < lx && X[j] < lx) || (X[i] > hx && X[j] > hx) ||
+             (Y[i] < ly && Y[j] < ly) || (Y[i] > hy && Y[j] > hy))) {
+            total += 1;
+            continue;
+        }
+        total += MAX(abs(X[j] - X[i]), abs(Y[j] - Y[i])) + 1;
+    }
+    return total * getPixelCycles(cmd);
 }
  
 /* NOTE: the VDP1 Manual does NOT prohibit the ECD=0 / SPD=1 combination,
@@ -1491,6 +1793,7 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   
  
   yabsys.vdp1cycles+= getNormalCycles(cmd);
+  vdp1EstQuad(cmd, 1);
   
   /* VDP1 Manual §6.3 p.81 (HSS bit 12) and §4.2 p.37 (FBCR bit 4 EOS):
    * HSS must be propagated to the renderer regardless of sprite flavor;
@@ -1759,6 +2062,7 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
  
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getScaledCycles(cmd);
+  vdp1EstQuad(cmd, 1);
   
   /* VDP1 Manual §6.3 p.83 Pre-Clipping Disable (Pclp bit 11):
    * when Pclp=0 (pre-clipping enabled), reject if the bounding box
@@ -1912,6 +2216,7 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
  
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles += getDistortedCycles(cmd);
+  vdp1EstQuad(cmd, 1);
  
   memset(cmd->G, 0, sizeof(float)*12);
   /* (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) */
@@ -1957,6 +2262,7 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYD += regs->localY;
  
   yabsys.vdp1cycles += getPolygonCycles(cmd);
+  vdp1EstQuad(cmd, 0);
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
 	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
@@ -2021,6 +2327,10 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
+  /* Polyligne : 4 segments (modele de l'emulateur, puis estimation
+   * detaillee pour le debogueur). */
+  yabsys.vdp1cycles += getLineCycles(cmd, 4);
+  vdp1EstLines(cmd, 4);
  
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
@@ -2077,6 +2387,9 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC = cmd->CMDYB;
   cmd->CMDXD = cmd->CMDXA;
   cmd->CMDYD = cmd->CMDYA;
+  /* Ligne : 1 segment (modele de l'emulateur, puis estimation). */
+  yabsys.vdp1cycles += getLineCycles(cmd, 1);
+  vdp1EstLines(cmd, 1);
  
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
@@ -2454,7 +2767,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
       } else {
         yabsys.vdp1cycles += 16;
       }
-      vdp1StatsCmd(yabsys.vdp1cycles, (command & 0x4000) != 0);
+      vdp1StatsCmd(regs->addr, yabsys.vdp1cycles, (command & 0x4000) != 0);
       vdp1_clock -= yabsys.vdp1cycles;
       yabsys.vdp1cycles = 0;
  
