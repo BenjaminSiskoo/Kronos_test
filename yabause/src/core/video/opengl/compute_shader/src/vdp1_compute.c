@@ -216,6 +216,10 @@ static GLuint ssbo_cmd_list_ = 0;
 static GLuint ssbo_vdp1ram_ = 0;
 static GLuint ssbo_vdp1access_ = 0;
 static GLuint prg_vdp1[NB_PRG] = {0};
+/* Shader object of a program whose compilation and link were started by
+   vdp1_compute_warmup() but whose status has not been checked yet (0 once
+   the program is ready, see vdp1_get_program). */
+static GLuint prg_vdp1_pending_shader[NB_PRG] = {0};
 
 static GLuint ssbo_cmd_line_list_ = 0;
 
@@ -666,32 +670,56 @@ int ErrorHandle(const char* name)
 #endif
 }
 
-static GLuint createProgram(int count, const GLchar** prg_strs) {
-  GLint status;
-	int exactCount = 0;
-  GLuint result = glCreateShader(GL_COMPUTE_SHADER);
+/* Compute programs used to be compiled the first time a command needed them,
+   on the emulation thread and in the middle of a frame. A compute shader
+   takes tens of milliseconds to compile and link with the usual Windows
+   drivers, so the first command of each new kind (a gouraud half-transparent
+   mesh polygon, say) froze the emulation for that long and the sound output
+   ran dry: Taisen Tanto-R Sashissu (ST-V), 53 to 94 ms on single frames of
+   its intro, heard as a gap in the music when the explosion is drawn.
+
+   Building a program is now split in two:
+   - vdp1_start_program() hands the sources to the driver and asks for the
+     compilation and the link, without reading any status back. With
+     GL_KHR_parallel_shader_compile (enabled in vdp1_compute_warmup) the
+     driver does this work on its own threads; without it, it is done here.
+   - vdp1_finish_program() reads the compile and link status the first time
+     the program is actually used, which only waits if the driver has not
+     finished yet.
+   vdp1_compute_warmup() starts every program when the renderer is set up and
+   whenever the sources change (mesh / banding mode), so no compilation is
+   left for the middle of a frame. Failures still abort, as before. */
+static GLuint vdp1_start_program(int count, const GLchar** prg_strs, GLuint *shader_out) {
+  int exactCount = 0;
+  GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+  GLuint program;
 
   for (int id = 0; id < count; id++) {
-		if (prg_strs[id] != NULL) exactCount++;
-		else break;
-	}
-  glShaderSource(result, exactCount, prg_strs, NULL);
-  glCompileShader(result);
-  glGetShaderiv(result, GL_COMPILE_STATUS, &status);
+    if (prg_strs[id] != NULL) exactCount++;
+    else break;
+  }
+  glShaderSource(shader, exactCount, prg_strs, NULL);
+  glCompileShader(shader);
+  program = glCreateProgram();
+  glAttachShader(program, shader);
+  glLinkProgram(program);
+  *shader_out = shader;
+  return program;
+}
 
+static void vdp1_finish_program(GLuint program, GLuint shader) {
+  GLint status;
+
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
   if (status == GL_FALSE) {
     GLint length;
-    glGetShaderiv(result, GL_INFO_LOG_LENGTH, &length);
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
     GLchar *info = (GLchar*)malloc(sizeof(GLchar) *length);
-    glGetShaderInfoLog(result, length, NULL, info);
+    glGetShaderInfoLog(shader, length, NULL, info);
     YuiMsg("[COMPILE] %s\n", info);
     free(info);
     abort();
   }
-  GLuint program = glCreateProgram();
-  glAttachShader(program, result);
-  glLinkProgram(program);
-  glDetachShader(program, result);
   glGetProgramiv(program, GL_LINK_STATUS, &status);
   if (status == GL_FALSE) {
     GLint length;
@@ -702,7 +730,53 @@ static GLuint createProgram(int count, const GLchar** prg_strs) {
     free(info);
     abort();
   }
-  return program;
+  /* The shader object is no longer needed once the program is linked. It
+     used to be detached but never deleted: one shader object leaked per
+     program, and again after every vdp1_compute_reset(). */
+  glDetachShader(program, shader);
+  glDeleteShader(shader);
+}
+
+/* Program progId, started if needed and checked on first use. */
+static GLuint vdp1_get_program(int progId) {
+  if (prg_vdp1[progId] == 0) {
+    prg_vdp1[progId] = vdp1_start_program(sizeof(a_prg_vdp1[progId]) / sizeof(char*),
+                                          (const GLchar**)a_prg_vdp1[progId],
+                                          &prg_vdp1_pending_shader[progId]);
+  }
+  if (prg_vdp1_pending_shader[progId] != 0) {
+    vdp1_finish_program(prg_vdp1[progId], prg_vdp1_pending_shader[progId]);
+    prg_vdp1_pending_shader[progId] = 0;
+  }
+  return prg_vdp1[progId];
+}
+
+static int vdp1_program_is_unsupported(int progId) {
+  return (progId == DRAW_POLY_UNSUPPORTED_NO_MESH) || (progId == DRAW_QUAD_UNSUPPORTED_NO_MESH)
+      || (progId == DRAW_POLY_UNSUPPORTED_MESH) || (progId == DRAW_QUAD_UNSUPPORTED_MESH);
+}
+
+/* Starts the compilation of every program not built yet (see above). Needs
+   the GL context of the renderer to be current, and the WRITE / READ /
+   CLEAR / start sources to have been formatted (vdp1_compute_init). */
+static void vdp1_compute_warmup(void) {
+#if defined(GLEW_KHR_parallel_shader_compile)
+  static int parallelSet = 0;
+  if (!parallelSet) {
+    parallelSet = 1;
+    /* 0xFFFFFFFF: let the implementation choose the number of threads */
+    if (GLEW_KHR_parallel_shader_compile && (glMaxShaderCompilerThreadsKHR != NULL))
+      glMaxShaderCompilerThreadsKHR(0xFFFFFFFFu);
+  }
+#endif
+  for (int i = 0; i < NB_PRG; i++) {
+    if (prg_vdp1[i] != 0) continue;
+    if (vdp1_program_is_unsupported(i)) continue; /* never drawn */
+    if (a_prg_vdp1[i][0] == NULL) continue;
+    prg_vdp1[i] = vdp1_start_program(sizeof(a_prg_vdp1[i]) / sizeof(char*),
+                                     (const GLchar**)a_prg_vdp1[i],
+                                     &prg_vdp1_pending_shader[i]);
+  }
 }
 
 
@@ -730,9 +804,7 @@ static void regenerateMeshTex(int w, int h) {
 
 static void vdp1_clear_mesh() {
 	int progId = CLEAR_MESH;
-	if (prg_vdp1[progId] == 0) {
-		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
   glUseProgram(prg_vdp1[progId]);
 	glBindImageTexture(0, mesh_tex[0], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 	glBindImageTexture(1, mesh_tex[1], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -1175,6 +1247,7 @@ int vdp1_add_upscale(vdp1cmd_struct* cmd, int clipcmd) {
 
 void vdp1_update_performance() {
 	vdp1_compute_reset();
+	vdp1_compute_warmup();
 }
 
 void vdp1_update_banding(void) {
@@ -1205,6 +1278,7 @@ void vdp1_update_banding(void) {
         : vdp1_get_pixel_gouraud_extended_half_transparent_f;
 
 	vdp1_compute_reset();
+	vdp1_compute_warmup();
 }
 
 void vdp1_update_mesh(void) {
@@ -1215,6 +1289,7 @@ void vdp1_update_mesh(void) {
 		a_prg_vdp1[i][4] = (_Ygl->meshmode == IMPROVED_MESH)?vdp1_draw_improved_mesh_f:vdp1_draw_mesh_f;
 	}
 	vdp1_compute_reset();
+	vdp1_compute_warmup();
 }
 
 void startVdp1Render(void) {
@@ -1270,9 +1345,7 @@ static void drawPolygonLine(cmd_poly* cmd_pol, int nbTotalLines, int nbLines, u3
 	if (progId == DRAW_QUAD_UNSUPPORTED_NO_MESH) return;
 
 
-	if (prg_vdp1[progId] == 0) {
-		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
 	if (oldProg != progId) {
     /* End the previous render pass before starting a new one.
      * Failing to unbind causes READ_WRITE/WRITE_ONLY access conflicts
@@ -1954,9 +2027,7 @@ void vdp1_clear(int id, float *col, float *colOdd, int xdiv, int* lim) {
 	int progId = CLEAR;
 	int limits[4];
 	memcpy(limits, lim, 4*sizeof(int));
-	if (prg_vdp1[progId] == 0) {
-		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
     /* VDP1 §4.4: scale erase area from VDP1 FB coordinates to texture pixels.
      * Use ceiling division for the right/bottom edges to avoid missing pixels.
      * limits[0]/[1] = top-left (floor OK), limits[2]/[3] = bottom-right (ceil). */
@@ -1988,9 +2059,7 @@ void vdp1_write_frame(int frame) {
 	int progId = WRITE;
 	float ratio = 1.0f/_Ygl->vdp1ratio;
 
-	if (prg_vdp1[progId] == 0) {
-    prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
   glUseProgram(prg_vdp1[progId]);
 
 	glBindImageTexture(0, get_vdp1_tex(frame), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
@@ -2009,9 +2078,7 @@ void vdp1_write() {
 u32* vdp1_read(int frame) {
 	int progId = READ;
 	float ratio = 1.0f/_Ygl->vdp1ratio;
-	if (prg_vdp1[progId] == 0){
-		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
   glUseProgram(prg_vdp1[progId]);
 
 	glBindImageTexture(0, get_vdp1_tex(frame), 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
@@ -2074,6 +2141,9 @@ void vdp1_compute_init(int width, int height, float ratio)
   work_groups_x = _Ygl->vdp1width / local_size_x;
   work_groups_y = _Ygl->vdp1height / local_size_y;
   generateComputeBuffer(_Ygl->vdp1width, _Ygl->vdp1height);
+  /* the sources above are ready: build the programs now rather than in the
+     middle of a frame (see vdp1_start_program) */
+  vdp1_compute_warmup();
 	return;
 }
 
@@ -2089,9 +2159,7 @@ void vdp1_compute(vdp1cmd_struct* cmd, point tl, point br) {
   GLuint error;
 	int progId = getProgramId();
 
-	if (prg_vdp1[progId] == 0){
-		prg_vdp1[progId] = createProgram(sizeof(a_prg_vdp1[progId]) / sizeof(char*), (const GLchar**)a_prg_vdp1[progId]);
-	}
+	vdp1_get_program(progId);
 
 	VDP1CPRINT("Draw VDP1 on %d\n", _Ygl->drawframe);
 	if (oldProg != progId) {
@@ -2129,6 +2197,12 @@ void vdp1_compute(vdp1cmd_struct* cmd, point tl, point br) {
 void vdp1_compute_reset(void) {
 	for(int i = 0; i<NB_PRG; i++) {
 		if(prg_vdp1[i] != 0) {
+			if (prg_vdp1_pending_shader[i] != 0) {
+				/* started by vdp1_compute_warmup and never used */
+				glDetachShader(prg_vdp1[i], prg_vdp1_pending_shader[i]);
+				glDeleteShader(prg_vdp1_pending_shader[i]);
+				prg_vdp1_pending_shader[i] = 0;
+			}
 			glDeleteProgram(prg_vdp1[i]);
 			prg_vdp1[i] = 0;
 		}
