@@ -32,6 +32,12 @@
 #include <QLabel>
 #include <QFont>
 #include <QStringList>
+#include <QPaintEvent>
+#include <QPainterPath>
+#include <QPalette>
+#include <QFontMetrics>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
@@ -203,11 +209,20 @@ std::string buildInfoLabel(Vdp1CommandsCount& cmdCount)
 
 // Charge VDP1 d'une période (vdp1.c, Vdp1DebugGetCycleStats) : cycles des
 // commandes + cycles volés par le CPU, rapportés à la capacité théorique
-// (cycles/ligne x lignes). Chiffres du modèle de l'émulateur, pas du matériel.
+// (cycles/ligne x lignes). Deux chiffres :
+//  - modèle de l'émulateur : celui qui règle réellement le tracé de Kronos ;
+//  - estimation : modèle détaillé de Mednafen (lignes, relecture du frame
+//    buffer, antialiasing, pixels hors zone), observationnel uniquement.
 double vdp1LoadPercent(const Vdp1CycleStats &st)
 {
     if (st.budgetCycles == 0) return 0.0;
     return 100.0 * (double)(st.cmdCycles + st.cpuCycles) / (double)st.budgetCycles;
+}
+
+double vdp1EstLoadPercent(const Vdp1CycleStats &st)
+{
+    if (st.budgetCycles == 0) return 0.0;
+    return 100.0 * (double)(st.estCycles + st.cpuCycles) / (double)st.budgetCycles;
 }
 
 void appendCyclePeriod(std::stringstream &s, const char *title, const Vdp1CycleStats &st, bool isFrame)
@@ -219,10 +234,17 @@ void appendCyclePeriod(std::stringstream &s, const char *title, const Vdp1CycleS
     }
     s << st.fields << (st.fields > 1 ? " fields, " : " field, ")
       << st.lines << " lines x " << st.cyclesPerLine << " cyc\n";
-    s << "    used   = " << st.cmdCycles << " (commands) + " << st.cpuCycles
-      << " (CPU stolen) = " << (st.cmdCycles + st.cpuCycles) << " cyc\n";
-    s << "    budget = " << st.budgetCycles << " cyc  ->  load "
-      << std::fixed << std::setprecision(1) << vdp1LoadPercent(st) << " %\n";
+    s << "    budget         = " << st.budgetCycles << " cyc\n";
+    s << std::fixed << std::setprecision(1);
+    s << "    estimate       = " << st.estCycles << " (commands) + " << st.cpuCycles
+      << " (CPU stolen)  ->  " << vdp1EstLoadPercent(st) << " %\n";
+    s << "      " << st.estLines << " lines, " << st.estPixels << " pixels";
+    if (st.estPixels)
+        s << ", " << st.estRmwPixels << " with frame buffer read ("
+          << (100.0 * (double)st.estRmwPixels / (double)st.estPixels) << " %)";
+    s << "\n";
+    s << "    emulator model = " << st.cmdCycles << " (commands) + " << st.cpuCycles
+      << " (CPU stolen)  ->  " << vdp1LoadPercent(st) << " %\n";
     s.unsetf(std::ios::floatfield);
     s << "    commands: " << st.commands << " executed, " << st.skipped << " skipped"
       << "   lists: " << st.lists << " started, " << st.listsEnded << " ended, "
@@ -233,6 +255,186 @@ void appendCyclePeriod(std::stringstream &s, const char *title, const Vdp1CycleS
         s << "    list still drawing at frame change: "
           << (st.runningAtSwap ? "YES (overrun)" : "no") << "\n";
 }
+
+// QFontMetrics::horizontalAdvance n'existe qu'à partir de Qt 5.11.
+int textWidth(const QFontMetrics &fm, const QString &t)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)
+    return fm.horizontalAdvance(t);
+#else
+    return fm.width(t);
+#endif
+}
+
+QString groupedNumber(qulonglong v)
+{
+    // 1234567 -> "1 234 567" : lisible dans la liste sans dépendre de la locale.
+    QString d = QString::number(v);
+    for (int i = d.size() - 3; i > 0; i -= 3) d.insert(i, QChar(' '));
+    return d;
+}
+
+// Graphe de charge image par image (Vdp1DebugGetLoadHistory) : barres =
+// estimation, ligne = modèle de l'émulateur, repère rouge = liste encore en
+// cours au changement de frame buffer. Échelle 0-100 %, étendue si une image
+// dépasse 100 %. Pas de Q_OBJECT : aucun signal ni slot, donc pas de moc.
+class Vdp1LoadGraph : public QWidget
+{
+public:
+    explicit Vdp1LoadGraph(QWidget *parent) : QWidget(parent)
+    {
+        setMinimumSize(220, 96);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        setMouseTracking(true);
+    }
+
+    void refresh()
+    {
+        mKronos.assign(VDP1_CYCLE_HISTORY, 0);
+        mEst.assign(VDP1_CYCLE_HISTORY, 0);
+        mOverrun.assign(VDP1_CYCLE_HISTORY, 0);
+        const int n = Vdp1DebugGetLoadHistory(mKronos.data(), mEst.data(), mOverrun.data(), VDP1_CYCLE_HISTORY);
+        mKronos.resize(n);
+        mEst.resize(n);
+        mOverrun.resize(n);
+        update();
+    }
+
+    QSize sizeHint() const override { return QSize(420, 110); }
+
+protected:
+    QRect plotRect() const
+    {
+        const QFontMetrics fm(font());
+        const int left = textWidth(fm, QStringLiteral("100%")) + 6;
+        // Marge basse d'une demi-ligne : l'étiquette "0%" est centrée sur l'axe.
+        return QRect(left, fm.height() + 4, width() - left - 4, height() - fm.height() - 8 - fm.height() / 2);
+    }
+
+    int scaleMax() const
+    {
+        int top = 1000;
+        for (size_t i = 0; i < mEst.size(); i++) top = std::max(top, std::max(mEst[i], mKronos[i]));
+        return ((top + 249) / 250) * 250;   // pas de 25 %
+    }
+
+    int frameAt(int x) const
+    {
+        const QRect pr = plotRect();
+        if (mEst.empty() || x < pr.left() || x > pr.right()) return -1;
+        const double slot = (double)pr.width() / VDP1_CYCLE_HISTORY;
+        // Les images les plus récentes sont à droite.
+        const int fromRight = (int)((pr.right() - x) / slot);
+        const int idx = (int)mEst.size() - 1 - fromRight;
+        return (idx >= 0 && idx < (int)mEst.size()) ? idx : -1;
+    }
+
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::ToolTip) {
+            QHelpEvent *he = static_cast<QHelpEvent *>(e);
+            const int i = frameAt(he->pos().x());
+            if (i >= 0) {
+                const int age = (int)mEst.size() - 1 - i;
+                QToolTip::showText(he->globalPos(),
+                    QStringLiteral("Frame -%1\nEstimate: %2.%3 %\nEmulator model: %4.%5 %%6")
+                        .arg(age)
+                        .arg(mEst[i] / 10).arg(mEst[i] % 10)
+                        .arg(mKronos[i] / 10).arg(mKronos[i] % 10)
+                        .arg(mOverrun[i] ? QStringLiteral("\nList still drawing at frame change") : QString()),
+                    this);
+            } else {
+                QToolTip::hideText();
+            }
+            return true;
+        }
+        return QWidget::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        const QPalette pal = palette();
+        const QColor text = pal.color(QPalette::WindowText);
+        QColor grid = text; grid.setAlpha(50);
+        const QColor estColor(230, 140, 30);
+        const QColor kronosColor(60, 130, 230);
+        const QRect pr = plotRect();
+        const QFontMetrics fm(font());
+
+        p.fillRect(pr, pal.color(QPalette::Base));
+        const int top = scaleMax();
+        auto yOf = [&](int permille) {
+            return pr.bottom() - (int)((double)permille * pr.height() / top);
+        };
+
+        // Grille tous les 25 %, étiquettes 0/50/100... à gauche.
+        for (int v = 0; v <= top; v += 250) {
+            const int y = yOf(v);
+            p.setPen(v == 1000 ? QPen(text, 1, Qt::DashLine) : QPen(grid));
+            p.drawLine(pr.left(), y, pr.right(), y);
+            if (v % 500 == 0) {
+                p.setPen(text);
+                const QString lab = QString::number(v / 10) + QLatin1Char('%');
+                p.drawText(QRect(0, y - fm.height() / 2, pr.left() - 4, fm.height()),
+                           Qt::AlignRight | Qt::AlignVCenter, lab);
+            }
+        }
+
+        const int n = (int)mEst.size();
+        const double slot = (double)pr.width() / VDP1_CYCLE_HISTORY;
+        auto xOf = [&](int i) { return pr.right() - (n - 1 - i + 1) * slot; };
+
+        // Barres : estimation.
+        for (int i = 0; i < n; i++) {
+            const double x0 = xOf(i);
+            const int y = yOf(std::min(mEst[i], top));
+            const QRectF bar(x0 + 0.5, y, std::max(1.0, slot - 1.0), pr.bottom() - y + 1);
+            p.fillRect(bar, mEst[i] > 1000 ? QColor(220, 50, 50) : estColor);
+            if (mOverrun[i])
+                p.fillRect(QRectF(x0 + 0.5, pr.top(), std::max(1.0, slot - 1.0), 3), QColor(220, 0, 0));
+        }
+
+        // Ligne : modèle de l'émulateur.
+        if (n > 0) {
+            QPainterPath path;
+            for (int i = 0; i < n; i++) {
+                const QPointF pt(xOf(i) + slot / 2, yOf(std::min(mKronos[i], top)));
+                if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+            }
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(kronosColor, 1.5));
+            p.drawPath(path);
+            p.setRenderHint(QPainter::Antialiasing, false);
+        }
+
+        // Légende sur la ligne du haut.
+        int lx = pr.left();
+        const int ly = 1;
+        auto legend = [&](const QColor &c, const QString &t) {
+            p.fillRect(lx, ly + fm.height() / 2 - 4, 10, 8, c);
+            lx += 13;
+            p.setPen(text);
+            p.drawText(lx, ly + fm.ascent(), t);
+            lx += textWidth(fm, t) + 12;
+        };
+        if (n > 0) {
+            legend(estColor, QStringLiteral("Estimate %1.%2 %").arg(mEst[n - 1] / 10).arg(mEst[n - 1] % 10));
+            legend(kronosColor, QStringLiteral("Emulator model %1.%2 %").arg(mKronos[n - 1] / 10).arg(mKronos[n - 1] % 10));
+            legend(QColor(220, 0, 0), QStringLiteral("Overrun"));
+        } else {
+            p.setPen(text);
+            p.drawText(pr, Qt::AlignCenter, QStringLiteral("No frame recorded yet"));
+        }
+        p.setPen(QPen(grid));
+        p.drawRect(pr.adjusted(0, 0, -1, -1));
+    }
+
+private:
+    std::vector<int> mKronos, mEst;
+    std::vector<u8> mOverrun;
+};
 
 } // anonymous namespace
 
@@ -424,13 +626,28 @@ void UIDebugVDP1::updateVdp1Registers()
         int avgPm = 0, peakPm = 0, histCount = 0;
         Vdp1DebugGetCycleStats(&frame, &field, &avgPm, &peakPm, &histCount);
         s << std::dec << std::setfill(' ');
-        s << "\n--- VDP1 cycle load (emulator cycle model, not hardware-measured) ---\n";
+        s << "\n--- VDP1 cycle load ---\n"
+          << "  estimate       : detailed model (Mednafen): per-line setup, 6 cycles per pixel\n"
+          << "                   when the frame buffer is read (MSB On, shadow, half-transparency),\n"
+          << "                   antialiasing pixels, pixels walked outside the clip area.\n"
+          << "  emulator model : what Kronos actually charges (vdp1.c getNormalCycles...).\n"
+          << "  Neither is a hardware measurement.\n";
         appendCyclePeriod(s, "Last frame (between FB changes)", frame, true);
         appendCyclePeriod(s, "Last field", field, false);
-        if (histCount > 0)
-            s << "  Last " << histCount << " frames: average "
-              << (avgPm / 10) << "." << (avgPm % 10) << " %, peak "
-              << (peakPm / 10) << "." << (peakPm % 10) << " %\n";
+        if (histCount > 0) {
+            std::vector<int> est(VDP1_CYCLE_HISTORY);
+            const int n = Vdp1DebugGetLoadHistory(nullptr, est.data(), nullptr, VDP1_CYCLE_HISTORY);
+            long sum = 0; int peak = 0;
+            for (int i = 0; i < n; i++) { sum += est[i]; peak = std::max(peak, est[i]); }
+            const int avgEst = n ? (int)((sum + n / 2) / n) : 0;
+            s << "  Last " << histCount << " frames:\n"
+              << "    estimate       average " << (avgEst / 10) << "." << (avgEst % 10)
+              << " %, peak " << (peak / 10) << "." << (peak % 10) << " %\n"
+              << "    emulator model average " << (avgPm / 10) << "." << (avgPm % 10)
+              << " %, peak " << (peakPm / 10) << "." << (peakPm % 10) << " %\n";
+        }
+        if (!mTopCostText.empty())
+            s << mTopCostText;
     }
 
     pteVdp1Regs->setPlainText(QString::fromStdString(s.str()));
@@ -440,6 +657,15 @@ void UIDebugVDP1::fillCommandList()
 {
     Vdp1CommandsCount cmdCount;
     Vdp1ColorCalcCount ccCount;
+    // Budget de la dernière image, pour la part de chaque commande, et
+    // classement des commandes les plus coûteuses.
+    double frameBudget = 0.0;
+    {
+        Vdp1CycleStats lastFrame;
+        Vdp1DebugGetCycleStats(&lastFrame, nullptr, nullptr, nullptr, nullptr);
+        frameBudget = (double)lastFrame.budgetCycles;
+    }
+    std::vector<std::pair<u32, int>> costRank;
     // Ligne sélectionnée avant le rafraîchissement : "Image suivante"
     // ramenait systématiquement la sélection sur la commande 0, ce qui
     // obligeait à re-cliquer le sprite étudié à chaque trame.
@@ -493,6 +719,31 @@ void UIDebugVDP1::fillCommandList()
                     if (pmod & 0x0100) ccTooltip += QStringLiteral("\nMesh");
                 }
 
+                // Coût de la commande dans le tracé capturé (vdp1.c,
+                // Vdp1DebugGetCommandCost) : estimation détaillée, et le
+                // modèle de l'émulateur en infobulle.
+                QString costTooltip;
+                {
+                    Vdp1CommandCost cost;
+                    // Seulement pour la liste capturée : avant le premier "Image
+                    // suivante", la liste affichée est la VRAM vivante et la
+                    // table des coûts ne couvre qu'une partie du tracé en cours.
+                    if (Vdp1DebugGetFrameRam() && Vdp1DebugGetCommandCost(addr, &cost)) {
+                        itemText += QStringLiteral("   ") + groupedNumber(cost.estCycles) + QStringLiteral(" cyc");
+                        if (frameBudget)
+                            itemText += QStringLiteral(" (%1 %)").arg(100.0 * cost.estCycles / frameBudget, 0, 'f', 1);
+                        costTooltip = QStringLiteral("\nCost in this draw: estimate %1 cyc, emulator model %2 cyc"
+                                                     "\n%3 line(s), %4 pixel(s), %5 with frame buffer read%6")
+                            .arg(cost.estCycles).arg(cost.kronosCycles)
+                            .arg(cost.lines).arg(cost.pixels).arg(cost.rmwPixels)
+                            .arg(cost.executions > 1 ? QStringLiteral("\nExecuted %1 times").arg(cost.executions) : QString());
+                        if (isVdp1DrawCommand(type))
+                            costRank.push_back(std::make_pair(cost.estCycles, (int)i));
+                    } else if (Vdp1DebugGetFrameRam()) {
+                        costTooltip = QStringLiteral("\nNot reached in this draw");
+                    }
+                }
+
                 QListWidgetItem *item = new QListWidgetItem(itemText);
                 if (itemCcb != 0) item->setBackground(ccbBackground(itemCcb));
                 if (itemMsb) {
@@ -535,7 +786,7 @@ void UIDebugVDP1::fillCommandList()
 
                 // Adresse VRAM en infobulle : permet de rapprocher une ligne
                 // de l'export brut ou d'un point d'arrêt mémoire.
-                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper() + ccTooltip);
+                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper() + ccTooltip + costTooltip);
                 lwCommandList->addItem(item);
 
                 // Une ligne par commande dans les DEUX listes, toujours : les
@@ -545,6 +796,28 @@ void UIDebugVDP1::fillCommandList()
                 free(rawStr);
             }
         }
+    }
+
+    // Commandes les plus coûteuses du tracé capturé (panneau des registres).
+    {
+        std::stringstream top;
+        std::sort(costRank.begin(), costRank.end(),
+                  [](const std::pair<u32, int> &a, const std::pair<u32, int> &b) { return a.first > b.first; });
+        if (!costRank.empty()) {
+            top << "  Heaviest commands in the captured draw (estimate):\n";
+            for (size_t k = 0; k < costRank.size() && k < 8; k++) {
+                const int row = costRank[k].second;
+                const QString name = (row < lwCommandList->count() && lwCommandList->item(row))
+                    ? lwCommandList->item(row)->text().section(QStringLiteral("   "), 0, 0) : QString();
+                top << "    #" << row << " @0x" << std::hex << std::uppercase << std::setw(5) << std::setfill('0')
+                    << mCmdAddrs[row] << std::dec << std::setfill(' ') << "  " << costRank[k].first << " cyc";
+                if (frameBudget)
+                    top << " (" << std::fixed << std::setprecision(1) << 100.0 * costRank[k].first / frameBudget << " %)";
+                top.unsetf(std::ios::floatfield);
+                top << "  " << name.toStdString() << "\n";
+            }
+        }
+        mTopCostText = top.str();
     }
 
     // Une ligne par rubrique (types, calcul couleur, charge, source) : le
@@ -562,11 +835,12 @@ void UIDebugVDP1::fillCommandList()
         Vdp1CycleStats frame;
         Vdp1DebugGetCycleStats(&frame, nullptr, nullptr, nullptr, nullptr);
         if (frame.budgetCycles != 0) {
-            info += QtYabause::translate("VDP1 load: %1 % (%2 / %3 cycles, %4 field(s))")
-                        .arg(vdp1LoadPercent(frame), 0, 'f', 1)
-                        .arg((qulonglong)(frame.cmdCycles + frame.cpuCycles))
-                        .arg((qulonglong)frame.budgetCycles)
-                        .arg(frame.fields);
+            info += QtYabause::translate("VDP1 load: %1 % estimated (%2 / %3 cycles, %4 field(s)), emulator model %5 %")
+                        .arg(vdp1EstLoadPercent(frame), 0, 'f', 1)
+                        .arg(groupedNumber(frame.estCycles + frame.cpuCycles))
+                        .arg(groupedNumber(frame.budgetCycles))
+                        .arg(frame.fields)
+                        .arg(vdp1LoadPercent(frame), 0, 'f', 1);
             if (frame.runningAtSwap)
                 info += QtYabause::translate(" OVERRUN");
             infoLines << info;
@@ -576,6 +850,8 @@ void UIDebugVDP1::fillCommandList()
         ? QtYabause::translate("Source: VRAM captured at draw start")
         : QtYabause::translate("Source: live VRAM (Next frame captures the drawn list)"));
     lVDP1Info->setText(infoLines.join(QStringLiteral("\n")));
+    if (mLoadGraph)
+        static_cast<Vdp1LoadGraph *>(mLoadGraph)->refresh();
 
     // Avant syncOnVdp1Entry : celui-ci place le cadre de sélection dans
     // l'aperçu, qui doit déjà correspondre à la nouvelle liste.
@@ -649,7 +925,10 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     // après le premier "Image suivante" -- au lieu de la VRAM vivante.
     Vdp1DebugSetCapture(1);
 
-    // wordWrap du bandeau : fixé dans UIDebugVDP1.ui (ligne pleine largeur).
+    // Graphe de charge à droite du bandeau (horizontalLayout_info, .ui).
+    mLoadGraph = new Vdp1LoadGraph(this);
+    mLoadGraph->setToolTip(QString());
+    horizontalLayout_info->addWidget(mLoadGraph, 2);
 
     connect(lwCommandList->verticalScrollBar(), &QScrollBar::valueChanged,
             lwCommandRaw->verticalScrollBar(), &QScrollBar::setValue);
@@ -714,6 +993,21 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     tempstr[sizeof(tempstr) - 1] = '\0';
     QString info = QString("Command address = 0x%1\n").arg(addr, 5, 16, QChar('0')).toUpper()
                  + QtYabause::translate(tempstr);
+    {
+        Vdp1CommandCost cost;
+        if (Vdp1DebugGetFrameRam() && Vdp1DebugGetCommandCost(addr, &cost)) {
+            info += QStringLiteral("\nCost in the captured draw:\n"
+                                   "  estimate       = %1 cyc (table fetch included)\n"
+                                   "  emulator model = %2 cyc\n"
+                                   "  lines %3, pixels %4 (%5 with frame buffer read)\n")
+                        .arg(cost.estCycles).arg(cost.kronosCycles)
+                        .arg(cost.lines).arg(cost.pixels).arg(cost.rmwPixels);
+            if (cost.executions > 1)
+                info += QStringLiteral("  executed %1 times (CALL)\n").arg(cost.executions);
+        } else if (Vdp1DebugGetFrameRam()) {
+            info += QStringLiteral("\nCost: not reached in the captured draw.\n");
+        }
+    }
     pteCommandInfo->setPlainText(info);
 
     // Nettoyage avant nouvelle allocation
