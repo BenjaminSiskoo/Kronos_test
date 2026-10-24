@@ -169,9 +169,11 @@ static int autoframeskipenab=0;
 
 #ifdef TIMING_SWAP
 void YuiTimedSwapBuffers(){
-  unsigned u64 now = YabauseGetTicks();
+  /* "unsigned u64" n'est pas un type (ne compilait pas avec TIMING_SWAP) ;
+     %ld ne correspond pas a un u64 */
+  u64 now = YabauseGetTicks();
   YuiSwapBuffers();
-  YuiMsg("delay %ld\n",YabauseGetTicks() - now);
+  YuiMsg("delay %lld\n", (long long)(YabauseGetTicks() - now));
 }
 #endif
 
