@@ -1313,6 +1313,59 @@ static QImage colorizeSprite(const QImage &raw, bool opaque)
     return out;
 }
 
+// ============================================================
+//  spriteLogicalImage -- ramene la texture SPRITE a la taille du
+//  framebuffer VDP1 vu par le VDP2.
+//
+//  La texture extraite (GetCSVDP1fb) mesure 512*scale*vdp1wdensity x
+//  256*scale*vdp1hdensity (YglChangeResolution, commongl.c) : agrandie par
+//  le facteur de rendu 'scale', elle couvre tout le framebuffer (1024
+//  points de large en haute resolution), bien au-dela de la zone affichee.
+//
+//  Le facteur se deduit de la taille de rendu VDP2 (_Ygl->width =
+//  rwidth * scale, meme fonction) et non de vdp1wdensity : cette densite
+//  est mise a jour avec un temps de retard (commongl.c, valeurs
+//  "pending"), et une densite perimee en haute resolution coupait l'image
+//  de moitie. Le mode du framebuffer se lit dans TVMR (ST-013-R3 :
+//  TVM = 1 -> haute resolution 1024x256 ; ST-058-R2 sec.9.1).
+//
+//  On prend un point sur 'scale' (le framebuffer agrandi repete chaque
+//  point) puis on garde la zone affichee :
+//    largeur = 320/352/640/704 (TVMD HRESO), divisee par 2 si le VDP2 est
+//              en haute resolution et le framebuffer VDP1 non (un point
+//              VDP1 couvre alors deux points ecran) ;
+//    hauteur = 224/240/256 (TVMD VRESO), doublee si le framebuffer est en
+//              double densite (512 lignes logiques).
+//  Les coordonnees de l'inspecteur sont ainsi celles du framebuffer VDP1.
+// ============================================================
+static QImage spriteLogicalImage(const QImage &tex)
+{
+    if (tex.isNull() || !_Ygl || !Vdp2Regs) return tex;
+    int scale = 1;
+    if (_Ygl->rwidth > 0 && _Ygl->width > 0)
+        scale = qMax(1, (int)std::lround((double)_Ygl->width / _Ygl->rwidth));
+    // Garde-fou : la texture VDP1 fait au moins 512 points logiques de large.
+    while (scale > 1 && tex.width() / scale < 512) scale--;
+    const int lw = tex.width() / scale, lh = tex.height() / scale;
+
+    QImage out(lw, lh, tex.format());
+    for (int y = 0; y < lh; y++)
+    {
+        const quint32 *src = reinterpret_cast<const quint32 *>(tex.constScanLine(y * scale));
+        quint32 *dst = reinterpret_cast<quint32 *>(out.scanLine(y));
+        for (int x = 0; x < lw; x++) dst[x] = src[x * scale];
+    }
+
+    const bool vdp1Hires = (Vdp1Regs && (Vdp1Regs->TVMR & 0x7) == 1) || lw >= 1024;
+    static const int hres[8] = { 320, 352, 640, 704, 320, 352, 640, 704 };
+    static const int vres[4] = { 224, 240, 256, 256 };
+    int w = hres[Vdp2Regs->TVMD & 7];
+    if (w >= 640 && !vdp1Hires) w /= 2;
+    int h = vres[(Vdp2Regs->TVMD >> 4) & 3];
+    if (lh >= 512) h *= 2;
+    return out.copy(0, 0, qMin(w, lw), qMin(h, lh));
+}
+
 void UIDebugVDP2Viewer::displayCurrentScreen()
 {
     if (!Vdp2Regs) {
@@ -1359,7 +1412,7 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         // les codes couleur s'affichaient comme des teintes de rouge/vert
         // quasi noires. On les passe par la CRAM comme le fait le VDP2.
         if (idx == SPRITE) {
-            mSpriteRaw = currentImage;
+            mSpriteRaw = spriteLogicalImage(currentImage);
             currentImage = colorizeSprite(mSpriteRaw, cbOpaque->isChecked());
         } else {
             mSpriteRaw = QImage();
