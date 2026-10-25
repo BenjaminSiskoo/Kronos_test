@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QFile>
@@ -1256,6 +1257,62 @@ UIDebugVDP2Viewer::~UIDebugVDP2Viewer()
     }
 }
 
+// ============================================================
+//  colorizeSprite -- couleurs reelles de la couche SPRITE.
+//
+//  Chaque mot du framebuffer VDP1 est decode comme le fait le VDP2
+//  (ST-058-R2 sec.9.1, decodeur Vdp2DebugPixelSource de vdp2debug.c) :
+//    - mot 0 : point non ecrit, transparent ;
+//    - RGB (SPCLMD=1 et bit 15 a 1, types 0-7) : RGB555 direct ; ses bits
+//      de priorite valent 0, il prend donc la priorite du registre 0 ;
+//    - palette : code couleur DC + decalage SPCAOS -> entree CRAM ;
+//    - priorite resultante 0 : transparent (un ecran de priorite 0 n'est
+//      pas affiche) -- c'est ce qui cache le fond efface de l'image ;
+//    - code d'ombre normale (DC = 0x7FE) : noir a demi transparent.
+//  Une table par mot (65536 entrees, remplie a la demande) evite de
+//  decoder deux fois la meme valeur. "Opaque" montre en noir les points
+//  transparents. Le calcul de couleur et le decalage de couleur ne sont
+//  pas appliques : c'est la couleur de la CRAM.
+// ============================================================
+static QImage colorizeSprite(const QImage &raw, bool opaque)
+{
+    QImage out(raw.size(), QImage::Format_ARGB32);
+    if (raw.isNull() || !Vdp2Regs) return out;
+    std::vector<QRgb> lut(65536, 0);
+    std::vector<unsigned char> done(65536, 0);
+    const QRgb clear = opaque ? qRgba(0, 0, 0, 255) : qRgba(0, 0, 0, 0);
+    for (int y = 0; y < raw.height(); y++)
+    {
+        const uchar *src = raw.constScanLine(y);   // RGBA8888 : octets R, G, B, A
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < raw.width(); x++)
+        {
+            const u16 w = (u16)(src[4 * x] | (src[4 * x + 1] << 8));
+            if (!done[w])
+            {
+                done[w] = 1;
+                vdp2debugpixel_struct d;
+                QRgb c = clear;
+                if (w != 0 && Vdp2DebugPixelSource(SPRITE, 0, 0, w, &d) && !d.transparent)
+                {
+                    if (d.direct_rgb)
+                    {
+                        if ((Vdp2Regs->PRISA & 7) != 0)
+                            c = qRgb((d.rgb & 0x1F) << 3, ((d.rgb >> 5) & 0x1F) << 3, ((d.rgb >> 10) & 0x1F) << 3);
+                    }
+                    else if (d.sprprioval != 0)
+                    {
+                        c = d.sprshadow ? qRgba(0, 0, 0, 128) : cramColor(d.cramindex).rgb();
+                    }
+                }
+                lut[w] = c;
+            }
+            dst[x] = lut[w];
+        }
+    }
+    return out;
+}
+
 void UIDebugVDP2Viewer::displayCurrentScreen()
 {
     if (!Vdp2Regs) {
@@ -1298,6 +1355,15 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         // vertical -- sauf SPRITE, deja dans le bon sens cote framebuffer
         // VDP1 (cf. VIDCSGetVdp2ScreenExtract, vidcs.c).
         currentImage = img.mirrored(false,idx!=SPRITE).copy();
+        // La texture SPRITE est le framebuffer VDP1 brut : sans conversion,
+        // les codes couleur s'affichaient comme des teintes de rouge/vert
+        // quasi noires. On les passe par la CRAM comme le fait le VDP2.
+        if (idx == SPRITE) {
+            mSpriteRaw = currentImage;
+            currentImage = colorizeSprite(mSpriteRaw, cbOpaque->isChecked());
+        } else {
+            mSpriteRaw = QImage();
+        }
         QPixmap px=QPixmap::fromImage(currentImage);
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
@@ -1645,7 +1711,8 @@ QString UIDebugVDP2Viewer::describeScreenPixel(int px, int py, int *cramIndexOut
     u32 sprWord = 0;
     if (screen == SPRITE)
     {
-        sprWord = (u32)c.red() | ((u32)c.green() << 8);
+        const QColor rc = mSpriteRaw.isNull() ? c : mSpriteRaw.pixelColor(px, py);
+        sprWord = (u32)rc.red() | ((u32)rc.green() << 8);
         l1 += QString::fromUtf8(" &nbsp;· %1 0x%2").arg(QtYabause::translate("VDP1 word")).arg(hexs(sprWord, 4));
     }
     else if (c.alpha() != 0)
