@@ -911,6 +911,11 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
         tp.end();
         mCheckerBrush = QBrush(tile);
     }
+    // Le styleSheet de gvTexture (.ui) est restreint au selecteur
+    // "QGraphicsView { ... }". Ecrit sans selecteur, il s'appliquait aussi a
+    // l'info-bulle du widget ("Ctrl+wheel to zoom"), dont le fond devenait
+    // transparent : sous Windows 7 sans composition, une barre noire
+    // apparaissait apres 2 s de survol du sprite.
     scene->setBackgroundBrush(Qt::NoBrush);
     gvTexture->setBackgroundBrush(Qt::NoBrush);
     gvTexture->setScene(scene);
