@@ -880,6 +880,7 @@ void UIDebugVDP1::clearVdp1Display()
     pbSaveBitmap->setEnabled(false);
     pbSaveRawSprite->setEnabled(false);
     if (gvTexture->scene()) gvTexture->scene()->clear();
+    mTexPixItem = nullptr;   // detruit par clear()
 }
 
 UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lock)
@@ -941,6 +942,23 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     // (lTexturePixelInfo) -- même schéma que UIDebugVDP2Viewer.
     gvTexture->viewport()->installEventFilter(this);
     gvTexture->viewport()->setMouseTracking(true);
+
+    // Hauteur fixe des deux lignes d'information sous la texture. Le texte
+    // de l'inspecteur passe de 1 a 3 lignes (et davantage avec le retour a
+    // la ligne) selon le texel survole : chaque changement redimensionnait
+    // gvTexture, qui recentrait la scene -- le sprite "bougeait" sous le
+    // curseur. La largeur est ignoree pour la meme raison (une longue ligne
+    // de couleur elargissait la colonne Texture). Le texte ne pilote plus
+    // la mise en page.
+    {
+        const int ls = lTexturePixelInfo->fontMetrics().lineSpacing();
+        lTextureInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        lTextureInfo->setFixedHeight(2 * ls + 4);
+        lTextureInfo->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        lTexturePixelInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        lTexturePixelInfo->setFixedHeight(4 * ls + 4);
+        lTexturePixelInfo->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    }
 
     fillCommandList();
 
@@ -1036,6 +1054,7 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
 
     QGraphicsScene *sc = gvTexture->scene();
     sc->clear();
+    mTexPixItem = nullptr;   // detruit par clear()
 
     if (vdp1texture) {
         QImage img((uchar *)vdp1texture, vdp1texturew, vdp1textureh, QImage::Format_ARGB32);
@@ -1054,8 +1073,9 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
         QGraphicsRectItem *frame = sc->addRect(r, framePen, Qt::NoBrush);
         frame->setZValue(-1);
 
-        QGraphicsPixmapItem *pix = sc->addPixmap(QPixmap::fromImage(currentTextureImage));
+        QGraphicsPixmapItem *pix = sc->addPixmap(texturePixmap());
         pix->setTransformationMode(Qt::FastTransformation); // texels nets
+        mTexPixItem = pix;
         sc->setSceneRect(r);
         fitTexture();
 
@@ -1083,6 +1103,24 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     }
     lTexturePixelInfo->setText(QtYabause::translate("Move the mouse over the texture to inspect a pixel."));
     updateFrameSelection();
+}
+
+// Image affichee dans gvTexture. Case Opaque : les texels transparents
+// (alpha 0) gardent leur couleur au lieu de laisser voir le damier, comme
+// la case Opaque du VDP2 Viewer. currentTextureImage, lue par
+// l'inspecteur de pixel, garde toujours son canal alpha.
+QPixmap UIDebugVDP1::texturePixmap() const
+{
+    if (currentTextureImage.isNull()) return QPixmap();
+    if (cbOpaque->isChecked())
+        return QPixmap::fromImage(currentTextureImage.convertToFormat(QImage::Format_RGB32));
+    return QPixmap::fromImage(currentTextureImage);
+}
+
+void UIDebugVDP1::on_cbOpaque_toggled(bool)
+{
+    // Remplace seulement l'image : zoom et position de la vue conserves.
+    if (mTexPixItem) mTexPixItem->setPixmap(texturePixmap());
 }
 
 // Zoom d'ajustement : facteur ENTIER dès que la texture tient au moins une
