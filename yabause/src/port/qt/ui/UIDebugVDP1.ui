@@ -175,6 +175,16 @@
              </spacer>
             </item>
             <item>
+             <widget class="QCheckBox" name="cbOpaque">
+              <property name="toolTip">
+               <string>Show transparent texels with their color instead of the checkerboard</string>
+              </property>
+              <property name="text">
+               <string>Opaque</string>
+              </property>
+             </widget>
+            </item>
+            <item>
              <widget class="QPushButton" name="pbResetZoom">
               <property name="toolTip">
                <string>Fit the texture back into the view (Ctrl+wheel to zoom)</string>
