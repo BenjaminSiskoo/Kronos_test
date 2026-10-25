@@ -81,6 +81,11 @@ protected:
     // pixel (lPixelInfo, sur survol de gvScreen) lise exactement ce que
     // l'utilisateur voit à l'écran sans avoir à refaire cette conversion.
     QImage currentImage;
+    // Couche SPRITE : mots bruts du framebuffer VDP1 (R = octet bas, G =
+    // octet haut), avant la mise en couleurs de displayCurrentScreen().
+    // L'inspecteur de pixel y relit le mot ; currentImage, elle, contient
+    // les couleurs reelles.
+    QImage mSpriteRaw;
 
 private:
     // Mémorisation de la sélection courante de cbScreen entre un
