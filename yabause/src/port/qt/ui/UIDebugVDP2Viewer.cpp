@@ -1221,7 +1221,7 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     lCramLegend->setText(QtYabause::translate(
         "Grey corner: color 0 of a 16 color palette, magenta: of a 256 color palette (transparent when TPON=0). "
         "White frame: selection, yellow dashes: same color. N0..SPR: start of the layer's Color RAM offset (CRAOF)."));
-    lCramLegend->setStyleSheet(QString::fromLatin1("color: %1;").arg(mixDim(palette()).name()));
+    lCramLegend->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
     splitterCram->setStretchFactor(0, 1);
     splitterCram->setStretchFactor(1, 0);
     gvColorRam->setRenderHint(QPainter::Antialiasing, false);
@@ -1232,7 +1232,7 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     twStats->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     twStats->header()->setStretchLastSection(true);
     pteStats->setVisible(false);
-    lStatsHint->setStyleSheet(QString::fromLatin1("color: %1;").arg(mixDim(palette()).name()));
+    lStatsHint->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
 
     // Style des cadres, dans l'esprit de UIDebugSCSPChan.
     setStyleSheet(QString::fromLatin1(
