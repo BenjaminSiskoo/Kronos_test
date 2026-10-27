@@ -3061,14 +3061,20 @@ int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, v
 #else
     char *last = (char *)strrchr(info->filename, '/');
 #endif
-    if (last != NULL) {
-      if (strcmp(last+1, "stvbios.zip") == 0) {
-        processBios(zip, user_data); // alters file offset
-      } else {
-        processFile(zip, user_data); // alters file offset
-      }
+    if (last != NULL && strcmp(last+1, "stvbios.zip") == 0) {
+      processBios(zip, user_data); // alters file offset
+    } else if (info->bios) {
+      // loadBios() reading a game zip that carries the BIOS (see below)
+      processBios(zip, user_data); // alters file offset
     } else {
       processFile(zip, user_data); // alters file offset
+      if (info->gameId == -1) {
+        // Scanning: a MAME non-merged set carries the BIOS files in the game's own zip. Look for
+        // them there too, so such a set runs without a separate stvbios.zip; updateGameList()
+        // then uses this zip as the BIOS source when no stvbios.zip was found first.
+        zip->seek(zip, header->offset, SEEK_SET);
+        processBios(zip, user_data); // alters file offset
+      }
     }
 
     zip->seek(zip, offset, SEEK_SET); // return to position
