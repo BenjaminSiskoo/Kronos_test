@@ -1,30 +1,31 @@
 /*  Copyright 2003-2005 Guillaume Duhamel
     Copyright 2004 Lawrence Sebald
     Copyright 2004-2006 Theo Berkau
-
+ 
     This file is part of Yabause.
-
+ 
     Yabause is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation; either version 2 of the License, or
     (at your option) any later version.
-
+ 
     Yabause is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
-
+ 
     You should have received a copy of the GNU General Public License
     along with Yabause; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
-
+ 
 /*! \file vdp1.c
     \brief VDP1 emulation functions.
 */
-
-
+ 
+ 
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include "yabause.h"
 #include "vdp1.h"
@@ -35,31 +36,32 @@
 #include "sh2core.h"
 #include "ygl.h"
 #include "yui.h"
-
+#include "vdpedit.h"
+ 
 // #define DEBUG_CMD_LIST
 // #define FRAMELOG printf
 #define FRAMELOG_CMD //printf
 #define PRINT_FB //printf
-
+ 
 u8 * Vdp1Ram;
 int vdp1Ram_update_start;
 int vdp1Ram_update_end;
 int VDP1_MASK = 0xFFFF;
-
+ 
 extern u32* getVDP1WriteFramebuffer(int frame);
 extern u32* getVDP1ReadFramebuffer();
 extern void updateVdp1DrawingFBMem(int frame);
 extern void YglGenerate();
 extern void syncVdp1FBBuffer(u32 addr);
-
+ 
 static int getVdp1CyclesPerLine(void);
-
+ 
 VideoInterface_struct *VIDCore=NULL;
 extern VideoInterface_struct *VIDCoreList[];
-
+ 
 Vdp1 * Vdp1Regs;
 Vdp1External_struct Vdp1External;
-
+ 
 /* ------------------------------------------------------------------------
  * Parametres d'erase/write verrouilles au changement de frame buffer.
  *
@@ -84,37 +86,37 @@ Vdp1External_struct Vdp1External;
 static u16 Vdp1EraseLatchEWDR = 0;
 static u16 Vdp1EraseLatchEWLR = 0;
 static u16 Vdp1EraseLatchEWRR = 0;
-
+ 
 static void Vdp1LatchEraseParameters(void) {
   if (Vdp1Regs == NULL) return;
   Vdp1EraseLatchEWDR = Vdp1Regs->EWDR;
   Vdp1EraseLatchEWLR = Vdp1Regs->EWLR;
   Vdp1EraseLatchEWRR = Vdp1Regs->EWRR;
 }
-
+ 
 void Vdp1GetEraseLatch(u16 *ewdr, u16 *ewlr, u16 *ewrr) {
   if (ewdr) *ewdr = Vdp1EraseLatchEWDR;
   if (ewlr) *ewlr = Vdp1EraseLatchEWLR;
   if (ewrr) *ewrr = Vdp1EraseLatchEWRR;
 }
-
+ 
 int vdp1_clock = 0;
-
+ 
 static int nbCmdToProcess = 0;
 static int CmdListInLoop = 0;
-
+ 
 static int needVdp1draw = 0;
 static int oldNeedVdp1draw = 0;
 static void Vdp1NoDraw(void);
 static int Vdp1Draw(void);
 static void FASTCALL Vdp1ReadCommand(vdp1cmd_struct *cmd, u32 addr, u8* ram);
-
+ 
 extern void addVdp1Framecount ();
-
+ 
 static void checkFBSync();
-
+ 
 #define DEBUG_BAD_COORD //YuiMsg
-
+ 
 int CONVERTCMD(s32 *A) {
   /* Vertex coordinates are decoded as 13-bit signed values: bits [12:0]
    * are kept and bit 12 is the sign, bits 15:13 are ignored. This is the
@@ -140,25 +142,428 @@ int CONVERTCMD(s32 *A) {
   else               (*A) &= 0x00001FFF;
   return 0;
 }
+ 
+/* ---------------------------------------------------------------------------
+ * Statistiques de charge VDP1 (debogueur, Vdp1DebugGetCycleStats).
+ *
+ * Purement observationnel : rien ici ne modifie vdp1_clock ni le deroulement
+ * du trace. Deux mesures sont tenues en parallele :
+ *
+ *  - cmdCycles : le modele de l'emulateur (yabsys.vdp1cycles, consomme en un
+ *    seul point dans Vdp1DrawCommands), celui qui regle vdp1_clock ;
+ *  - estCycles : une estimation detaillee (vdp1EstQuad / vdp1EstLines plus
+ *    bas). Le manuel VDP1 ST-013-R3 ne donne que "1 pixel par cycle" (§2.5
+ *    p.20) et aucun cout par ligne ni par mode de calcul couleur ; le detail
+ *    reprend donc le modele de Mednafen (ss/vdp1.c, vdp1_common.h,
+ *    vdp1_sprite.c, vdp1_poly.c, vdp1_line.c).
+ *
+ * Les cycles retires par vdp1BusAccess / vdp1BusRead pendant le trace
+ * (cpuCycles) s'ajoutent aux deux.
+ *
+ * Deux periodes :
+ *  - le champ : d'une ligne MaxLineCount-1 a la suivante (Vdp1HBlankIN) ;
+ *  - l'image  : entre deux bascules du frame buffer (Vdp1SwitchFrame), soit
+ *    1 champ a 60 fps, 2 champs a 30 fps, etc.
+ * ------------------------------------------------------------------------- */
+static Vdp1CycleStats vdp1StatField;      /* champ en cours        */
+static Vdp1CycleStats vdp1StatFrame;      /* image en cours        */
+static Vdp1CycleStats vdp1StatLastField;  /* dernier champ complet */
+static Vdp1CycleStats vdp1StatLastFrame;  /* derniere image        */
+static int vdp1StatHistory[VDP1_CYCLE_HISTORY];    /* modele emulateur, pour mille */
+static int vdp1StatEstHistory[VDP1_CYCLE_HISTORY]; /* estimation, pour mille       */
+static u8  vdp1StatOverrunHistory[VDP1_CYCLE_HISTORY];
+static int vdp1StatHistoryPos = 0;
+static int vdp1StatHistoryCount = 0;
 
+/* Estimation de la commande en cours : remplie par les fonctions de trace,
+ * consommee (et remise a zero) par vdp1StatsCmd. */
+typedef struct {
+  u32 cycles;
+  u32 lines;
+  u32 pixels;
+  u32 rmwPixels;
+} Vdp1Est;
+static Vdp1Est vdp1EstCur;
+
+/* Cout par commande du trace capture par le debogueur : une entree par
+ * adresse de table possible (CMDLINK x 8 -> pas de 8 octets, 512 Ko de VRAM).
+ * N'existe que pendant la capture (Vdp1DebugSetCapture). */
+#define VDP1_CMD_COST_ENTRIES (0x80000 >> 3)
+static Vdp1CommandCost *vdp1CmdCost = NULL;
+
+static void vdp1CmdCostEnable(int enable) {
+  if (enable) {
+    if (vdp1CmdCost == NULL)
+      vdp1CmdCost = (Vdp1CommandCost *)calloc(VDP1_CMD_COST_ENTRIES, sizeof(Vdp1CommandCost));
+  } else {
+    free(vdp1CmdCost);
+    vdp1CmdCost = NULL;
+  }
+}
+
+static void vdp1CmdCostClear(void) {
+  if (vdp1CmdCost != NULL)
+    memset(vdp1CmdCost, 0, VDP1_CMD_COST_ENTRIES * sizeof(Vdp1CommandCost));
+}
+
+int Vdp1DebugGetCommandCost(u32 addr, Vdp1CommandCost *out) {
+  const Vdp1CommandCost *c;
+  if (vdp1CmdCost == NULL) return 0;
+  c = &vdp1CmdCost[(addr & 0x7FFFF) >> 3];
+  if (c->executions == 0) return 0;
+  if (out) *out = *c;
+  return 1;
+}
+
+static void vdp1StatsReset(void) {
+  memset(&vdp1StatField, 0, sizeof(vdp1StatField));
+  memset(&vdp1StatFrame, 0, sizeof(vdp1StatFrame));
+  memset(&vdp1StatLastField, 0, sizeof(vdp1StatLastField));
+  memset(&vdp1StatLastFrame, 0, sizeof(vdp1StatLastFrame));
+  memset(vdp1StatHistory, 0, sizeof(vdp1StatHistory));
+  memset(vdp1StatEstHistory, 0, sizeof(vdp1StatEstHistory));
+  memset(vdp1StatOverrunHistory, 0, sizeof(vdp1StatOverrunHistory));
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
+  vdp1StatHistoryPos = 0;
+  vdp1StatHistoryCount = 0;
+  vdp1CmdCostClear();
+}
+
+/* Fin d'une commande (sautee ou non). addr = adresse de sa table. */
+static INLINE void vdp1StatsCmd(u32 addr, int cycles, int skipped) {
+  /* Lecture de la table de commande : 16 cycles, commande sautee comprise
+   * (Mednafen ss/vdp1.c DoDrawing, VDP1_EAT_CLOCKS(16) avant tout test). */
+  const u32 est = vdp1EstCur.cycles + 16;
+
+  vdp1StatField.cmdCycles += (u64)cycles;
+  vdp1StatFrame.cmdCycles += (u64)cycles;
+  vdp1StatField.estCycles += est;
+  vdp1StatFrame.estCycles += est;
+  vdp1StatField.estPixels += vdp1EstCur.pixels;
+  vdp1StatFrame.estPixels += vdp1EstCur.pixels;
+  vdp1StatField.estRmwPixels += vdp1EstCur.rmwPixels;
+  vdp1StatFrame.estRmwPixels += vdp1EstCur.rmwPixels;
+  vdp1StatField.estLines += vdp1EstCur.lines;
+  vdp1StatFrame.estLines += vdp1EstCur.lines;
+  if (skipped) { vdp1StatField.skipped++;  vdp1StatFrame.skipped++;  }
+  else         { vdp1StatField.commands++; vdp1StatFrame.commands++; }
+
+  if (vdp1CmdCost != NULL) {
+    Vdp1CommandCost *c = &vdp1CmdCost[(addr & 0x7FFFF) >> 3];
+    c->kronosCycles += (u32)cycles;
+    c->estCycles    += est;
+    c->lines        += vdp1EstCur.lines;
+    c->pixels       += vdp1EstCur.pixels;
+    c->rmwPixels    += vdp1EstCur.rmwPixels;
+    c->executions++;
+  }
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
+}
+
+static INLINE void vdp1StatsCpu(int cycles) {
+  vdp1StatField.cpuCycles += (u64)cycles;
+  vdp1StatFrame.cpuCycles += (u64)cycles;
+}
+
+static INLINE void vdp1StatsListStart(void) {
+  vdp1StatField.lists++;
+  vdp1StatFrame.lists++;
+  memset(&vdp1EstCur, 0, sizeof(vdp1EstCur));
+}
+
+static INLINE void vdp1StatsListEnd(void) {
+  vdp1StatField.listsEnded++;
+  vdp1StatFrame.listsEnded++;
+}
+
+static INLINE void vdp1StatsListAbort(void) {
+  vdp1StatField.listsAborted++;
+  vdp1StatFrame.listsAborted++;
+}
+
+/* Budget d'une ligne : raster = cycles par ligne theoriques (rasterValue),
+ * blocked = Vdp1External.blocked (la ligne n'accorde alors aucun cycle). */
+static void vdp1StatsLine(int raster, int blocked) {
+  vdp1StatField.lines++;
+  vdp1StatFrame.lines++;
+  vdp1StatField.budgetCycles += (u64)raster;
+  vdp1StatFrame.budgetCycles += (u64)raster;
+  vdp1StatField.cyclesPerLine = (u32)raster;
+  vdp1StatFrame.cyclesPerLine = (u32)raster;
+  if (blocked) { vdp1StatField.blockedLines++; vdp1StatFrame.blockedLines++; }
+}
+
+static int vdp1StatsPermilleOf(u64 used, u64 budget) {
+  if (budget == 0) return 0;
+  return (int)((used * 1000 + budget / 2) / budget);
+}
+
+static int vdp1StatsPermille(const Vdp1CycleStats *st) {
+  return vdp1StatsPermilleOf(st->cmdCycles + st->cpuCycles, st->budgetCycles);
+}
+
+static void vdp1StatsEndField(void) {
+  vdp1StatField.fields = 1;
+  vdp1StatLastField = vdp1StatField;
+  memset(&vdp1StatField, 0, sizeof(vdp1StatField));
+  vdp1StatFrame.fields++;
+}
+
+static void vdp1StatsEndFrame(int runningAtSwap) {
+  vdp1StatFrame.runningAtSwap = (u32)(runningAtSwap != 0);
+  vdp1StatLastFrame = vdp1StatFrame;
+  memset(&vdp1StatFrame, 0, sizeof(vdp1StatFrame));
+  if (vdp1StatLastFrame.budgetCycles != 0) {
+    vdp1StatHistory[vdp1StatHistoryPos] = vdp1StatsPermille(&vdp1StatLastFrame);
+    vdp1StatEstHistory[vdp1StatHistoryPos] =
+        vdp1StatsPermilleOf(vdp1StatLastFrame.estCycles + vdp1StatLastFrame.cpuCycles,
+                            vdp1StatLastFrame.budgetCycles);
+    vdp1StatOverrunHistory[vdp1StatHistoryPos] = (u8)vdp1StatLastFrame.runningAtSwap;
+    vdp1StatHistoryPos = (vdp1StatHistoryPos + 1) % VDP1_CYCLE_HISTORY;
+    if (vdp1StatHistoryCount < VDP1_CYCLE_HISTORY) vdp1StatHistoryCount++;
+  }
+}
+
+void Vdp1DebugGetCycleStats(Vdp1CycleStats *lastFrame, Vdp1CycleStats *lastField,
+                            int *avgPermille, int *peakPermille, int *historyCount) {
+  int i, sum = 0, peak = 0;
+  if (lastFrame) *lastFrame = vdp1StatLastFrame;
+  if (lastField) *lastField = vdp1StatLastField;
+  for (i = 0; i < vdp1StatHistoryCount; i++) {
+    sum += vdp1StatHistory[i];
+    if (vdp1StatHistory[i] > peak) peak = vdp1StatHistory[i];
+  }
+  if (avgPermille)  *avgPermille  = vdp1StatHistoryCount ? (sum + vdp1StatHistoryCount / 2) / vdp1StatHistoryCount : 0;
+  if (peakPermille) *peakPermille = peak;
+  if (historyCount) *historyCount = vdp1StatHistoryCount;
+}
+
+int Vdp1DebugGetLoadHistory(int *kronosPermille, int *estPermille, u8 *overrun, int maxCount) {
+  int i, n = vdp1StatHistoryCount;
+  /* Indice du plus ancien : si le tampon n'est pas plein, c'est 0. */
+  const int first = (vdp1StatHistoryCount < VDP1_CYCLE_HISTORY) ? 0 : vdp1StatHistoryPos;
+  int skip;
+  if (maxCount <= 0) return 0;
+  skip = (n > maxCount) ? (n - maxCount) : 0;   /* garder les plus recents */
+  for (i = skip; i < n; i++) {
+    const int src = (first + i) % VDP1_CYCLE_HISTORY;
+    if (kronosPermille) kronosPermille[i - skip] = vdp1StatHistory[src];
+    if (estPermille)    estPermille[i - skip]    = vdp1StatEstHistory[src];
+    if (overrun)        overrun[i - skip]        = vdp1StatOverrunHistory[src];
+  }
+  return n - skip;
+}
+
+/* ---------------------------------------------------------------------------
+ * Estimation detaillee du cout d'une commande de trace.
+ *
+ * Le manuel ne documente pas ces couts : chaque valeur ci-dessous est celle de
+ * Mednafen (references entre parentheses). Le VDP1 trace un quadrilatere
+ * (sprite normal, agrandi, deforme, polygone) comme une suite de LIGNES entre
+ * les aretes AD et BC, et non comme une surface :
+ *
+ *  - nombre de lignes = max(|dx|,|dy|) des aretes AD et BC, + 1
+ *    (vdp1_sprite.c / vdp1_poly.c, dmax) ;
+ *  - par ligne : 8 cycles, + 4 si le pre-clipping est actif (Pclp = 0)
+ *    (vdp1.c VDP1_SetupDrawLine) ;
+ *  - une ligne entierement hors de la zone de clipping, pre-clipping actif,
+ *    n'est pas tracee (sauf la derniere, reduite a un point) ;
+ *  - par pixel : 1 cycle, 6 si le pixel du frame buffer doit etre relu --
+ *    MSB On, ombre, demi-transparence, Gouraud + demi-transparence, c'est-a-
+ *    dire CCB bit 0 = 1 (vdp1_common.h VDP1_PlotPixel, "ret += 5") ;
+ *  - les pixels hors zone sont parcourus jusqu'a la sortie de la zone ; une
+ *    ligne qui ne la traverse jamais est parcourue en entier (VDP1_PBODY) ;
+ *  - quadrilateres : un pixel d'antialiasing a chaque pas en diagonale, soit
+ *    min(|dx|,|dy|) pixels de plus par ligne ; pas pour les lignes et
+ *    polylignes (AA = 0 dans vdp1_line.c) ;
+ *  - surcout de +48/256 (frame buffer 16 bits) ou +24/256 (8 bits) sur les
+ *    cycles de pixels (vdp1_common.h VDP1_AdjustDrawTiming) ;
+ *  - par commande : 16 cycles de lecture de table (ajoutes par
+ *    vdp1StatsCmd), + 4 pour la table Gouraud (sprites, polygones), + 16
+ *    pour une table de couleurs (mode couleur 1, sprites), + 2 par ligne de
+ *    polyligne en Gouraud.
+ *
+ * Ce qui n'est pas modelise : les codes de fin (ECD) qui abregent une ligne,
+ * le double entrelacement, et l'attente du VDP1 quand le CPU accede a la VRAM
+ * (deja comptee dans cpuCycles).
+ * ------------------------------------------------------------------------- */
+typedef struct { int x0, y0, x1, y1; } Vdp1EstRect;
+
+/* Zone de clipping du trace : la zone utilisateur si le clipping
+ * utilisateur est actif en mode "dedans" (Clip = 1, Cmod = 0), la zone
+ * systeme sinon (Mednafen, VDP1_SetupDrawLine et VDP1_PBODY). */
+static void vdp1EstClipRect(u16 pmod, Vdp1EstRect *r) {
+  if ((pmod & 0x0400) && !(pmod & 0x0200)) {
+    r->x0 = Vdp1Regs->userclipX1; r->y0 = Vdp1Regs->userclipY1;
+    r->x1 = Vdp1Regs->userclipX2; r->y1 = Vdp1Regs->userclipY2;
+  } else {
+    r->x0 = 0; r->y0 = 0;
+    r->x1 = Vdp1Regs->systemclipX2; r->y1 = Vdp1Regs->systemclipY2;
+  }
+}
+
+static INLINE int vdp1EstOutside(int x0, int y0, int x1, int y1, const Vdp1EstRect *r) {
+  return (x0 < r->x0 && x1 < r->x0) || (x0 > r->x1 && x1 > r->x1) ||
+         (y0 < r->y0 && y1 < r->y0) || (y0 > r->y1 && y1 > r->y1);
+}
+
+static INLINE int vdp1EstInside(int x, int y, const Vdp1EstRect *r) {
+  return (x >= r->x0) && (x <= r->x1) && (y >= r->y0) && (y <= r->y1);
+}
+
+/* Pixels parcourus sur une ligne de n pixels qui coupe la zone : jusqu'au
+ * premier pixel hors zone apres la sortie (Liang-Barsky sur le segment). */
+static u32 vdp1EstWalked(int x0, int y0, int x1, int y1, const Vdp1EstRect *r, u32 n) {
+  const double dx = (double)(x1 - x0), dy = (double)(y1 - y0);
+  const double p[4] = { -dx, dx, -dy, dy };
+  const double q[4] = { (double)(x0 - r->x0), (double)(r->x1 - x0),
+                        (double)(y0 - r->y0), (double)(r->y1 - y0) };
+  double t0 = 0.0, t1 = 1.0;
+  u32 walked;
+  int k;
+  for (k = 0; k < 4; k++) {
+    if (p[k] == 0.0) {
+      if (q[k] < 0.0) return n;          /* parallele et dehors : jamais dedans */
+    } else {
+      const double t = q[k] / p[k];
+      if (p[k] < 0.0) { if (t > t1) return n; if (t > t0) t0 = t; }
+      else            { if (t < t0) return n; if (t < t1) t1 = t; }
+    }
+  }
+  if (t1 >= 1.0) return n;               /* finit dans la zone */
+  walked = (u32)(t1 * (double)(n - 1)) + 2;
+  return (walked < n) ? walked : n;
+}
+
+/* Une ligne : ajoute son cout a vdp1EstCur. Renvoie les cycles de pixels
+ * (avant le surcout VDP1_AdjustDrawTiming, applique par l'appelant). */
+static u32 vdp1EstOneLine(int x0, int y0, int x1, int y1, int aa, int isQuad, int last,
+                          int preclip, int fullyInside, int perPix, const Vdp1EstRect *r) {
+  u32 n, aaPix;
+  int adx, ady;
+  vdp1EstCur.cycles += 8 + (preclip ? 4 : 0);
+  vdp1EstCur.lines++;
+  if (preclip && vdp1EstOutside(x0, y0, x1, y1, r)) {
+    /* Reduite a un point ; un quadrilatere ne trace pas une ligne
+     * pre-clippee, sauf la derniere (vdp1_sprite.c, "|| !iter"). */
+    if (isQuad && !last) return 0;
+    vdp1EstCur.pixels += 1;
+    if (perPix > 1) vdp1EstCur.rmwPixels += 1;
+    return (u32)perPix;
+  }
+  adx = abs(x1 - x0);
+  ady = abs(y1 - y0);
+  n = (u32)((adx > ady) ? adx : ady) + 1;
+  aaPix = aa ? (u32)((adx < ady) ? adx : ady) : 0;
+  if (!fullyInside && !(vdp1EstInside(x0, y0, r) && vdp1EstInside(x1, y1, r))) {
+    const u32 walked = vdp1EstWalked(x0, y0, x1, y1, r, n);
+    aaPix = (u32)(((u64)aaPix * walked) / n);
+    n = walked;
+  }
+  n += aaPix;
+  vdp1EstCur.pixels += n;
+  if (perPix > 1) vdp1EstCur.rmwPixels += n;
+  return n * (u32)perPix;
+}
+
+static INLINE int vdp1EstPerPixel(u16 pmod) {
+  return ((pmod & 0x8000) || (pmod & 0x0001)) ? 6 : 1;
+}
+
+static INLINE u32 vdp1EstAdjust(u32 pixCycles) {
+  /* VDP1_AdjustDrawTiming : +48/256 en 16 bits, +24/256 en 8 bits. */
+  return pixCycles + (u32)(((u64)pixCycles * ((Vdp1Regs->TVMR & 0x1) ? 24 : 48)) >> 8);
+}
+
+/* Quadrilatere A B C D (coordonnees finales, coordonnees locales appliquees).
+ * textured = sprite (normal, agrandi, deforme), 0 = polygone. */
+static void vdp1EstQuad(const vdp1cmd_struct *cmd, int textured) {
+  const u16 pmod = cmd->CMDPMOD;
+  const int preclip = !(pmod & 0x0800);
+  const int perPix = vdp1EstPerPixel(pmod);
+  const int xa = cmd->CMDXA, ya = cmd->CMDYA, xb = cmd->CMDXB, yb = cmd->CMDYB;
+  const int xc = cmd->CMDXC, yc = cmd->CMDYC, xd = cmd->CMDXD, yd = cmd->CMDYD;
+  Vdp1EstRect r;
+  int dmax, i, fullyInside, minx, maxx, miny, maxy;
+  u32 pix = 0;
+
+  vdp1EstClipRect(pmod, &r);
+  dmax = abs(xd - xa);
+  if (abs(yd - ya) > dmax) dmax = abs(yd - ya);
+  if (abs(xc - xb) > dmax) dmax = abs(xc - xb);
+  if (abs(yc - yb) > dmax) dmax = abs(yc - yb);
+  dmax &= 0xFFF;
+
+  minx = MIN(MIN(xa, xb), MIN(xc, xd)); maxx = MAX(MAX(xa, xb), MAX(xc, xd));
+  miny = MIN(MIN(ya, yb), MIN(yc, yd)); maxy = MAX(MAX(ya, yb), MAX(yc, yd));
+  fullyInside = (minx >= r.x0) && (maxx <= r.x1) && (miny >= r.y0) && (maxy <= r.y1);
+
+  if ((pmod & 0x8004) == 0x0004) vdp1EstCur.cycles += 4;              /* table Gouraud */
+  if (textured && (((pmod >> 3) & 0x7) == 1)) vdp1EstCur.cycles += 16; /* table de couleurs */
+
+  if (preclip && (maxx < r.x0 || minx > r.x1 || maxy < r.y0 || miny > r.y1)) {
+    /* Tout le quadrilatere est hors zone : toutes les lignes sont
+     * pre-clippees, seule la derniere est tracee (un point). */
+    vdp1EstCur.cycles += (u32)(dmax + 1) * 12;
+    vdp1EstCur.lines  += (u32)(dmax + 1);
+    vdp1EstCur.pixels += 1;
+    if (perPix > 1) vdp1EstCur.rmwPixels += 1;
+    vdp1EstCur.cycles += vdp1EstAdjust((u32)perPix);
+    return;
+  }
+
+  for (i = 0; i <= dmax; i++) {
+    int x0, y0, x1, y1;
+    if (dmax == 0) { x0 = xa; y0 = ya; x1 = xb; y1 = yb; }
+    else {
+      x0 = xa + (int)(((s64)(xd - xa) * i) / dmax);
+      y0 = ya + (int)(((s64)(yd - ya) * i) / dmax);
+      x1 = xb + (int)(((s64)(xc - xb) * i) / dmax);
+      y1 = yb + (int)(((s64)(yc - yb) * i) / dmax);
+    }
+    pix += vdp1EstOneLine(x0, y0, x1, y1, 1, 1, i == dmax, preclip, fullyInside, perPix, &r);
+  }
+  vdp1EstCur.cycles += vdp1EstAdjust(pix);
+}
+
+/* Ligne (1 segment A-B) ou polyligne (A-B, B-C, C-D, D-A), sans antialiasing. */
+static void vdp1EstLines(const vdp1cmd_struct *cmd, int nlines) {
+  const u16 pmod = cmd->CMDPMOD;
+  const int preclip = !(pmod & 0x0800);
+  const int perPix = vdp1EstPerPixel(pmod);
+  const int X[4] = { cmd->CMDXA, cmd->CMDXB, cmd->CMDXC, cmd->CMDXD };
+  const int Y[4] = { cmd->CMDYA, cmd->CMDYB, cmd->CMDYC, cmd->CMDYD };
+  Vdp1EstRect r;
+  u32 pix = 0;
+  int i;
+  vdp1EstClipRect(pmod, &r);
+  for (i = 0; i < nlines; i++) {
+    const int j = (i + 1) & 3;
+    if ((pmod & 0x8004) == 0x0004) vdp1EstCur.cycles += 2;           /* Gouraud */
+    pix += vdp1EstOneLine(X[i], Y[i], X[j], Y[j], 0, 0, 1, preclip, 0, perPix, &r);
+  }
+  vdp1EstCur.cycles += vdp1EstAdjust(pix);
+}
+ 
 static void RequestVdp1ToDraw() {
   if (needVdp1draw == 0){
     needVdp1draw = 1;
     CmdListInLoop = 0;
   }
 }
-
-
+ 
+ 
 void Vdp1SetDMAConcurrency() {
   Vdp1External.blocked = 1;
 }
 void Vdp1ClearDMAConcurrency() {
   Vdp1External.blocked = 0;
 }
-
+ 
 static void abortVdp1() {
   if ((Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING) {
     FRAMELOG("Aborting VDP1 %d\n", yabsys.LineCount);
+    vdp1StatsListAbort();
     // The vdp1 is still running and a new draw command request has been received
     // Abort the current command list
     Vdp1External.status &= ~VDP1_STATUS_MASK;
@@ -172,7 +577,7 @@ static void abortVdp1() {
 }
 //////////////////////////////////////////////////////////////////////////////
 static u32 lastVRamBankCol = 0;
-
+ 
 /* ---------------------------------------------------------------------------
  * VDP1 busy / idle and the cost of touching its memories.
  *
@@ -202,11 +607,11 @@ static u32 lastVRamBankCol = 0;
  * and to the SCU as much as the CPU, since the manual names the system
  * controller IC rather than the CPU as the higher-priority agent.
  * ------------------------------------------------------------------------- */
-
+ 
 static INLINE int vdp1IsDrawing(void) {
   return (Vdp1External.status & VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING;
 }
-
+ 
 /* p.19 gives "more than 10 wait cycles" as the figure for an access that
  * collides with drawing, without an exact number. 10 is the manual's own
  * lower bound and is used here as a conservative value; override at build
@@ -214,7 +619,7 @@ static INLINE int vdp1IsDrawing(void) {
 #ifndef VDP1_CPU_WAIT_WHILE_DRAWING
 #define VDP1_CPU_WAIT_WHILE_DRAWING 10
 #endif
-
+ 
 /* Charge one access to the VDP1 VRAM or frame buffer.
  * `cycles` is the bus occupancy of the access itself, always paid.
  * A collision with drawing adds the arbitration stall on top, and steals
@@ -225,9 +630,12 @@ static INLINE void vdp1BusAccess(SH2_struct *context, int cycles) {
     context->cycles += cycles;
     if (drawing) context->cycles += VDP1_CPU_WAIT_WHILE_DRAWING;
   }
-  if (drawing) vdp1_clock -= cycles;
+  if (drawing) {
+    vdp1_clock -= cycles;
+    vdp1StatsCpu(cycles);
+  }
 }
-
+ 
 /* Read variant. The row-bank crossing penalty at each read site already
  * accounts for the SH2-side bus cost, so only the drawing collision is added
  * here. A cached read hides the latency from the SH2 but not the bus
@@ -235,10 +643,11 @@ static INLINE void vdp1BusAccess(SH2_struct *context, int cycles) {
 static INLINE void vdp1BusRead(SH2_struct *context, int cycles) {
   if (!vdp1IsDrawing()) return;
   vdp1_clock -= cycles;
+  vdp1StatsCpu(cycles);
   if ((context != NULL) && (!context->cacheOn))
     context->cycles += VDP1_CPU_WAIT_WHILE_DRAWING;
 }
-
+ 
 u8 FASTCALL Vdp1RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x7FFFF;
    int rowBank = ((addr>>9)&0x3FF);
@@ -251,9 +660,9 @@ u8 FASTCALL Vdp1RamReadByte(SH2_struct *context, u8* mem, u32 addr) {
    vdp1BusRead(context, 2);
    return T1ReadByte(mem, addr);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u16 FASTCALL Vdp1RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
     addr &= 0x07FFFF;
     int rowBank = ((addr>>9)&0x3FF);
@@ -266,9 +675,9 @@ u16 FASTCALL Vdp1RamReadWord(SH2_struct *context, u8* mem, u32 addr) {
    vdp1BusRead(context, 2);
    return T1ReadWord(mem, addr);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u32 FASTCALL Vdp1RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x7FFFF;
    int rowBank = ((addr>>9)&0x3FF);
@@ -281,9 +690,9 @@ u32 FASTCALL Vdp1RamReadLong(SH2_struct *context, u8* mem, u32 addr) {
    vdp1BusRead(context, 2);
    return T1ReadLong(mem, addr);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static int Vdp1LoopAddr = -1;
 void FASTCALL Vdp1RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    addr &= 0x7FFFF;
@@ -293,7 +702,7 @@ void FASTCALL Vdp1RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
     if (context) context->cycles += 2;
    }
    if (context)context->cycles += 1;
-
+ 
    // printf("Write 0x%x @ 0x%x (%d %d)\n", val, addr, yabsys.LineCount, yabsys.DecilineCount);
    Vdp1External.updateVdp1Ram = 1;
    vdp1BusAccess(context, 1);
@@ -301,9 +710,9 @@ void FASTCALL Vdp1RamWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
    if (vdp1Ram_update_end < addr+1) vdp1Ram_update_end = addr + 1;
    T1WriteByte(mem, addr, val);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
    addr &= 0x7FFFF;
    int rowBank = ((addr>>9)&0x3FF);
@@ -319,9 +728,9 @@ void FASTCALL Vdp1RamWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) 
    if (vdp1Ram_update_end < addr+2) vdp1Ram_update_end = addr + 2;
    T1WriteWord(mem, addr, val);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    addr &= 0x7FFFF;
    int rowBank = ((addr>>9)&0x3FF);
@@ -337,9 +746,9 @@ void FASTCALL Vdp1RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) 
    if (vdp1Ram_update_end < addr+4) vdp1Ram_update_end = addr + 4;
    T1WriteLong(mem, addr, val);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 /* VDP1 Manual §1.2 Table 1.2 p.13 + §4.1 Table 4.2 p.42:
  * The frame-buffer dimensions are determined by TVMR.TVM (bits 2:0):
  *
@@ -358,13 +767,13 @@ void FASTCALL Vdp1RamWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) 
 static INLINE u32 vdp1FBHeight(void) {
     return ((Vdp1Regs->TVMR & 0x7) == 0x3) ? 512 : 256;
 }
-
+ 
 /* §1.2 / §4.1: only TVM=001 (Hi-Res 8bpp) is 1024 wide. All other
  * modes (including Rotation 8bpp TVM=011 which is 512×512) are 512. */
 static INLINE u32 vdp1FBWidth(void) {
     return ((Vdp1Regs->TVMR & 0x7) == 0x1) ? 1024 : 512;
 }
-
+ 
 /* BUG CORRIGE : cette capacité était figée à 512*256 (131072), soit
  * exactement la moitié du vrai framebuffer Hi-Res (1024*256=262144,
  * cf. vdp1FBWidth() ci-dessus qui renvoie bien 1024 pour TVM=001).
@@ -380,7 +789,7 @@ static INLINE u32 vdp1FBPixCapacity(void) {
 static INLINE int vdp1FBPixInBounds(u32 pixIdx) {
     return pixIdx < vdp1FBPixCapacity();
 }
-
+ 
 u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0x3FFFF;
    u32 pixIdx = addr>>1;
@@ -395,7 +804,7 @@ u8 FASTCALL Vdp1FrameBuffer16bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    PRINT_FB("R B 0x%x@0x%x\n", ret, addr);
    return ret;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) {
@@ -407,7 +816,7 @@ u16 FASTCALL Vdp1FrameBuffer16bReadWord(SH2_struct *context, u8* mem, u32 addr) 
    PRINT_FB("R W 0x%x@0x%x (%d, %d)\n", T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF, addr, yabsys.LineCount, yabsys.DecilineCount);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFFFF;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) {
@@ -421,7 +830,7 @@ u32 FASTCALL Vdp1FrameBuffer16bReadLong(SH2_struct *context, u8* mem, u32 addr) 
    u16 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFFFF) : 0;
    return (val1<<16) | val2;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
@@ -455,7 +864,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteByte(SH2_struct *context, u8* mem, u32 addr
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
@@ -470,7 +879,7 @@ void FASTCALL Vdp1FrameBuffer16bWriteWord(SH2_struct *context, u8* mem, u32 addr
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer16bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
@@ -502,7 +911,7 @@ u8 FASTCALL Vdp1FrameBuffer8bReadByte(SH2_struct *context, u8* mem, u32 addr) {
    PRINT_FB("R B 0x%x@0x%x\n", buf[pixIdx]&0xFF, addr);
    return T1ReadLong((u8*)buf, pixIdx*4) & 0xFF;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
@@ -515,7 +924,7 @@ u16 FASTCALL Vdp1FrameBuffer8bReadWord(SH2_struct *context, u8* mem, u32 addr) {
    u8 val2 = vdp1FBPixInBounds(pixIdx+1) ? (T1ReadLong((u8*)buf, (pixIdx+1)*4) & 0xFF) : 0;
    return (val1<<8) | val2;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
@@ -530,7 +939,7 @@ u32 FASTCALL Vdp1FrameBuffer8bReadLong(SH2_struct *context, u8* mem, u32 addr) {
    PRINT_FB("R L 0x%x@0x%x\n", (val1<<24)|(val2<<16)|(val3<<8)|val4, addr);
    return (val1<<24) | (val2<<16) | (val3<<8) | val4;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
@@ -545,7 +954,7 @@ void FASTCALL Vdp1FrameBuffer8bWriteByte(SH2_struct *context, u8* mem, u32 addr,
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
@@ -565,7 +974,7 @@ void FASTCALL Vdp1FrameBuffer8bWriteWord(SH2_struct *context, u8* mem, u32 addr,
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
  
 void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
@@ -593,25 +1002,25 @@ void FASTCALL Vdp1FrameBuffer8bWriteLong(SH2_struct *context, u8* mem, u32 addr,
    _Ygl->FBDirty[_Ygl->drawframe] = 1;
    _Ygl->vdp1IsNotEmpty[_Ygl->drawframe] = yabsys.LineCount;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 int Vdp1Init(void) {
    if ((Vdp1Regs = (Vdp1 *) malloc(sizeof(Vdp1))) == NULL)
       return -1;
-
+ 
    if ((Vdp1Ram = T1MemoryInit(0x80000)) == NULL)
       return -1;
-
+ 
    Vdp1External.disptoggle = 1;
    Vdp1External.blocked = 0;
-
+ 
    Vdp1Regs->TVMR = 0;
    Vdp1Regs->FBCR = 0;
    Vdp1Regs->PTMR = 0;
-
+ 
    /* Chapitre 9 du manuel VDP1 : le coin haut-gauche du clipping systeme est
     * fixe a (0,0) par le materiel, et la plage de coordonnees de clipping va
     * de (0,0) a (1023,511) -- bornes INCLUSIVES, comme le confirme l'usage
@@ -627,7 +1036,7 @@ int Vdp1Init(void) {
    Vdp1Regs->systemclipY1 = 0;
    Vdp1Regs->systemclipX2 = 1023;
    Vdp1Regs->systemclipY2 = 511;
-
+ 
    Vdp1Regs->userclipX1 = 0;
    Vdp1Regs->userclipY1 = 0;
    /* Bornes INCLUSIVES : ces champs recoivent ensuite cmd->CMDXC / CMDYC,
@@ -638,57 +1047,57 @@ int Vdp1Init(void) {
    Vdp1Regs->userclipX2 = 1023;
    Vdp1Regs->userclipY2 = 511;
    Vdp1Regs->userclipMode = 0; // VDP1 Manual §6.3 Cmod: default = inside drawing mode
-
+ 
    Vdp1Regs->localX = 0;
    Vdp1Regs->localY = 0;
-
+ 
    VDP1_MASK = 0xFFFF;
-
+ 
    vdp1Ram_update_start = 0x80000;
    vdp1Ram_update_end = 0x0;
-
+ 
    _Ygl->shallVdp1Erase[0] = 1;
    _Ygl->shallVdp1Erase[1] = 1;
-
+ 
    Vdp1EraseLatchEWDR = 0;
    Vdp1EraseLatchEWLR = 0;
    Vdp1EraseLatchEWRR = 0;
-
+ 
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void Vdp1DeInit(void) {
    if (Vdp1Regs)
       free(Vdp1Regs);
    Vdp1Regs = NULL;
-
+ 
    if (Vdp1Ram)
       T1MemoryDeInit(Vdp1Ram);
    Vdp1Ram = NULL;
-
+ 
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 int VideoInit(int coreid) {
    return VideoChangeCore(coreid);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 int VideoChangeCore(int coreid)
 {
    int i;
-
+ 
    // Make sure the old core is freed
    VideoDeInit();
-
+ 
    // So which core do we want?
    if (coreid == VIDCORE_DEFAULT)
       coreid = 0; // Assume we want the first one
-
+ 
    // Go through core list and find the id
    for (i = 0; VIDCoreList[i] != NULL; i++)
    {
@@ -699,32 +1108,32 @@ int VideoChangeCore(int coreid)
          break;
       }
    }
-
+ 
    if (VIDCore == NULL)
       return -1;
-
+ 
    if (VIDCore->Init() != 0)
       return -1;
-
+ 
    // Reset resolution/priority variables
    if (Vdp2Regs)
    {
       VIDCore->Vdp1Reset();
    }
-
+ 
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void VideoDeInit(void) {
    if (VIDCore)
       VIDCore->DeInit();
    VIDCore = NULL;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void Vdp1Reset(void) {
    FRAMELOG("Reset Vdp1\n");
    Vdp1Regs->PTMR = 0;
@@ -736,23 +1145,24 @@ void Vdp1Reset(void) {
    VIDCore->Vdp1Reset();
    vdp1_clock = 0;
    Vdp1LatchEraseParameters();
+   vdp1StatsReset();
 }
-
+ 
 int VideoSetSetting( int type, int value )
 {
 	if (VIDCore) VIDCore->SetSettingValue( type, value );
 	return 0;
 }
-
-
+ 
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u8 FASTCALL Vdp1ReadByte(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0xFF;
    LOG("trying to byte-read a Vdp1 register\n");
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
 u16 FASTCALL Vdp1ReadWord(SH2_struct *context, u8* mem, u32 addr) {
    addr &= 0xFF;
@@ -779,9 +1189,9 @@ u16 FASTCALL Vdp1ReadWord(SH2_struct *context, u8* mem, u32 addr) {
    }
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u32 FASTCALL Vdp1ReadLong(SH2_struct *context, u8* mem, u32 addr) {
    /* VDP1 registers are 16-bit; a 32-bit bus access spans two adjacent
     * registers. The Saturn SH2 bus is big-endian, so the word at the lower
@@ -792,16 +1202,16 @@ u32 FASTCALL Vdp1ReadLong(SH2_struct *context, u8* mem, u32 addr) {
    u16 lo = Vdp1ReadWord(context, mem, addr + 2);
    return ((u32)hi << 16) | lo;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1WriteByte(SH2_struct *context, u8* mem, u32 addr, UNUSED u8 val) {
    addr &= 0xFF;
    LOG("trying to byte-write a Vdp1 register - %08X\n", addr);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static u8 FBCRChangeUpdated = 0;
 /* VDP1 Manual §4.2 Table 4.3 p.41-42: frame buffer mode from
  * (VBE=TVMR[3], FCT=FBCR[1], FCM=FBCR[0]). Returns a bitfield:
@@ -830,8 +1240,8 @@ static u8 decodeFBCRMode(void) {
     if (fct == 0) return 0x08;   /* (0,1,0) manual erase  */
     return 0x02;                 /* (0,1,1) manual change */
 }
-
-
+ 
+ 
 static void updateFBCRChange() {
   if (FBCRChangeUpdated == 0) return;
   u8 m = decodeFBCRMode();
@@ -839,7 +1249,7 @@ static void updateFBCRChange() {
   Vdp1External.onecyclechange = (m >> 2) & 0x1;
   FBCRChangeUpdated = 0;
 }
-
+ 
 static u8 FBCREraseUpdated = 0;
 /* Effacement programme au changement de frame buffer.
  *
@@ -877,7 +1287,7 @@ static void updateFBCRErase() {
 static void updateFBCRVBE() {
 	Vdp1External.useVBlankErase = decodeFBCRMode() & 0x1;
 }
-
+ 
 /* Instantane de la VRAM VDP1 pris au declenchement du trace.
  *
  * Un debogueur doit montrer la liste de commandes REELLEMENT tracee, pas
@@ -890,25 +1300,38 @@ static void updateFBCRVBE() {
  * La copie n'est faite que si l'interface de debogue l'a demandee
  * (Vdp1DebugSetCapture), pour ne pas payer un memcpy de 512 Ko par trame
  * en fonctionnement normal. */
+/* Edits de l'editeur graphique (vdpedit.h) : NULL tant qu'aucun edit
+ * n'existe ; vdpedit.c l'installe. */
+void (*VdpEditHookVdp1)(void) = NULL;
+
 static u8 *Vdp1DebugFrameRam = NULL;
 static int Vdp1DebugCaptureEnabled = 0;
 static int Vdp1DebugFrameValid = 0;
-
+ 
+/* Compteur d'utilisateurs : le debogueur VDP1 et l'editeur graphique peuvent
+ * etre ouverts ensemble ; fermer l'un ne doit pas liberer l'instantane que
+ * l'autre lit encore. Chaque Vdp1DebugSetCapture(1) est equilibre par un
+ * Vdp1DebugSetCapture(0). */
 void Vdp1DebugSetCapture(int enable)
 {
-   Vdp1DebugCaptureEnabled = enable;
-   if (!enable) {
+   if (enable)
+      Vdp1DebugCaptureEnabled++;
+   else if (Vdp1DebugCaptureEnabled > 0)
+      Vdp1DebugCaptureEnabled--;
+   /* Couts par commande du trace capture (vdp1StatsCmd). */
+   vdp1CmdCostEnable(Vdp1DebugCaptureEnabled > 0);
+   if (Vdp1DebugCaptureEnabled == 0) {
       free(Vdp1DebugFrameRam);
       Vdp1DebugFrameRam = NULL;
       Vdp1DebugFrameValid = 0;
    }
 }
-
+ 
 u8 *Vdp1DebugGetFrameRam(void)
 {
    return Vdp1DebugFrameValid ? Vdp1DebugFrameRam : NULL;
 }
-
+ 
 /* Memoire que lisent TOUTES les fonctions Vdp1Debug* : l'instantane pris au
  * debut du dernier trace s'il existe, la VRAM vivante sinon.
  *
@@ -923,12 +1346,12 @@ static u8 *Vdp1DebugMem(void)
    return Vdp1DebugFrameValid && (Vdp1DebugFrameRam != NULL)
           ? Vdp1DebugFrameRam : Vdp1Ram;
 }
-
+ 
 u8 *Vdp1DebugGetRam(void)
 {
    return Vdp1DebugMem();
 }
-
+ 
 static void Vdp1DebugCaptureFrame(void)
 {
    if (!Vdp1DebugCaptureEnabled || (Vdp1Ram == NULL))
@@ -939,13 +1362,20 @@ static void Vdp1DebugCaptureFrame(void)
       return;
    memcpy(Vdp1DebugFrameRam, Vdp1Ram, 0x80000);
    Vdp1DebugFrameValid = 1;
+   /* Nouveau trace : les couts par commande repartent de zero, pour
+    * correspondre a la table qui vient d'etre capturee. */
+   vdp1CmdCostClear();
 }
-
+ 
 static void Vdp1TryDraw(void) {
   if ((yabsys.LineCount >= yabsys.MaxLineCount-2) && (yabsys.LineCount <= yabsys.MaxLineCount-1)) return;
   if ((oldNeedVdp1draw == 0) && (needVdp1draw != 0)) {
     /* Transition 0 -> 1 : une nouvelle passe de trace commence, la table de
      * commandes est dans son etat definitif pour cette trame. */
+    /* Edits de l'editeur graphique (vdpedit.c) : remis en VRAM avant le
+     * trace -- et avant la capture, pour que le debogueur montre la meme
+     * chose que l'ecran. Pointeur NULL tant qu'aucun edit n'existe. */
+    if (VdpEditHookVdp1) VdpEditHookVdp1();
     Vdp1DebugCaptureFrame();
     FRAMELOG("Shift EDSR\n");
     Vdp1Regs->EDSR >>= 1;
@@ -958,14 +1388,14 @@ static void Vdp1TryDraw(void) {
     needVdp1draw = Vdp1Draw();
   }
 }
-
+ 
 static int Vdp1FBDraw(void) {
   if (VIDCore->Vdp1FBDraw){
     VIDCore->Vdp1FBDraw();
   }
   return 1;
 }
-
+ 
 static void checkFBSync() {
   int needClearFB = 0;
   if (_Ygl->vdp1IsNotEmpty[_Ygl->drawframe] != -1) {
@@ -978,10 +1408,10 @@ static void checkFBSync() {
     if (needClearFB != 0) clearVDP1Framebuffer(_Ygl->drawframe);
   }
 }
-
+ 
 void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
   addr &= 0xFF;
-
+ 
   switch(addr) {
     case 0x00: // TVMR
       /* Le BIOS peut écrire des bits de test ici. 
@@ -994,7 +1424,7 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       Vdp1Regs->TVMR = val & 0x000F; // Masque hardware strict
       updateFBCRVBE();
       break;
-
+ 
     case 0x02: // FBCR
       /* IMPORTANT : Le BIOS utilise le mode manuel pour l'animation des cristaux.
          On ne doit pas filtrer trop agressivement ici.
@@ -1004,7 +1434,7 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       FBCREraseUpdated = 1;
       FBCRChangeUpdated = 1;
       break;
-
+ 
 	case 0x04: // PTMR
       val &= 0x0003;
       if (val == 0x3) val = 0x2;
@@ -1032,11 +1462,11 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
         Vdp1TryDraw();
       }
       break;
-
+ 
     case 0x06: // EWDR
       Vdp1Regs->EWDR = val;
       break;
-
+ 
     case 0x08: // EWLR
     case 0x0A: // EWRR
       /* On retire le masque 0x3F3F qui cassait probablement l'effacement du BIOS.
@@ -1044,7 +1474,7 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
       if (addr == 0x08) Vdp1Regs->EWLR = val;
       else Vdp1Regs->EWRR = val;
       break;
-
+ 
     case 0x0C: // ENDR
       Vdp1Regs->ENDR = val;
       /* ENDR only stops a drawing in progress (VDP1 manual ST-013-R3, Draw
@@ -1060,14 +1490,14 @@ void FASTCALL Vdp1WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val) {
        * waited for CEF forever (black screen, VDP1 at 0 fps). */
       abortVdp1();
       break;
-
+ 
     default:
       break;
   }
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void FASTCALL Vdp1WriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    /* VDP1 registers are 16-bit; a 32-bit bus access targets two adjacent
     * registers. Big-endian SH2: the word at the lower address holds the
@@ -1080,7 +1510,7 @@ void FASTCALL Vdp1WriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val) {
    Vdp1WriteWord(context, mem, addr,     (val >> 16) & 0xFFFF);
    Vdp1WriteWord(context, mem, addr + 2,  val        & 0xFFFF);
 }
-
+ 
 static void printCommand(vdp1cmd_struct *cmd) {
   printf("===== CMD =====\n");
   printf("CMDCTRL = 0x%x\n",cmd->CMDCTRL );
@@ -1099,7 +1529,7 @@ static void printCommand(vdp1cmd_struct *cmd) {
   printf("CMDYD = 0x%x\n",cmd->CMDYD );
   printf("CMDGRDA = 0x%x\n",cmd->CMDGRDA );
 }
-
+ 
 static int emptyCmd(vdp1cmd_struct *cmd) {
   return (
     (cmd->CMDCTRL == 0) &&
@@ -1118,170 +1548,174 @@ static int emptyCmd(vdp1cmd_struct *cmd) {
     (cmd->CMDYD == 0) &&
     (cmd->CMDGRDA == 0));
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
-static int getNormalCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: "data for 1 pixel is drawn in sync with
-     * the 28MHz CPU operating clock" → 1 cycle = 1 pixel drawn.
-     *
-     * The bottleneck depends on color mode (CMDPMOD bits 5-3):
-     *   mode 0/1 (4bpp):  2 pixels per VRAM word read  → texture read
-     *                     is rw/2 cycles; FB write is rw cycles (16bpp FB)
-     *                     → bottleneck = FB write = rw cycles
-     *   mode 2/3/4 (8bpp):1 pixel per VRAM word read  → texture read
-     *                     is rw cycles; 8bpp FB write = rw/2 cycles
-     *                     → bottleneck = texture read = rw cycles
-     *                     BUT when TVMR bit 0 = 1 (8bpp FB):
-     *                     FB write costs rw/2 cycles (2px/word)
-     *                     → total dominated by texture read
-     *   mode 5 (16bpp):   1 pixel per 2 VRAM words; FB write = rw cycles
-     *                     → bottleneck = max(texture, FB write) = rw cycles
-     *
-     * When TVMR bit 0 = 1 (8bpp frame buffer mode, hi-res/rotation):
-     *   Each FB write stores 2 pixels per word → half the write cycles.
-     *   VDP1 Manual §4.3 p.49: "erase/write is performed 2 pixels at a time"
-     *   This halves effective throughput for the FB write path.
-     *   The texture read path dominates for 8bpp color modes.
-     *
-     * Conservative model: cycles = rw * h (1 cycle per output pixel)
-     * with 8bpp-FB correction already accounted via >>1.
-     */
-    int rw = MAX(cmd->w, 1);
-    /* VDP1 Manual §4.3: in 8bpp FB mode (TVMR bit 0 = 1),
-     * 2 pixels are written per bus cycle → effective rate doubles,
-     * so the per-line pixel budget is halved for FB write. */
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-    return rw * MAX(cmd->h, 1);
-}
-
+ 
+/* ---------------------------------------------------------------------------
+ * Modele de cycles de l'emulateur : c'est lui qui regle vdp1_clock, donc la
+ * duree du trace emule (transfer-over, fin de liste, EDSR.CEF...).
+ *
+ * Base : VDP1 Manual ST-013-R3 §2.5 p.20, "the data for 1 pixel is drawn in
+ * sync with" l'horloge de 28 MHz -> 1 cycle par pixel ecrit.
+ *
+ * Corrections :
+ *
+ *  - Frame buffer 8 bits : la largeur n'est plus divisee par 2. Le "erase/
+ *    write is performed 2 pixels at a time when the frame buffer depth is 8
+ *    bits/pixel" du manuel (p.46) concerne l'EFFACEMENT seulement ; rien
+ *    n'indique que le trace ecrive deux pixels par cycle (Mednafen compte
+ *    1 cycle par pixel dans les deux profondeurs, vdp1_common.h
+ *    VDP1_PlotPixel). Les jeux en 8 bits (haute resolution, rotation)
+ *    etaient sous-estimes de moitie.
+ *
+ *  - Pre-clipping : la zone de reference est la zone de trace "specified by
+ *    the CPU" (ST-013-SP1 p.2-3, Pre-Clipping Disable) : la zone utilisateur
+ *    quand le clipping utilisateur est actif en mode interieur (CMDPMOD
+ *    Clip = 1, Cmod = 0), la zone systeme sinon. Les sommets etaient bornes
+ *    par la zone utilisateur meme clipping utilisateur desactive : un jeu qui
+ *    laissait une petite zone utilisateur rendait ses commandes presque
+ *    gratuites.
+ *
+ *  - Calcul couleur : MSB On, ombre, demi-transparence et Gouraud + demi-
+ *    transparence (CCB bit 0 = 1) relisent le pixel du frame buffer avant de
+ *    l'ecrire. Le manuel ne chiffre pas ce cout ; la valeur est celle de
+ *    Mednafen (VDP1_PlotPixel, "ret += 5" : 6 cycles par pixel au lieu de 1).
+ *
+ *  - Lignes et polylignes : comptees (getLineCycles) ; elles ne coutaient
+ *    aucun cycle.
+ *
+ * Non modelise ici (voir l'estimation detaillee vdp1EstQuad, observationnelle) :
+ * le cout fixe par ligne (dont "up to five CPU clock cycles for one line" de
+ * detection de pre-clipping, ST-013-SP1 p.3), les pixels d'antialiasing et
+ * le parcours des pixels hors zone.
+ * ------------------------------------------------------------------------- */
 #define CAP(L,A,H) (((A)<(L))?(L):(((A)>(H))?(H):(A)))
 
+/* Zone de trace de la commande (pre-clipping, lignes). */
+static void getDrawArea(const vdp1cmd_struct *cmd, int *lx, int *hx, int *ly, int *hy) {
+    if ((cmd->CMDPMOD & 0x0400) && !(cmd->CMDPMOD & 0x0200)) {
+        *lx = Vdp1Regs->userclipX1; *hx = Vdp1Regs->userclipX2;
+        *ly = Vdp1Regs->userclipY1; *hy = Vdp1Regs->userclipY2;
+    } else {
+        *lx = 0; *hx = Vdp1Regs->systemclipX2;
+        *ly = 0; *hy = Vdp1Regs->systemclipY2;
+    }
+}
+
+/* Cycles par pixel ecrit : 6 si le frame buffer est relu (MSB On, ou
+ * CCB bit 0 = 1 : ombre, demi-transparence, Gouraud + demi-transparence). */
+static INLINE int getPixelCycles(const vdp1cmd_struct *cmd) {
+    return ((cmd->CMDPMOD & 0x8000) || (cmd->CMDPMOD & 0x0001)) ? 6 : 1;
+}
+
+/* Diviseur de lecture de texture (CMDPMOD bits 5-3) : mots VRAM de 16 bits.
+ * 4 bpp -> 4 texels par mot, 8 bpp -> 2, 16 bpp -> 1. */
+static INLINE int getTextureWords(const vdp1cmd_struct *cmd, int texels) {
+    switch ((cmd->CMDPMOD >> 3) & 0x7) {
+        case 0: case 1: return texels >> 2;
+        case 2: case 3: case 4: return texels >> 1;
+        default: return texels;
+    }
+}
+
+static int getNormalCycles(vdp1cmd_struct *cmd) {
+    /* Sprite normal : w x h pixels ecrits, sans agrandissement. */
+    return MAX(cmd->w, 1) * MAX(cmd->h, 1) * getPixelCycles(cmd);
+}
+
 static int getScaledCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
-     * For scaled sprites the output size is (rw × rh) pixels.
-     * The texture read cost depends on the color mode and HSS:
-     *
-     * VDP1 Manual §6.3 HSS (bit 12 of CMDPMOD, p.81):
-     *   When HSS=1 AND output_width < texture_width (reduction):
-     *   only even/odd texture columns are sampled → texture read
-     *   is halved: cmdW >>= 1.
-     *   When HSS=0: all texture columns sampled regardless of scaling.
-     *
-     * Color mode (CMDPMOD bits 5-3):
-     *   0/1 (4bpp):  4px per word → cmdW = w/4
-     *   2/3/4 (8bpp): 2px per word → cmdW = w/2
-     *   5 (16bpp):   1px per word (as 2-byte word) → cmdW = w
-     *
-     * VDP1 Manual §4.3 Table 4.4 (p.49): 8bpp FB halves write cycles.
-     *
-     * Effective cycles = max(output_write_cycles, texture_read_cycles)
-     * where output_write_cycles = rw (16bpp FB) or rw/2 (8bpp FB)
-     * and   texture_read_cycles = cmdW (after HSS and color-mode divisor)
-     */
+    /* Sprite agrandi : rw x rh pixels ecrits. La lecture de texture (cmdW
+     * mots par ligne, divisee par 2 en reduction avec HSS = 1, ST-013-SP1
+     * p.2) borne le cout par le bas quand le sprite est fortement reduit. */
     int ax = cmd->CMDXA;
     int ay = cmd->CMDYA;
     int bx = cmd->CMDXB;
     int dy = cmd->CMDYD;
-    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping enabled (Pclp=0) */
-        int lx = Vdp1Regs->userclipX1;
-        int hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1;
-        int hy = Vdp1Regs->userclipY2;
+    int cmdW, rw, rh;
+    if (!(cmd->CMDPMOD & 0x800)) {   /* pre-clipping actif (Pclp = 0) */
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx);
         bx = CAP(lx,bx,hx);
         ay = CAP(ly,ay,hy);
         dy = CAP(ly,dy,hy);
     }
-    int cmdW = MAX(cmd->w, 1);
-    /* VDP1 Manual §6.3 color mode divisor (CMDPMOD bits 5-3):
-     * mode 0/1 (4bpp) : 4 pixels per 16-bit VRAM word → divide by 4
-     * mode 2/3/4 (8bpp): 2 pixels per 16-bit VRAM word → divide by 2
-     * mode 5 (16bpp)  : 1 pixel per 16-bit VRAM word  → no division */
-    switch ((cmd->CMDPMOD >> 3) & 0x7) {
-        case 0: case 1: cmdW >>= 2; break;   /* 4bpp: 4px/word */
-        case 2: case 3: case 4: cmdW >>= 1; break; /* 8bpp: 2px/word */
-        default: break;                        /* 16bpp: 1px/word */
-    }
-    int rh  = abs(dy - ay);
-    int rw  = abs(bx - ax);
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1; /* 8bpp FB: 2px/write-cycle */
-    /* VDP1 Manual §6.3 HSS p.81: when shrinking (rw_screen < texture_w)
-     * and HSS=1, texture read is at half resolution → cmdW halved again. */
+    cmdW = getTextureWords(cmd, MAX(cmd->w, 1));
+    rh = abs(dy - ay);
+    rw = abs(bx - ax);
     if (((cmd->CMDPMOD >> 12) & 0x1) && (rw < cmd->w)) cmdW >>= 1;
-    return MAX(rw, cmdW) * MAX(rh, 1);
+    return MAX(rw * getPixelCycles(cmd), cmdW) * MAX(rh, 1);
 }
 
 static int getDistortedCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §2.5 p.20: 1 cycle = 1 output pixel at 28MHz.
-     * Distorted sprite uses same pipeline as scaled sprite (§6.2 p.83).
-     * rw_screen = average horizontal output width across all scan lines.
-     * VDP1 Manual §6.3 Pre-clipping (Pclp bit 11, p.83):
-     *   "overhead required for detection = up to 5 CPU clock cycles per line"
-     *   When Pclp=0 (pre-clipping enabled), clip to user-clip rect first. */
+    /* Sprite deforme : largeur moyenne des aretes AB et DC x hauteur
+     * maximale ; meme borne de lecture de texture que le sprite agrandi. */
     int ax = cmd->CMDXA, ay = cmd->CMDYA;
     int bx = cmd->CMDXB, by = cmd->CMDYB;
     int cx = cmd->CMDXC, cy = cmd->CMDYC;
     int dx = cmd->CMDXD, dy = cmd->CMDYD;
+    int rw_screen, cmdW, rw, rh;
     if (!(cmd->CMDPMOD & 0x800)) {
-        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
         cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
         ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
         cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
     }
-    /* Average horizontal screen width (AB edge + DC edge) / 2 */
-    int rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
-    if (Vdp1Regs->TVMR & 0x1) rw_screen >>= 1; /* 8bpp FB */
-    int cmdW = MAX(cmd->w, 1);
-    /* VDP1 Manual §6.3 color mode (CMDPMOD bits 5-3):
-     * 4bpp→ /4, 8bpp→ /2, 16bpp→ /1 (words per texture pixel) */
-    switch ((cmd->CMDPMOD >> 3) & 0x7) {
-        case 0: case 1: cmdW >>= 2; break;
-        case 2: case 3: case 4: cmdW >>= 1; break;
-        default: break;
-    }
-    /* VDP1 Manual HSS p.81: shrink + HSS=1 → half texture reads */
+    rw_screen = (abs(bx-ax) + abs(cx-dx)) / 2;
+    cmdW = getTextureWords(cmd, MAX(cmd->w, 1));
     if (((cmd->CMDPMOD >> 12) & 0x1) && (rw_screen < cmd->w))
         cmdW >>= 1;
-    int rw = MAX(rw_screen, cmdW);
-    int rh = MAX(abs(ay - dy), abs(cy - by));
+    rw = MAX(rw_screen * getPixelCycles(cmd), cmdW);
+    rh = MAX(abs(ay - dy), abs(cy - by));
     return MAX(rw, 1) * MAX(rh, 1);
 }
 
 static int getPolygonCycles(vdp1cmd_struct *cmd) {
-    /* VDP1 Manual §6.1 Table 6.1 p.71: Polygon/Polyline/Line are
-     * NON-TEXTURED draw commands — no VRAM texture read, only FB write.
-     * VDP1 Manual §2.5 p.20: 1 cycle = 1 pixel written at 28MHz.
-     * Average width = ((XB-XA) + (XC-XD)) / 2  (top + bottom edges).
-     * VDP1 Manual §4.3: 8bpp FB (TVMR bit 0=1) → 2px per write cycle.
-     * Pre-clipping (Pclp bit 11): clamp vertices to user-clip rect.
-     * Note: CMDPMOD color mode bits are irrelevant for non-textured
-     * commands — there is no texture to read. Color is flat from CMDCOLR.
-     */
+    /* Polygone : pas de texture, seulement l'ecriture des pixels. */
     int ax = cmd->CMDXA, ay = cmd->CMDYA;
     int bx = cmd->CMDXB, by = cmd->CMDYB;
     int cx = cmd->CMDXC, cy = cmd->CMDYC;
     int dx = cmd->CMDXD, dy = cmd->CMDYD;
-    if (!(cmd->CMDPMOD & 0x800)) { /* pre-clipping enabled */
-        int lx = Vdp1Regs->userclipX1, hx = Vdp1Regs->userclipX2;
-        int ly = Vdp1Regs->userclipY1, hy = Vdp1Regs->userclipY2;
+    int rw, rh;
+    if (!(cmd->CMDPMOD & 0x800)) {
+        int lx, hx, ly, hy;
+        getDrawArea(cmd, &lx, &hx, &ly, &hy);
         ax = CAP(lx,ax,hx); bx = CAP(lx,bx,hx);
         cx = CAP(lx,cx,hx); dx = CAP(lx,dx,hx);
         ay = CAP(ly,ay,hy); by = CAP(ly,by,hy);
         cy = CAP(ly,cy,hy); dy = CAP(ly,dy,hy);
     }
-    /* Average horizontal width over the quadrilateral */
-	int rw = (abs(bx - ax) + abs(cx - dx)) / 2;
-    /* VDP1 Manual §4.3: 8bpp FB → 2 pixels per bus write cycle */
-    if (Vdp1Regs->TVMR & 0x1) rw >>= 1;
-    /* VDP1 Manual §6.2 p.83 Pre-clipping note: "up to 5 CPU clock cycles
-     * per line" overhead for detection, but no texture read penalty. */
-	int rh = MAX(abs(ay - dy), abs(cy - by));
-    return MAX(rw, 1) * MAX(rh, 1);
+    rw = (abs(bx - ax) + abs(cx - dx)) / 2;
+    rh = MAX(abs(ay - dy), abs(cy - by));
+    return MAX(rw, 1) * MAX(rh, 1) * getPixelCycles(cmd);
 }
 
+static int getLineCycles(vdp1cmd_struct *cmd, int nlines) {
+    /* Ligne (1 segment A-B) ou polyligne (A-B, B-C, C-D, D-A) : chaque
+     * segment ecrit max(|dx|, |dy|) + 1 pixels. Avec le pre-clipping actif,
+     * un segment entierement d'un meme cote de la zone de trace n'est pas
+     * trace (ST-013-SP1 p.3 : "can be detected in advance ... by not
+     * allowing the drawing to be started") ; on lui compte 1 cycle. */
+    const int X[4] = { cmd->CMDXA, cmd->CMDXB, cmd->CMDXC, cmd->CMDXD };
+    const int Y[4] = { cmd->CMDYA, cmd->CMDYB, cmd->CMDYC, cmd->CMDYD };
+    const int preclip = !(cmd->CMDPMOD & 0x800);
+    int lx, hx, ly, hy, i, total = 0;
+    getDrawArea(cmd, &lx, &hx, &ly, &hy);
+    for (i = 0; i < nlines; i++) {
+        const int j = (i + 1) & 3;
+        if (preclip &&
+            ((X[i] < lx && X[j] < lx) || (X[i] > hx && X[j] > hx) ||
+             (Y[i] < ly && Y[j] < ly) || (Y[i] > hy && Y[j] > hy))) {
+            total += 1;
+            continue;
+        }
+        total += MAX(abs(X[j] - X[i]), abs(Y[j] - Y[i])) + 1;
+    }
+    return total * getPixelCycles(cmd);
+}
+ 
 /* NOTE: the VDP1 Manual does NOT prohibit the ECD=0 / SPD=1 combination,
  * and there is no "when ECD=0, SPD must equal 0" rule anywhere in the
  * spec. ECD (End Code Disable, bit 7, p.85-86) and SPD (Transparent Pixel
@@ -1289,7 +1723,7 @@ static int getPolygonCycles(vdp1cmd_struct *cmd) {
  * pixel handling are evaluated separately per pixel. SPD must therefore be
  * honoured as-is (it is applied normally in the texture/draw paths); do NOT
  * force it to 0. */
-
+ 
 /* Valeurs de retour de Vdp1NormalSpriteDraw() :
  *    1 : sprite transmis au moteur de rendu ;
  *    0 : commande valide qui ne dessine rien (taille nulle, hors ecran) ;
@@ -1319,7 +1753,7 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
     yabsys.vdp1cycles += 16;
     return 0;
   }
-
+ 
   if ((cmd->CMDSIZE & 0x8000)) {
 	/* VDP1 Manual §4.5: ENDR forces termination within ~30 clock cycles.
      * For invalid/malformed commands the hardware aborts after fetching
@@ -1348,9 +1782,9 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
     yabsys.vdp1cycles += 16 + 1;
     return 0;
   }
-
+ 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
-
+ 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA)) {
          // damaged data
@@ -1362,10 +1796,10 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
          yabsys.vdp1cycles += 70;
          return -1;
        }
-
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
-
+ 
   cmd->CMDXB = cmd->CMDXA + MAX(1,cmd->w)-1;
   cmd->CMDYB = cmd->CMDYA;
   cmd->CMDXC = cmd->CMDXA + MAX(1,cmd->w)-1;
@@ -1373,8 +1807,9 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
   cmd->CMDXD = cmd->CMDXA;
   cmd->CMDYD = cmd->CMDYA + MAX(1,cmd->h)-1;
   
-
+ 
   yabsys.vdp1cycles+= getNormalCycles(cmd);
+  vdp1EstQuad(cmd, 1);
   
   /* VDP1 Manual §6.3 p.81 (HSS bit 12) and §4.2 p.37 (FBCR bit 4 EOS):
    * HSS must be propagated to the renderer regardless of sprite flavor;
@@ -1397,8 +1832,8 @@ static int Vdp1NormalSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs){
    * horizontale, donc les end codes restent actifs. */
   if (cmd->hss) cmd->hss = 0;
   cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
-
-
+ 
+ 
   memset(cmd->G, 0, sizeof(float)*12);
   /* VDP1 Manual §5.3 p.65: "Gouraud shading [...] is only effective on
    * RGB color codes. The color cannot be guaranteed when Gouraud
@@ -1467,7 +1902,7 @@ if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
       LOG("VDP1: mode couleur RGB interdit en frame buffer 8bpp (CMDPMOD=%04X)\n",
           cmd->CMDPMOD);
   }
-
+ 
   /* VDP1 Manual §6.3 Color Calculation bits 2~0:
    * Mode 101B (5) = "Setting prohibited (do not set)"
    * Skip the command silently to avoid undefined behavior. */
@@ -1478,13 +1913,13 @@ if (!(cmd->CMDPMOD & 0x800)) { // pre-clipping enabled (Pclp = 0 means enabled)
   VIDCore->Vdp1NormalSpriteDraw(cmd, ram, regs);
   return ret;
 }
-
+ 
 static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   s16 rw = 0, rh = 0;
   s16 x, y;
   int ret = 1;
-
+ 
   if (emptyCmd(cmd)) {
     // damaged data
     yabsys.vdp1cycles += 70;
@@ -1499,20 +1934,20 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     yabsys.vdp1cycles += 70;
     return -1;
   }
-
+ 
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
   if ((cmd->w == 0) || (cmd->h == 0)) {
     yabsys.vdp1cycles += 70;
     ret = 0;
   }
-
+ 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
-
+ 
   /* VDP1 Manual §10 p.155: when HSS=1 the hardware internally ignores
    * end codes but does NOT rewrite CMDPMOD. The downstream renderer
    * uses cmd->hss (set below) to skip end-code processing. */
-
+ 
   switch ((cmd->CMDCTRL & 0xF00) >> 8)
   {
       case 0x0:
@@ -1540,8 +1975,8 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 			   }
 		   break;
 	}
-
-
+ 
+ 
   x = cmd->CMDXA;
   y = cmd->CMDYA;
   /* Chapitre 9 du manuel VDP1 : seules les valeurs 0H, 5H, 6H, 7H, 9H, AH,
@@ -1560,7 +1995,7 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     if (((zp & 0x3) == 0) != (((zp >> 2) & 0x3) == 0))
       LOG("VDP1: zoom point interdit %XH (CMDCTRL=%04X)\n", zp, cmd->CMDCTRL);
   }
-
+ 
   // Setup Zoom Point
   switch ((cmd->CMDCTRL & 0x300) >> 8) {
     case 1: //Left
@@ -1631,7 +2066,7 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     default:
     break;
   }
-
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
   cmd->CMDXB += regs->localX;
@@ -1640,9 +2075,10 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-
+ 
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles+= getScaledCycles(cmd);
+  vdp1EstQuad(cmd, 1);
   
   /* VDP1 Manual §6.3 p.83 Pre-Clipping Disable (Pclp bit 11):
    * when Pclp=0 (pre-clipping enabled), reject if the bounding box
@@ -1661,7 +2097,7 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     s16 by2 = (s16)MAX(MAX(cmd->CMDYA,cmd->CMDYB), MAX(cmd->CMDYC,cmd->CMDYD));
     if (bx1 > scx2 || by1 > scy2 || bx2 < 0 || by2 < 0) return 0;
   }
-
+ 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
 	/* VDP1 Manual §5.3 p.65: "Gouraud shading [...] is only effective on
@@ -1718,34 +2154,34 @@ static int Vdp1ScaledSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	VIDCore->Vdp1ScaledSpriteDraw(cmd, ram, regs);
   return ret;
 }
-
+ 
 static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
   int ret = 1;
-
+ 
   if (emptyCmd(cmd)) {
     /* §4.5: malformed command. Keep return 0 (original behavior) for
      * compatibility — the dispatcher resets vdp1_clock either way. */
     yabsys.vdp1cycles += 70;
     return 0;
   }
-
+ 
   /* §6.3 p.89-92: color mode bits 5:3 values 110/111 are reserved.
    * Keep return 0 to match original Vdp1DistortedSpriteDraw convention. */
   if (((cmd->CMDPMOD >> 3) & 0x7) > 5) {
     yabsys.vdp1cycles += 70;
     return 0;
   }
-
+ 
   cmd->w = ((cmd->CMDSIZE >> 8) & 0x3F) * 8;
   cmd->h = cmd->CMDSIZE & 0xFF;
   if ((cmd->w == 0) || (cmd->h == 0)) {
     yabsys.vdp1cycles += 70;
     ret = 0;
   }
-
+ 
   cmd->flip = (cmd->CMDCTRL & 0x30) >> 4;
-
+ 
   /* VDP1 Manual §6.3 p.81 (HSS, CMDPMOD bit 12) + §4.2 p.37 (FBCR bit 4 EOS):
    * a distorted sprite is textured, so — exactly like normal and scaled
    * sprites — HSS/EOS must be propagated to the renderer (the hardware
@@ -1772,7 +2208,7 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
     if (MAX(wAB, wDC) >= (int)MAX(1u, cmd->w)) cmd->hss = 0;
   }
   cmd->eos = (Vdp1Regs->FBCR >> 4) & 0x1;
-
+ 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
        CONVERTCMD(&cmd->CMDXB) ||
@@ -1784,7 +2220,7 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
          yabsys.vdp1cycles += 70;
          return 0;
        }
-
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
   cmd->CMDXB += regs->localX;
@@ -1793,10 +2229,11 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-
+ 
   //mission 1 of burning rangers is loading a lot the vdp1.
   yabsys.vdp1cycles += getDistortedCycles(cmd);
-
+  vdp1EstQuad(cmd, 1);
+ 
   memset(cmd->G, 0, sizeof(float)*12);
   /* (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) */
   if ((cmd->CMDPMOD & 4))
@@ -1810,14 +2247,14 @@ static int Vdp1DistortedSpriteDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
       cmd->G[(i * 3) + 2] = (float)((int)((color2 & 0x7C00) >> 10) - 0x10) / 31.0f;
     }
   }
-
+ 
   VIDCore->Vdp1DistortedSpriteDraw(cmd, ram, regs);
   return ret;
 }
-
+ 
 static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
-
+ 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
        CONVERTCMD(&cmd->CMDXB) ||
@@ -1830,7 +2267,7 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
          yabsys.vdp1cycles += 70;
          return -1;
        }
-
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
   cmd->CMDXB += regs->localX;
@@ -1839,8 +2276,9 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-
+ 
   yabsys.vdp1cycles += getPolygonCycles(cmd);
+  vdp1EstQuad(cmd, 0);
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
 	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
@@ -1870,19 +2308,19 @@ static int Vdp1PolygonDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	   yabsys.vdp1cycles += 70;
 	   return -1;
 	 }
-
+ 
   VIDCore->Vdp1PolygonDraw(cmd, ram, regs);
   return 1;
 }
-
+ 
 static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
-
+ 
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
-
+ 
   cmd->w = 1;
   cmd->h = 1;
   cmd->flip = 0;
-
+ 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
        CONVERTCMD(&cmd->CMDXB) ||
@@ -1895,8 +2333,8 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
          yabsys.vdp1cycles += 70;
          return 0;
        }
-
-
+ 
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
   cmd->CMDXB += regs->localX;
@@ -1905,7 +2343,11 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC += regs->localY;
   cmd->CMDXD += regs->localX;
   cmd->CMDYD += regs->localY;
-
+  /* Polyligne : 4 segments (modele de l'emulateur, puis estimation
+   * detaillee pour le debogueur). */
+  yabsys.vdp1cycles += getLineCycles(cmd, 4);
+  vdp1EstLines(cmd, 4);
+ 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
 	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
@@ -1933,16 +2375,16 @@ static int Vdp1PolylineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	   yabsys.vdp1cycles += 70;
 	   return -1;
 	 }
-
+ 
   VIDCore->Vdp1PolylineDraw(cmd, ram, regs);
-
+ 
   return 1;
 }
-
+ 
 static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   Vdp2 *varVdp2Regs = &Vdp2Lines[0];
-
-
+ 
+ 
   if ( CONVERTCMD(&cmd->CMDXA) ||
        CONVERTCMD(&cmd->CMDYA) ||
        CONVERTCMD(&cmd->CMDXB) ||
@@ -1951,8 +2393,8 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
          yabsys.vdp1cycles += 70;
          return 0;
        }
-
-
+ 
+ 
   cmd->CMDXA += regs->localX;
   cmd->CMDYA += regs->localY;
   cmd->CMDXB += regs->localX;
@@ -1961,7 +2403,10 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
   cmd->CMDYC = cmd->CMDYB;
   cmd->CMDXD = cmd->CMDXA;
   cmd->CMDYD = cmd->CMDYA;
-
+  /* Ligne : 1 segment (modele de l'emulateur, puis estimation). */
+  yabsys.vdp1cycles += getLineCycles(cmd, 1);
+  vdp1EstLines(cmd, 1);
+ 
   //gouraud
   memset(cmd->G, 0, sizeof(float)*12);
 	// (VDP1 Manual §5.3 Table 5.3 : correction = value - 0x10, range [-16,+15]) :
@@ -1991,12 +2436,12 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 	   yabsys.vdp1cycles += 70;
 	   return -1;
 	 }
-
+ 
   VIDCore->Vdp1LineDraw(cmd, ram, regs);
-
+ 
   return 1;
 }
-
+ 
 /* ---------------------------------------------------------------------------
  * VDP1 per-raster drawing budget.
  *
@@ -2047,9 +2492,9 @@ static int Vdp1LineDraw(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs) {
 #define VDP1_RASTER_352   1820  /* Table 4.4 "PAL"  row  */
 #define VDP1_RASTER_31KC   852  /* Table 4.4 "31KC" row  */
 #define VDP1_RASTER_HDTV   848  /* Table 4.4 "HDTV" row  */
-
+ 
 static int rasterValue = VDP1_RASTER_320;
-
+ 
 /* hreso = VDP2 TVMD bits 2-0 (HRESO2-0). */
 void Vdp1SetRaster(int hreso) {
     switch (hreso & 0x7) {
@@ -2064,13 +2509,13 @@ void Vdp1SetRaster(int hreso) {
         default:                       rasterValue = VDP1_RASTER_320;  break;
     }
 }
-
+ 
 static int getVdp1CyclesPerLine(void)
 {
     if (Vdp1External.blocked != 0) return 0;
     return rasterValue;
 }
-
+ 
 /* État persistant entre appels de Vdp1DrawCommands : le rendu VDP1
  * peut être interrompu puis repris (émulation cycle-accurate), donc
  * l'adresse de retour CALL/RETURN doit survivre entre deux appels.
@@ -2078,7 +2523,7 @@ static int getVdp1CyclesPerLine(void)
  * homonymes de EvaluateCmdListHash / Vdp1FakeDrawCommands /
  * Vdp1DebugGetCommandNumberAddr (-Wshadow). */
 static u32 g_vdp1DrawReturnAddr = 0xffffffff;
-
+ 
 #ifdef DEBUG_CMD_LIST
 void debugCmdList() {
   YuiMsg("Draw %d (%d)\n", yabsys.LineCount, _Ygl->drawframe);
@@ -2088,22 +2533,22 @@ void debugCmdList() {
      u32 addr = Vdp1DebugGetCommandAddr(i);
      if ((string = Vdp1DebugGetCommandNumberName(addr)) == NULL)
         break;
-
+ 
      YuiMsg("\t%s\n", string);
   }
 }
 #endif
 static u32 Vdp1DebugGetCommandNumberAddr(u32 number);
-
+ 
 int EvaluateCmdListHash(Vdp1 * regs){
   int hash = 0;
   u32 addr = 0;
   u32 returnAddr = 0xFFFFFFFF;
   u32 commandCounter = 0;
   u16 command;
-
+ 
   command = T1ReadWord(Vdp1Ram, addr);
-
+ 
   while (!(command & 0x8000) && (commandCounter < 2000))
   {
       vdp1cmd_struct cmd;
@@ -2120,7 +2565,7 @@ int EvaluateCmdListHash(Vdp1 * regs){
       hash ^= (cmd.CMDXC << 16) | cmd.CMDYC;
       hash ^= (cmd.CMDXD << 16) | cmd.CMDYD;
       hash ^= (cmd.CMDGRDA << 16) | _Ygl->drawframe;
-
+ 
      // Determine where to go next
      switch ((command & 0x3000) >> 12)
      {
@@ -2133,7 +2578,7 @@ int EvaluateCmdListHash(Vdp1 * regs){
         case 2: // CALL, call a subroutine
            if (returnAddr == 0xFFFFFFFF)
               returnAddr = addr + 0x20;
-
+ 
            addr = T1ReadWord(Vdp1Ram, addr + 2) * 8;
            break;
         case 3: // RETURN, return from subroutine
@@ -2145,7 +2590,7 @@ int EvaluateCmdListHash(Vdp1 * regs){
               addr += 0x20;
            break;
      }
-
+ 
      if (addr > 0x7FFE0)
         return hash;
      command = T1ReadWord(Vdp1Ram, addr);
@@ -2153,43 +2598,30 @@ int EvaluateCmdListHash(Vdp1 * regs){
   }
   return hash;
 }
-
-static int sameCmd(vdp1cmd_struct* a, vdp1cmd_struct* b) {
-  if (a == NULL) return 0;
-  if (b == NULL) return 0;
-  if (emptyCmd(a)) return 0;
-  /* VDP1 Manual §6.1 p.71: the command table contains 15 u16 fields at
-   * offsets +0x00..+0x1C.  Our in-memory struct widens the coordinate
-   * fields (CMDXA..CMDYD) to s32 after sign-extension (see CONVERTCMD
-   * §6.7 p.105), which may introduce alignment padding when the
-   * struct mixes u16 and s32 members.  Using memcmp across a mixed-
-   * width region reads uninitialised padding bytes (ISO C11 §6.2.6.1
-   * -- undefined per standard).
-   *
-   * Compare each CMDxxxx field explicitly. Slightly more lines, but
-   * unambiguous and padding-proof. Derived fields (w/h/flip/G/hss/eos)
-   * are intentionally NOT compared -- they're recomputed per frame. */
-  if (a->CMDCTRL == b->CMDCTRL
-   && a->CMDLINK == b->CMDLINK
-   && a->CMDPMOD == b->CMDPMOD
-   && a->CMDCOLR == b->CMDCOLR
-   && a->CMDSRCA == b->CMDSRCA
-   && a->CMDSIZE == b->CMDSIZE
-   && a->CMDXA   == b->CMDXA && a->CMDYA == b->CMDYA
-   && a->CMDXB   == b->CMDXB && a->CMDYB == b->CMDYB
-   && a->CMDXC   == b->CMDXC && a->CMDYC == b->CMDYC
-   && a->CMDXD   == b->CMDXD && a->CMDYD == b->CMDYD
-   && a->CMDGRDA == b->CMDGRDA) {
-    return 1;
-  }
-  return 0;
-}
-
+ 
+/* sameCmd() supprime.
+ *
+ * Introduit en amont (Kronos e869a0bf, issue #1245, ralentissement des
+ * videos de Gihren no Yabou) pour ne pas retracer une commande identique a
+ * la precedente. Le refactoring dedd8fc4 l'a rendu inoperant : 'oldCmd = cmd'
+ * copiait la commande locale tout juste remise a zero, puis sameCmd()
+ * comparait la commande lue a une table nulle -- et renvoyait 0 pour une
+ * table nulle (emptyCmd). Il ne detectait donc jamais rien.
+ *
+ * Il n'est pas remis en service : le VDP1 trace chaque table qu'il lit et en
+ * paie le cout (VDP1 Manual ST-013-R3, chap. 6 ; idem Mednafen ss/vdp1.c et
+ * Ymir, qui n'ont aucun saut de ce genre). Sauter une commande identique
+ * changerait le resultat des modes cumulatifs (deux demi-transparences
+ * successives donnent 3/4 + 1/4, pas 1/2 + 1/2 ; idem MSB On, Gouraud +
+ * demi-transparence) et retirerait son cout du budget de cycles, puisque
+ * yabsys.vdp1cycles est incremente dans les fonctions de trace. Le comportement
+ * actuel (tout tracer) est donc conserve ; seul le code mort disparait. */
+ 
 static int lastHash = -1;
 void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
 {
   int cylesPerLine  = getVdp1CyclesPerLine();
-
+ 
   if ((Vdp1External.status&VDP1_STATUS_MASK) == VDP1_STATUS_IDLE) {
     FRAMELOG("Start vdp1 Draw %d(%d)\n", yabsys.LineCount, yabsys.DecilineCount);
     #if 0
@@ -2207,10 +2639,11 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
     #ifdef DEBUG_CMD_LIST
     debugCmdList();
     #endif
-
+ 
     g_vdp1DrawReturnAddr = 0xffffffff;
     nbCmdToProcess = 0;
-
+    vdp1StatsListStart();
+ 
      // Vdp1Regs->EDSR >>= 1;
      Vdp1Regs->addr = 0;
      // BEF <- CEF
@@ -2219,10 +2652,10 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
      Vdp1Regs->lCOPR = 0;
      if (VIDCore->startVdp1Render) VIDCore->startVdp1Render();
   }
-
+ 
    Vdp1External.status &= ~VDP1_STATUS_MASK;
    Vdp1External.status |= VDP1_STATUS_RUNNING;
-
+ 
    /* VDP1 Manual ST-013-R3 p.19: "When fetching of the command table goes
     * beyond the end address (07FFFFH) of VRAM, fetching wraps to the top
     * address (000000H) of VRAM."
@@ -2233,21 +2666,18 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
     * was still live, which then let a CPU access believe it was hitting an
     * idle chip and skip the arbitration stall. Wrap instead. */
    regs->addr &= 0x7FFFF;
-
+ 
     u16 command = Vdp1RamReadWord(NULL, ram, regs->addr);
-
-
+ 
+ 
    FRAMELOG_CMD("Command is 0x%x @ 0x%x available cycles %d %d(%d)\n", command, regs->addr, vdp1_clock, yabsys.LineCount, yabsys.DecilineCount);
-
+ 
    Vdp1External.checkEDSR = 0;
-
-   vdp1cmd_struct oldCmd = {0};
-
+ 
    yabsys.vdp1cycles = 0;
    //Shall continue is used for prohibited usage of ENd bit. In case a command is valid (like polygon drawing) but with a end bit set, the command is executed then stopped.
    //Not sure it is really stopped in that case, maybe end bit is ignored for other code than 0x8000
    while (!(command & 0x8000) && (nbCmdToProcess < CMD_QUEUE_SIZE) && (CmdListInLoop == 0)) {
-     int ret;
      vdp1cmd_struct cmd = {0};
       regs->COPR = (regs->addr & 0x7FFFF) >> 3;
       // First, process the command
@@ -2257,60 +2687,47 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
            //No more clock cycle, wait next line
            return;
          }
-         oldCmd = cmd;
          Vdp1ReadCommand(&cmd, regs->addr, ram);
          switch (command & 0x000F) {
            case 0: // normal sprite draw
-           if (!sameCmd(&cmd, &oldCmd)) {
-             ret = Vdp1NormalSpriteDraw(&cmd, ram, regs);
-             if (ret == 1) nbCmdToProcess++;
-             /* ret == 0 : commande valide sans pixel a tracer (table vide,
-              * taille nulle, sprite hors du clipping systeme). Le VDP1 passe
-              * a la table suivante ; seule une commande invalide (-1) fait
-              * attendre la ligne suivante. */
-             else if (ret < 0) {
-               FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
-               vdp1_clock = 0; //Incorrect command, wait next line to continue
-             }
+           ret = Vdp1NormalSpriteDraw(&cmd, ram, regs);
+           if (ret == 1) nbCmdToProcess++;
+           /* ret == 0 : commande valide sans pixel a tracer (table vide,
+            * taille nulle, sprite hors du clipping systeme). Le VDP1 passe
+            * a la table suivante ; seule une commande invalide (-1) fait
+            * attendre la ligne suivante. */
+           else if (ret < 0) {
+             FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
+             vdp1_clock = 0; //Incorrect command, wait next line to continue
            }
            break;
            case 1: // scaled sprite draw
-           if (!sameCmd(&cmd, &oldCmd)) {
-             ret = Vdp1ScaledSpriteDraw(&cmd, ram, regs);
-             if (ret == 1) nbCmdToProcess++;
-             else {
-               FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
-               vdp1_clock = 0; //Incorrect command, wait next line to continue
-             }
+           ret = Vdp1ScaledSpriteDraw(&cmd, ram, regs);
+           if (ret == 1) nbCmdToProcess++;
+           else {
+             FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
+             vdp1_clock = 0; //Incorrect command, wait next line to continue
            }
            break;
            case 2: // distorted sprite draw
            case 3: /* this one should be invalid, but some games
            (Hardcore 4x4 for instance) use it instead of 2 */
-           if (!sameCmd(&cmd, &oldCmd)) {
-             ret = Vdp1DistortedSpriteDraw(&cmd, ram, regs);
-             if (ret == 1) nbCmdToProcess++;
-             else {
-               FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
-               vdp1_clock = 0; //Incorrect command, wait next line to continue
-             }
+           ret = Vdp1DistortedSpriteDraw(&cmd, ram, regs);
+           if (ret == 1) nbCmdToProcess++;
+           else {
+             FRAMELOG_CMD("Reset vdp1_clock %d %d\n", yabsys.LineCount, __LINE__);
+             vdp1_clock = 0; //Incorrect command, wait next line to continue
            }
            break;
            case 4: // polygon draw
-           // if (!sameCmd(&cmd, &oldCmd)) {
              nbCmdToProcess += Vdp1PolygonDraw(&cmd, ram, regs);
-             // }
              break;
              case 5: // polyline draw
              case 7: // undocumented mirror
-             if (!sameCmd(&cmd, &oldCmd)) {
-               nbCmdToProcess += Vdp1PolylineDraw(&cmd, ram, regs);
-             }
+             nbCmdToProcess += Vdp1PolylineDraw(&cmd, ram, regs);
              break;
              case 6: // line draw
-             if (!sameCmd(&cmd, &oldCmd)) {
-               nbCmdToProcess += Vdp1LineDraw(&cmd, ram, regs);
-             }
+             nbCmdToProcess += Vdp1LineDraw(&cmd, ram, regs);
              break;
              case 8: // user clipping coordinates
              /* VDP1 Manual §6.1 p.71: command table = 30 bytes, fetched as
@@ -2318,9 +2735,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
               * At 28MHz pixel clock: 32 bytes / 2 bytes per cycle = 16 cycles.
               * VDP1 Manual §6.3 p.74 Table 6.1: set command overhead = 16. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1UserClipping(&cmd, ram, regs);
-             }
+             VIDCore->Vdp1UserClipping(&cmd, ram, regs);
              break;
              case 11: // undocumented command
               //Do nothing as we are skipping it.
@@ -2329,17 +2744,13 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
              /* VDP1 Manual §6.1/§6.3 Table 6.1: same fetch overhead as
               * user clipping — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1SystemClipping(&cmd, ram, regs);
-             }
+             VIDCore->Vdp1SystemClipping(&cmd, ram, regs);
              break;
              case 10: // local coordinate
              /* VDP1 Manual §6.1/§6.3 Table 6.1: local coordinate set command
               * has fetch overhead only — 16 cycles, no pixels drawn. */
              yabsys.vdp1cycles += 16;
-             if (!sameCmd(&cmd, &oldCmd)) {
-               VIDCore->Vdp1LocalCoordinate(&cmd, ram, regs);
-             }
+             VIDCore->Vdp1LocalCoordinate(&cmd, ram, regs);
              break;
              default: // Abort
              FRAMELOG("vdp1\t: Bad command: %x\n", command);
@@ -2372,9 +2783,10 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
       } else {
         yabsys.vdp1cycles += 16;
       }
+      vdp1StatsCmd(regs->addr, yabsys.vdp1cycles, (command & 0x4000) != 0);
       vdp1_clock -= yabsys.vdp1cycles;
       yabsys.vdp1cycles = 0;
-
+ 
       // Next, determine where to go next
       switch ((command & 0x3000) >> 12) {
       case 0: // NEXT, jump to following table
@@ -2435,7 +2847,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
 		   }
 		   break;
       }
-
+ 
       command = Vdp1RamReadWord(NULL,ram, regs->addr);
       FRAMELOG_CMD("Command is 0x%x @ 0x%x\n", command, regs->addr);
       //If we change directly CPR to last value, scorcher will not boot.
@@ -2454,12 +2866,13 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
        FRAMELOG("Set EDSR\n");
        regs->EDSR |= 2;
        Vdp1LoopAddr = -1;
+       vdp1StatsListEnd();
      } else {
        FRAMELOG("Wait a bit before the stop. Enough for the command to end\n");
      }
    }
 }
-
+ 
 //ensure that registers are set correctly
 void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
 {
@@ -2468,7 +2881,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
    u32 returnAddr = 0xffffffff;
    vdp1cmd_struct cmd;
    // Vdp1Regs->EDSR >>= 1;
-
+ 
    while (!(command & 0x8000) && commandCounter < 2000) { // fix me
       // First, process the command
       if (!(command & 0x4000)) { // if (!skip)
@@ -2503,7 +2916,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
             return;
          }
       }
-
+ 
       // Next, determine where to go next
       switch ((command & 0x3000) >> 12) {
       case 0: // NEXT, jump to following table
@@ -2523,7 +2936,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
       case 2: // CALL, call a subroutine
          if (returnAddr == 0xFFFFFFFF)
             returnAddr = regs->addr + 0x20;
-
+ 
          {
             u32 t = T1ReadWord(ram, regs->addr + 2) * 8;
             if (t > 0x7FFE0) { regs->EDSR |= 2; return; }
@@ -2539,7 +2952,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
             regs->addr += 0x20;
          break;
       }
-
+ 
       command = T1ReadWord(ram, regs->addr);
       commandCounter++;
    }
@@ -2547,17 +2960,17 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
      regs->EDSR |= 2;
    }
 }
-
+ 
 static int Vdp1Draw(void)
 {
   FRAMELOG_CMD("Vdp1Draw %d\n", yabsys.LineCount);
   VIDCore->Vdp1Draw();
-
+ 
   if ((Vdp1External.status & VDP1_STATUS_MASK) != VDP1_STATUS_IDLE)
     return 1;
-
+ 
   FRAMELOG("Vdp1Draw end at line %d \n", yabsys.LineCount);
-
+ 
   /* VDP1 Manual §4.4 p.52: "When the draw end command is fetched, the VDP1
    * sets CEF to 1 and generates an interrupt signal." The interrupt and
    * CEF are two faces of the same event -- the fetch of the end bit -- and
@@ -2579,12 +2992,12 @@ static int Vdp1Draw(void)
    * this list reached its draw end command. */
   if (Vdp1Regs->EDSR & 0x2)
     ScuSendDrawEnd();
-
+ 
   return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static void Vdp1NoDraw(void) {
    Vdp1Regs->lCOPR = 0;
    Vdp1External.status &= ~VDP1_STATUS_MASK;
@@ -2592,9 +3005,9 @@ static void Vdp1NoDraw(void) {
    if (VIDCore->endVdp1Render) VIDCore->endVdp1Render();
    Vdp1FakeDrawCommands(Vdp1Ram, Vdp1Regs);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static void FASTCALL Vdp1ReadCommand(vdp1cmd_struct *cmd, u32 addr, u8* ram) {
     /* VDP1 Manual §6.2 p.71: "command table is defined on a 20H-byte
      * boundary, the lower 5 bits of the address are fixed at 00000B".
@@ -2617,10 +3030,10 @@ static void FASTCALL Vdp1ReadCommand(vdp1cmd_struct *cmd, u32 addr, u8* ram) {
    cmd->CMDYD = T1ReadWord(ram, addr + 0x1A);
    cmd->CMDGRDA = T1ReadWord(ram, addr + 0x1C);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
-
+ 
+ 
 int Vdp1SaveState(void ** stream)
 {
    int offset;
@@ -2656,10 +3069,10 @@ int Vdp1SaveState(void ** stream)
    MemStateWrite((void *)(&Vdp1External), sizeof(Vdp1External_struct),1,stream);
    return MemStateFinishHeader(stream, offset);
 }
-
-
+ 
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 int Vdp1LoadState(const void * stream, UNUSED int version, int size)
 {
 #ifdef IMPROVED_SAVESTATES
@@ -2727,18 +3140,18 @@ int Vdp1LoadState(const void * stream, UNUSED int version, int size)
    else switchFB16bit();
    return size;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
 {
    u32 addr = 0;
    u32 returnAddr = 0xFFFFFFFF;
    u32 commandCounter = 0;
    u16 command;
-
+ 
    command = T1ReadWord(Vdp1DebugMem(), addr);
-
+ 
    while (!(command & 0x8000) && (commandCounter != number) && (commandCounter<2000))
    {
       // Determine where to go next
@@ -2753,7 +3166,7 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
          case 2: // CALL, call a subroutine
             if (returnAddr == 0xFFFFFFFF)
                returnAddr = addr + 0x20;
-
+ 
             addr = T1ReadWord(Vdp1DebugMem(), addr + 2) * 8;
             break;
          case 3: // RETURN, return from subroutine
@@ -2765,21 +3178,21 @@ static u32 Vdp1DebugGetCommandNumberAddr(u32 number)
                addr += 0x20;
             break;
       }
-
+ 
       if (addr > 0x7FFE0)
          return 0xFFFFFFFF;
       command = T1ReadWord(Vdp1DebugMem(), addr);
       commandCounter++;
    }
-
+ 
    if (commandCounter == number)
       return addr;
    else
       return 0xFFFFFFFF;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr)
 {
    if (addr != 0xFFFFFFFF)
@@ -2790,19 +3203,19 @@ Vdp1CommandType Vdp1DebugGetCommandTypeAtAddr(u32 addr)
       else if ((command & 0x000F) < VDPCT_INVALID)
         return (Vdp1CommandType) (command & 0x000F);
    }
-
+ 
    return VDPCT_INVALID;
 }
-
+ 
 Vdp1CommandType Vdp1DebugGetCommandType(u32 number)
 {
    return Vdp1DebugGetCommandTypeAtAddr(Vdp1DebugGetCommandNumberAddr(number));
 }
-
+ 
 u32 Vdp1DebugGetCommandAddr(u32 number) {
   return Vdp1DebugGetCommandNumberAddr(number);
 }
-
+ 
 /* Parcourt la table de commandes UNE seule fois et range l'adresse de chaque
  * commande (Draw End compris, en derniere position) dans addrs[].
  *
@@ -2814,7 +3227,7 @@ u32 Vdp1DebugGetCommandAddr(u32 number) {
  * elle-meme (ASSIGN vers sa propre adresse).
  *
  * Saut CALL/RETURN : un seul niveau, comme Vdp1DebugGetCommandNumberAddr()
- * et le moteur de trace (ST-013-R3 �5 : pas d'imbrication de sous-routines).
+ * et le moteur de trace (ST-013-R3 �5 : pas d'imbrication de sous-routines).
  * Renvoie le nombre d'adresses ecrites. */
 int Vdp1DebugGetCommandList(u32 *addrs, int maxCount)
 {
@@ -2822,18 +3235,18 @@ int Vdp1DebugGetCommandList(u32 *addrs, int maxCount)
    u32 addr = 0;
    u32 returnAddr = 0xFFFFFFFF;
    int count = 0;
-
+ 
    if ((ram == NULL) || (addrs == NULL) || (maxCount <= 0))
       return 0;
-
+ 
    while (count < maxCount)
    {
       u16 command = T1ReadWord(ram, addr);
       addrs[count++] = addr;
-
+ 
       if (command & 0x8000)
          break; // Draw End
-
+ 
       switch ((command & 0x3000) >> 12)
       {
          case 0: // NEXT
@@ -2856,30 +3269,30 @@ int Vdp1DebugGetCommandList(u32 *addrs, int maxCount)
                addr += 0x20;
             break;
       }
-
+ 
       if (addr > 0x7FFE0)
          break;
    }
-
+ 
    return count;
 }
-
+ 
 char *Vdp1DebugGetCommandRaw(u32 addr)
 {
    u16 command;
    char *out;
-
+ 
    if (addr == 0xFFFFFFFF)
       return NULL;
-
+ 
    out = (char*)malloc(128*sizeof(char));
    command = T1ReadWord(Vdp1DebugMem(), addr);
-
+ 
    if (command & 0x8000) {
      snprintf(out, 128, "END");
      return out;
    }
-
+ 
    // Next, determine where to go next
    switch ((command & 0x3000) >> 12) {
    case 0: // NEXT, jump to following table
@@ -2900,18 +3313,18 @@ char *Vdp1DebugGetCommandRaw(u32 addr)
    }
    return out;
 }
-
+ 
 char *Vdp1DebugGetCommandNumberName(u32 addr)
 {
    u16 command;
-
+ 
    if (addr != 0xFFFFFFFF)
    {
       command = T1ReadWord(Vdp1DebugMem(), addr);
-
+ 
       if (command & 0x8000)
          return "Draw End";
-
+ 
       // Figure out command name
       switch (command & 0x000F)
       {
@@ -2946,9 +3359,9 @@ char *Vdp1DebugGetCommandNumberName(u32 addr)
    else
       return NULL;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 /* Les trois fonctions de detail ci-dessous prennent desormais une ADRESSE
  * de commande plutot qu'un rang dans la liste. Le rang n'est pas stable :
  * il oblige a reparcourir toute la table a chaque appel (O(n^2) sur le
@@ -2962,32 +3375,32 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
 {
    u16 command;
    vdp1cmd_struct cmd;
-
+ 
    if (addr == 0xFFFFFFFF)
       return;
-
+ 
    command = T1ReadWord(Vdp1DebugMem(), addr);
-
+ 
    if (command & 0x8000)
    {
       // Draw End
       outstring[0] = 0x00;
       return;
    }
-
+ 
    if (command & 0x4000)
    {
       AddString(outstring, "Command is skipped\r\n");
       return;
    }
-
+ 
    Vdp1ReadCommand(&cmd, addr, Vdp1DebugMem());
-
+ 
    if ((cmd.CMDCTRL & 0x000F) < 4) {
      cmd.w = ((cmd.CMDSIZE >> 8) & 0x3F) * 8;
      cmd.h = cmd.CMDSIZE & 0xFF;
    }
-
+ 
    int invalid = 0;
    switch (cmd.CMDCTRL & 0x000F)
    {
@@ -3002,13 +3415,13 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
            int cycles = getNormalCycles(&cmd);
            AddString(outstring, "estimated cycles=%d\n", cycles);
          }
-
+ 
          break;
       case 1:
          AddString(outstring, "Scaled Sprite\r\n");
-
+ 
          AddString(outstring, "Zoom Point: ");
-
+ 
          switch ((cmd.CMDCTRL >> 8) & 0xF)
          {
             case 0x0:
@@ -3053,7 +3466,7 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
                break;
             default: break;
          }
-
+ 
          AddString(outstring, "CMDXA = 0x%04x, CMDYA = 0x%04x\r\n", cmd.CMDXA&0xFFFF, cmd.CMDYA&0xFFFF);
          AddString(outstring, "CMDXB = 0x%04x, CMDYB = 0x%04x\r\n", cmd.CMDXB&0xFFFF, cmd.CMDYB&0xFFFF);
          AddString(outstring, "CMDXC = 0x%04x, CMDYC = 0x%04x\r\n", cmd.CMDXC&0xFFFF, cmd.CMDYC&0xFFFF);
@@ -3276,7 +3689,7 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
          AddString(outstring, "Invalid command\r\n");
          return;
    }
-
+ 
    // Only Sprite commands use CMDSRCA, CMDSIZE
    if (!(cmd.CMDCTRL & 0x000C))
    {
@@ -3284,7 +3697,7 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
       AddString(outstring, "Texture width = %d, height = %d\r\n", MAX(1, (cmd.CMDSIZE & 0x3F00) >> 5), MAX(1,cmd.CMDSIZE & 0xFF));
       if ((((cmd.CMDSIZE & 0x3F00) >> 5)==0) || ((cmd.CMDSIZE & 0xFF)==0)) AddString(outstring, "Texture malformed \r\n");
       AddString(outstring, "Texture read direction: ");
-
+ 
       switch ((cmd.CMDCTRL >> 4) & 0x3)
       {
          case 0:
@@ -3302,51 +3715,51 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
          default: break;
       }
    }
-
+ 
    // Only draw commands use CMDPMOD
    if (!(cmd.CMDCTRL & 0x0008))
    {
       if (cmd.CMDPMOD & 0x8000)
       {
-         AddString(outstring, "MSB set\r\n");
+         AddString(outstring, "MSB On (MSBON)\r\n");
       }
-
+ 
       if (cmd.CMDPMOD & 0x1000)
       {
          AddString(outstring, "High Speed Shrink Enabled\r\n");
       }
-
+ 
       if (!(cmd.CMDPMOD & 0x0800))
       {
          AddString(outstring, "Pre-clipping Enabled\r\n");
       }
-
+ 
       if (cmd.CMDPMOD & 0x0400)
       {
          AddString(outstring, "User Clipping Enabled\r\n");
          AddString(outstring, "Clipping Mode = %d\r\n", (cmd.CMDPMOD >> 9) & 0x1);
       }
-
+ 
       if (cmd.CMDPMOD & 0x0100)
       {
          AddString(outstring, "Mesh Enabled\r\n");
       }
-
+ 
       if (!(cmd.CMDPMOD & 0x0080))
       {
          AddString(outstring, "End Code Enabled\r\n");
       }
-
+ 
       if (!(cmd.CMDPMOD & 0x0040))
       {
          AddString(outstring, "Transparent Pixel Enabled\r\n");
       }
-
+ 
       if (cmd.CMDCTRL & 0x0004){
           AddString(outstring, "Non-textured color: %04X\r\n", cmd.CMDCOLR);
       } else {
           AddString(outstring, "Color mode: ");
-
+ 
           switch ((cmd.CMDPMOD >> 3) & 0x7)
           {
              case 0:
@@ -3375,22 +3788,22 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
              default: break;
           }
         }
-
+ 
       AddString(outstring, "Color Calc. mode: ");
-
+ 
       switch (cmd.CMDPMOD & 0x7)
       {
          case 0:
             AddString(outstring, "Replace\r\n");
             break;
          case 1:
-            AddString(outstring, "Cannot overwrite/Shadow\r\n");
+            AddString(outstring, "Shadow\r\n");
             break;
          case 2:
             AddString(outstring, "Half-luminance\r\n");
             break;
          case 3:
-            AddString(outstring, "Replace/Half-transparent\r\n");
+            AddString(outstring, "Half-transparency\r\n");
             break;
          case 4:
             AddString(outstring, "Gouraud Shading\r\n");
@@ -3400,17 +3813,22 @@ void Vdp1DebugCommandAtAddr(u32 addr, char *outstring)
             AddString(outstring, "Gouraud Shading + Half-luminance\r\n");
             AddString(outstring, "Gouraud Shading Table = %08X\r\n", ((unsigned int)cmd.CMDGRDA) << 3);
             break;
+         case 5:
+            /* CCB = 101b : reglage interdit. Le "default: break;" laissait
+             * la ligne "Color Calc. mode: " sans valeur. */
+            AddString(outstring, "Setting prohibited (5)\r\n");
+            break;
          case 7:
-            AddString(outstring, "Gouraud Shading/Gouraud Shading + Half-transparent\r\n");
+            AddString(outstring, "Gouraud Shading + Half-transparency\r\n");
             AddString(outstring, "Gouraud Shading Table = %08X\r\n", ((unsigned int)cmd.CMDGRDA) << 3);
             break;
          default: break;
       }
    }
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static u32 ColorRamGetColor(u32 colorindex)
 {
    switch(Vdp2Internal.ColorMode)
@@ -3434,12 +3852,12 @@ static u32 ColorRamGetColor(u32 colorindex)
       }
       default: break;
    }
-
+ 
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 /* Couleur qu'affiche le VDP2 pour une donnee de sprite 16 bits, telle que le
  * VDP1 l'ecrit dans le frame buffer (mode banque : CMDCOLR | code ; mode LUT :
  * l'entree de la table ; mode RGB : le mot de texture ; polygone : CMDCOLR).
@@ -3466,27 +3884,42 @@ static const u16 Vdp1DebugSpriteDCMask[16] = {
    0x7FF, 0x7FF, 0x7FF, 0x7FF, 0x3FF, 0x7FF, 0x3FF, 0x1FF,
    0x07F, 0x03F, 0x03F, 0x03F, 0x0FF, 0x0FF, 0x0FF, 0x0FF
 };
-
+ 
 static int Vdp1DebugIsRgbData(u32 data)
 {
    return ((Vdp2Regs->SPCTL & 0x20) != 0) && ((data & 0x8000) != 0);
 }
-
+ 
 static u32 Vdp1DebugPaletteIndex(u32 data)
 {
    return (data & Vdp1DebugSpriteDCMask[Vdp2Regs->SPCTL & 0xF])
           + ((Vdp2Regs->CRAOFB & 0x70) << 4);
 }
-
+ 
 static u32 Vdp1DebugFbDataColor(u32 data)
 {
    if (Vdp1DebugIsRgbData(data))
       return SAT2YAB1(0xFF, data);
    return ColorRamGetColor(Vdp1DebugPaletteIndex(data));
 }
+ 
+/* Versions exportees, pour l'editeur graphique (vdpedit.c) : la couleur et
+ * l'index de Color RAM d'une donnee de sprite suivent exactement les regles
+ * de l'apercu ci-dessus. Index -1 = donnee RGB. */
+u32 Vdp1DebugSpriteDataColor(u32 data)
+{
+   return Vdp1DebugFbDataColor(data);
+}
+
+int Vdp1DebugSpriteDataCramIndex(u32 data)
+{
+   if (Vdp1DebugIsRgbData(data))
+      return -1;
+   return (int)(Vdp1DebugPaletteIndex(data) & 0x7FF);
+}
 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static INLINE int CheckEndcode(int dot, int endcode, int *code)
 {
    if (dot == endcode)
@@ -3499,18 +3932,18 @@ static INLINE int CheckEndcode(int dot, int endcode, int *code)
       }
       return 1;
    }
-
+ 
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 static INLINE int DoEndcode(int count, u32 *charAddr, u32 **textdata, int width, int xoff, int oddpixel, int pixelsize)
 {
    if (count > 1)
    {
       float divisor = (float)(8 / pixelsize);
-
+ 
       if(divisor != 0)
          charAddr[0] += (int)((float)(width - xoff + oddpixel) / divisor);
       memset(textdata[0], 0, sizeof(u32) * (width - xoff));
@@ -3519,12 +3952,12 @@ static INLINE int DoEndcode(int count, u32 *charAddr, u32 **textdata, int width,
    }
    else
       *textdata[0]++ = 0;
-
+ 
    return 0;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
 {
    u16 command;
@@ -3538,22 +3971,22 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
    int isendcode=0;
    int code=0;
    int ret;
-
+ 
    if (addr == 0xFFFFFFFF)
       return NULL;
-
+ 
    command = T1ReadWord(Vdp1DebugMem(), addr);
-
+ 
    if (command & 0x8000)
       // Draw End
       return NULL;
-
+ 
    if (command & 0x4000)
       // Command Skipped
       return NULL;
-
+ 
    Vdp1ReadCommand(&cmd, addr, Vdp1DebugMem());
-
+ 
    switch (cmd.CMDCTRL & 0x000F)
    {
       case 0: // Normal Sprite
@@ -3562,10 +3995,10 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       case 3: // Distorted Sprite *
          w[0] = MAX(1, (cmd.CMDSIZE & 0x3F00) >> 5);
          h[0] = MAX(1, cmd.CMDSIZE & 0xFF);
-
+ 
          if ((texture = (u32 *)malloc(sizeof(u32) * w[0] * h[0])) == NULL)
             return NULL;
-
+ 
          if (!(cmd.CMDPMOD & 0x80))
          {
             isendcode = 1;
@@ -3583,9 +4016,9 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          h[0] = 1;
          if ((texture = (u32 *)malloc(sizeof(u32))) == NULL)
             return NULL;
-
+ 
          texture[0] = Vdp1DebugFbDataColor(cmd.CMDCOLR);
-
+ 
          return texture;
       case 8: // User Clipping
       case 9: // System Clipping
@@ -3595,12 +4028,12 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       default: // Invalid command
          return NULL;
    }
-
+ 
    charAddr = cmd.CMDSRCA * 8;
    SPD = ((cmd.CMDPMOD & 0x40) != 0);
    alpha = 0xFF;
    textdata = texture;
-
+ 
    switch((cmd.CMDPMOD >> 3) & 0x7)
    {
       case 0:
@@ -3611,7 +4044,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
           * shader masquait deja correctement, pas cette fonction. */
          u32 colorBank = cmd.CMDCOLR & 0xFFF0;
          u16 i;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             u16 j;
@@ -3626,7 +4059,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
             while(j < w[0])
             {
                dot = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
-
+ 
                // Pixel 1
                if (isendcode && (ret = CheckEndcode(dot >> 4, 0xF, &code)) > 0)
                {
@@ -3638,9 +4071,9 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   if (((dot >> 4) == 0) && !SPD) *textdata++ = 0;
                   else *textdata++ = Vdp1DebugFbDataColor((dot >> 4) | colorBank);
                }
-
+ 
                j += 1;
-
+ 
                // Pixel 2
                if (isendcode && (ret = CheckEndcode(dot & 0xF, 0xF, &code)) > 0)
                {
@@ -3652,7 +4085,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   if (((dot & 0xF) == 0) && !SPD) *textdata++ = 0;
                   else *textdata++ = Vdp1DebugFbDataColor((dot & 0xF) | colorBank);
                }
-
+ 
                j += 1;
                charAddr += 1;
             }
@@ -3674,7 +4107,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
           * pas ajoute ici, contrairement aux modes banque : l'apercu
           * prenait la mauvaise couleur des qu'un jeu utilise SPCAOS != 0. */
          u16 i;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             u16 j;
@@ -3689,7 +4122,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
             while(j < w[0])
             {
                dot = T1ReadByte(Vdp1DebugMem(), charAddr & 0x7FFFF);
-
+ 
                if (isendcode && (ret = CheckEndcode(dot >> 4, 0xF, &code)) > 0)
                {
                   if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 0, 4))
@@ -3705,9 +4138,9 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                      *textdata++ = Vdp1DebugFbDataColor(temp);
                   }
                }
-
+ 
                j += 1;
-
+ 
                if (isendcode && (ret = CheckEndcode(dot & 0xF, 0xF, &code)) > 0)
                {
                   if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 1, 4))
@@ -3723,9 +4156,9 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                      *textdata++ = Vdp1DebugFbDataColor(temp);
                   }
                }
-
+ 
                j += 1;
-
+ 
                charAddr += 1;
             }
          }
@@ -3737,7 +4170,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          /* ST-013-R3 §6.3 : 6 bits de code couleur -> CMDCOLR & 0xFFC0. */
          u32 colorBank = cmd.CMDCOLR & 0xFFC0;
          u16 i, j;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             j = 0;
@@ -3772,13 +4205,13 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   j += 1;
                   continue;
                }
-
+ 
                dot = raw & 0x3F;
                charAddr++;
-
+ 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
-
+ 
                j += 1;
             }
          }
@@ -3790,7 +4223,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          /* ST-013-R3 §6.3 : 7 bits de code couleur -> CMDCOLR & 0xFF80. */
          u32 colorBank = cmd.CMDCOLR & 0xFF80;
          u16 i, j;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             j = 0;
@@ -3825,13 +4258,13 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   j += 1;
                   continue;
                }
-
+ 
                dot = raw & 0x7F;
                charAddr++;
-
+ 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
-
+ 
                j += 1;
             }
          }
@@ -3843,7 +4276,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
          /* ST-013-R3 §6.3 : 8 bits de code couleur -> CMDCOLR & 0xFF00. */
          u32 colorBank = cmd.CMDCOLR & 0xFF00;
          u16 i, j;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             j = 0;
@@ -3878,13 +4311,13 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   j += 1;
                   continue;
                }
-
+ 
                dot = raw;
                charAddr++;
-
+ 
                if ((dot == 0) && !SPD) *textdata++ = 0;
                else *textdata++ = Vdp1DebugFbDataColor(dot | colorBank);
-
+ 
                j += 1;
             }
          }
@@ -3894,7 +4327,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       {
          // 16 bpp Bank mode
          u16 i, j;
-
+ 
          for(i = 0;i < h[0];i++)
          {
             /* ST-013-R3 §6.3 p.86 : le compte d'end codes est PAR LIGNE. */
@@ -3902,7 +4335,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
             for(j = 0;j < w[0];j++)
             {
                dot = T1ReadWord(Vdp1DebugMem(), charAddr & 0x7FFFF);
-
+ 
                if (isendcode && (ret = CheckEndcode(dot, 0x7FFF, &code)) > 0)
                {
                   if (DoEndcode(ret, &charAddr, &textdata, w[0], j, 0, 16))
@@ -3919,7 +4352,7 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
                   if (!(dot & 0x8000) && !SPD) *textdata++ = 0;
                   else *textdata++ = Vdp1DebugFbDataColor(dot);
                }
-
+ 
                charAddr += 2;
             }
          }
@@ -3928,34 +4361,34 @@ u32 *Vdp1DebugTextureAtAddr(u32 addr, int *w, int *h)
       default:
          break;
    }
-
+ 
    return texture;
 }
-
+ 
 u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numBytes)
 {
    u16 cmdRaw;
    vdp1cmd_struct cmd;
    u8 *texture = NULL;
-
+ 
    // Initial number of bytes written to texture
    *numBytes = 0;
-
+ 
    if (cmdAddress == 0xFFFFFFFF)
       return NULL;
-
+ 
    cmdRaw = T1ReadWord(Vdp1DebugMem(), cmdAddress);
-
+ 
    if (cmdRaw & 0x8000)
       // Draw End
       return NULL;
-
+ 
    if (cmdRaw & 0x4000)
       // Command Skipped
       return NULL;
-
+ 
    Vdp1ReadCommand(&cmd, cmdAddress, Vdp1DebugMem());
-
+ 
    const int spriteCmdType = ((cmd.CMDPMOD >> 3) & 0x7);
    switch (cmd.CMDCTRL & 0x000F)
    {
@@ -3965,7 +4398,7 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
       case 3: // Distorted Sprite *
          width[0] = (cmd.CMDSIZE & 0x3F00) >> 5;
          height[0] = cmd.CMDSIZE & 0xFF;
-
+ 
          switch (spriteCmdType) {
             // 0: 4 bpp Bank mode
             // 1: 4 bpp LUT mode
@@ -3992,10 +4425,10 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
                texture = NULL;
                break;
          }
-
+ 
          if (texture == NULL)
             return NULL;
-
+ 
          break;
       case 4: // Polygon
       case 5: // Polyline
@@ -4005,10 +4438,10 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
          width[0] = 1;
          height[0] = 1;
          texture = (u8*) malloc(sizeof(u16));
-
+ 
          if (texture == NULL)
             return NULL;
-
+ 
          *numBytes = 2;
          memcpy(texture, &cmd.CMDCOLR, sizeof(u16));
          return texture;
@@ -4020,25 +4453,25 @@ u8 *Vdp1DebugRawTextureAtAddr(u32 cmdAddress, int *width, int *height, int *numB
       default: // Invalid command
          return NULL;
    }
-
+ 
    // Read texture data directly from VRAM.
    for (u32 i = 0; i < *numBytes; ++i)
    {
      texture[ i ] = T1ReadByte(Vdp1DebugMem(), ((cmd.CMDSRCA * 8) + i) & 0x7FFFF);
    }
-
+ 
    return texture;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 //////////////////////////////////////////////////////////////////////////////
 // Aide au debogage : couleur d'un texel et apercu de la trame complete.
 //
 // Ni l'une ni l'autre n'interviennent dans le rendu : elles ne lisent que
 // Vdp1DebugMem(), la Color RAM et les registres VDP2, pour l'interface.
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 /* Decrit le chemin complet d'un code couleur de texel jusqu'a sa couleur
  * finale : banque/LUT, decalage CRAOFB, index et contenu de la Color RAM.
  * Meme arithmetique que Vdp1DebugTextureAtAddr (et donc que l'apercu).
@@ -4049,14 +4482,14 @@ int Vdp1DebugTexelColorText(u32 cmdAddr, u32 code, char *out, int outSize)
    vdp1cmd_struct cmd;
    u32 data = 0;
    int n = 0;
-
+ 
    if ((out == NULL) || (outSize <= 0)) return 0;
    out[0] = '\0';
    if ((ram == NULL) || (cmdAddr == 0xFFFFFFFF)) return 0;
-
+ 
    Vdp1ReadCommand(&cmd, cmdAddr, ram);
    if ((cmd.CMDCTRL & 0xC000) || ((cmd.CMDCTRL & 0xF) > 3)) return 0;
-
+ 
    /* Donnee 16 bits que le VDP1 ecrit dans le frame buffer pour ce texel. */
    switch ((cmd.CMDPMOD >> 3) & 0x7)
    {
@@ -4076,13 +4509,13 @@ int Vdp1DebugTexelColorText(u32 cmdAddr, u32 code, char *out, int outSize)
          return 0;
    }
    if (n >= outSize) return (int)strlen(out);
-
+ 
    if (Vdp1DebugIsRgbData(data)) {
       snprintf(out + n, outSize - n, "FB 0x%04X = RGB R=%d G=%d B=%d",
                data, data & 0x1F, (data >> 5) & 0x1F, (data >> 10) & 0x1F);
       return (int)strlen(out);
    }
-
+ 
    {
       const int type = Vdp2Regs->SPCTL & 0xF;
       const u32 mask = Vdp1DebugSpriteDCMask[type];
@@ -4109,13 +4542,13 @@ int Vdp1DebugTexelColorText(u32 cmdAddr, u32 code, char *out, int outSize)
    }
    return (int)strlen(out);
 }
-
+ 
 static void Vdp1DebugPlot(u32 *fb, int W, int H, int x, int y, u32 c)
 {
    if ((x >= 0) && (y >= 0) && (x < W) && (y < H))
       fb[y * W + x] = c;
 }
-
+ 
 static void Vdp1DebugDrawLine(u32 *fb, int W, int H, int x0, int y0, int x1, int y1, u32 c)
 {
    int dx = abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
@@ -4130,7 +4563,7 @@ static void Vdp1DebugDrawLine(u32 *fb, int W, int H, int x0, int y0, int x1, int
       if (e2 <= dx) { err += dx; y0 += sy; }
    }
 }
-
+ 
 /* Plaque la texture tw x th sur le quadrilatere A B C D (A = coin haut
  * gauche de la texture, B haut droit, C bas droit, D bas gauche) par
  * echantillonnage direct : chaque point (u, v) est interpole bilineairement
@@ -4147,7 +4580,7 @@ static void Vdp1DebugDrawQuad(u32 *fb, int W, int H, const int *qx, const int *q
    int nu = MIN(2048, MAX(tw, lenU) * 2 + 1);
    int nv = MIN(2048, MAX(th, lenV) * 2 + 1);
    int iu, iv;
-
+ 
    for (iv = 0; iv <= nv; iv++) {
       float v = (float)iv / (float)nv;
       int ty = MIN(th - 1, (int)(v * th));
@@ -4167,7 +4600,7 @@ static void Vdp1DebugDrawQuad(u32 *fb, int W, int H, const int *qx, const int *q
       }
    }
 }
-
+ 
 /* Assemble toutes les commandes de addrs[] dans une image ARGB (meme format
  * que Vdp1DebugTextureAtAddr, 0 = transparent) de la taille du clipping
  * systeme (320x224 si aucune commande System Clipping ne le fixe).
@@ -4188,9 +4621,9 @@ u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int
    s32 localX = 0, localY = 0;
    u32 *fb;
    int i;
-
+ 
    if ((ram == NULL) || (addrs == NULL) || (count <= 0)) return NULL;
-
+ 
    /* Taille de la toile : derniere commande System Clipping de la liste. */
    for (i = 0; i < count; i++) {
       u16 ctrl = T1ReadWord(ram, addrs[i]);
@@ -4201,39 +4634,39 @@ u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int
    }
    W = MAX(8, MIN(1024, W));
    H = MAX(8, MIN(512, H));
-
+ 
    fb = (u32 *)calloc((size_t)W * H, sizeof(u32));
    if (fb == NULL) return NULL;
-
+ 
    for (i = 0; i < count; i++) {
       vdp1cmd_struct cmd;
       int qx[4], qy[4];
       int type, k;
       u32 *tex = NULL;
       int tw = 0, th = 0;
-
+ 
       if (boxes) { boxes[4*i] = 0; boxes[4*i+1] = 0; boxes[4*i+2] = -1; boxes[4*i+3] = -1; }
-
+ 
       Vdp1ReadCommand(&cmd, addrs[i], ram);
       if (cmd.CMDCTRL & 0x8000) break;       // Draw End
       if (cmd.CMDCTRL & 0x4000) continue;    // commande sautee
       type = cmd.CMDCTRL & 0xF;
-
+ 
       CONVERTCMD(&cmd.CMDXA); CONVERTCMD(&cmd.CMDYA);
       CONVERTCMD(&cmd.CMDXB); CONVERTCMD(&cmd.CMDYB);
       CONVERTCMD(&cmd.CMDXC); CONVERTCMD(&cmd.CMDYC);
       CONVERTCMD(&cmd.CMDXD); CONVERTCMD(&cmd.CMDYD);
-
+ 
       if (type == 10) {                       // Local Coordinates
          localX = cmd.CMDXA;
          localY = cmd.CMDYA;
          continue;
       }
       if (type > 7) continue;                 // clipping, invalide
-
+ 
       tex = Vdp1DebugTextureAtAddr(addrs[i], &tw, &th);
       if (tex == NULL) continue;
-
+ 
       switch (type) {
          case 0: // Normal Sprite
             qx[0] = cmd.CMDXA;          qy[0] = cmd.CMDYA;
@@ -4271,9 +4704,9 @@ u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int
             qx[3] = cmd.CMDXD; qy[3] = cmd.CMDYD;
             break;
       }
-
+ 
       for (k = 0; k < 4; k++) { qx[k] += localX; qy[k] += localY; }
-
+ 
       if (boxes) {
          int nk = (type == 6) ? 2 : 4;
          boxes[4*i] = boxes[4*i+2] = qx[0];
@@ -4285,7 +4718,7 @@ u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int
             boxes[4*i+3] = MAX(boxes[4*i+3], qy[k]);
          }
       }
-
+ 
       if (type == 0) {
          /* Copie exacte texel a texel. */
          int flipH = (cmd.CMDCTRL >> 4) & 1, flipV = (cmd.CMDCTRL >> 5) & 1;
@@ -4305,21 +4738,21 @@ u32 *Vdp1DebugRenderFrame(const u32 *addrs, int count, int *outW, int *outH, int
          for (k = 0; k < 4; k++)
             Vdp1DebugDrawLine(fb, W, H, qx[k], qy[k], qx[(k + 1) & 3], qy[(k + 1) & 3], tex[0]);
       }
-
+ 
       free(tex);
    }
-
+ 
    *outW = W;
    *outH = H;
    return fb;
 }
-
+ 
 void ToggleVDP1(void)
 {
    Vdp1External.disptoggle ^= 1;
 }
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 /* Number of display lines the V-blank erase/write overruns by.
  *
  * Sources: VDP1 User's Manual ST-013-R3, EWDR p.46, EWLR/EWRR pp.47-48,
@@ -4342,13 +4775,13 @@ void ToggleVDP1(void)
 static int getVdp1ErasePixelLine() {
     int is8bpp = (Vdp1Regs->TVMR & 0x1);
     int xunit  = is8bpp ? 16 : 8;
-
+ 
     /* Parametres verrouilles au dernier swap (cf. Vdp1LatchEraseParameters). */
     int x1 = ((Vdp1EraseLatchEWLR >> 9) & 0x3F) * xunit;
     int y1 =  (Vdp1EraseLatchEWLR) & 0x1FF;
     int x3 = (((Vdp1EraseLatchEWRR >> 9) & 0x7F) * xunit) - 1;
     int y3 =  (Vdp1EraseLatchEWRR) & 0x1FF;
-
+ 
     /* p.48: "Because the register setting for the Y coordinate is doubled
      * during double interlace, the actual coordinate value should be set to
      * one half. For example, when the setting is 223, the coordinate
@@ -4360,7 +4793,7 @@ static int getVdp1ErasePixelLine() {
         y1 *= 2;
         y3 = y3 * 2 + 1;
     }
-
+ 
     /* p.49: "If the setting is X1 >= X3 or Y1 > Y3, then erase/write is
      * performed for 1 dot in the normal or high-resolution mode and for
      * 8 dots in the case of rotation or HDTV. In these cases, erase/write
@@ -4383,7 +4816,7 @@ static int getVdp1ErasePixelLine() {
         area_w = x3 - x1 + 1;
         area_h = y3 - y1 + 1;
     }
-
+ 
     /* EWDR p.46: "Erase/write is performed 2 pixels at a time when the frame
      * buffer depth is 8 bits/pixel." The frame buffer moves one 16-bit word
      * per cycle (p.20), so 8 bpp clears 2 pixels per cycle and 16 bpp one.
@@ -4393,7 +4826,7 @@ static int getVdp1ErasePixelLine() {
     int pixels_per_cycle = is8bpp ? 2 : 1;
     int total_cycles     = (area_pixels + pixels_per_cycle - 1)
                            / pixels_per_cycle;
-
+ 
     /* p.49: usable pixels per raster = (pixels in 1 raster) - 200.
      *
      * Read rasterValue directly rather than going through
@@ -4404,17 +4837,17 @@ static int getVdp1ErasePixelLine() {
      * property of the video mode, not of who currently owns the bus. */
     int usable_per_line = rasterValue - 200;
     if (usable_per_line <= 0) return 0;
-
+ 
     return (total_cycles + usable_per_line - 1) / usable_per_line;
 }
-
+ 
 static void Vdp1EraseWrite(int id){
   lastHash = -1;
   _Ygl->shallVdp1Erase[id] = 1;
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void Vdp1HBlankIN(void)
 {
   if (yabsys.LineCount == (yabsys.VBlankLineCount + 1)) {
@@ -4426,7 +4859,7 @@ void Vdp1HBlankIN(void)
       //Vblank time - VBE on, erase read frame
       FRAMELOG("##### VBlank on %d (%d %d)\n", eraseId, yabsys.LineCount, yabsys.DecilineCount);
       Vdp1EraseWrite(eraseId);
-
+ 
       /* VDP1 Manual p.49: the erase/write finishes only if the pixels it
        * needs fit within the V-blank capacity of Tables 4.4 and 4.5. Past
        * that the hardware stops mid-erase and the remainder of the frame
@@ -4443,7 +4876,7 @@ void Vdp1HBlankIN(void)
       int eraseLines     = getVdp1ErasePixelLine();
       int availableLines = (yabsys.MaxLineCount - 1)
                          - (yabsys.VBlankLineCount + 1);
-
+ 
       Vdp1External.eraseOverrun      = (eraseLines > availableLines);
       Vdp1External.eraseOverrunLines = Vdp1External.eraseOverrun
                                      ? (eraseLines - availableLines) : 0;
@@ -4451,12 +4884,15 @@ void Vdp1HBlankIN(void)
         FRAMELOG("V-blank erase overruns by %d lines (needs %d, has %d)\n",
                  Vdp1External.eraseOverrunLines, eraseLines, availableLines);
       }
-
+ 
       updateFBCRChange();
     }
   }
   if (yabsys.LineCount == (yabsys.MaxLineCount - 1)) {
-
+    /* Statistiques : le champ se termine ici, avant la bascule eventuelle
+     * (Vdp1SwitchFrame cloture l'image, qui compte donc ce champ). */
+    vdp1StatsEndField();
+ 
     FRAMELOG("### Update FBCR for next field %d %d\n", yabsys.LineCount, yabsys.DecilineCount);
     updateFBCRErase();
     updateFBCRChange();
@@ -4471,7 +4907,7 @@ void Vdp1HBlankIN(void)
       Vdp1SwitchFrame();
     }
     Vdp1External.manualchange = 0;
-
+ 
     int eraseId = 0;
     if (_Ygl != NULL) eraseId = _Ygl->readframe;
     //Vblank time - VBE of, erase read frame if erase mode or oncyclemode
@@ -4483,16 +4919,17 @@ void Vdp1HBlankIN(void)
     Vdp1External.manualerase = 0;
   }
   int cyclesPerLine  = getVdp1CyclesPerLine();
+  vdp1StatsLine(rasterValue, Vdp1External.blocked != 0);
   if (vdp1_clock > 0) vdp1_clock = 0;
   vdp1_clock += cyclesPerLine;
   Vdp1TryDraw();
 }
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void Vdp1StartVisibleLine(void)
 {
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
 void Vdp1VBlankIN(void)
 {
@@ -4504,15 +4941,20 @@ void Vdp1VBlankOUT(void) {
     //Evaluate FBCR
   // }
 }
-
+ 
 void Vdp1VBlankIN_It(void)
 {
   FRAMELOG("VBLANKIn line %d (%d)\n", yabsys.LineCount, yabsys.DecilineCount);
   checkFBSync();
 }
-
+ 
 void Vdp1SwitchFrame(void)
 {
+  /* Statistiques : liste encore en cours au moment de la bascule ? (le
+   * trace n'a pas fini dans la periode de l'image). Releve AVANT un
+   * eventuel abortVdp1() du mode PTMR = 2 ci-dessous. */
+  const int statRunningAtSwap =
+      ((Vdp1External.status & VDP1_STATUS_MASK) == VDP1_STATUS_RUNNING);
   FRAMELOG("Change frames before draw %d, read %d (%d)\n", _Ygl->drawframe, _Ygl->readframe, yabsys.LineCount);
   checkFBSync();
   FRAMELOG("Switch Frame change VDP1 %d(%d)\n", yabsys.LineCount, yabsys.DecilineCount);
@@ -4527,7 +4969,7 @@ void Vdp1SwitchFrame(void)
   Vdp1Regs->LOPR = Vdp1Regs->lCOPR;
   Vdp1Regs->COPR = 0;
   Vdp1Regs->lCOPR = 0;
-
+ 
   if (Vdp1Regs->PTMR == 0x2) {
     FRAMELOG("[VDP1] PTMR == 0x2 start drawing immidiatly %d %d EDSR %x PTMR %x\n", yabsys.LineCount, yabsys.DecilineCount, Vdp1Regs->EDSR,  Vdp1Regs->PTMR);
     int cylesPerLine = getVdp1CyclesPerLine();
@@ -4539,8 +4981,12 @@ void Vdp1SwitchFrame(void)
   } else {
     Vdp1Regs->EDSR >>= 1;
   }
+  /* Cloture APRES l'abortVdp1() du mode PTMR = 2 : la liste coupee par la
+   * bascule est comptee dans l'image qui se termine, pas dans la suivante.
+   * Aucun cycle n'est consomme entre les deux. */
+  vdp1StatsEndFrame(statRunningAtSwap);
 }
-
+ 
 //////////////////////////////////////////////////////////////////////////////
 // Variantes historiques a base de rang dans la liste de commandes.
 //
@@ -4549,17 +4995,17 @@ void Vdp1SwitchFrame(void)
 // chaque appel reparcourt la table depuis l'adresse 0, et rien ne garantit
 // que la table n'a pas bouge depuis le moment ou le rang a ete calcule.
 //////////////////////////////////////////////////////////////////////////////
-
+ 
 void Vdp1DebugCommand(u32 number, char *outstring)
 {
    Vdp1DebugCommandAtAddr(Vdp1DebugGetCommandNumberAddr(number), outstring);
 }
-
+ 
 u32 *Vdp1DebugTexture(u32 number, int *w, int *h)
 {
    return Vdp1DebugTextureAtAddr(Vdp1DebugGetCommandNumberAddr(number), w, h);
 }
-
+ 
 u8 *Vdp1DebugRawTexture(u32 cmdNumber, int *width, int *height, int *numBytes)
 {
    return Vdp1DebugRawTextureAtAddr(Vdp1DebugGetCommandNumberAddr(cmdNumber),
