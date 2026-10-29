@@ -39,6 +39,7 @@
 #include "ygl.h"
 #include "mpegcard.h"
 #include "cs2.h"
+#include "vdpedit.h"
 
 u8 * Vdp2Ram;
 u8 * Vdp2ColorRam;
@@ -698,6 +699,9 @@ int Vdp2Init(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void Vdp2DeInit(void) {
+   /* Les edits de l'editeur graphique appartiennent au jeu qui se ferme. */
+   if (VdpEditHookDeInit) VdpEditHookDeInit();
+
    if (Vdp2Regs)
       free(Vdp2Regs);
    Vdp2Regs = NULL;
@@ -1033,8 +1037,18 @@ void Vdp2VBlankIN_It(void) {
   ScuSendVBlankIN();
 }
 
+/* Edits de l'editeur graphique (vdpedit.h) : NULL tant qu'aucun edit
+ * n'existe ; vdpedit.c les installe. */
+void (*VdpEditHookVblank)(void) = NULL;
+void (*VdpEditHookDeInit)(void) = NULL;
+
 void Vdp2VBlankIN(void) {
   FRAMELOG("***** VIN *****");
+
+  /* Edits de l'editeur graphique (vdpedit.c) : tuiles / bitmaps VDP2, sprites
+   * VDP1 et couleurs remis si le jeu a recharge les donnees d'origine.
+   * Pointeur NULL tant qu'aucun edit n'existe. */
+  if (VdpEditHookVblank) VdpEditHookVblank();
 
   if (Vdp2Regs->EXTEN & 0x200) // Should be revised for accuracy(should occur only occur on the line it happens at, etc.)
   {
@@ -1553,10 +1567,34 @@ void Vdp2SendExternalLatch(int trigger, int hcnt, int vcnt)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Side-effect-free read of a VDP2 register (no HV latch on EXTEN, no
+   EXLTFG/EXSYFG clear on TVSTAT), returning what Vdp2ReadWord() would. */
+static u16 Vdp2PeekRegister(u32 addr) {
+   switch (addr & 0x1FE)
+   {
+      case 0x000: return Vdp2Regs->TVMD;
+      case 0x002: return Vdp2Regs->EXTEN;
+      case 0x004:
+         // if TVMD's DISP bit is cleared, TVSTAT's VBLANK bit is always set
+         return ((Vdp2Regs->TVMD & 0x8000) != 0) ? Vdp2Regs->TVSTAT : (u16)(Vdp2Regs->TVSTAT | 0x8);
+      case 0x006: return Vdp2Regs->VRSIZE;
+      case 0x008: return Vdp2Regs->HCNT;
+      case 0x00A: return Vdp2Regs->VCNT;
+      case 0x00E: return Vdp2Regs->RAMCTL;
+      default:    return 0;
+   }
+}
+
 u8 FASTCALL Vdp2ReadByte(SH2_struct *context, u8* mem, u32 addr) {
-   YuiMsg("Non supported VDP2 register byte read = %08X\n", addr);
+   /* ST-58-R2 p.3: registers may only be accessed in word/long units, so
+      the hardware result of a byte read isn't documented. Like Ymir
+      (vdp.cpp, VDP2 register bus map: VDP2ReadReg<true>, i.e. peek), read
+      the containing word without side effects and return the addressed
+      byte (even = high byte, big-endian). Previously always returned 0. */
+   u16 v;
    addr &= 0x1FF;
-   return 0;
+   v = Vdp2PeekRegister(addr);
+   return (u8)((addr & 1) ? (v & 0xFF) : (v >> 8));
 }
 
 //////////////////////////////////////////////////////////////////////////////
