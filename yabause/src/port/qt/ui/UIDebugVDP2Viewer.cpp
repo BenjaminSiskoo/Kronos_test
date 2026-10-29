@@ -2,10 +2,16 @@
     This file is part of Yabause. (GPL v2+) */
 
 #include "UIDebugVDP2Viewer.h"
+#include "UIEditsExport.h"
+#include "UIDebugGfxEditor.h"
 #include "CommonDialogs.h"
 #include "ygl.h"
 
 #include <QImageWriter>
+#include <QDir>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QApplication>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsRectItem>
 #include <sstream>
@@ -32,6 +38,7 @@ extern "C" {
 #include "vdp1.h"
 #include "vdp2.h"
 #include "vdp2debug.h"
+#include "vdpedit.h"
 #include "memory.h"
 #include "yabause.h"
 }
@@ -2036,6 +2043,243 @@ void UIDebugVDP2Viewer::on_pbVramExport_clicked()
         CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
 }
 void UIDebugVDP2Viewer::on_cbCramHex_toggled(bool)            { updateColorRam(); }
+
+// ============================================================
+//  on_pbDumpLayers_clicked -- export en masse des couches VDP2.
+//
+//  layer_<NOM>.png : chaque couche telle que le moteur la dessine (zone
+//    visible, avec scroll/zoom/fenetres), via Vdp2DebugTexture() -- comme
+//    le visualiseur et "Save As Bitmap". SPRITE = framebuffer VDP1.
+//  map_<NOM>.png   : la carte COMPLETE du fond (tous les plans/pages, hors
+//    ecran compris, 2x2 plans pour les NBG, 4x4 pour les RBG) ou le bitmap
+//    entier, relu depuis la VRAM sans scroll, zoom ni rotation (vdpedit.c).
+//    C'est ce qu'il faut pour recuperer un decor entier ou ses tuiles.
+//  palette.png     : la CRAM courante, une case 8x8 par couleur, 32 colonnes.
+// ============================================================
+namespace {
+struct MapLayer { int layer; const char *name; };
+const MapLayer kMapLayers[] = {
+    { VDPEDIT_NBG0, "NBG0" }, { VDPEDIT_NBG1, "NBG1" }, { VDPEDIT_NBG2, "NBG2" }, { VDPEDIT_NBG3, "NBG3" },
+    { VDPEDIT_RBG0, "RBG0" }, { VDPEDIT_RBG0B, "RBG0B" }, { VDPEDIT_RBG1, "RBG1" }
+};
+
+QImage cramPicture()
+{
+    const int n = VdpEditCramColorCount(), cols = 32;
+    QImage img(cols * 8, (n / cols) * 8, QImage::Format_ARGB32);
+    for (int i = 0; i < n; i++) {
+        const QRgb c = VdpEditCramArgb((u32)i);
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++)
+                img.setPixel((i % cols) * 8 + x, (i / cols) * 8 + y, c);
+    }
+    return img;
+}
+}
+
+void UIDebugVDP2Viewer::on_pbDumpLayers_clicked()
+{
+    if (!Vdp2Regs)
+        return;
+    const QString dir = CommonDialogs::getExistingDirectory(
+        QString(), QtYabause::translate("Select output folder for VDP2 layers"));
+    if (dir.isEmpty())
+        return;
+    QDir().mkpath(dir);
+
+    static const struct { int id; const char *name; } layers[] = {
+        { NBG0, "NBG0" }, { NBG1, "NBG1" }, { NBG2, "NBG2" }, { NBG3, "NBG3" },
+        { RBG0, "RBG0" }, { RBG1, "RBG1" }, { SPRITE, "SPRITE" }
+    };
+
+    QStringList written, failed;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); ++i) {
+        int w = 0, h = 0;
+        pixel_t *tex = Vdp2DebugTexture(layers[i].id, &w, &h);
+        if (!tex)
+            continue; // couche desactivee (BGON) ou sans sortie
+        // Meme orientation que displayCurrentScreen() : les couches sont lues
+        // par glGetTexImage (bas en haut), sauf SPRITE deja a l'endroit.
+        QImage img = QImage((const uchar *)tex, w, h, QImage::Format_RGBA8888)
+                         .mirrored(false, layers[i].id != SPRITE);
+        if (layers[i].id == SPRITE) {
+            // Meme rendu que l'ecran : le framebuffer VDP1 ramene a sa
+            // taille logique, chaque mot passe par la CRAM comme le fait le
+            // VDP2 (colorizeSprite). Les mots bruts restent exportes a part.
+            const QImage raw = spriteLogicalImage(img);
+            (raw.save(QDir(dir).filePath("layer_SPRITE_raw.png")) ? written : failed) << "layer_SPRITE_raw.png";
+            img = colorizeSprite(raw, false);
+        } else {
+            img = img.copy();
+        }
+        const QString name = QString("layer_%1.png").arg(layers[i].name);
+        (img.save(QDir(dir).filePath(name)) ? written : failed) << name;
+        free(tex);
+    }
+
+    for (size_t n = 0; n < sizeof(kMapLayers) / sizeof(kMapLayers[0]); ++n) {
+        VdpEditBg bg;
+        if (VdpEditBgGet(kMapLayers[n].layer, &bg) != 0)
+            continue;   // couche eteinte
+        if (kMapLayers[n].layer == VDPEDIT_RBG0B && (Vdp2Regs->RPMD & 3) == 0)
+            continue;   // parametre B inutilise
+        int w = 0, h = 0;
+        u32 *map = VdpEditBgRender(&bg, &w, &h);
+        if (!map)
+            continue;
+        const QString name = QString("map_%1.png").arg(kMapLayers[n].name);
+        (QImage((const uchar *)map, w, h, QImage::Format_ARGB32).save(QDir(dir).filePath(name)) ? written : failed) << name;
+        free(map);
+    }
+
+    (cramPicture().save(QDir(dir).filePath("palette.png")) ? written : failed) << "palette.png";
+
+    QApplication::restoreOverrideCursor();
+
+    QString msg = QtYabause::translate("%1 file(s) written to:\n%2").arg(written.size()).arg(dir);
+    if (written.isEmpty())
+        msg = QtYabause::translate("No layer produced any output (all layers disabled?).");
+    if (!failed.isEmpty())
+        msg += "\n\n" + QtYabause::translate("Failed:") + "\n" + failed.join("\n");
+    QMessageBox::information(this, QtYabause::translate("Dump all layers"), msg);
+}
+
+// ============================================================
+//  on_pbImportLayers_clicked -- reimporte les images editees d'un dump.
+//
+//  map_<NOM>.png : seuls les caracteres (ou lignes de bitmap) dont l'image
+//    differe de l'etat courant sont reecrits (couleur la plus proche de la
+//    palette de chaque cellule, flips inverses) ; les autres ne sont pas
+//    touches. Un caractere utilise a plusieurs endroits change partout : les
+//    copies non editees sont comptees dans "blocs encore differents".
+//  palette.png : chaque case dont la couleur a change est ecrite en CRAM.
+//  Les cartes sont traitees AVANT la palette, pour que la comparaison se
+//  fasse avec la palette telle qu'elle etait au moment du dump.
+//  Les edits sont persistants (vdpedit.c, reappliques a chaque V-blank).
+//  layer_*.png n'est pas reimportable : c'est la vue finale (scroll, zoom,
+//  priorites) et non des donnees.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbImportLayers_clicked()
+{
+    if (!Vdp2Regs)
+        return;
+    const QString dir = CommonDialogs::getExistingDirectory(
+        QString(), QtYabause::translate("Select the VDP2 dump folder"));
+    if (dir.isEmpty())
+        return;
+
+    QStringList lines;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    for (size_t n = 0; n < sizeof(kMapLayers) / sizeof(kMapLayers[0]); ++n) {
+        const QString name = QString("map_%1.png").arg(kMapLayers[n].name);
+        const QFileInfo fi(QDir(dir).filePath(name));
+        if (!fi.exists())
+            continue;
+        QImage img(fi.filePath());
+        if (img.isNull()) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("unreadable image"));
+            continue;
+        }
+        img = img.convertToFormat(QImage::Format_ARGB32);
+        VdpEditBg bg;
+        const int got = VdpEditBgGet(kMapLayers[n].layer, &bg);
+        int st[4] = { 0, 0, 0, 0 };
+        const int rc = (got == 0)
+            ? VdpEditBgImport(&bg, reinterpret_cast<const u32 *>(img.constBits()), img.width(), img.height(), st)
+            : got;
+        if (rc == 0) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate(
+                "%1 character(s)/row(s) changed, %2 conflict(s), %3 dot(s) mapped to the nearest palette color, "
+                "%4 block(s) still different from your image").arg(st[0]).arg(st[1]).arg(st[3]).arg(st[2]));
+        } else if (rc == -2) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("size differs from the current map"));
+        } else if (rc == -3) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("layer is disabled"));
+        } else {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("invalid"));
+        }
+    }
+
+    {
+        const QFileInfo fi(QDir(dir).filePath("palette.png"));
+        if (fi.exists()) {
+            QImage img(fi.filePath());
+            const QImage cur = cramPicture();
+            if (img.isNull()) {
+                lines << QString("palette.png: %1").arg(QtYabause::translate("unreadable image"));
+            } else if (img.size() != cur.size()) {
+                lines << QString("palette.png: %1").arg(QtYabause::translate("size differs from the current palette"));
+            } else {
+                img = img.convertToFormat(QImage::Format_ARGB32);
+                const int n = VdpEditCramColorCount();
+                int changed = 0;
+                for (int i = 0; i < n; i++) {
+                    const QRgb p = img.pixel((i % 32) * 8 + 4, (i / 32) * 8 + 4);
+                    const QRgb c = cur.pixel((i % 32) * 8 + 4, (i / 32) * 8 + 4);
+                    if ((p & 0xF8F8F8) != (c & 0xF8F8F8) &&
+                        VdpEditSetCramColor((u32)i, qRed(p), qGreen(p), qBlue(p)) == 0)
+                        changed++;
+                }
+                lines << QString("palette.png: %1").arg(QtYabause::translate("%1 color(s) changed").arg(changed));
+            }
+        }
+    }
+
+    QApplication::restoreOverrideCursor();
+
+    if (lines.isEmpty())
+        lines << QtYabause::translate("No map_*.png or palette.png found in this folder.");
+    QMessageBox::information(this, QtYabause::translate("Import edited layers"), lines.join("\n"));
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+// Ouvre l'editeur graphique sur la couche selectionnee. SPRITE = la couche
+// sprite du VDP2, c'est-a-dire la trame VDP1 : l'editeur s'ouvre sur sa vue
+// "couche sprite", ou cliquer un sprite l'ouvre.
+void UIDebugVDP2Viewer::on_pbOpenEditor_clicked()
+{
+    const int id = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+    {
+        UIDebugGfxEditor ed(this);
+        switch (id) {
+        case NBG0: ed.openLayer(VDPEDIT_NBG0); break;
+        case NBG1: ed.openLayer(VDPEDIT_NBG1); break;
+        case NBG2: ed.openLayer(VDPEDIT_NBG2); break;
+        case NBG3: ed.openLayer(VDPEDIT_NBG3); break;
+        case RBG0: ed.openLayer(VDPEDIT_RBG0); break;
+        case RBG1: ed.openLayer(VDPEDIT_RBG1); break;
+        default:   ed.openLayer(-1); break;   // SPRITE
+        }
+        ed.exec();
+    }
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+void UIDebugVDP2Viewer::on_pbSaveEdits_clicked()
+{
+    UIEditsExport dlg(this);
+    dlg.exec();
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+void UIDebugVDP2Viewer::on_pbRevertEdits_clicked()
+{
+    if (VdpEditCount(-1) == 0)
+        return;
+    if (QMessageBox::question(this, QtYabause::translate("Revert all edits"),
+            QtYabause::translate("Put every original graphic and color back and forget all %1 edit(s)?")
+                .arg(VdpEditCount(-1)), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    VdpEditRevertAll();
+    updateColorRam();
+    displayCurrentScreen();
+}
 
 void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
 {

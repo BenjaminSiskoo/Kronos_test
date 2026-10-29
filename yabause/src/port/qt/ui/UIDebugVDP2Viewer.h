@@ -131,6 +131,11 @@ private:
 protected slots:
     void on_cbScreen_currentIndexChanged(int index);
     void on_pbSaveAsBitmap_clicked();
+    void on_pbDumpLayers_clicked();
+    void on_pbImportLayers_clicked();
+    void on_pbOpenEditor_clicked();
+    void on_pbRevertEdits_clicked();
+    void on_pbSaveEdits_clicked();
     void on_cbOpaque_toggled(bool enable);
     void on_pbResetZoom_clicked();
     void on_tabWidget_currentChanged(int index);

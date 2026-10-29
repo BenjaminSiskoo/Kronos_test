@@ -141,6 +141,7 @@ protected:
 
 protected slots:
     void onViewerClicked();
+    void onGfxEditorClicked();
     void onNextFrame();
     void onLiveToggled(bool live);
     void onLiveTick();
@@ -172,6 +173,7 @@ private:
     QLabel *lDetailTitle = nullptr, *lStripHint = nullptr, *lVramInfo = nullptr, *lInactive = nullptr;
     QWidget *body = nullptr;
     QPushButton *pbViewer = nullptr, *pbNextButton = nullptr, *pbLive = nullptr;
+    QPushButton *pbGfxEditor = nullptr;
     QPushButton *pbExport = nullptr, *pbShowAll = nullptr;
     QTimer *liveTimer = nullptr;
 

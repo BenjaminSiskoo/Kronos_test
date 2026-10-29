@@ -110,6 +110,9 @@ protected:
 protected slots:
     void on_pbSaveBitmap_clicked();
     void on_pbSaveRawSprite_clicked();
+    void on_pbEditSprite_clicked();
+    void on_pbSaveEdits_clicked();
+    void on_pbRevertEdits_clicked();
     void on_pbNextButton_clicked();
     void on_pbResetZoom_clicked();
     void on_cbOpaque_toggled(bool checked);

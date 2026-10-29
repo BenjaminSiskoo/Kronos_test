@@ -8,9 +8,12 @@
     (at your option) any later version.
 */
 #include "UIDebugVDP1.h"
+#include "UIDebugGfxEditor.h"
+#include "UIEditsExport.h"
 #include "CommonDialogs.h"
 
 #include <QImageWriter>
+#include <QMessageBox>
 #include <QScrollBar>
 #include <QGraphicsPixmapItem>
 #include <QListWidgetItem>
@@ -47,6 +50,7 @@
 // VDP1 system headers
 extern "C" {
 #include "vdp1.h"
+#include "vdpedit.h"
 }
 
 namespace {
@@ -1500,6 +1504,44 @@ void UIDebugVDP1::on_pbSaveRawSprite_clicked()
             outputFile.close();
         }
     }
+}
+
+// ============================================================
+//  Edition : l'editeur graphique s'ouvre sur le sprite selectionne (ou sur
+//  la liste des sprites si la commande n'en est pas un). Il travaille sur la
+//  meme memoire que ce dialogue (instantane pris au debut du trace) et y
+//  recopie ses edits, d'ou le rafraichissement au retour.
+// ============================================================
+void UIDebugVDP1::on_pbEditSprite_clicked()
+{
+    const int row = lwCommandList->currentRow();
+    {
+        UIDebugGfxEditor ed(this);
+        if (row >= 0 && row < (int)mCmdAddrs.size() && mCurIsSprite)
+            ed.openSpriteCommand(mCmdAddrs[row]);
+        ed.exec();
+    }
+    // L'editeur peut avoir fait tourner le jeu : la liste a change.
+    fillCommandList();
+}
+
+void UIDebugVDP1::on_pbSaveEdits_clicked()
+{
+    UIEditsExport dlg(this);
+    dlg.exec();
+    syncOnVdp1Entry(lwCommandList->currentRow());
+}
+
+void UIDebugVDP1::on_pbRevertEdits_clicked()
+{
+    if (VdpEditCount(-1) == 0)
+        return;
+    if (QMessageBox::question(this, QtYabause::translate("Revert all edits"),
+            QtYabause::translate("Put every original graphic and color back and forget all %1 edit(s)?")
+                .arg(VdpEditCount(-1)), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    VdpEditRevertAll();
+    syncOnVdp1Entry(lwCommandList->currentRow());
 }
 
 void UIDebugVDP1::on_pbSaveBitmap_clicked()

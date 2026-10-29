@@ -222,6 +222,7 @@
     <addaction name="aViewDebugSSH2"/>
     <addaction name="aViewDebugVDP1"/>
     <addaction name="aViewDebugVDP2"/>
+    <addaction name="aViewDebugGfxEditor"/>
     <addaction name="aViewDebugM68K"/>
     <addaction name="aViewDebugSCUDSP"/>
     <addaction name="aViewDebugSCSP"/>
@@ -524,6 +525,18 @@
    </property>
    <property name="text">
     <string>VDP&amp;2</string>
+   </property>
+  </action>
+  <action name="aViewDebugGfxEditor">
+   <property name="icon">
+    <iconset resource="../resources/resources.qrc">
+     <normaloff>:/actions/icons/actions/debug_cpu.png</normaloff>:/actions/icons/actions/debug_cpu.png</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Graphics Editor (VDP1/VDP2)</string>
+   </property>
+   <property name="toolTip">
+    <string>Edit the sprites and backgrounds of the running game</string>
    </property>
   </action>
   <action name="aViewDebugM68K">

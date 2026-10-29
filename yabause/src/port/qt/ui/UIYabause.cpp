@@ -29,6 +29,8 @@
 #include "UIDebugSH2.h"
 #include "UIDebugVDP1.h"
 #include "UIDebugVDP2.h"
+#include "UIDebugGfxEditor.h"
+#include <QPointer>
 #include "UIDebugM68K.h"
 #include "UIDebugSCUDSP.h"
 #include "UIDebugSCSP.h"
@@ -1225,6 +1227,23 @@ void UIYabause::on_aViewDebugVDP2_triggered()
 {
 	YabauseLocker locker( mYabauseThread );
 	UIDebugVDP2( NULL, &locker ).exec();
+}
+
+// Editeur graphique : fenetre NON modale et sans YabauseLocker, pour pouvoir
+// jouer pendant qu'il est ouvert et voir les edits a l'ecran. L'emulation
+// tourne sur ce meme thread (YabauseGL::event), donc les ecritures en VRAM de
+// l'editeur ne croisent jamais une trame en cours. Une seule instance.
+void UIYabause::on_aViewDebugGfxEditor_triggered()
+{
+	static QPointer<UIDebugGfxEditor> editor;
+	if (!editor) {
+		editor = new UIDebugGfxEditor(this);
+		editor->setAttribute(Qt::WA_DeleteOnClose);
+		editor->setModal(false);
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
 }
 
 void UIYabause::on_aHelpReport_triggered()

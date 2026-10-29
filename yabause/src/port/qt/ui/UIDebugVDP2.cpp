@@ -34,6 +34,7 @@
 
 #include "UIDebugVDP2.h"
 #include "UIDebugVDP2Viewer.h"
+#include "UIDebugGfxEditor.h"
 #include "CommonDialogs.h"
 #include "../YabauseThread.h"
 
@@ -669,6 +670,8 @@ void UIDebugVDP2::buildUi()
     pbViewer->setObjectName("pbViewer");
     pbViewer->setToolTip(tr_("Open the VDP2 viewer"));
     pbExport = new QPushButton(tr_("Export (.txt)..."), this);
+    pbGfxEditor = new QPushButton(tr_("Graphics Editor..."), this);
+    pbGfxEditor->setToolTip(tr_("Edit the selected layer (or the VDP1 sprites for SPR) and see the result in the game"));
     pbNextButton = new QPushButton(tr_("Next Frame"), this);
     pbNextButton->setObjectName("pbNextButton");
     pbNextButton->setToolTip(tr_("Advance one frame"));
@@ -678,6 +681,7 @@ void UIDebugVDP2::buildUi()
     QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, this);
     footer->addWidget(pbViewer);
     footer->addWidget(pbExport);
+    footer->addWidget(pbGfxEditor);
     footer->addStretch(1);
     footer->addWidget(pbNextButton);
     footer->addWidget(pbLive);
@@ -688,6 +692,7 @@ void UIDebugVDP2::buildUi()
     // Boutons crees apres setupUi() : connexions explicites (des slots
     // nommes on_<objet>_<signal> feraient avertir connectSlotsByName).
     connect(pbViewer, SIGNAL(clicked()), this, SLOT(onViewerClicked()));
+    connect(pbGfxEditor, SIGNAL(clicked()), this, SLOT(onGfxEditorClicked()));
     connect(pbNextButton, SIGNAL(clicked()), this, SLOT(onNextFrame()));
     connect(pbLive, SIGNAL(toggled(bool)), this, SLOT(onLiveToggled(bool)));
     connect(pbExport, SIGNAL(clicked()), this, SLOT(onExport()));
@@ -919,6 +924,7 @@ void UIDebugVDP2::updateAll()
     lInactive->setVisible(!active);
     body->setVisible(active);
     pbViewer->setEnabled(active);
+    pbGfxEditor->setEnabled(active);
     pbExport->setEnabled(active);
     pbViewer->setToolTip(active ? tr_("Open the VDP2 viewer") : tr_("VDP2 not initialised."));
     setWindowTitle(active ? tr_("VDP2 Debug") : tr_("VDP2 Debug - inactive"));
@@ -984,6 +990,25 @@ void UIDebugVDP2::onViewerClicked()
     viewer->show();
     viewer->raise();
     viewer->activateWindow();
+}
+
+// Editeur graphique sur la couche selectionnee dans la bande. L'editeur a son
+// propre bouton Run/Pause : Live est arrete pendant qu'il est ouvert, et la
+// pause d'origine est retrouvee a sa fermeture (UIDebugGfxEditor::done).
+void UIDebugVDP2::onGfxEditorClicked()
+{
+    if (mLive) setLive(false);
+    static const int kEditorLayer[Vdp2LayerStrip::LaneCount] = {
+        VDPEDIT_NBG0, VDPEDIT_NBG1, VDPEDIT_NBG2, VDPEDIT_NBG3, VDPEDIT_RBG0, VDPEDIT_RBG1, -1, VDPEDIT_NBG0
+    };
+    const int lane = strip ? strip->selected() : 0;
+    {
+        UIDebugGfxEditor ed(this);
+        ed.openLayer((lane >= 0 && lane < Vdp2LayerStrip::LaneCount) ? kEditorLayer[lane] : VDPEDIT_NBG0);
+        ed.exec();
+    }
+    updateAll();
+    if (viewer->isVisible()) viewer->refresh();
 }
 
 void UIDebugVDP2::onNextFrame()

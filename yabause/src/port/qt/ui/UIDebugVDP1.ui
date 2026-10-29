@@ -210,6 +210,40 @@
             </item>
            </layout>
           </item>
+          <item>
+           <layout class="QHBoxLayout" name="hlEdit">
+            <item>
+             <widget class="QPushButton" name="pbEditSprite">
+              <property name="toolTip">
+               <string>Open the graphics editor on the selected sprite: draw in it, change its palette, see the result in the game</string>
+              </property>
+              <property name="text">
+               <string>Edit in Graphics Editor...</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbSaveEdits">
+              <property name="toolTip">
+               <string>Save the edits: edit pack (.kmod), patched disc image, BPS or IPS patch</string>
+              </property>
+              <property name="text">
+               <string>Save / load edits...</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbRevertEdits">
+              <property name="toolTip">
+               <string>Put back every original sprite, tile and color changed with the graphics editor</string>
+              </property>
+              <property name="text">
+               <string>Revert all edits</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
          </layout>
         </widget>
        </item>
