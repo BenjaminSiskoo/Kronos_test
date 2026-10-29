@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>UIDebugVDP2Viewer</class>
+ <widget class="QDialog" name="UIDebugVDP2Viewer">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>1060</width><height>760</height></rect></property>
+  <property name="windowTitle"><string>VDP2 Viewer</string></property>
+  <property name="sizeGripEnabled"><bool>true</bool></property>
+  <layout class="QVBoxLayout" name="vlay_root">
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+
+     <!-- 0: Screen Viewer -->
+     <widget class="QWidget" name="tabViewer">
+      <attribute name="title"><string>Screen Viewer</string></attribute>
+      <layout class="QVBoxLayout" name="vlViewer">
+       <item><layout class="QHBoxLayout" name="hlViewerTop">
+        <item><widget class="QLabel" name="lScreenLabel"><property name="text"><string>Screen:</string></property></widget></item>
+        <item><widget class="QComboBox" name="cbScreen"><property name="minimumWidth"><number>110</number></property></widget></item>
+        <item><spacer name="hs1"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QCheckBox" name="cbOpaque"><property name="text"><string>Opaque</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbResetZoom">
+         <property name="toolTip"><string>Fit the image back into the view (Ctrl+wheel to zoom)</string></property>
+         <property name="text"><string>Reset Zoom</string></property>
+        </widget></item>
+       </layout></item>
+       <item><widget class="QGraphicsView" name="gvScreen">
+        <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+        <property name="mouseTracking"><bool>true</bool></property>
+       </widget></item>
+       <item><widget class="QLabel" name="lPixelInfo">
+        <property name="text"><string>Move the mouse over the image to inspect a pixel.</string></property>
+        <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set></property>
+       </widget></item>
+       <item><widget class="QPlainTextEdit" name="pteScreenInfo">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+        <property name="maximumHeight"><number>110</number></property>
+       </widget></item>
+       <item><layout class="QHBoxLayout" name="hlViewerBottom">
+        <item><spacer name="hs2"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QPushButton" name="pbSaveAsBitmap"><property name="text"><string>Save As Bitmap</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbOpenEditor"><property name="toolTip"><string>Open the graphics editor on the selected layer: click a part of its map and draw in it, change its palette, see the result in the game</string></property><property name="text"><string>Edit in Graphics Editor...</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbDumpLayers"><property name="toolTip"><string>Export every layer (NBG0-3, RBG0-1, SPRITE) as seen on screen, plus the full map of each NBG / RBG and the color RAM palette, as PNG files</string></property><property name="text"><string>Dump all layers...</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbImportLayers"><property name="toolTip"><string>Re-import edited map_*.png and palette.png from a dump folder. Only characters / colors that differ from the current state are rewritten; edits are kept every frame.</string></property><property name="text"><string>Import edited layers...</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbSaveEdits"><property name="toolTip"><string>Save the edits: edit pack (.kmod), patched disc image, BPS or IPS patch</string></property><property name="text"><string>Save / load edits...</string></property></widget></item>
+        <item><widget class="QPushButton" name="pbRevertEdits"><property name="toolTip"><string>Put back every original sprite, tile and color changed with the graphics editor</string></property><property name="text"><string>Revert all edits</string></property></widget></item>
+       </layout></item>
+      </layout>
+     </widget>
+
+     <!-- 1: VDP2 Registers -->
+     <widget class="QWidget" name="tabRegisters">
+      <attribute name="title"><string>Registers</string></attribute>
+      <layout class="QVBoxLayout" name="vlRegs" stretch="0,1">
+       <item><layout class="QHBoxLayout" name="hlRegFilter">
+        <item><widget class="QLabel" name="lRegFilter"><property name="text"><string>Filter:</string></property></widget></item>
+        <item><widget class="QLineEdit" name="leRegFilter">
+         <property name="placeholderText"><string>register or text (e.g. CYC, BGON, NBG1)</string></property>
+         <property name="clearButtonEnabled"><bool>true</bool></property>
+        </widget></item>
+        <item><widget class="QLabel" name="lRegFilterCount"><property name="text"><string/></property></widget></item>
+       </layout></item>
+       <item><widget class="QSplitter" name="splitterRegs">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <widget class="QGroupBox" name="gbRawRegs">
+         <property name="title"><string>Raw Values</string></property>
+         <layout class="QVBoxLayout" name="vlRaw"><item><widget class="QPlainTextEdit" name="pteRawRegs">
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+         </widget></item></layout>
+        </widget>
+        <widget class="QGroupBox" name="gbDecodedRegs">
+         <property name="title"><string>Decoded</string></property>
+         <layout class="QVBoxLayout" name="vlDec"><item><widget class="QPlainTextEdit" name="pteDecodedRegs">
+          <property name="readOnly"><bool>true</bool></property>
+          <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+         </widget></item></layout>
+        </widget>
+       </widget></item>
+      </layout>
+     </widget>
+
+     <!-- 2: Debug (Vdp2DebugStatsXXX, arbre groupe ou texte brut) -->
+     <widget class="QWidget" name="tabStats">
+      <attribute name="title"><string>Debug</string></attribute>
+      <layout class="QVBoxLayout" name="vlStats" stretch="0,1,1">
+       <item><layout class="QHBoxLayout" name="hlStatsTop" stretch="1,0,0">
+        <item><widget class="QLabel" name="lStatsHint">
+         <property name="text"><string>Active layers, grouped by topic. Warnings explain why a layer that is on is not drawn.</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget></item>
+        <item><spacer name="hsStats"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QCheckBox" name="cbStatsText"><property name="text"><string>Plain text</string></property></widget></item>
+       </layout></item>
+       <item><widget class="QTreeWidget" name="twStats">
+        <property name="alternatingRowColors"><bool>true</bool></property>
+        <property name="uniformRowHeights"><bool>true</bool></property>
+        <property name="columnCount"><number>2</number></property>
+        <column><property name="text"><string>Field</string></property></column>
+        <column><property name="text"><string>Value</string></property></column>
+       </widget></item>
+       <item><widget class="QPlainTextEdit" name="pteStats">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
+     <!-- 3: Color RAM -->
+     <widget class="QWidget" name="tabColorRam">
+      <attribute name="title"><string>Color RAM</string></attribute>
+      <layout class="QVBoxLayout" name="vlCram" stretch="0,1,0">
+       <item><layout class="QHBoxLayout" name="hlCramTop">
+        <item><widget class="QLabel" name="lCramInfo"><property name="text"><string>Color RAM</string></property></widget></item>
+        <item><spacer name="hs3"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QCheckBox" name="cbCramHex"><property name="text"><string>Show hex dump</string></property></widget></item>
+       </layout></item>
+       <item><widget class="QSplitter" name="splitterCram">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="childrenCollapsible"><bool>false</bool></property>
+        <widget class="QGraphicsView" name="gvColorRam">
+         <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Expanding"><horstretch>3</horstretch><verstretch>0</verstretch></sizepolicy></property>
+         <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+         <property name="verticalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+        </widget>
+        <widget class="QFrame" name="frCramPanel">
+         <property name="minimumWidth"><number>250</number></property>
+         <layout class="QVBoxLayout" name="vlCramPanel">
+          <item><layout class="QHBoxLayout" name="hlCramSel">
+           <item><widget class="QLabel" name="lCramSwatch">
+            <property name="minimumSize"><size><width>56</width><height>56</height></size></property>
+            <property name="maximumSize"><size><width>56</width><height>56</height></size></property>
+           </widget></item>
+           <item><widget class="QLabel" name="lCramTitle">
+            <property name="text"><string>Hover a color</string></property>
+            <property name="wordWrap"><bool>true</bool></property>
+           </widget></item>
+          </layout></item>
+          <item><widget class="QLabel" name="lCramDetail">
+           <property name="text"><string/></property>
+           <property name="wordWrap"><bool>true</bool></property>
+           <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set></property>
+          </widget></item>
+          <item><widget class="QLabel" name="lCramDup">
+           <property name="text"><string/></property>
+           <property name="wordWrap"><bool>true</bool></property>
+           <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set></property>
+          </widget></item>
+          <item><spacer name="vsCram"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+          <item><widget class="QLabel" name="lCramLegend">
+           <property name="text"><string/></property>
+           <property name="wordWrap"><bool>true</bool></property>
+          </widget></item>
+         </layout>
+        </widget>
+       </widget></item>
+       <item><widget class="QPlainTextEdit" name="pteColorRamHex">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="maximumHeight"><number>160</number></property>
+        <property name="font"><font><family>Courier New</family><pointsize>8</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
+     <!-- 4: VRAM Hex -->
+     <widget class="QWidget" name="tabVram">
+      <attribute name="title"><string>VRAM Hex</string></attribute>
+      <layout class="QVBoxLayout" name="vlVram">
+       <item><layout class="QHBoxLayout" name="hlVramTop">
+        <item><widget class="QLabel" name="lVramBank"><property name="text"><string>Bank:</string></property></widget></item>
+        <item><widget class="QComboBox" name="cbVramBank">
+         <item><property name="text"><string>VRAM-A  (0x00000-0x3FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B  (0x40000-0x7FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-A0 (0x00000-0x1FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-A1 (0x20000-0x3FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B0 (0x40000-0x5FFFF)</string></property></item>
+         <item><property name="text"><string>VRAM-B1 (0x60000-0x7FFFF)</string></property></item>
+        </widget></item>
+        <item><widget class="QLabel" name="lVramOff"><property name="text"><string>  Offset (hex):</string></property></widget></item>
+        <item><widget class="QLineEdit" name="leVramOffset"><property name="text"><string>0</string></property><property name="maximumWidth"><number>80</number></property></widget></item>
+        <item><widget class="QPushButton" name="pbVramGo"><property name="text"><string>Go</string></property><property name="maximumWidth"><number>50</number></property></widget></item>
+        <item><widget class="QLabel" name="lVramJump"><property name="text"><string>  Jump to:</string></property></widget></item>
+        <item><widget class="QComboBox" name="cbVramJump">
+         <property name="toolTip"><string>Tables and data used by the active layers (from the Debug tab)</string></property>
+         <property name="minimumWidth"><number>220</number></property>
+        </widget></item>
+        <item><spacer name="hs4"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        <item><widget class="QPushButton" name="pbVramExport">
+         <property name="toolTip"><string>Save the selected VRAM bank to a raw .bin file</string></property>
+         <property name="text"><string>Export bank (.bin)...</string></property>
+        </widget></item>
+       </layout></item>
+       <item><widget class="QPlainTextEdit" name="pteVramHex">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="font"><font><family>Courier New</family><pointsize>9</pointsize></font></property>
+       </widget></item>
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+   <item><layout class="QHBoxLayout" name="hlay_bot">
+    <item><widget class="QPushButton" name="pbExportDebugInfo">
+     <property name="toolTip"><string>Save the Registers tab (raw + decoded) and the Debug tab to a text file</string></property>
+     <property name="text"><string>Export Registers / Debug (.txt)...</string></property>
+    </widget></item>
+    <item><spacer name="hs5"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+    <item><widget class="QDialogButtonBox" name="dbbButtons"><property name="standardButtons"><set>QDialogButtonBox::Close</set></property></widget></item>
+   </layout></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>dbbButtons</sender><signal>rejected()</signal>
+   <receiver>UIDebugVDP2Viewer</receiver><slot>reject()</slot>
+   <hints><hint type="sourcelabel"><x>347</x><y>670</y></hint><hint type="destinationlabel"><x>335</x><y>720</y></hint></hints>
+  </connection>
+ </connections>
+</ui>

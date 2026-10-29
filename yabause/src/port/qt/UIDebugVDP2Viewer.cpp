@@ -1,0 +1,2794 @@
+/*  Copyright 2012 Theo Berkau <cwx@cyberwarriorx.com>
+    This file is part of Yabause. (GPL v2+) */
+
+#include "UIDebugVDP2Viewer.h"
+#include "UIEditsExport.h"
+#include "UIDebugGfxEditor.h"
+#include "CommonDialogs.h"
+#include "ygl.h"
+
+#include <QImageWriter>
+#include <QDir>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QApplication>
+#include <QGraphicsPixmapItem>
+#include <QGraphicsRectItem>
+#include <sstream>
+#include <iomanip>
+#include <cstdio>
+#include <cstring>
+#include <algorithm>
+#include <vector>
+#include <QWheelEvent>
+#include <QMouseEvent>
+#include <QFile>
+#include <QTextStream>
+#include <QDateTime>
+#include <cmath>
+#include <QHeaderView>
+#include <QMap>
+#include <QPainter>
+#include <QPixmap>
+#include <QScrollBar>
+#include <QTreeWidget>
+#include <QGraphicsSimpleTextItem>
+
+extern "C" {
+#include "vdp1.h"
+#include "vdp2.h"
+#include "vdp2debug.h"
+#include "vdpedit.h"
+#include "memory.h"
+#include "yabause.h"
+}
+
+// ============================================================
+//  Helpers
+// ============================================================
+// std::right est indispensable : l'alignement est un etat PERSISTANT du
+// flux, et la macro R() ci-dessous pose std::left pour aligner la colonne
+// du nom sans jamais le retablir. Sans std::right ici, les zeros de
+// remplissage partaient a DROITE : BGON=0x0201 s'affichait "2010" et
+// TVSTAT=0x0007 s'affichait "7000". Seules les valeurs occupant deja
+// toute la largeur (TVMD=0x8120, RAMCTL=0x1327...) echappaient au bug.
+#define HEX4(v) std::hex<<std::uppercase<<std::right<<std::setw(4)<<std::setfill('0')<<(unsigned)(v)
+#define HEX8(v) std::hex<<std::uppercase<<std::right<<std::setw(8)<<std::setfill('0')<<(unsigned)(v)
+#define DEC(v)  std::dec<<(v)
+
+// VRAM access command decode -- ST-058-R2 Table 3.5 p.34.
+//
+// L'ancienne table etait decalee de deux crans sur tout le haut du nibble.
+// Elle attribuait 1000B-1011B a RBG0/RBG1, alors que ces quatre codes sont
+// "setting prohibited" : les fonds en rotation n'utilisent PAS les registres
+// de cycle pattern (leur banque entiere leur est reservee via RAMCTL, cf.
+// §3.3 et Technical Bulletin SOA-6, et vdp2.c:bankOwnedByRotation()). Les
+// deux codes reellement presents a cet endroit de la table sont les tables
+// de vertical cell scroll NBG0 (1100B) et NBG1 (1101B), qui manquaient
+// completement -- d'ou le glissement : CPU-RW (1110B) s'affichait "(rsvd)"
+// et no-access (1111B) prenait la place du precedent.
+//
+// Consequence concrete : sur un jeu utilisant le vertical cell scroll, les
+// creneaux VCS etaient rapportes comme CPU-RW / no-access, et le creneau CPU
+// reel comme reserve -- exactement le sous-systeme qu'on cherche a debugger.
+// Sonic Jam (CYCA1L=0xCD45) se lisait "T0=CPU-RW T1=NoAccess T2=NBG0CP
+// T3=NBG1CP" au lieu de "T0=N0VCST T1=N1VCST T2=NBG0CP T3=NBG1CP".
+//
+// Les libelles font tous 6 caracteres pour que les colonnes T0-T7 restent
+// alignees dans l'export texte.
+static std::string decodeVramTiming(u8 n) {
+    switch(n&0xF){
+        case 0x0:return"NBG0PN"; case 0x1:return"NBG1PN";
+        case 0x2:return"NBG2PN"; case 0x3:return"NBG3PN";
+        case 0x4:return"NBG0CP"; case 0x5:return"NBG1CP";
+        case 0x6:return"NBG2CP"; case 0x7:return"NBG3CP";
+        // 1000B-1011B : setting prohibited (Table 3.5)
+        case 0x8: case 0x9:
+        case 0xA: case 0xB:      return"PROHIB";
+        case 0xC:return"N0VCST"; case 0xD:return"N1VCST";
+        case 0xE:return"CPU-RW"; case 0xF:return"------";
+        default: return"??????";
+    }
+}
+
+// Saturn VDP2 Color RAM formats (ST-058-R2 §4.4) :
+//   Mode 0/1 : 1024 or 2048 entries × 16-bit  BGR555  (b14-10=B, b9-5=G, b4-0=R)
+//   Mode 2/3 : 1024 entries × 32-bit  XRGB888  (b23-16=R, b15-8=G, b7-0=B)
+// La CRAM totale est toujours 4096 octets (0x1000).
+static QColor cramColor(int idx) {
+    if (!Vdp2ColorRam || !Vdp2Regs) return Qt::black;
+    int mode = (Vdp2Regs->RAMCTL>>12)&3;
+    if (mode <= 1) {
+        // 16-bit BGR555 — adresse = idx*2, max 4095 (0xFFF)
+        u16 w = T2ReadWord(Vdp2ColorRam, (idx * 2) & 0xFFF);
+        int r = ( w        & 0x1F) << 3;  // bits  4- 0 = Red
+        int g = ((w >>  5) & 0x1F) << 3;  // bits  9- 5 = Green
+        int b = ((w >> 10) & 0x1F) << 3;  // bits 14-10 = Blue
+        return QColor(r, g, b);
+    } else {
+        // 32-bit XRGB888 — adresse = idx*4, max 4092 (0xFFC pour le mot de base)
+        u32 addr = (u32)(idx * 4) & 0xFFC;
+        u16 msw = T2ReadWord(Vdp2ColorRam, addr);       // bits 31-16 : X(ignoré), R(23-16)
+        u16 lsw = T2ReadWord(Vdp2ColorRam, addr + 2);   // bits 15-0  : G(15-8), B(7-0)
+        int r_val = (msw & 0xFF);
+        int g_val = (lsw >> 8) & 0xFF;
+        int b_val =  lsw       & 0xFF;
+        return QColor(r_val, g_val, b_val);
+    }
+}
+
+// Mot brut d'une entree CRAM : 16 bits en mode 0/1, 32 bits (MSW:LSW) en
+// mode 2. Meme adressage que cramColor().
+static u32 cramRaw(int idx) {
+    if (!Vdp2ColorRam || !Vdp2Regs) return 0;
+    if (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1)
+        return T2ReadWord(Vdp2ColorRam, (u32)(idx * 2) & 0xFFF);
+    const u32 addr = (u32)(idx * 4) & 0xFFC;
+    return ((u32)T2ReadWord(Vdp2ColorRam, addr) << 16) | T2ReadWord(Vdp2ColorRam, addr + 2);
+}
+
+// Nombre d'entrees affichees par updateColorRam().
+static int cramEntries() {
+    if (!Vdp2Regs) return 0;
+    return (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1) ? 2048 : 1024;
+}
+
+// Partie couleur d'un mot CRAM, sans le bit MSB (bit 15 en mode 0/1,
+// bit 31 en mode 2) qui sert au calcul de couleur special et non a la
+// couleur : deux entrees qui ne different que par ce bit affichent la meme
+// couleur.
+static u32 cramColorBits(u32 raw) {
+    if (!Vdp2Regs) return raw;
+    return (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1) ? (raw & 0x7FFF) : (raw & 0xFFFFFF);
+}
+
+// Geometrie des cases de l'onglet Color RAM (updateColorRam / cramIndexAt).
+static const int CRAM_SW = 10, CRAM_SH = 10, CRAM_COLS = 64;
+
+// Numero de palette et rang dans la palette, pour un index CRAM donne.
+// Les palettes 16 et 256 couleurs sont alignees sur leur taille dans la CRAM
+// (index = palette * taille + couleur), le decalage CRAOFx y compris.
+static QString paletteText(int colornumber, int idx) {
+    switch (colornumber) {
+        case 0:  return QtYabause::translate("16c palette %1, color %2").arg(idx >> 4).arg(idx & 0xF);
+        case 1:  return QtYabause::translate("256c palette %1, color %2").arg(idx >> 8).arg(idx & 0xFF);
+        case 2:  return QtYabause::translate("2048c (no palette), color %1").arg(idx);
+        default: return QtYabause::translate("16c palette %1 color %2 / 256c palette %3 color %4")
+                     .arg(idx >> 4).arg(idx & 0xF).arg(idx >> 8).arg(idx & 0xFF);
+    }
+}
+
+// Hexadecimal majuscule sur 'w' chiffres minimum (prefixe 0x non inclus).
+static QString hexs(u32 v, int w) {
+    return QString("%1").arg(v, w, 16, QChar('0')).toUpper();
+}
+
+// Texte secondaire qui suit le theme (clair ou sombre), comme dimColor()
+// de UIDebugSCSPChan.
+static QColor mixDim(const QPalette &pal)
+{
+    const QColor a = pal.color(QPalette::WindowText), b = pal.color(QPalette::Window);
+    return QColor((int)(a.red() * 0.6 + b.red() * 0.4), (int)(a.green() * 0.6 + b.green() * 0.4),
+                  (int)(a.blue() * 0.6 + b.blue() * 0.4));
+}
+
+// ============================================================
+//  Geometrie de la grille Color RAM. 64 cases par rangee ; un espace
+//  supplementaire toutes les 16 colonnes (palette 16 couleurs) et toutes
+//  les 4 rangees (palette 256 couleurs = 256 entrees), pour lire les
+//  palettes d'un coup d'oeil. A gauche : etiquette de la zone CRAOF des
+//  couches actives puis index de la rangee ; en haut : colonnes.
+// ============================================================
+namespace {
+const int CRAM_TAGW = 26;                    // etiquettes N0/N1/.../SPR
+const int CRAM_LBLW = 30;                    // index de rangee
+const int CRAM_LM = CRAM_TAGW + CRAM_LBLW;   // marge gauche
+const int CRAM_TM = 12;                      // marge haute
+const int CRAM_PITCH = CRAM_SW + 1;          // case + espace
+const int CRAM_GGAP = 3;                     // espace entre palettes
+inline double cramCellX(int col) { return CRAM_LM + col * CRAM_PITCH + (col / 16) * CRAM_GGAP; }
+inline double cramCellY(int row) { return CRAM_TM + row * CRAM_PITCH + (row / 4) * CRAM_GGAP; }
+}
+
+// Couches actives dont la zone CRAOF commence au bloc de 256 entrees 'block'.
+// CRAOFA : N0 bits 2-0, N1 6-4, N2 10-8, N3 14-12 ; CRAOFB : R0 bits 2-0,
+// SPR 6-4 (ST-058-R2 1800E4H/E6H). RBG1 utilise le decalage de NBG0.
+static QStringList cramLayersAtBlock(int block)
+{
+    QStringList out;
+    if (!Vdp2Regs) return out;
+    const Vdp2 *r = Vdp2Regs;
+    const int mode2 = (((r->RAMCTL >> 12) & 3) == 2);
+    struct { const char *n; int on; int ofs; } l[] = {
+        { "N0", r->BGON & 0x01, r->CRAOFA & 7 },        { "N1", r->BGON & 0x02, (r->CRAOFA >> 4) & 7 },
+        { "N2", r->BGON & 0x04, (r->CRAOFA >> 8) & 7 }, { "N3", r->BGON & 0x08, (r->CRAOFA >> 12) & 7 },
+        { "R0", r->BGON & 0x10, r->CRAOFB & 7 },        { "R1", r->BGON & 0x20, r->CRAOFA & 7 },
+        { "SPR", 1, (r->CRAOFB >> 4) & 7 }
+    };
+    for (size_t i = 0; i < sizeof(l) / sizeof(l[0]); i++)
+        if (l[i].on && (mode2 ? (l[i].ofs & 3) : l[i].ofs) == block)
+            out << QString::fromLatin1(l[i].n);
+    return out;
+}
+
+// ============================================================
+//  Arbre groupe des textes Vdp2DebugStatsXXX() (onglet Debug du viewer et
+//  fenetre UIDebugVDP2). Le texte est plat, une information par ligne
+//  ("Libelle = valeur") ; on le range par theme, comme groupForSlotLabel()
+//  du debogueur SCSP. L'ordre des regles compte : "Line Color..." doit
+//  tomber dans Couleur avant que "Line " ne l'envoie dans Scroll.
+// ============================================================
+static QString statsGroupForLabel(const QString &l)
+{
+    struct Rule { const char *group; const char *prefixes[16]; };
+    static const Rule rules[] = {
+        { "Warnings",   { "***", 0 } },
+        { "Color",      { "Line Color", "Color", "Gradation", "Extended", "Special Color Calculation",
+                          "Ratio", "R = ", "Transparent Shadow", "Sprite Gradation", 0 } },
+        { "Priority",   { "Priority", "Special Priority Mode", 0 } },
+        { "Format",     { "4-bit", "8-bit", "16-bit", "32-bit", "Unsupported", "Bitmap", "Tile(", "Mosaic", 0 } },
+        { "Map",        { "Plane", "Pattern Name", "Character Number", "Special Priority bit",
+                          "Supplementary", 0 } },
+        { "Scroll & zoom", { "Screen Scroll", "Coordinate inc", "Zoom factor", "Horizontal Reduction",
+                          "Line Zoom", "Line Scroll", "Vertical Cell", 0 } },
+        { "Rotation",   { "Using Parameter", "Parameter", "Coefficient", "Rotation", "Read ", 0 } },
+        { "Windows",    { "Using Window", "Using Sprite Window", "Horizontal start", "Vertical start",
+                          "Horizontal end", "Vertical end", "Valid area", "Window", "Line Window",
+                          "Line Table", 0 } },
+        { "Sprite",     { "Sprite", "Screen Mode", "VDP1", "Erased", "Erase", "Prohibited", "Invalid", 0 } },
+    };
+    const QString t = l.trimmed();
+    for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); r++)
+        for (int k = 0; rules[r].prefixes[k]; k++)
+            if (t.startsWith(QString::fromLatin1(rules[r].prefixes[k])))
+                return QtYabause::translate(QString::fromLatin1(rules[r].group));
+    return QtYabause::translate("Other");
+}
+
+// Coupe "Libelle = valeur" ou "Libelle: valeur" ;
+// "Screen Scroll x = 1, y = 2" devient "Screen Scroll" / "x 1, y 2".
+static void statsSplitLine(const QString &line, QString *label, QString *value)
+{
+    const QString t = line.trimmed();
+    int p = t.indexOf(QLatin1String(" = "));
+    int len = 3;
+    if (p < 0) { p = t.indexOf(QLatin1String(": ")); len = 2; }
+    if (p > 0) { *label = t.left(p); *value = t.mid(p + len).trimmed(); }
+    else       { *label = t; value->clear(); }
+    if (label->endsWith(QLatin1String(" x")) && value->contains(QLatin1String(", y = ")))
+    {
+        label->chop(2);
+        *value = QLatin1String("x ") + value->replace(QLatin1String(", y = "), QLatin1String(", y "));
+    }
+}
+
+void Vdp2FillStatsTree(QTreeWidget *tree, QTreeWidgetItem *parent, const QString &rawText, bool general)
+{
+    const QColor warnCol(229, 72, 77);
+    QFont mono(QString::fromLatin1("Courier New"));
+    mono.setStyleHint(QFont::Monospace);
+
+    const QString text = QString(rawText).remove(QLatin1Char('\r'));
+    QMap<QString, QTreeWidgetItem *> groups;
+    QStringList order;
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QString section;   // Vdp2DebugStatsGeneral : "Titre" suivi de "-----"
+    for (int k = 0; k < lines.size(); k++)
+    {
+        const QString line = lines[k];
+        if (line.trimmed().startsWith(QLatin1String("---"))) continue;
+        if (general && k + 1 < lines.size() && lines[k + 1].trimmed().startsWith(QLatin1String("---")))
+        {
+            section = line.trimmed();
+            continue;
+        }
+        QString label, value;
+        statsSplitLine(line, &label, &value);
+        const bool warn = label.startsWith(QLatin1String("***"));
+        QString g = general ? (section.isEmpty() ? QtYabause::translate("Display") : section)
+                            : statsGroupForLabel(label);
+        if (warn) g = QtYabause::translate("Warnings");
+        if (!groups.contains(g))
+        {
+            QTreeWidgetItem *gi = new QTreeWidgetItem();
+            gi->setText(0, g);
+            QFont f = gi->font(0); f.setBold(true); gi->setFont(0, f);
+            gi->setForeground(0, warn ? warnCol : tree->palette().color(QPalette::Highlight));
+            gi->setFirstColumnSpanned(true);
+            gi->setFlags(Qt::ItemIsEnabled);
+            groups.insert(g, gi);
+            if (warn) order.prepend(g); else order.append(g);
+        }
+        QTreeWidgetItem *it = new QTreeWidgetItem(groups[g]);
+        if (warn) label = label.mid(3).remove(QLatin1String("***")).trimmed();
+        it->setText(0, label);
+        it->setText(1, value);
+        it->setToolTip(0, line.trimmed());
+        it->setToolTip(1, value);
+        if (warn)
+        {
+            it->setForeground(0, warnCol);
+            QFont f = it->font(0); f.setBold(true); it->setFont(0, f);
+        }
+        if (!value.isEmpty() && (value.at(0).isDigit() || value.at(0) == QLatin1Char('-')))
+            it->setFont(1, mono);
+    }
+    for (int k = 0; k < order.size(); k++)
+    {
+        if (parent) parent->addChild(groups[order[k]]);
+        else        tree->addTopLevelItem(groups[order[k]]);
+        groups[order[k]]->setExpanded(true);
+    }
+}
+
+
+// ============================================================
+//  updateVdp2Registers  (raw + decoded)
+// ============================================================
+void UIDebugVDP2Viewer::updateVdp2Registers()
+{
+    if (!Vdp2Regs) {
+        mRawRegsText = mDecRegsText = QtYabause::translate("VDP2 not initialised.");
+        applyRegFilter();
+        return;
+    }
+    const Vdp2 &r = *Vdp2Regs;
+
+    /* ---- RAW pane ---- */
+    std::ostringstream raw;
+    raw<<"Address    Name     Value\n"
+       <<"---------- -------- ------\n";
+#define R(a,n,v) raw<<"0x"<<HEX8(a)<<"  "<<std::left<<std::setw(8)<<std::setfill(' ')<<(n)<<std::right<<" = 0x"<<HEX4(v)<<"\n"
+    R(0x25F80000,"TVMD",  r.TVMD);   R(0x25F80002,"EXTEN", r.EXTEN);
+    R(0x25F80004,"TVSTAT",r.TVSTAT); R(0x25F80006,"VRSIZE",r.VRSIZE);
+    R(0x25F80008,"HCNT",  r.HCNT);   R(0x25F8000A,"VCNT",  r.VCNT);
+    R(0x25F8000C,"(rsvd)", r.EWDR);
+    R(0x25F8000E,"RAMCTL",r.RAMCTL);
+    R(0x25F80010,"CYCA0L",r.CYCA0L); R(0x25F80012,"CYCA0U",r.CYCA0U);
+    R(0x25F80014,"CYCA1L",r.CYCA1L); R(0x25F80016,"CYCA1U",r.CYCA1U);
+    R(0x25F80018,"CYCB0L",r.CYCB0L); R(0x25F8001A,"CYCB0U",r.CYCB0U);
+    R(0x25F8001C,"CYCB1L",r.CYCB1L); R(0x25F8001E,"CYCB1U",r.CYCB1U);
+    R(0x25F80020,"BGON",  r.BGON);   R(0x25F80022,"MZCTL", r.MZCTL);
+    R(0x25F80024,"SFSEL", r.SFSEL);  R(0x25F80026,"SFCODE",r.SFCODE);
+    R(0x25F80028,"CHCTLA",r.CHCTLA); R(0x25F8002A,"CHCTLB",r.CHCTLB);
+    R(0x25F8002C,"BMPNA", r.BMPNA);  R(0x25F8002E,"BMPNB", r.BMPNB);
+    R(0x25F80030,"PNCN0", r.PNCN0);  R(0x25F80032,"PNCN1", r.PNCN1);
+    R(0x25F80034,"PNCN2", r.PNCN2);  R(0x25F80036,"PNCN3", r.PNCN3);
+    R(0x25F80038,"PNCR",  r.PNCR);   R(0x25F8003A,"PLSZ",  r.PLSZ);
+    R(0x25F8003C,"MPOFN", r.MPOFN);  R(0x25F8003E,"MPOFR", r.MPOFR);
+    R(0x25F80040,"MPABN0",r.MPABN0); R(0x25F80042,"MPCDN0",r.MPCDN0);
+    R(0x25F80044,"MPABN1",r.MPABN1); R(0x25F80046,"MPCDN1",r.MPCDN1);
+    R(0x25F80048,"MPABN2",r.MPABN2); R(0x25F8004A,"MPCDN2",r.MPCDN2);
+    R(0x25F8004C,"MPABN3",r.MPABN3); R(0x25F8004E,"MPCDN3",r.MPCDN3);
+    R(0x25F80050,"MPABRA",r.MPABRA); R(0x25F80052,"MPCDRA",r.MPCDRA);
+    R(0x25F80054,"MPEFRA",r.MPEFRA); R(0x25F80056,"MPGHRA",r.MPGHRA);
+    R(0x25F80058,"MPIJRA",r.MPIJRA); R(0x25F8005A,"MPKLRA",r.MPKLRA);
+    R(0x25F8005C,"MPMNRA",r.MPMNRA); R(0x25F8005E,"MPOPRA",r.MPOPRA);
+    R(0x25F80060,"MPABRB",r.MPABRB); R(0x25F80062,"MPCDRB",r.MPCDRB);
+    R(0x25F80064,"MPEFRB",r.MPEFRB); R(0x25F80066,"MPGHRB",r.MPGHRB);
+    R(0x25F80068,"MPIJRB",r.MPIJRB); R(0x25F8006A,"MPKLRB",r.MPKLRB);
+    R(0x25F8006C,"MPMNRB",r.MPMNRB); R(0x25F8006E,"MPOPRB",r.MPOPRB);
+    R(0x25F80070,"SCXIN0",r.SCXIN0); R(0x25F80072,"SCXDN0",r.SCXDN0);
+    R(0x25F80074,"SCYIN0",r.SCYIN0); R(0x25F80076,"SCYDN0",r.SCYDN0);
+    R(0x25F80078,"ZMXN0I",r.ZMXN0.part.I); R(0x25F8007A,"ZMXN0D",r.ZMXN0.part.D);
+    R(0x25F8007C,"ZMYN0I",r.ZMYN0.part.I); R(0x25F8007E,"ZMYN0D",r.ZMYN0.part.D);
+    R(0x25F80080,"SCXIN1",r.SCXIN1); R(0x25F80082,"SCXDN1",r.SCXDN1);
+    R(0x25F80084,"SCYIN1",r.SCYIN1); R(0x25F80086,"SCYDN1",r.SCYDN1);
+    R(0x25F80088,"ZMXN1I",r.ZMXN1.part.I); R(0x25F8008A,"ZMXN1D",r.ZMXN1.part.D);
+    R(0x25F8008C,"ZMYN1I",r.ZMYN1.part.I); R(0x25F8008E,"ZMYN1D",r.ZMYN1.part.D);
+    R(0x25F80090,"SCXN2", r.SCXN2);  R(0x25F80092,"SCYN2", r.SCYN2);
+    R(0x25F80094,"SCXN3", r.SCXN3);  R(0x25F80096,"SCYN3", r.SCYN3);
+    R(0x25F80098,"ZMCTL", r.ZMCTL);  R(0x25F8009A,"SCRCTL",r.SCRCTL);
+    R(0x25F8009C,"VCSTAU",r.VCSTA.part.U); R(0x25F8009E,"VCSTL", r.VCSTA.part.L);
+    R(0x25F800A0,"LSTA0U",r.LSTA0.part.U); R(0x25F800A2,"LSTA0L",r.LSTA0.part.L);
+    R(0x25F800A4,"LSTA1U",r.LSTA1.part.U); R(0x25F800A6,"LSTA1L",r.LSTA1.part.L);
+    R(0x25F800A8,"LCTAU", r.LCTA.part.U);  R(0x25F800AA,"LCTAL", r.LCTA.part.L);
+    R(0x25F800AC,"BKTAU", r.BKTAU);  R(0x25F800AE,"BKTAL", r.BKTAL);
+    R(0x25F800B0,"RPMD",  r.RPMD);   R(0x25F800B2,"RPRCTL",r.RPRCTL);
+    R(0x25F800B4,"KTCTL", r.KTCTL);  R(0x25F800B6,"KTAOF", r.KTAOF);
+    R(0x25F800B8,"OVPNRA",r.OVPNRA); R(0x25F800BA,"OVPNRB",r.OVPNRB);
+    R(0x25F800BC,"RPTAU", r.RPTA.part.U);  R(0x25F800BE,"RPTAL", r.RPTA.part.L);
+    R(0x25F800C0,"WPSX0", r.WPSX0);  R(0x25F800C2,"WPSY0", r.WPSY0);
+    R(0x25F800C4,"WPEX0", r.WPEX0);  R(0x25F800C6,"WPEY0", r.WPEY0);
+    R(0x25F800C8,"WPSX1", r.WPSX1);  R(0x25F800CA,"WPSY1", r.WPSY1);
+    R(0x25F800CC,"WPEX1", r.WPEX1);  R(0x25F800CE,"WPEY1", r.WPEY1);
+    R(0x25F800D0,"WCTLA", r.WCTLA);  R(0x25F800D2,"WCTLB", r.WCTLB);
+    R(0x25F800D4,"WCTLC", r.WCTLC);  R(0x25F800D6,"WCTLD", r.WCTLD);
+    R(0x25F800D8,"LWTA0U",r.LWTA0.part.U); R(0x25F800DA,"LWTA0L",r.LWTA0.part.L);
+    R(0x25F800DC,"LWTA1U",r.LWTA1.part.U); R(0x25F800DE,"LWTA1L",r.LWTA1.part.L);
+    R(0x25F800E0,"SPCTL", r.SPCTL);  R(0x25F800E2,"SDCTL", r.SDCTL);
+    R(0x25F800E4,"CRAOFA",r.CRAOFA); R(0x25F800E6,"CRAOFB",r.CRAOFB);
+    R(0x25F800E8,"LNCLEN",r.LNCLEN); R(0x25F800EA,"SFPRMD",r.SFPRMD);
+    R(0x25F800EC,"CCCTL", r.CCCTL);  R(0x25F800EE,"SFCCMD",r.SFCCMD);
+    R(0x25F800F0,"PRISA", r.PRISA);  R(0x25F800F2,"PRISB", r.PRISB);
+    R(0x25F800F4,"PRISC", r.PRISC);  R(0x25F800F6,"PRISD", r.PRISD);
+    R(0x25F800F8,"PRINA", r.PRINA);  R(0x25F800FA,"PRINB", r.PRINB);
+    R(0x25F800FC,"PRIR",  r.PRIR);   R(0x25F800FE,"(rsvd)",r.pad);
+    R(0x25F80100,"CCRSA", r.CCRSA);  R(0x25F80102,"CCRSB", r.CCRSB);
+    R(0x25F80104,"CCRSC", r.CCRSC);  R(0x25F80106,"CCRSD", r.CCRSD);
+    R(0x25F80108,"CCRNA", r.CCRNA);  R(0x25F8010A,"CCRNB", r.CCRNB);
+    R(0x25F8010C,"CCRR",  r.CCRR);   R(0x25F8010E,"CCRLB", r.CCRLB);
+    R(0x25F80110,"CLOFEN",r.CLOFEN); R(0x25F80112,"CLOFSL",r.CLOFSL);
+    R(0x25F80114,"COAR",  r.COAR);   R(0x25F80116,"COAG",  r.COAG);
+    R(0x25F80118,"COAB",  r.COAB);   R(0x25F8011A,"COBR",  r.COBR);
+    R(0x25F8011C,"COBG",  r.COBG);   R(0x25F8011E,"COBB",  r.COBB);
+#undef R
+    mRawRegsText = QString::fromStdString(raw.str());
+
+    /* ---- DECODED pane ---- */
+    auto s9=[](u16 v)->int{int x=v&0x1FF;if(x&0x100)x-=0x200;return x;};
+    std::ostringstream d;
+
+    // TVMD
+    {static const char*hr[]={"320","352","640","704"};static const char*vr[]={"224","240","256","480/448"};static const char*lm[]={"Non-interlace","(rsvd)","Single-density interlace","Double-density interlace"};
+    d<<"=== TVMD=0x"<<HEX4(r.TVMD)<<" ===\n";
+    // ST-058-R2 §3.1 : DISP=bit15 (display on/off), BSMC=bit8 (border color mode)
+    bool disp=(r.TVMD>>15)&1;
+    d<<"  DISP="<<(disp?"ON":"OFF")<<"  BSMC="<<((r.TVMD>>8)&1)<<" (border color mode)\n";
+    d<<"  LSMD="<<lm[(r.TVMD>>6)&3]<<"\n";
+    d<<"  VRES="<<vr[(r.TVMD>>4)&3]<<"  HRES="<<hr[r.TVMD&3]<<"\n";
+    d<<"  Signal: "<<(Vdp2Regs->TVSTAT&1?"PAL":"NTSC")<<"\n";}
+
+    // EXTEN/TVSTAT/counters
+    d<<"\n=== EXTEN=0x"<<HEX4(r.EXTEN)<<"  TVSTAT=0x"<<HEX4(r.TVSTAT)<<" ===\n";
+    d<<"  EXLTEN="<<(r.EXTEN&1)<<"  EXSYEN="<<((r.EXTEN>>1)&1)<<"\n";
+    // ST-058-R2 §3.3 : TVSTAT bit9=EXLTFG (external latch flag), bit8=EXSYFG (external sync flag)
+    d<<"  EXLTFG="<<((r.TVSTAT>>9)&1)<<"  EXSYFG="<<((r.TVSTAT>>8)&1)<<"\n";
+    d<<"  ODD="<<((r.TVSTAT>>1)&1)<<"  PAL="<<(r.TVSTAT&1)<<"\n";
+    // ST-058-R2 §3.3 : bit2=HBSY (H-blank busy), bit3=VBSY (V-blank busy)
+    d<<"  HBSY="<<((r.TVSTAT>>2)&1)<<"  VBSY="<<((r.TVSTAT>>3)&1)<<"\n";
+    // ST-058-R2 ch.2 p.23-24 + EXLTEN (p.19) : HCNT/VCNT ne sont PAS des
+    // compteurs live. Avec EXLTEN=0 ils sont latches a la lecture du
+    // registre EXTEN par le jeu ; avec EXLTEN=1, par un signal externe.
+    // Les afficher a cote de HBSY/VBSY (qui, eux, sont live) laissait
+    // croire a une incoherence quand le jeu n'avait pas relu EXTEN depuis
+    // longtemps. L'etiquette dit maintenant d'ou vient la valeur.
+    d<<"  HCNT="<<DEC(r.HCNT)<<"  VCNT="<<DEC(r.VCNT)
+      <<"  (valeurs latchees, "<<((r.EXTEN&0x200)?"EXLTEN=1: signal externe":"EXLTEN=0: derniere lecture de EXTEN")<<")\n";
+
+    // 0x25F8000C : adresse reservee sur le VDP2 (ST-058-R2, table des
+    // registres). EWDR est un registre du VDP1 (ST-013-R3), sans rapport.
+    d<<"\n=== 0x25F8000C (reserve) = 0x"<<HEX4(r.EWDR)<<" ===\n";
+
+    // VRSIZE/RAMCTL
+    d<<"\n=== VRAM/RAMCTL ===\n";
+    {static const char*crm[]={"1024x16bit(m0)","2048x16bit(m1)","1024x32bit(m2)","(rsvd)"};
+    d<<"  VRSIZE=0x"<<HEX4(r.VRSIZE)<<((r.VRSIZE>>15)&1?"  (8Mbit)":"  (4Mbit)")<<"\n";
+    d<<"  CRMD="<<crm[(r.RAMCTL>>12)&3]<<"\n";
+    // ST-058-R2 §3.6 : RAMCTL bit8=VRAMD (VRAM-A mode), bit9=VRBMD (VRAM-B mode)
+    d<<"  VRAMD="<<((r.RAMCTL>>8)&1)<<"  VRBMD="<<((r.RAMCTL>>9)&1)<<"\n";}
+
+    // Cycle patterns
+    d<<"\n=== VRAM Cycle Patterns ===\n";
+    auto cyc=[&](const char*n,u16 L,u16 U){
+        d<<"  "<<n<<": T0="<<decodeVramTiming((L>>12)&0xF)<<" T1="<<decodeVramTiming((L>>8)&0xF)
+          <<" T2="<<decodeVramTiming((L>>4)&0xF)<<" T3="<<decodeVramTiming(L&0xF)
+          <<"  T4="<<decodeVramTiming((U>>12)&0xF)<<" T5="<<decodeVramTiming((U>>8)&0xF)
+          <<" T6="<<decodeVramTiming((U>>4)&0xF)<<" T7="<<decodeVramTiming(U&0xF)<<"\n";};
+    cyc("VRAM-A0",r.CYCA0L,r.CYCA0U); cyc("VRAM-A1",r.CYCA1L,r.CYCA1U);
+    cyc("VRAM-B0",r.CYCB0L,r.CYCB0U); cyc("VRAM-B1",r.CYCB1L,r.CYCB1U);
+    d<<"  (N0VCST/N1VCST = table de vertical cell scroll NBG0/NBG1, "
+       "PROHIB = reglage interdit, ------ = no access)\n";
+    // ST-058-R2 §3.2 p.32 : T0-T7 ne sont tous valides qu'en mode normal
+    // (HRESO 000/001). En haute resolution ou en mode moniteur exclusif,
+    // seuls T0-T3 sont pris en compte, T4-T7 sont ignores par le materiel.
+    if ((r.TVMD & 0x6) != 0)
+        d<<"  (HRESO hi-res / moniteur exclusif : seuls T0-T3 sont en vigueur, "
+           "T4-T7 ignores)\n";
+    // Une banque monopolisee par un fond en rotation ignore entierement son
+    // cycle pattern (RAMCTL RDBSx, §3.3 p.149 ; RBG1 prend VRAM-B0 et B1 en
+    // entier). Le signaler evite de lire un pattern qui ne s'applique pas.
+    if ((r.BGON & 0x20) != 0)
+        d<<"  (RBG1 affiche : VRAM-B0 et VRAM-B1 lui sont reservees, "
+           "leurs cycle patterns sont ignores)\n";
+    if ((r.BGON & 0x10) != 0) {
+        static const char* bkn[4] = {"VRAM-A0","VRAM-A1","VRAM-B0","VRAM-B1"};
+        for (int b = 0; b < 4; b++)
+            if (((r.RAMCTL >> (b*2)) & 0x3) != 0)
+                d<<"  (RBG0 : "<<bkn[b]<<" lui est reservee (RAMCTL), "
+                   "son cycle pattern est ignore)\n";
+    }
+
+    // BGON §3.7 : bits 5-0 = display enable (NBG0-RBG1), bits 13-8 = transparency (NBG0-RBG1, tous les 6 layers)
+    d<<"\n=== BGON=0x"<<HEX4(r.BGON)<<" (Display Enable) ===\n";
+    {static const char*bn[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
+    for(int i=0;i<6;i++) {
+        d<<"  "<<bn[i]<<": "<<((r.BGON>>i)&1?"ON ":"OFF");
+        // ST-058-R2 §3.7 : bits 13-8 = TRPN5-TRPN0 (transparency pour NBG0..RBG1, tous présents)
+        d<<"  transparent="<<((r.BGON>>(8+i))&1);
+        d<<"\n";
+    }}
+
+    // MZCTL
+    d<<"\n=== MZCTL=0x"<<HEX4(r.MZCTL)<<" (Mosaic) ===\n";
+    {static const char*mp[]={"NBG0","NBG1","NBG2","NBG3","RBG0"};
+    d<<"  H="<<DEC(((r.MZCTL>>8)&0xF)+1)<<"  V="<<DEC(((r.MZCTL>>12)&0xF)+1)<<"\n";
+    for(int i=0;i<5;i++) d<<"  "<<mp[i]<<"="<<((r.MZCTL>>i)&1?"ON":"off")<<"\n";}
+
+    // SFSEL/SFCODE — RE-VÉRIFIÉ contre VDP2 User's Manual ST-058-R2 p.220-221.
+    // SFSEL (§write-only, 180024H) n'a que 5 bits réels, pas 6 : bit0=N0SFCS
+    // ("For NBG0 (or RBG1)" — RBG1 PARTAGE le bit 0 avec NBG0, ce n'est pas
+    // un bit séparé), bit1=N1SFCS, bit2=N2SFCS, bit3=N3SFCS, bit4=R0SFCS.
+    // Mon décodage précédent inventait un 6e bit pour RBG1 : bug corrigé.
+    d<<"\n=== Special Function: SFSEL=0x"<<HEX4(r.SFSEL)<<"  SFCODE=0x"<<HEX4(r.SFCODE)<<" ===\n";
+    {static const char*sf[]={"NBG0 (or RBG1)","NBG1","NBG2","NBG3","RBG0"};
+    for(int i=0;i<5;i++) d<<"  "<<sf[i]<<": pattern "<<((r.SFSEL>>i)&1?"B":"A")<<"\n";
+    // SFCODE (p.221, Fig 10.7) : CE N'EST PAS un motif spatial/damier comme
+    // je l'avais supposé la dernière fois — chaque bit SFCDxN active la
+    // fonction spéciale pour les dots dont les 4 bits de poids faible du
+    // CODE COULEUR valent {2N, 2N+1}. SFCDA=bits7-0 (pattern A), SFCDB=
+    // bits15-8 (pattern B). Décodage en plages de code couleur, pas en pixels.
+    auto sfRanges=[&](const char*label,u8 byte){
+        d<<"  "<<label<<": ";
+        bool any=false;
+        for(int b=0;b<8;b++) if((byte>>b)&1){d<<std::hex<<std::uppercase<<(2*b)<<"-"<<(2*b+1)<<"H ";any=true;}
+        if(!any)d<<"none";
+        d<<std::dec<<"\n";};
+    sfRanges("Pattern A (color code low nibble)", r.SFCODE&0xFF);
+    sfRanges("Pattern B (color code low nibble)", (r.SFCODE>>8)&0xFF);}
+
+    // CHCTLA/B
+    d<<"\n=== Character Control ===\n";
+    // ST-058-R2 4.5 : N0CHCN/R0CHCN (3 bits) 000=16, 001=256, 010=2048,
+    // 011=32768, 100=16.77M, 101-111 interdit. Il y avait un doublon
+    // "16(4bpp)" en index 1 : toute la table etait donc decalee d'un cran a
+    // partir de la, et un NBG0 en 256 couleurs (CHCTLA=0x1010, N0CHCN=1)
+    // etait annonce en 16 couleurs.
+    {static const char*cc5[]={"16(4bpp)","256(8bpp)","2048(11bpp)","32768(15bpp)","16M(24bpp)","(interdit)","(interdit)","(interdit)"};
+    // N1CHCN (2 bits) : 00=16, 01=256, 10=2048, 11=32768. Les deux dernieres
+    // valeurs sont licites, elles etaient rendues "?".
+    static const char*cc2[]={"16(4bpp)","256(8bpp)","2048(11bpp)","32768(15bpp)"};
+    static const char*bsz[]={"512x256","512x512","1024x256","1024x512"};
+    d<<"  CHCTLA=0x"<<HEX4(r.CHCTLA)<<"\n";
+    int n0bm=(r.CHCTLA>>1)&1,n0sz=r.CHCTLA&1,n0cc=(r.CHCTLA>>4)&7,n0bw=(r.CHCTLA>>2)&3;
+    d<<"    NBG0: bm="<<n0bm<<"  char="<<(n0sz?"16x16":"8x8")<<"  col="<<cc5[n0cc];
+    if(n0bm)d<<"  bmpSz="<<bsz[n0bw];d<<"\n";
+    int n1bm=(r.CHCTLA>>9)&1,n1sz=(r.CHCTLA>>8)&1,n1cc=(r.CHCTLA>>12)&3,n1bw=(r.CHCTLA>>10)&3;
+    d<<"    NBG1: bm="<<n1bm<<"  char="<<(n1sz?"16x16":"8x8")<<"  col="<<cc2[n1cc];
+    if(n1bm)d<<"  bmpSz="<<bsz[n1bw];d<<"\n";
+    d<<"  CHCTLB=0x"<<HEX4(r.CHCTLB)<<"\n";
+    // CHCTLB (0x25F8002A) — RE-VÉRIFIÉ contre VDP2 User's Manual ST-058-R2
+    // §4.5 p.59-61 (texte exact du manuel officiel, plus de "?"/doute) :
+    //   bit  0     : N2CHSZ (char size NBG2, 0=8x8 1=16x16)
+    //   bit  1     : N2CHCN (color NBG2, 0=16col 1=256col)
+    //   bit  4     : N3CHSZ (char size NBG3)
+    //   bit  5     : N3CHCN (color NBG3)
+    //   bit  8     : R0CHSZ (char size RBG0)
+    //   bit  9     : R0BMEN (bitmap enable RBG0)
+    //   bit  10    : R0BMSZ (bitmap size RBG0 — 1 SEUL bit : 0=512x256, 1=512x512 ;
+    //                différent de N0/N1BMSZ qui font 2 bits/4 tailles)
+    //   bits 14-12 : R0CHCN2-0 (color count RBG0, index dans cc5[])
+    // Le code précédent lisait bits 2/4/8/10/12 de façon incohérente : NBG2/
+    // NBG3/RBG0 étaient en fait mélangés entre eux (RBG0 bitmap-enable lu au
+    // mauvais endroit, NBG3 char size lisait en fait le bit de RBG0 bitmap
+    // size, etc). Bug corrigé après vérification directe du manuel officiel.
+    d<<"    NBG2: char="<<((r.CHCTLB&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>1)&1]<<"\n";
+    d<<"    NBG3: char="<<(((r.CHCTLB>>4)&1)?"16x16":"8x8")<<"  col="<<cc2[(r.CHCTLB>>5)&1]<<"\n";
+    int r0sz =(r.CHCTLB>>8) &1;   // bit  8 = R0CHSZ
+    int r0bm =(r.CHCTLB>>9) &1;   // bit  9 = R0BMEN
+    int r0bw =(r.CHCTLB>>10)&1;   // bit 10 = R0BMSZ (1 bit)
+    int r0cc =(r.CHCTLB>>12)&7;   // bits 14-12 = R0CHCN2-0
+    static const char*r0bsz[]={"512x256","512x512"};  // table dédiée : R0BMSZ n'a que 2 valeurs, pas 4
+    d<<"    RBG0: bm="<<r0bm<<"  char="<<(r0sz?"16x16":"8x8")<<"  col="<<cc5[r0cc&7];
+    if(r0bm)d<<"  bmpSz="<<r0bsz[r0bw&1];d<<"\n";}
+
+    // BMPNA/B
+    d<<"\n=== Bitmap Palette Numbers ===\n";
+    // ST-058-R2 p.112-113 (Bit Map Palette Number Register) :
+    //   BMPNA (18002CH) : N0BMP6~4 = bits 2-0, N0BMCC = bit 4, N0BMPR = bit 5
+    //                     N1BMP6~4 = bits 10-8, N1BMCC = bit 12, N1BMPR = bit 13
+    //   BMPNB (18002EH) : R0BMP6~4 = bits 2-0, R0BMCC = bit 4, R0BMPR = bit 5
+    // BMP = 3 bits hauts du numero de palette (bits 6-4) ; adresse CRAM
+    // de base = BMP << 8 (en entrees de couleur, avant CRAOFx).
+    d<<"  BMPNA=0x"<<HEX4(r.BMPNA)
+      <<"  N0: pal="<<DEC(r.BMPNA&7)<<"(CRAM+0x"<<HEX4((r.BMPNA&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNA>>4)&1)<<" pr="<<DEC((r.BMPNA>>5)&1)
+      <<"  N1: pal="<<DEC((r.BMPNA>>8)&7)<<"(CRAM+0x"<<HEX4(((r.BMPNA>>8)&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNA>>12)&1)<<" pr="<<DEC((r.BMPNA>>13)&1)<<"\n";
+    d<<"  BMPNB=0x"<<HEX4(r.BMPNB)
+      <<"  RBG0: pal="<<DEC(r.BMPNB&7)<<"(CRAM+0x"<<HEX4((r.BMPNB&7)<<8)<<")"
+      <<" cc="<<DEC((r.BMPNB>>4)&1)<<" pr="<<DEC((r.BMPNB>>5)&1)<<"\n";
+
+    // PNC
+    d<<"\n=== Pattern Name Control ===\n";
+    auto pnc=[&](const char*n,u16 v){
+        d<<"  "<<n<<"=0x"<<HEX4(v)<<"  "<<((v&0x8000)?"1word":"2word");
+        if(v&0x8000)d<<"  CNs="<<((v>>14)&1)<<"  SPb="<<((v>>9)&1)<<"  SCCb="<<((v>>8)&1)<<"  palS="<<((v>>5)&7)<<"  colS="<<(v&0x1F);
+        d<<"\n";};
+    pnc("PNCN0",r.PNCN0);pnc("PNCN1",r.PNCN1);pnc("PNCN2",r.PNCN2);pnc("PNCN3",r.PNCN3);pnc("PNCR ",r.PNCR);
+
+    // PLSZ
+    d<<"\n=== PLSZ=0x"<<HEX4(r.PLSZ)<<" (Plane Size) ===\n";
+    // ST-058-R2 §3.14 : N0[1:0], N1[3:2], N2[5:4], N3[7:6], R0A[9:8], R0B[11:10], R1[15:14]
+    {static const char*ps[]={"1Hx1V","2Hx1V","(rsvd)","2Hx2V"};
+    /* ST-58-R2 18003AH :
+     *   1-0 N0PLSZ   3-2 N1PLSZ   5-4 N2PLSZ   7-6 N3PLSZ
+     *   9-8 RAPLSZ   11-10 RAOVR  13-12 RBPLSZ  15-14 RBOVR
+     * R0B lisait les bits 11-10 (RAOVR) et R1 les bits 15-14 (RBOVR) : deux
+     * screen-over affiches comme des tailles de plan. RBPLSZ est en 13-12,
+     * et RBG1 etant toujours dessine avec le parametre B (6.1), R0B et R1
+     * valent tous deux RBPLSZ. */
+    /* Screen-over process (RxOVR): 00 repeat the plane, 01 repeat the
+       character given by OVPNRx, 10 transparent outside the plane, 11 force
+       a 512x512 area, transparent outside (Mednafen vdp2_render.c, same
+       order as Kronos' RBG renderer). The labels of 01 and 10 were swapped. */
+    static const char*ov[]={"repeat","OVPNR char","transparent","512x512"};
+    d<<"  N0="<<ps[r.PLSZ&3]<<"  N1="<<ps[(r.PLSZ>>2)&3]<<"  N2="<<ps[(r.PLSZ>>4)&3]
+      <<"  N3="<<ps[(r.PLSZ>>6)&3]<<"  R0A="<<ps[(r.PLSZ>>8)&3]
+      <<"  R0B="<<ps[(r.PLSZ>>12)&3]<<"  R1="<<ps[(r.PLSZ>>12)&3]<<"\n";
+    d<<"  screen-over: RAOVR="<<DEC((r.PLSZ>>10)&3)<<"("<<ov[(r.PLSZ>>10)&3]<<")"
+      <<"  RBOVR="<<DEC((r.PLSZ>>14)&3)<<"("<<ov[(r.PLSZ>>14)&3]<<")\n";}
+
+    // Map offsets
+    d<<"\n=== Map Offsets ===\n";
+    d<<"  MPOFN=0x"<<HEX4(r.MPOFN)<<"  N0="<<DEC(r.MPOFN&7)<<"  N1="<<DEC((r.MPOFN>>4)&7)<<"  N2="<<DEC((r.MPOFN>>8)&7)<<"  N3="<<DEC((r.MPOFN>>12)&7)<<"\n";
+    // ST-058-R2 §3.15 : MPOFR[2:0]=R0A, MPOFR[6:4]=R0B, MPOFR[10:8]=R1
+    d<<"  MPOFR=0x"<<HEX4(r.MPOFR)<<"  R0A="<<DEC(r.MPOFR&7)<<"  R0B="<<DEC((r.MPOFR>>4)&7)<<"  R1="<<DEC((r.MPOFR>>8)&7)<<"\n";
+
+    // NBG map planes
+    d<<"\n=== NBG Map Planes (A-D) ===\n";
+    auto mp=[&](const char*n,u16 ab,u16 cd){d<<"  "<<n<<": A=0x"<<HEX4(ab&0xFF)<<" B=0x"<<HEX4(ab>>8)<<" C=0x"<<HEX4(cd&0xFF)<<" D=0x"<<HEX4(cd>>8)<<"\n";};
+    mp("NBG0",r.MPABN0,r.MPCDN0);mp("NBG1",r.MPABN1,r.MPCDN1);mp("NBG2",r.MPABN2,r.MPCDN2);mp("NBG3",r.MPABN3,r.MPCDN3);
+
+    // RBG maps
+    d<<"\n=== RBG0 Param A planes (A-P) ===\n"<<std::hex<<std::uppercase;
+    d<<"  AB=0x"<<HEX4(r.MPABRA)<<" CD=0x"<<HEX4(r.MPCDRA)<<" EF=0x"<<HEX4(r.MPEFRA)<<" GH=0x"<<HEX4(r.MPGHRA)<<"\n";
+    d<<"  IJ=0x"<<HEX4(r.MPIJRA)<<" KL=0x"<<HEX4(r.MPKLRA)<<" MN=0x"<<HEX4(r.MPMNRA)<<" OP=0x"<<HEX4(r.MPOPRA)<<"\n";
+    d<<"\n=== RBG0 Param B planes (A-P) ===\n";
+    d<<"  AB=0x"<<HEX4(r.MPABRB)<<" CD=0x"<<HEX4(r.MPCDRB)<<" EF=0x"<<HEX4(r.MPEFRB)<<" GH=0x"<<HEX4(r.MPGHRB)<<"\n";
+    d<<"  IJ=0x"<<HEX4(r.MPIJRB)<<" KL=0x"<<HEX4(r.MPKLRB)<<" MN=0x"<<HEX4(r.MPMNRB)<<" OP=0x"<<HEX4(r.MPOPRB)<<"\n";
+    d<<std::dec;
+
+    // Scroll
+    d<<"\n=== Scroll Positions ===\n";
+    // ST-058-R2 §3.16 : SCxDN bits 7-0 = fractional part (not bits 15-8)
+    d<<"  NBG0: X="<<DEC((s16)r.SCXIN0)<<"."<<DEC(r.SCXDN0&0xFF)<<"  Y="<<DEC((s16)r.SCYIN0)<<"."<<DEC(r.SCYDN0&0xFF)<<"\n";
+    d<<"  NBG1: X="<<DEC((s16)r.SCXIN1)<<"."<<DEC(r.SCXDN1&0xFF)<<"  Y="<<DEC((s16)r.SCYIN1)<<"."<<DEC(r.SCYDN1&0xFF)<<"\n";
+    d<<"  NBG2: X="<<DEC((s16)r.SCXN2)<<"  Y="<<DEC((s16)r.SCYN2)<<"\n";
+    d<<"  NBG3: X="<<DEC((s16)r.SCXN3)<<"  Y="<<DEC((s16)r.SCYN3)<<"\n";
+
+    // Zoom
+    d<<"\n=== ZMCTL=0x"<<HEX4(r.ZMCTL)<<" (Zoom) ===\n";
+    // ST-058-R2 §3.18 : 0=1/1, 1=H:1/2, 2=H+V:1/4, 3=(rsvd)
+    {static const char*zm[]={"1/1","H:1/2","H+V:1/4","(rsvd)"};
+    d<<"  NBG0="<<zm[r.ZMCTL&3]<<"  NBG1="<<zm[(r.ZMCTL>>8)&3]<<"\n";
+    /* ST-058-R2 ch.5.2 p.126, Figure 5.2 : l'increment de coordonnee est un
+     * point fixe = partie entiere sur 3 bits dans ZMxINn[2:0] + partie
+     * fractionnaire sur 8 bits dans ZMxDNn[15:8].
+     *
+     * L'ancien affichage concatenait la partie entiere, un point, puis la
+     * VALEUR BRUTE du registre fractionnaire : ZMXN1I=0x0000 / ZMXN1D=0x8000
+     * sortait "0.32768" au lieu de 0.5. Ce n'etait pas un nombre.
+     *
+     * On imprime maintenant l'increment reel, plus le facteur de zoom
+     * correspondant (1/increment), qui est ce que le renderer manipule sous
+     * le nom coordincx/coordincy. */
+    {auto inc=[](u16 I,u16 D){ return (double)(I & 0x7) + (double)((D >> 8) & 0xFF) / 256.0; };
+    auto zoom=[](double v){ return (v > 0.0) ? 1.0/v : 0.0; };
+    double ix0=inc(r.ZMXN0.part.I,r.ZMXN0.part.D), iy0=inc(r.ZMYN0.part.I,r.ZMYN0.part.D);
+    double ix1=inc(r.ZMXN1.part.I,r.ZMXN1.part.D), iy1=inc(r.ZMYN1.part.I,r.ZMYN1.part.D);
+    d<<"  NBG0 inc: x="<<ix0<<" y="<<iy0<<"  (zoom x"<<zoom(ix0)<<" / x"<<zoom(iy0)<<")\n";
+    d<<"  NBG1 inc: x="<<ix1<<" y="<<iy1<<"  (zoom x"<<zoom(ix1)<<" / x"<<zoom(iy1)<<")\n";}}
+
+    // SCRCTL
+    d<<"\n=== SCRCTL=0x"<<HEX4(r.SCRCTL)<<" (Scroll Control) ===\n";
+    {auto sb=[&](const char*n,int b,u32 la,u32 vc){
+        d<<"  "<<n<<":";
+        if((b>>0)&1){d<<" VertCell tbl=0x"<<std::hex<<(0x05E00000|((vc&0x7FFFE)<<1))<<std::dec;}
+        if((b>>1)&1) d<<" LineScrollX";
+        if((b>>2)&1) d<<" LineScrollY";
+        if((b>>3)&1) d<<" LineZoom";
+        if(!(b&0xF))  d<<" none";
+        if(b&0x6){d<<" lnTbl=0x"<<std::hex<<(0x05E00000|((la&0x7FFFE)<<1))<<std::dec;
+            static const char*iv[]={"everyLine","every2","every4","every8"};d<<" "<<iv[(b>>4)&3];}
+        d<<"\n";};
+    sb("NBG0",r.SCRCTL&0x3F,r.LSTA0.all,r.VCSTA.all);
+    // ST-058-R2 §3.20 : NBG1 line scroll table address est LSTA1 (non VCSTA)
+    sb("NBG1",(r.SCRCTL>>8)&0x3F,r.LSTA1.all,r.VCSTA.all);}
+
+    // Table addresses
+    d<<"\n=== Cell/Line/Back Screen Addresses ===\n"<<std::hex<<std::uppercase;
+    d<<"  VCSTA=0x"<<HEX8(0x05E00000|((r.VCSTA.all&0x7FFFE)<<1))<<"\n";
+    d<<"  LSTA0=0x"<<HEX8(0x05E00000|((r.LSTA0.all&0x7FFFE)<<1))<<"\n";
+    d<<"  LSTA1=0x"<<HEX8(0x05E00000|((r.LSTA1.all&0x7FFFE)<<1))<<"\n";
+    // ST-058-R2 ch.7.1 p.174 : LCTA18~LCTA16 = LCTAU[2:0], LCTA15~LCTA0 =
+    // LCTAL[15:0] -- LCTA0 EXISTE (contrairement a LSTA/VCSTA ou le bit 0
+    // est inutilise). Le masque 0x7FFFE l'ecrasait : une table a adresse
+    // impaire etait mal decodee.
+    d<<"  LCTA =0x"<<HEX8(0x05E00000|((r.LCTA.all&0x7FFFF)<<1));
+    d<<(r.LCTA.part.U&0x8000?"  (per-line)":"  (single)")<<"\n";
+    // ST-058-R2 ch.7.2 p.176-177 : BKTA18~BKTA16 = BKTAU[2:0],
+    // BKTA15~BKTA0 = BKTAL[15:0], et
+    //   (adresse VRAM) = (valeur 19 bits du registre) x 2
+    // L'ancienne formule ((BKTAU&7)<<17) | (BKTAL & 0xFFFE) oubliait le x2
+    // sur le mot bas et perdait BKTA0, ce qui donnait une adresse fausse
+    // (et en contradiction avec celle imprimee par vdp2debug.c plus bas
+    // dans le meme export).
+    {u32 bk = 0x05E00000 | (((((u32)(r.BKTAU & 0x7) << 16) | r.BKTAL) & 0x7FFFF) << 1);
+    d<<"  BKTA =0x"<<HEX8(bk)<<(r.BKTAU&0x8000?"  (per-line)":"  (single)")<<"\n";}
+    d<<std::dec;
+
+    // RBG rotation
+    d<<"\n=== RBG Rotation ===\n";
+    /* RPMD: 10 = switch on the MSB of parameter A's coefficient, 11 = switch
+       via the rotation parameter window (WCTLD bits 7-0). The two labels
+       were swapped, and "sprite MSB" is not involved at all. */
+    {static const char*rpm[]={"Param A only","Param B only","Switch by coefficient MSB","Switch by rotation parameter window"};
+    d<<"  RPMD=0x"<<HEX4(r.RPMD)<<"  "<<rpm[r.RPMD&3]<<"\n";
+    d<<"  RPRCTL=0x"<<HEX4(r.RPRCTL)<<"\n";
+    auto rpr=[&](const char*n,int sh){int b=(r.RPRCTL>>sh)&0xF;d<<"    "<<n<<": ";
+        if(b&1)d<<"Xst ";if(b&2)d<<"Yst ";if(b&4)d<<"KAst ";if(b&8)d<<"KAstInc ";if(!b)d<<"none";d<<"\n";};
+    rpr("ParamA",0);rpr("ParamB",8);
+    d<<"  KTCTL=0x"<<HEX4(r.KTCTL)<<"\n";
+    /* ST-58-R2 p.283, KTCTL (1800B4H), parametre A (parametre B decale de 8) :
+     *   bit 0    RAKTE   activation
+     *   bit 1    RAKDBS  taille : 0 = 2 mots (32 bits), 1 = 1 mot (16 bits)
+     *   bits 3-2 RAKMD   mode : kx&ky / kx / ky / Xp
+     *   bit 4    RAKLCE  donnee de couleur de ligne
+     * L'ancien decodage lisait 3 bits a partir du bit 2, melangeant RAKMD
+     * et RAKLCE, et ignorait RAKDBS alors que sa table pretendait afficher
+     * une taille. */
+    auto kt=[&](const char*n,int sh){
+        static const char*kmd[]={"kx&ky","kx","ky","Xp"};
+        d<<"    "<<n<<": en="<<((r.KTCTL>>sh)&1)
+         <<"  taille="<<(((r.KTCTL>>(sh+1))&1)?"1 mot (16b)":"2 mots (32b)")
+         <<"  mode="<<DEC((r.KTCTL>>(sh+2))&3)<<"("<<kmd[(r.KTCTL>>(sh+2))&3]<<")"
+         <<"  lineCol="<<((r.KTCTL>>(sh+4))&1)<<"\n";};
+    kt("ParamA",0);kt("ParamB",8);
+    d<<"  KTAOF=0x"<<HEX4(r.KTAOF)<<"  A-off="<<DEC(r.KTAOF&7)<<"  B-off="<<DEC((r.KTAOF>>8)&7)<<"\n";
+    d<<"  OVPNRA=0x"<<HEX4(r.OVPNRA)<<"  OVPNRB=0x"<<HEX4(r.OVPNRB)<<"\n";
+    /* RPTA holds the table address in words: RPTAU bits 2-0 and RPTAL
+       bits 15-1 are address bits 18-1 of a WORD address, so the byte
+       address is (RPTAU:RPTAL) << 1 -- the same computation as the
+       renderer (vidshared.c: addr = RPTA.all << 1). The old formula did not
+       double it: RPTA 0001:FF80 showed 05E2FF80 instead of 05E3FF00
+       (DecAthlete's rotation table, found at 0x3FF00 in VRAM). */
+    u32 rp = 0x05E00000 | (((((u32)(r.RPTA.part.U & 0x7) << 16) | (u32)(r.RPTA.part.L & 0xFFFE)) << 1) & 0x7FFFF);
+    d<<"  RPTA=0x"<<std::hex<<std::uppercase<<HEX8(rp)<<std::dec<<"\n";}
+
+    // Windows
+    d<<"\n=== Windows ===\n";
+    {auto wc=[&](const char*n,u16 wctl){
+        d<<"  "<<n<<" WCTL=0x"<<HEX4(wctl)<<": ";
+        // WCTLA/B/C/D (§3.28) : bit1=W0en, bit3=W1en, bit5=SPWen, bit7=logic(AND/OR)
+        // Seuls les bits 1, 3, 5 sont des enables de fenêtre.
+        if(!(wctl&0x2A)){d<<"none\n";return;}
+        if(wctl&0x02)d<<"W0("<<((wctl&0x01)?"out":"in")<<") ";
+        if(wctl&0x08)d<<"W1("<<((wctl&0x04)?"out":"in")<<") ";
+        if(wctl&0x20)d<<"SPW("<<((wctl&0x10)?"out":"in")<<") ";
+        if(wctl&0x80)d<<"AND ";d<<"\n";};
+    d<<"  W0: ("<<DEC((s16)r.WPSX0)<<","<<DEC((s16)r.WPSY0)<<")->("<<DEC((s16)r.WPEX0)<<","<<DEC((s16)r.WPEY0)<<")";
+    if(r.LWTA0.all&0x80000000)d<<"  [LINE 0x"<<std::hex<<std::uppercase<<(0x05E00000UL|((r.LWTA0.all&0x7FFFEUL)<<1))<<std::dec<<"]\n"; else d<<"\n";
+    d<<"  W1: ("<<DEC((s16)r.WPSX1)<<","<<DEC((s16)r.WPSY1)<<")->("<<DEC((s16)r.WPEX1)<<","<<DEC((s16)r.WPEY1)<<")";
+    if(r.LWTA1.all&0x80000000)d<<"  [LINE 0x"<<std::hex<<std::uppercase<<(0x05E00000UL|((r.LWTA1.all&0x7FFFEUL)<<1))<<std::dec<<"]\n"; else d<<"\n";
+    wc("NBG0",r.WCTLA);wc("NBG1",r.WCTLA>>8);wc("NBG2",r.WCTLB);wc("NBG3",r.WCTLB>>8);
+    // ST-058-R2 §3.27 : WCTLC[7:0]=RBG0, WCTLC[15:8]=SPR, WCTLD[7:0]=RBG1, WCTLD[15:8]=CC
+    /* WCTLD bits 7-0 control the ROTATION PARAMETER window (RPMD = 11), not
+       RBG1 (RBG1 uses NBG0's control, WCTLA bits 7-0); bits 15-8 are the
+       color calculation window. */
+    wc("RBG0",r.WCTLC);wc("SPR ",r.WCTLC>>8);wc("RPW ",r.WCTLD);wc("CC  ",r.WCTLD>>8);}
+
+    // SPCTL/SDCTL
+    d<<"\n=== SPCTL=0x"<<HEX4(r.SPCTL)<<"  SDCTL=0x"<<HEX4(r.SDCTL)<<" ===\n";
+    {static const char*spcond[]={"Prio<=CCnum","Prio==CCnum","Prio>=CCnum","MSB colour"};
+    // ST-058-R2 ch.9 "Sprite Control Register" (p.207) : SPCCCS=bits13-12,
+    // SPCCN=bits10-8, SPCLMD=bit5, SPWINEN=bit4, SPTYPE=bits3-0.
+    // Les bits 7-6, 11 et 15-14 sont réservés : SPCTL ne contient AUCUN
+    // champ de profondeur couleur (le "col[6:4]" affiché ici était
+    // inventé), et SPWINEN était lu au bit 11 au lieu du bit 4.
+    // Les formats de données sprite sont Figure 9.1 de ST-058-R2, pas
+    // "table 4.1" de ST-013-R3 (qui est le manuel du VDP1).
+    d<<"  SPTYPE="<<DEC(r.SPCTL&0xF)<<" (ST-058-R2 fig.9.1)"
+      <<"  SPCLMD="<<((r.SPCTL>>5)&1)<<((r.SPCTL>>5)&1?" (palette+RGB)":" (palette only)")
+      <<"  SPWINEN="<<((r.SPCTL>>4)&1)<<"\n";
+    d<<"  CCcond="<<spcond[(r.SPCTL>>12)&3]<<"  CCnum="<<DEC((r.SPCTL>>8)&7)<<"\n";
+    // ST-058-R2 ch.14 "Shadow Control Register" (p.259) : bit0=N0SDEN,
+    // bit1=N1SDEN, bit2=N2SDEN, bit3=N3SDEN, bit4=R0SDEN, bit5=BKSDEN,
+    // bit8=TPSDSL. Le bit 0 était étiqueté "MSBshadow", ce qui n'existe
+    // pas dans ce registre : c'est l'activation d'ombre sur NBG0.
+    {static const char*sd[]={"N0","N1","N2","N3","R0","BK"};
+    d<<"  SDEN:";
+    for(int i=0;i<6;i++)d<<" "<<sd[i]<<"="<<((r.SDCTL>>i)&1);
+    d<<"  TPSDSL="<<((r.SDCTL>>8)&1)<<"\n";}}
+
+    // CRAOFA/B
+    d<<"\n=== Color RAM Offset ===\n"<<std::hex;
+    d<<"  CRAOFA=0x"<<HEX4(r.CRAOFA)<<"  N0=0x"<<((r.CRAOFA&7)<<8)<<"  N1=0x"<<(((r.CRAOFA>>4)&7)<<8)<<"  N2=0x"<<(((r.CRAOFA>>8)&7)<<8)<<"  N3=0x"<<(((r.CRAOFA>>12)&7)<<8)<<"\n";
+    // ST-058-R2 §3.30 : CRAOFB[2:0]=RBG0, CRAOFB[6:4]=SPR, CRAOFB[10:8]=RBG1
+    d<<"  CRAOFB=0x"<<HEX4(r.CRAOFB)<<"  RBG0=0x"<<((r.CRAOFB&7)<<8)<<"  SPR=0x"<<(((r.CRAOFB>>4)&7)<<8)<<"  RBG1=0x"<<(((r.CRAOFB>>8)&7)<<8)<<"\n"<<std::dec;
+
+    // LNCLEN
+    d<<"\n=== LNCLEN=0x"<<HEX4(r.LNCLEN)<<" (Line Color Insertion) ===\n";
+    // ST-058-R2 ch.11.3 "Line Color Screen Enable Register" (p.231) :
+    // bit0=N0LCEN (ou RBG1), bit1=N1LCEN (ou EXBG), bit2=N2LCEN,
+    // bit3=N3LCEN, bit4=R0LCEN, bit5=SPLCEN. Il n'y a que 6 bits : RBG1
+    // n'a pas d'entrée propre (il partage celle de NBG0), et SPR est au
+    // bit 5. L'ancienne table de 7 entrées décalait SPR au bit 6.
+    {static const char*lp[]={"NBG0/RBG1","NBG1/EXBG","NBG2","NBG3","RBG0","SPR"};
+    for(int i=0;i<6;i++)d<<"  "<<lp[i]<<"="<<((r.LNCLEN>>i)&1?"ON":"off")<<"\n";}
+
+    // SFPRMD
+    d<<"\n=== SFPRMD=0x"<<HEX4(r.SFPRMD)<<" (Special Priority) ===\n";
+    // ST-058-R2 §3.32 : bits 11-0 = 6 layers x 2 bits, bit12 = SPR (single bit)
+    {static const char*sp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
+    static const char*sm[]={"none","per-tile","per-pixel","(undoc)"};
+    for(int i=0;i<6;i++)d<<"  "<<sp[i]<<"="<<sm[(r.SFPRMD>>(i*2))&3]<<"\n";
+    d<<"  SPR=per-pixel="<<((r.SFPRMD>>12)&1)<<"\n";}
+
+    // CCCTL/SFCCMD
+    d<<"\n=== CCCTL=0x"<<HEX4(r.CCCTL)<<"  SFCCMD=0x"<<HEX4(r.SFCCMD)<<" ===\n";
+    // ST-058-R2 §3.33 : BOKEN=bit15, EXCCEN=bit9, BKCCEN=bit8
+    {d<<"  BOKEN="<<((r.CCCTL>>15)&1)<<"  EXCCEN="<<((r.CCCTL>>9)&1)<<"  BKCCEN="<<((r.CCCTL>>8)&1)<<"\n";
+    static const char*cp[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1","SPR","BACK"};
+    d<<"  CC enabled: ";for(int i=0;i<8;i++)if((r.CCCTL>>i)&1)d<<cp[i]<<" ";d<<"\n";
+    static const char*sl[]={"NBG0","NBG1","NBG2","NBG3","RBG0","RBG1"};
+    for(int i=0;i<6;i++)d<<"  "<<sl[i]<<" SCC="<<DEC((r.SFCCMD>>(i*2))&3)<<"\n";}
+
+    // Priority numbers (§3.29) :
+    //   PRINA : NBG0 (bits 2-0), NBG1 (bits 10-8)
+    //   PRINB : NBG2 (bits 2-0), NBG3 (bits 10-8)
+    //   PRIR  : RBG0 (bits 2-0), RBG1 (bits 10-8)  ← registre dédié
+    //   PRISA/B/C/D : sprites SP0-SP7
+    d<<"\n=== Priority Numbers ===\n";
+    d<<"  N0="<<DEC(r.PRINA&7)<<" N1="<<DEC((r.PRINA>>8)&7)<<" N2="<<DEC(r.PRINB&7)<<" N3="<<DEC((r.PRINB>>8)&7)<<"\n";
+    d<<"  R0="<<DEC(r.PRIR&7)<<" R1="<<DEC((r.PRIR>>8)&7)<<"\n";
+    // PRISA/B/C/D (§3.29) : SP0-SP7, 4 bits par sprite dans 4 registres 16-bit
+    // Lecture explicite pour éviter tout problème d'alignement/padding
+    {d<<"  Sprite:";
+    d<<" SP0="<<DEC(r.PRISA&7)   <<" SP1="<<DEC((r.PRISA>>8)&7);
+    d<<" SP2="<<DEC(r.PRISB&7)   <<" SP3="<<DEC((r.PRISB>>8)&7);
+    d<<" SP4="<<DEC(r.PRISC&7)   <<" SP5="<<DEC((r.PRISC>>8)&7);
+    d<<" SP6="<<DEC(r.PRISD&7)   <<" SP7="<<DEC((r.PRISD>>8)&7);
+    d<<"\n";}
+
+    // CC ratios
+    d<<"\n=== Color Calculation Ratios ===\n";
+    // CCRNA/B : N0-N3, CCRR : RBG0(bits4-0) + RBG1(bits12-8), CCRLB : Back(bits12-8)
+    d<<"  N0="<<DEC(r.CCRNA&0x1F)<<" N1="<<DEC((r.CCRNA>>8)&0x1F)<<" N2="<<DEC(r.CCRNB&0x1F)<<" N3="<<DEC((r.CCRNB>>8)&0x1F)<<"\n";
+    d<<"  R0="<<DEC(r.CCRR&0x1F)<<" R1="<<DEC((r.CCRR>>8)&0x1F)<<"\n";
+    // CCRSA/B/C/D (§3.34) : CCR0-CCR7, 5 bits par sprite dans 4 registres 16-bit
+    {d<<"  Sprite:";
+    d<<" SP0="<<DEC(r.CCRSA&0x1F)    <<" SP1="<<DEC((r.CCRSA>>8)&0x1F);
+    d<<" SP2="<<DEC(r.CCRSB&0x1F)    <<" SP3="<<DEC((r.CCRSB>>8)&0x1F);
+    d<<" SP4="<<DEC(r.CCRSC&0x1F)    <<" SP5="<<DEC((r.CCRSC>>8)&0x1F);
+    d<<" SP6="<<DEC(r.CCRSD&0x1F)    <<" SP7="<<DEC((r.CCRSD>>8)&0x1F);
+    d<<"\n";}
+    // CCRLB (§3.34) : bits 4-0 = Line color screen CC ratio, bits 12-8 = Back screen CC ratio
+    d<<"  Line="<<DEC(r.CCRLB&0x1F)<<"  Back="<<DEC((r.CCRLB>>8)&0x1F)<<"\n";
+
+    // Color offset
+    d<<"\n=== Color Offset ===\n";
+    d<<"  CLOFEN=0x"<<HEX4(r.CLOFEN)<<"  CLOFSL=0x"<<HEX4(r.CLOFSL)<<"\n";
+    d<<"  BankA: R="<<DEC(s9(r.COAR))<<" G="<<DEC(s9(r.COAG))<<" B="<<DEC(s9(r.COAB))<<"\n";
+    d<<"  BankB: R="<<DEC(s9(r.COBR))<<" G="<<DEC(s9(r.COBG))<<" B="<<DEC(s9(r.COBB))<<"\n";
+    // ST-058-R2 ch.13.1 "Color Offset Enable Register" (p.251) :
+    // bit0=N0COEN (ou RBG1), bit1=N1COEN, bit2=N2COEN, bit3=N3COEN,
+    // bit4=R0COEN, bit5=BKCOEN, bit6=SPCOEN. Les bits 15-7 sont réservés
+    // (l'ancien commentaire plaçait un "RBG1" inexistant au bit 7).
+    {static const char*op[]={"NBG0","NBG1","NBG2","NBG3","RBG0","BACK","SPR","RBG1"};
+    for(int i=0;i<8;i++)if((r.CLOFEN>>i)&1){
+        bool useB=(r.CLOFSL>>i)&1;
+        d<<"  "<<op[i]<<": bank"<<(useB?"B":"A")<<" R="<<DEC(s9(useB?r.COBR:r.COAR))<<" G="<<DEC(s9(useB?r.COBG:r.COAG))<<" B="<<DEC(s9(useB?r.COBB:r.COAB))<<"\n";}}
+
+    mDecRegsText = QString::fromStdString(d.str());
+    applyRegFilter();
+}
+
+// ============================================================
+//  Screen viewer : use CTRL + mouse to zoom & dezoom
+// ============================================================
+
+
+
+void UIDebugVDP2Viewer::wheelEvent(QWheelEvent *event)
+{
+    // Vérifie si la touche CTRL est enfoncée
+    if (event->modifiers() & Qt::ControlModifier) {
+        // Vérifie si le curseur est au-dessus du QGraphicsView du Screen Viewer
+        if (gvScreen->underMouse()) {
+            const double scaleFactor = 1.15; // Facteur de zoom
+            if (event->angleDelta().y() > 0) {
+                // Zoom avant
+                gvScreen->scale(scaleFactor, scaleFactor);
+            } else {
+                // Zoom arrière
+                gvScreen->scale(1.0 / scaleFactor, 1.0 / scaleFactor);
+            }
+            event->accept();
+            return;
+        }
+    }
+    QDialog::wheelEvent(event);
+}
+
+
+// ============================================================
+//  updateStats -- onglet Debug : arbre groupe (une branche par couche
+//  active, plus Sprite et General) et le meme texte brut (case "Plain
+//  text", utilise aussi par l'export). L'arbre n'est reconstruit que si le
+//  texte change ; les branches repliees le restent.
+// ============================================================
+void UIDebugVDP2Viewer::updateStats()
+{
+    if (!Vdp2Regs) {
+        pteStats->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        twStats->clear();
+        return;
+    }
+    std::ostringstream out;
+    struct Layer { const char *name; void (*fn)(char*,int*); };
+    static Layer layers[] = {
+        {"NBG0",    Vdp2DebugStatsNBG0},
+        {"NBG1",    Vdp2DebugStatsNBG1},
+        {"NBG2",    Vdp2DebugStatsNBG2},
+        {"NBG3",    Vdp2DebugStatsNBG3},
+        {"RBG0",    Vdp2DebugStatsRBG0},
+        {"RBG1",    Vdp2DebugStatsRBG1},
+        {"SPRITE",  Vdp2DebugStatsSprite},
+        {"GENERAL", Vdp2DebugStatsGeneral},
+    };
+    QStringList names, texts;
+    for (auto &l : layers) {
+        char buf[VDP2_DEBUG_STRING_SIZE] = {};
+        int en = 0;
+        l.fn(buf, &en);
+        if (en || l.fn == Vdp2DebugStatsSprite || l.fn == Vdp2DebugStatsGeneral) {
+            out << "========== " << l.name << " ==========\n" << buf << "\n";
+            names << QString::fromLatin1(l.name);
+            texts << QString::fromUtf8(buf);
+        }
+    }
+    const QString all = QString::fromStdString(out.str());
+    if (all == pteStats->toPlainText() && twStats->topLevelItemCount() > 0) return;
+    pteStats->setPlainText(all);
+
+    QStringList collapsed;
+    for (int i = 0; i < twStats->topLevelItemCount(); i++)
+        if (!twStats->topLevelItem(i)->isExpanded()) collapsed << twStats->topLevelItem(i)->text(0);
+    const int scroll = twStats->verticalScrollBar()->value();
+
+    twStats->setUpdatesEnabled(false);
+    twStats->clear();
+    for (int i = 0; i < names.size(); i++) {
+        QTreeWidgetItem *top = new QTreeWidgetItem(twStats);
+        top->setText(0, names[i]);
+        QFont f = top->font(0); f.setBold(true); f.setPointSizeF(f.pointSizeF() * 1.15); top->setFont(0, f);
+        top->setFirstColumnSpanned(true);
+        if (texts[i].contains(QLatin1String("***")))
+            top->setForeground(0, QColor(229, 72, 77));
+        Vdp2FillStatsTree(twStats, top, texts[i], names[i] == QLatin1String("GENERAL"));
+        top->setExpanded(!collapsed.contains(names[i]));
+    }
+    twStats->setUpdatesEnabled(true);
+    twStats->verticalScrollBar()->setValue(scroll);
+}
+
+// ============================================================
+//  updateColorRam -- onglet Color RAM.
+//   - grille de 64 cases par rangee, espacee par palette 16 (colonnes) et
+//     par palette 256 (groupes de 4 rangees), index de rangee a gauche ;
+//   - a gauche des blocs de 256 entrees : les couches actives dont la zone
+//     CRAOF commence la (N0..N3, R0, R1, SPR) ;
+//   - triangle dans le coin de la couleur 0 de chaque palette 16 (gris) et
+//     256 (magenta) : code de point transparent si TPON=0 ;
+//   - selection : cadre blanc ; meme couleur : pointilles jaunes ;
+//   - panneau lateral : voir showCramEntry().
+// ============================================================
+void UIDebugVDP2Viewer::updateColorRam()
+{
+    QGraphicsScene *scene = gvColorRam->scene();
+    if (!scene) { scene = new QGraphicsScene(this); gvColorRam->setScene(scene); }
+    scene->clear();
+    pteColorRamHex->clear();
+    const bool showHex = cbCramHex->isChecked();
+    pteColorRamHex->setVisible(showHex);
+
+    if (!Vdp2ColorRam || !Vdp2Regs) {
+        lCramInfo->setText(QtYabause::translate("Color RAM not available"));
+        showCramEntry(-1);
+        return;
+    }
+
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const int total = cramEntries();
+    // RAMCTL bits 13-12 = CRMD (ST-058-R2 p.43) : 0 = RGB555 x1024,
+    // 1 = RGB555 x2048, 2 = RGB888 x1024, 3 = interdit.
+    static const char *crmd[4] = { "RGB555, 1024 colors", "RGB555, 2048 colors", "RGB888, 1024 colors", "prohibited" };
+    mCramHeader = QtYabause::translate("Color RAM mode %1 (%2) — %3 entries of %4 bytes")
+        .arg(mode).arg(QLatin1String(crmd[mode])).arg(total).arg(mode <= 1 ? 2 : 4);
+    lCramInfo->setText(QString::fromLatin1("<b>%1</b>").arg(mCramHeader.toHtmlEscaped()));
+
+    const QColor text = palette().color(QPalette::WindowText);
+    const QColor dim = mixDim(palette());
+    QFont smallFont = font();
+    smallFont.setPixelSize(7);
+    QFont tagFont = smallFont; tagFont.setBold(true);
+
+    // Colonnes : debut de chaque palette 16
+    for (int c = 0; c < CRAM_COLS; c += 16) {
+        QGraphicsSimpleTextItem *t = scene->addSimpleText(QString::fromLatin1("+%1").arg(c), smallFont);
+        t->setBrush(dim);
+        t->setPos(cramCellX(c), 1);
+    }
+    const int rows = (total + CRAM_COLS - 1) / CRAM_COLS;
+    for (int r = 0; r < rows; r++) {
+        QGraphicsSimpleTextItem *t = scene->addSimpleText(hexs(r * CRAM_COLS, 3), smallFont);
+        t->setBrush((r % 4) == 0 ? text : dim);
+        t->setPos(CRAM_TAGW + 2, cramCellY(r) + 1);
+        if ((r % 4) == 0) {
+            const QStringList users = cramLayersAtBlock(r / 4);
+            for (int k = 0; k < users.size() && k < 4; k++) {
+                QGraphicsSimpleTextItem *u = scene->addSimpleText(users[k], tagFont);
+                u->setBrush(QColor(62, 99, 221));
+                u->setPos(1, cramCellY(r) + 1 + k * 9);
+            }
+        }
+    }
+
+    std::ostringstream hex;
+    for (int i = 0; i < total; i++) {
+        const double x = cramCellX(i % CRAM_COLS), y = cramCellY(i / CRAM_COLS);
+        scene->addRect(x, y, CRAM_SW, CRAM_SH, QPen(Qt::NoPen), QBrush(cramColor(i)));
+        if ((i & 0xF) == 0) {
+            QPolygonF tri;
+            tri << QPointF(x, y) << QPointF(x + 4, y) << QPointF(x, y + 4);
+            scene->addPolygon(tri, QPen(Qt::NoPen),
+                              QBrush((i & 0xFF) == 0 ? QColor(255, 0, 255) : QColor(128, 128, 128)));
+        }
+        if (showHex) {
+            if (i%16==0) hex<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<i<<": ";
+            if (mode <= 1)
+                hex<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<(unsigned)cramRaw(i)<<" ";
+            else
+                hex<<std::hex<<std::uppercase<<std::setw(8)<<std::setfill('0')<<(unsigned)cramRaw(i)<<" ";
+            if (i%16==15) hex<<"\n";
+        }
+    }
+
+    // Selection (cadre plein) et entrees de meme couleur (pointilles) : une
+    // palette peut contenir plusieurs fois la meme couleur, et c'est ce qui
+    // rend trompeuse une recherche de l'index a partir du RGB affiche.
+    if (mSelCram >= 0 && mSelCram < total) {
+        const u32 ref = cramColorBits(cramRaw(mSelCram));
+        QPen dup(QColor(255, 220, 0)); dup.setWidthF(1.5); dup.setStyle(Qt::DashLine);
+        for (int i = 0; i < total; i++) {
+            if (i == mSelCram || cramColorBits(cramRaw(i)) != ref) continue;
+            scene->addRect(cramCellX(i % CRAM_COLS) - 1, cramCellY(i / CRAM_COLS) - 1, CRAM_SW + 1, CRAM_SH + 1, dup, Qt::NoBrush);
+        }
+        const double x = cramCellX(mSelCram % CRAM_COLS), y = cramCellY(mSelCram / CRAM_COLS);
+        QPen outer(Qt::white); outer.setWidthF(2.0);
+        QPen inner(Qt::black); inner.setWidthF(1.0);
+        scene->addRect(x - 2, y - 2, CRAM_SW + 3, CRAM_SH + 3, outer, Qt::NoBrush);
+        scene->addRect(x - 1, y - 1, CRAM_SW + 1, CRAM_SH + 1, inner, Qt::NoBrush);
+    }
+
+    scene->setSceneRect(scene->itemsBoundingRect().adjusted(-2, -2, 2, 2));
+    fitColorRam();
+    showCramEntry(mSelCram);
+    if (showHex) pteColorRamHex->setPlainText(QString::fromStdString(hex.str()));
+}
+
+// ============================================================
+//  updateVramHex  — hex dump of a VRAM bank region
+// ============================================================
+// ============================================================
+//  vramBankRange - base et taille de la banque selectionnee.
+//
+//  L'ordre des cas doit suivre celui des entrees de cbVramBank dans le
+//  .ui, qui est A, B, A0, A1, B0, B1. L'ancien code supposait
+//  A0, A1, B0, B1, A, B : cinq entrees sur six pointaient sur la mauvaise
+//  banque. Choisir "VRAM-B1 (0x60000-0x7FFFF)" affichait 0x40000 et
+//  "VRAM-B0 (0x40000-0x5FFFF)" affichait 0x00000, l'en-tete "VRAM @ ..."
+//  reportant cette fausse adresse sans rien signaler.
+//
+//  Les libelles decrivent la configuration 4 Mbit (VRSIZE bit 15 a 0) :
+//  A = 0x00000-0x3FFFF, B = 0x40000-0x7FFFF, chacune divisible en deux
+//  moities de 128 Ko. En 8 Mbit tout double, d'ou le facteur ci-dessous ;
+//  les libelles du .ui, eux, restent ceux du 4 Mbit.
+// ============================================================
+void UIDebugVDP2Viewer::vramBankRange(u32 *base, u32 *size) const
+{
+    const u32 mul = (Vdp2Regs && ((Vdp2Regs->VRSIZE >> 15) & 1)) ? 2u : 1u;
+    switch (cbVramBank->currentIndex()) {
+        case 0: *base=0x00000;     *size=0x40000*mul; break; // VRAM-A
+        case 1: *base=0x40000*mul; *size=0x40000*mul; break; // VRAM-B
+        case 2: *base=0x00000;     *size=0x20000*mul; break; // VRAM-A0
+        case 3: *base=0x20000*mul; *size=0x20000*mul; break; // VRAM-A1
+        case 4: *base=0x40000*mul; *size=0x20000*mul; break; // VRAM-B0
+        case 5: *base=0x60000*mul; *size=0x20000*mul; break; // VRAM-B1
+        default: *base=0x00000;    *size=0x40000*mul; break;
+    }
+}
+
+void UIDebugVDP2Viewer::updateVramHex()
+{
+    pteVramHex->clear();
+    if (!Vdp2Ram) { pteVramHex->setPlainText(QtYabause::translate("VDP2 RAM not available.")); return; }
+
+    // VRAM layout (Saturn HW Manual §3.2 / VRSIZE) :
+    //   Total VRAM = 512KB (0x80000 octets) — toujours présent
+    //   VRSIZE bit 15 = 0 → 4Mbit (A0=256KB, B0=256KB, pas de A1/B1)
+    //   VRSIZE bit 15 = 1 → 8Mbit (A0=A1=B0=B1=128KB chacun)
+    // Les banques 2-5 (divisions en 128KB) ne sont valides qu'en 8Mbit.
+    u32 base=0, bSize=0;
+    vramBankRange(&base, &bSize);
+
+    bool ok=false;
+    u32 offset = leVramOffset->text().toUInt(&ok,16);
+    if (!ok) offset=0;
+    offset &= ~0xFU;
+    if (offset >= bSize) offset=0;
+
+    const int ROWS=32;  // 512 bytes
+    std::ostringstream s;
+    s<<"VRAM @ 0x"<<std::hex<<std::uppercase<<std::setw(6)<<std::setfill('0')<<(base+offset)
+     <<"  ("<<std::dec<<ROWS*16<<" bytes)\n\n"
+     <<"Offset   00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII\n"
+     <<"-------- ------------------------------------------------  ----------------\n";
+
+    for (int row=0;row<ROWS;row++){
+        u32 off=offset+row*16;
+        if (off+16>bSize) break;
+        u32 addr=base+off;
+        s<<"0x"<<std::hex<<std::uppercase<<std::setw(6)<<std::setfill('0')<<addr<<"  ";
+        char asc[17]={};
+        for(int b=0;b<16;b++){
+            u8 byte=T2ReadByte(Vdp2Ram,addr+b);
+            s<<std::hex<<std::uppercase<<std::setw(2)<<std::setfill('0')<<(unsigned)byte<<" ";
+            if(b==7)s<<" ";
+            asc[b]=(byte>=0x20&&byte<0x7F)?(char)byte:'.';
+        }
+        s<<" "<<asc<<"\n";
+    }
+    pteVramHex->setPlainText(QString::fromStdString(s.str()));
+}
+
+// ============================================================
+//  Viewer methods
+// ============================================================
+void UIDebugVDP2Viewer::clearItems()
+{
+    // Mémorise la couche individuelle actuellement sélectionnée pour pouvoir
+    // la restaurer une fois la liste reconstruite par les addItem() qui
+    // suivent. UIDebugVDP2::updateScreenInfos() appelle clearItems() puis
+    // addItem() à CHAQUE frame ("Next Frame") pour tenir la liste des
+    // couches actives à jour ; sans cette restauration, la sélection de
+    // l'utilisateur (ex: RBG1) revenait systématiquement à la première
+    // couche active (ex: NBG0) à chaque frame.
+    mRestoreScreenId = (cbScreen->count() > 0);
+    if (mRestoreScreenId)
+        mScreenIdToRestore = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+
+    cbScreen->clear();
+}
+
+void UIDebugVDP2Viewer::addItem(int id)
+{
+    const char *label = NULL;
+    switch (id) {
+        case NBG0:   label = "NBG0";   break;
+        case NBG1:   label = "NBG1";   break;
+        case NBG2:   label = "NBG2";   break;
+        case NBG3:   label = "NBG3";   break;
+        case RBG0:   label = "RBG0";   break;
+        case RBG1:   label = "RBG1";   break;
+        case SPRITE: label = "SPRITE"; break;
+        default: return;
+    }
+    cbScreen->addItem(label, id);
+
+    // Restaure la sélection mémorisée par clearItems() si la couche qu'on
+    // vient d'ajouter est celle qui était affichée avant le rebuild.
+    if (mRestoreScreenId && id == mScreenIdToRestore) {
+        cbScreen->setCurrentIndex(cbScreen->count() - 1);
+        mRestoreScreenId = false; // restauration faite
+    }
+}
+
+int UIDebugVDP2Viewer::exec() { return QDialog::exec(); }
+
+UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
+{
+    setupUi(this);
+    QGraphicsScene *sc = new QGraphicsScene(this); gvScreen->setScene(sc);
+    QGraphicsScene *sc2= new QGraphicsScene(this); gvColorRam->setScene(sc2);
+    vdp2texture=NULL; width=0; height=0;
+
+    // Filtre d'evenements plutot que surcharger mouseMoveEvent : la cible
+    // reelle des mouvements de souris est gvScreen->viewport() (l'enfant
+    // qui recoit les evenements dans une QGraphicsView), pas gvScreen
+    // lui-meme ni ce QDialog. Alimente l'inspecteur de pixel (lPixelInfo).
+    gvScreen->viewport()->installEventFilter(this);
+    gvScreen->viewport()->setMouseTracking(true);
+    // Meme mecanisme pour l'onglet Color RAM : survol = infos de la case,
+    // clic = selection (cadre + doublons).
+    gvColorRam->viewport()->installEventFilter(this);
+    gvColorRam->viewport()->setMouseTracking(true);
+    // Inspecteur sur une seule ligne. Sans retour a la ligne et a hauteur
+    // fixe : un QLabel riche avec wordWrap calcule sa hauteur pour une
+    // largeur etroite et reservait un grand vide sous l'image.
+    lPixelInfo->setWordWrap(false);
+    lPixelInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    lPixelInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lPixelInfo->setTextFormat(Qt::RichText);
+    lCramInfo->setTextFormat(Qt::RichText);
+
+    // Onglet Color RAM : panneau lateral ; les doublons sont des liens.
+    frCramPanel->setObjectName("frCramPanel");
+    lCramTitle->setTextFormat(Qt::RichText);
+    lCramDetail->setTextFormat(Qt::RichText);
+    lCramDup->setTextFormat(Qt::RichText);
+    lCramDetail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lCramDup->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    connect(lCramDup, &QLabel::linkActivated, this, [this](const QString &link) {
+        bool ok = false;
+        const int idx = link.toInt(&ok);
+        if (ok) { mSelCram = idx; updateColorRam(); }
+    });
+    lCramLegend->setText(QtYabause::translate(
+        "Grey corner: color 0 of a 16 color palette, magenta: of a 256 color palette (transparent when TPON=0). "
+        "White frame: selection, yellow dashes: same color. N0..SPR: start of the layer's Color RAM offset (CRAOF)."));
+    lCramLegend->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
+    splitterCram->setStretchFactor(0, 1);
+    splitterCram->setStretchFactor(1, 0);
+    gvColorRam->setRenderHint(QPainter::Antialiasing, false);
+    pteColorRamHex->setVisible(false);
+    showCramEntry(-1);
+
+    // Onglet Debug : arbre groupe, texte brut sur demande.
+    twStats->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    twStats->header()->setStretchLastSection(true);
+    pteStats->setVisible(false);
+    lStatsHint->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
+
+    // Style des cadres, dans l'esprit de UIDebugSCSPChan.
+    setStyleSheet(QString::fromLatin1(
+        "QFrame#frCramPanel { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        "QTabWidget::pane { border: 1px solid palette(mid); border-radius: 6px; top: -1px; }"
+        // Pas de gras sur l'onglet actif : la largeur des onglets est
+        // calculee avec la police normale, le titre en gras etait tronque
+        // ("creen Viewe").
+        "QTabBar::tab { padding: 6px 14px; }"));
+
+    QtYabause::retranslateWidget(this);
+}
+
+UIDebugVDP2Viewer::~UIDebugVDP2Viewer()
+{
+    // vdp2texture est allouée via Vdp2DebugTexture() (malloc) et n'était
+    // jamais libérée à la fermeture du viewer : fuite mémoire de la
+    // dernière texture générée. On la libère ici explicitement.
+    if (vdp2texture) {
+        free(vdp2texture);
+        vdp2texture = NULL;
+    }
+}
+
+// ============================================================
+//  colorizeSprite -- couleurs reelles de la couche SPRITE.
+//
+//  Chaque mot du framebuffer VDP1 est decode comme le fait le VDP2
+//  (ST-058-R2 sec.9.1, decodeur Vdp2DebugPixelSource de vdp2debug.c) :
+//    - mot 0 : point non ecrit, transparent ;
+//    - RGB (SPCLMD=1 et bit 15 a 1, types 0-7) : RGB555 direct ; ses bits
+//      de priorite valent 0, il prend donc la priorite du registre 0 ;
+//    - palette : code couleur DC + decalage SPCAOS -> entree CRAM ;
+//    - priorite resultante 0 : transparent (un ecran de priorite 0 n'est
+//      pas affiche) -- c'est ce qui cache le fond efface de l'image ;
+//    - code d'ombre normale (DC = 0x7FE) : noir a demi transparent.
+//  Une table par mot (65536 entrees, remplie a la demande) evite de
+//  decoder deux fois la meme valeur. "Opaque" montre en noir les points
+//  transparents. Le calcul de couleur et le decalage de couleur ne sont
+//  pas appliques : c'est la couleur de la CRAM.
+// ============================================================
+static QImage colorizeSprite(const QImage &raw, bool opaque)
+{
+    QImage out(raw.size(), QImage::Format_ARGB32);
+    if (raw.isNull() || !Vdp2Regs) return out;
+    std::vector<QRgb> lut(65536, 0);
+    std::vector<unsigned char> done(65536, 0);
+    const QRgb clear = opaque ? qRgba(0, 0, 0, 255) : qRgba(0, 0, 0, 0);
+    for (int y = 0; y < raw.height(); y++)
+    {
+        const uchar *src = raw.constScanLine(y);   // RGBA8888 : octets R, G, B, A
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < raw.width(); x++)
+        {
+            const u16 w = (u16)(src[4 * x] | (src[4 * x + 1] << 8));
+            if (!done[w])
+            {
+                done[w] = 1;
+                vdp2debugpixel_struct d;
+                QRgb c = clear;
+                if (w != 0 && Vdp2DebugPixelSource(SPRITE, 0, 0, w, &d) && !d.transparent)
+                {
+                    if (d.direct_rgb)
+                    {
+                        if ((Vdp2Regs->PRISA & 7) != 0)
+                            c = qRgb((d.rgb & 0x1F) << 3, ((d.rgb >> 5) & 0x1F) << 3, ((d.rgb >> 10) & 0x1F) << 3);
+                    }
+                    else if (d.sprprioval != 0)
+                    {
+                        c = d.sprshadow ? qRgba(0, 0, 0, 128) : cramColor(d.cramindex).rgb();
+                    }
+                }
+                lut[w] = c;
+            }
+            dst[x] = lut[w];
+        }
+    }
+    return out;
+}
+
+// ============================================================
+//  spriteLogicalImage -- ramene la texture SPRITE a la taille du
+//  framebuffer VDP1 vu par le VDP2.
+//
+//  La texture extraite (GetCSVDP1fb) mesure 512*scale*vdp1wdensity x
+//  256*scale*vdp1hdensity (YglChangeResolution, commongl.c) : agrandie par
+//  le facteur de rendu 'scale', elle couvre tout le framebuffer (1024
+//  points de large en haute resolution), bien au-dela de la zone affichee.
+//
+//  Le facteur se deduit de la taille de rendu VDP2 (_Ygl->width =
+//  rwidth * scale, meme fonction) et non de vdp1wdensity : cette densite
+//  est mise a jour avec un temps de retard (commongl.c, valeurs
+//  "pending"), et une densite perimee en haute resolution coupait l'image
+//  de moitie. Le mode du framebuffer se lit dans TVMR (ST-013-R3 :
+//  TVM = 1 -> haute resolution 1024x256 ; ST-058-R2 sec.9.1).
+//
+//  On prend un point sur 'scale' (le framebuffer agrandi repete chaque
+//  point) puis on garde la zone affichee :
+//    largeur = 320/352/640/704 (TVMD HRESO), divisee par 2 si le VDP2 est
+//              en haute resolution et le framebuffer VDP1 non (un point
+//              VDP1 couvre alors deux points ecran) ;
+//    hauteur = 224/240/256 (TVMD VRESO), doublee si le framebuffer est en
+//              double densite (512 lignes logiques).
+//  Les coordonnees de l'inspecteur sont ainsi celles du framebuffer VDP1.
+// ============================================================
+static QImage spriteLogicalImage(const QImage &tex)
+{
+    if (tex.isNull() || !_Ygl || !Vdp2Regs) return tex;
+    int scale = 1;
+    if (_Ygl->rwidth > 0 && _Ygl->width > 0)
+        scale = qMax(1, (int)std::lround((double)_Ygl->width / _Ygl->rwidth));
+    // Garde-fou : la texture VDP1 fait au moins 512 points logiques de large.
+    while (scale > 1 && tex.width() / scale < 512) scale--;
+    const int lw = tex.width() / scale, lh = tex.height() / scale;
+
+    QImage out(lw, lh, tex.format());
+    for (int y = 0; y < lh; y++)
+    {
+        const quint32 *src = reinterpret_cast<const quint32 *>(tex.constScanLine(y * scale));
+        quint32 *dst = reinterpret_cast<quint32 *>(out.scanLine(y));
+        for (int x = 0; x < lw; x++) dst[x] = src[x * scale];
+    }
+
+    const bool vdp1Hires = (Vdp1Regs && (Vdp1Regs->TVMR & 0x7) == 1) || lw >= 1024;
+    static const int hres[8] = { 320, 352, 640, 704, 320, 352, 640, 704 };
+    static const int vres[4] = { 224, 240, 256, 256 };
+    int w = hres[Vdp2Regs->TVMD & 7];
+    if (w >= 640 && !vdp1Hires) w /= 2;
+    int h = vres[(Vdp2Regs->TVMD >> 4) & 3];
+    if (lh >= 512) h *= 2;
+    return out.copy(0, 0, qMin(w, lw), qMin(h, lh));
+}
+
+void UIDebugVDP2Viewer::displayCurrentScreen()
+{
+    if (!Vdp2Regs) {
+        // Libérer la texture précédente avant de rendre le viewer vide
+        if (vdp2texture) { free(vdp2texture); vdp2texture = NULL; }
+        gvScreen->scene()->clear();
+        currentImage = QImage();
+        pbSaveAsBitmap->setEnabled(false);
+        pteScreenInfo->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        return;
+    }
+    int idx = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+    if (vdp2texture) { free(vdp2texture); vdp2texture = NULL; }
+    vdp2texture = Vdp2DebugTexture(idx, &width, &height);
+    if (vdp2texture) {
+        pbSaveAsBitmap->setEnabled(true);
+        QGraphicsScene *sc=gvScreen->scene();
+        /* Les extracteurs de vidcs.c remplissent le tampon via
+         * glGetTexImage/glReadPixels avec GL_RGBA + GL_UNSIGNED_BYTE :
+         * l'ordre en memoire est donc [R][G][B][A], quel que soit
+         * l'endianness de la machine.
+         *
+         * Format_ARGB32 / Format_RGB32 sont des formats *entiers* : un pixel
+         * y vaut 0xAARRGGBB, dont la disposition en octets depend de
+         * l'endianness. En little-endian cela donne [B][G][R][A], soit R et B
+         * inverses par rapport a ce que GL a ecrit -- ce que le .rgbSwapped()
+         * plus bas venait rattraper. Les deux erreurs s'annulaient, mais
+         * seulement sur little-endian : en big-endian la lecture donne
+         * [A][R][G][B] et le rgbSwapped() aggrave le probleme au lieu de le
+         * corriger.
+         *
+         * Format_RGBA8888 / Format_RGBX8888 sont definis par leur ordre
+         * d'OCTETS ([R][G][B][A]) et correspondent donc directement a la
+         * sortie de GL, sur toutes les plateformes. Le .rgbSwapped() devient
+         * inutile et est retire. */
+        QImage::Format fmt=cbOpaque->isChecked()?QImage::Format_RGBX8888:QImage::Format_RGBA8888;
+        QImage img((uchar*)vdp2texture,width,height,fmt);
+        // Toutes les couches (NBG0-3, RBG0-1, SPRITE) sont extraites par
+        // glGetTexImage, dont la convention "bas en haut" impose ce miroir
+        // vertical -- sauf SPRITE, deja dans le bon sens cote framebuffer
+        // VDP1 (cf. VIDCSGetVdp2ScreenExtract, vidcs.c).
+        currentImage = img.mirrored(false,idx!=SPRITE).copy();
+        // La texture SPRITE est le framebuffer VDP1 brut : sans conversion,
+        // les codes couleur s'affichaient comme des teintes de rouge/vert
+        // quasi noires. On les passe par la CRAM comme le fait le VDP2.
+        if (idx == SPRITE) {
+            mSpriteRaw = spriteLogicalImage(currentImage);
+            currentImage = colorizeSprite(mSpriteRaw, cbOpaque->isChecked());
+        } else {
+            mSpriteRaw = QImage();
+        }
+        QPixmap px=QPixmap::fromImage(currentImage);
+        sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
+        sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
+    } else {
+        // La couche sélectionnée n'a pas produit de texture. Le cas le plus
+        // courant est BGON=off (couche désactivée par le jeu) : le dire
+        // explicitement évite de confondre "rien à afficher" avec "l'image
+        // est un damier gris transparent" ou avec un bug du viewer -- les
+        // deux se ressemblaient avant ce message.
+        currentImage = QImage();
+        gvScreen->scene()->clear();
+        QGraphicsTextItem *msg = gvScreen->scene()->addText(
+            QtYabause::translate("This layer isn't producing any output right now.\n"
+               "Most likely its BGON enable bit is off -- see the\n"
+               "Registers tab (BGON) or the main VDP2 Debug window."));
+        msg->setDefaultTextColor(Qt::gray);
+        gvScreen->scene()->setSceneRect(gvScreen->scene()->itemsBoundingRect());
+        pbSaveAsBitmap->setEnabled(false);
+    }
+    updateLayerInfo(idx);
+    lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
+}
+
+// ============================================================
+//  updateLayerInfo -- reprend Vdp2DebugStatsXXX() (meme fonctions que la
+//  fenetre VDP2 Debug principale, UIDebugVDP2.cpp) pour la couche
+//  actuellement choisie dans cbScreen, afin que l'image et les chiffres qui
+//  l'expliquent (BPP, taille de plan, position de scroll, priorite...)
+//  soient visibles au meme endroit au lieu de devoir garder l'autre fenetre
+//  ouverte a cote et faire la correspondance NBG0/NBG1/... a la main.
+// ============================================================
+void UIDebugVDP2Viewer::updateLayerInfo(int screenId)
+{
+    if (!Vdp2Regs) {
+        pteScreenInfo->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        return;
+    }
+
+    void (*statsFn)(char *, int *) = NULL;
+    switch (screenId) {
+        case NBG0:   statsFn = Vdp2DebugStatsNBG0;   break;
+        case NBG1:   statsFn = Vdp2DebugStatsNBG1;   break;
+        case NBG2:   statsFn = Vdp2DebugStatsNBG2;   break;
+        case NBG3:   statsFn = Vdp2DebugStatsNBG3;   break;
+        case RBG0:   statsFn = Vdp2DebugStatsRBG0;   break;
+        case RBG1:   statsFn = Vdp2DebugStatsRBG1;   break;
+        case SPRITE: statsFn = Vdp2DebugStatsSprite; break;
+        default:
+            pteScreenInfo->clear();
+            return;
+    }
+
+    char buf[VDP2_DEBUG_STRING_SIZE];
+    memset(buf, 0, sizeof(buf));
+    int isEnabled = 0;
+    statsFn(buf, &isEnabled);
+    buf[sizeof(buf)-1] = '\0';
+
+    QString text = isEnabled
+        ? QString::fromUtf8(buf)
+        : QtYabause::translate("(layer disabled -- BGON bit off)\n");
+    pteScreenInfo->setPlainText(text);
+}
+
+// ============================================================
+//  refreshActiveTab — met à jour les données de l'onglet actuellement
+//  affiché. Point d'entrée commun à refresh() (pas de frame), showEvent()
+//  (ré-ouverture du viewer) et on_tabWidget_currentChanged() (changement
+//  manuel d'onglet), pour que les trois se comportent de la même façon.
+//  Avant ce refactor, showEvent() appelait toujours updateVdp2Registers()
+//  sans regarder l'onglet réellement actif : rouvrir le viewer sur
+//  l'onglet Debug (ou Color RAM / VRAM Hex) affichait des données
+//  potentiellement obsolètes tant qu'on ne changeait pas d'onglet.
+// ============================================================
+void UIDebugVDP2Viewer::refreshActiveTab()
+{
+    switch (tabWidget->currentIndex()) {
+        case 1: updateVdp2Registers(); break;
+        case 2: updateStats();         break;
+        case 3: updateColorRam();      break;
+        case 4: updateVramJumps(); updateVramHex(); break;
+        default: break;
+    }
+}
+
+void UIDebugVDP2Viewer::refresh()
+{
+    displayCurrentScreen();
+    refreshActiveTab();
+}
+
+void UIDebugVDP2Viewer::showEvent(QShowEvent *)
+{
+    // Fix: this used to fitInView()+refreshActiveTab() without ever calling
+    // displayCurrentScreen() (refreshActiveTab() only handles tabs 1-4, not
+    // the Screen Viewer itself). Closing the viewer, letting a few "Next
+    // Frame" clicks go by, then reopening it showed a stale image (and
+    // fitInView was framed against that stale image's old scene rect, so
+    // even reselecting the same layer afterwards could look mis-zoomed).
+    refresh();
+    gvScreen->fitInView(gvScreen->scene()->sceneRect(), Qt::KeepAspectRatio);
+}
+
+void UIDebugVDP2Viewer::on_tabWidget_currentChanged(int)
+{
+    refreshActiveTab();
+}
+
+void UIDebugVDP2Viewer::on_cbScreen_currentIndexChanged(int index)
+{
+    if (index < 0)
+        return; // combo momentanément vide (ex: reconstruction de la liste par clearItems())
+    displayCurrentScreen();
+}
+void UIDebugVDP2Viewer::on_cbOpaque_toggled(bool)             { displayCurrentScreen(); }
+
+void UIDebugVDP2Viewer::on_pbResetZoom_clicked()
+{
+    // Ctrl+wheel (see wheelEvent()) has no way back to a known-good zoom
+    // level short of guessing how many notches to scroll the other way;
+    // this snaps straight back to "the whole image fits the view".
+    gvScreen->resetTransform();
+    if (gvScreen->scene())
+        gvScreen->fitInView(gvScreen->scene()->sceneRect(), Qt::KeepAspectRatio);
+}
+
+// ============================================================
+//  Pixel inspector: hovering the image shows its on-screen coordinates and
+//  raw RGBA value, read back from the same currentImage that's on display
+//  (see displayCurrentScreen()) so what's reported always matches what's
+//  visible, mirroring/zoom included. A QGraphicsView's viewport is a plain
+//  QWidget, so an event filter is what actually sees the mouse move rather
+//  than overriding QWidget::mouseMoveEvent() on the dialog itself.
+// ============================================================
+bool UIDebugVDP2Viewer::eventFilter(QObject *watched, QEvent *event)
+{
+    const QString hint = QtYabause::translate("Move the mouse over the image to inspect a pixel.");
+
+    if (watched == gvScreen->viewport())
+    {
+        if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress)
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            QPointF scenePos = gvScreen->mapToScene(me->pos());
+            int px = (int)std::floor(scenePos.x());
+            int py = (int)std::floor(scenePos.y());
+
+            if (!currentImage.isNull() && px >= 0 && py >= 0 &&
+                px < currentImage.width() && py < currentImage.height())
+            {
+                int idx = -1;
+                QString html = describeScreenPixel(px, py, &idx);
+                if (event->type() == QEvent::MouseButtonPress &&
+                    me->button() == Qt::LeftButton && idx >= 0)
+                {
+                    // Clic : l'entree est mise en evidence dans l'onglet
+                    // Color RAM, avec ses doublons.
+                    mSelCram = idx;   // selection reprise par l'onglet Color RAM
+                }
+                lPixelInfo->setText(html);
+            }
+            else
+            {
+                lPixelInfo->setText(hint);
+            }
+        }
+        else if (event->type() == QEvent::Leave)
+        {
+            lPixelInfo->setText(hint);
+        }
+    }
+    else if (watched == gvColorRam->viewport())
+    {
+        if (event->type() == QEvent::Resize)
+        {
+            fitColorRam();
+        }
+        else if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress)
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            const int idx = cramIndexAt(gvColorRam->mapToScene(me->pos()));
+            if (event->type() == QEvent::MouseButtonPress && me->button() == Qt::LeftButton)
+            {
+                mSelCram = idx;          // -1 (clic entre deux cases) = deselection
+                updateColorRam();        // redessine cadre + doublons
+            }
+            else
+            {
+                showCramEntry(idx >= 0 ? idx : mSelCram);
+            }
+        }
+        else if (event->type() == QEvent::Leave)
+        {
+            showCramEntry(mSelCram);
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
+// ============================================================
+//  cramIndexAt -- entree CRAM sous un point de la scene de gvColorRam,
+//  -1 entre deux cases ou hors de la grille.
+// ============================================================
+int UIDebugVDP2Viewer::cramIndexAt(const QPointF &p) const
+{
+    const double gx = p.x() - CRAM_LM, gy = p.y() - CRAM_TM;
+    if (gx < 0 || gy < 0) return -1;
+    const double gw = 16 * CRAM_PITCH + CRAM_GGAP, gh = 4 * CRAM_PITCH + CRAM_GGAP;
+    const int cg = (int)(gx / gw), rg = (int)(gy / gh);
+    const double wx = gx - cg * gw, wy = gy - rg * gh;
+    const int ci = (int)(wx / CRAM_PITCH), ri = (int)(wy / CRAM_PITCH);
+    if (ci >= 16 || ri >= 4) return -1;                         // espace entre palettes
+    if (wx - ci * CRAM_PITCH >= CRAM_SW || wy - ri * CRAM_PITCH >= CRAM_SH) return -1;
+    const int col = cg * 16 + ci, row = rg * 4 + ri;
+    if (col >= CRAM_COLS) return -1;
+    const int idx = row * CRAM_COLS + col;
+    return (idx < cramEntries()) ? idx : -1;
+}
+
+// ============================================================
+//  showCramEntry -- panneau lateral de l'onglet Color RAM.
+// ============================================================
+void UIDebugVDP2Viewer::showCramEntry(int idx)
+{
+    const QColor dim = mixDim(palette());
+    if (!Vdp2Regs || !Vdp2ColorRam || idx < 0 || idx >= cramEntries())
+    {
+        QPixmap px(56, 56); px.fill(Qt::transparent);
+        lCramSwatch->setPixmap(px);
+        lCramTitle->setText(QtYabause::translate("Hover a color to inspect it, click to select it."));
+        lCramDetail->clear();
+        lCramDup->clear();
+        return;
+    }
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const u32 raw = cramRaw(idx);
+    const QColor c = cramColor(idx);
+    const bool msb = (mode <= 1) ? ((raw & 0x8000) != 0) : ((raw & 0x80000000u) != 0);
+
+    QPixmap px(56, 56);
+    px.fill(c);
+    {
+        QPainter p(&px);
+        p.setPen(QPen(palette().color(QPalette::Mid), 1));
+        p.drawRect(0, 0, 55, 55);
+    }
+    lCramSwatch->setPixmap(px);
+
+    lCramTitle->setText(QString::fromLatin1("<span style='font-size:15pt; font-weight:600'>C=%1</span>"
+                                            "&nbsp;&nbsp;<span style='color:%2'>0x%3%4</span>")
+        .arg(idx).arg(dim.name()).arg(hexs(idx, 3))
+        .arg(idx == mSelCram ? QString::fromLatin1("<br>") + QtYabause::translate("selected") : QString()));
+
+    auto row = [&](const QString &k, const QString &v) {
+        return QString::fromLatin1("<tr><td style='color:%1; padding-right:10px'>%2</td><td>%3</td></tr>")
+            .arg(dim.name()).arg(k.toHtmlEscaped()).arg(v);
+    };
+    QString t = QLatin1String("<table cellspacing='0' cellpadding='1'>");
+    t += row(QtYabause::translate("Palette 16c"), QtYabause::translate("n°%1, color %2").arg(idx >> 4).arg(idx & 0xF));
+    t += row(QtYabause::translate("Palette 256c"), QtYabause::translate("n°%1, color %2").arg(idx >> 8).arg(idx & 0xFF));
+    t += row(QtYabause::translate("RGB (8 bits)"), QString::fromLatin1("%1, %2, %3").arg(c.red()).arg(c.green()).arg(c.blue()));
+    if (mode <= 1)
+        t += row(QtYabause::translate("RGB (5 bits)"), QString::fromLatin1("%1, %2, %3").arg(raw & 0x1F).arg((raw >> 5) & 0x1F).arg((raw >> 10) & 0x1F));
+    t += row(QtYabause::translate("Raw word"), QString::fromLatin1("<tt>0x%1</tt>").arg(hexs(raw, mode <= 1 ? 4 : 8)));
+    t += row(QtYabause::translate("MSB"), msb ? QtYabause::translate("1 (special color calculation)") : QString::fromLatin1("0"));
+    t += row(QtYabause::translate("Address"), QString::fromLatin1("<tt>0x%1</tt>").arg(hexs(0x05F00000u + (u32)idx * (mode <= 1 ? 2 : 4), 8)));
+    const QStringList users = cramLayersAtBlock(idx >> 8);
+    if (!users.isEmpty())
+        t += row(QtYabause::translate("CRAOF of"), users.join(QLatin1String(", ")));
+    t += QLatin1String("</table>");
+    if ((idx & 0xF) == 0)
+        t += QString::fromLatin1("<p style='color:%1'>%2</p>").arg(dim.name()).arg(((idx & 0xFF) == 0)
+            ? QtYabause::translate("Color 0 of a 16 and a 256 color palette: transparent dot code when TPON=0.")
+            : QtYabause::translate("Color 0 of a 16 color palette: transparent dot code when TPON=0."));
+    lCramDetail->setText(t);
+
+    // Doublons : meme couleur (hors bit MSB) ailleurs dans la CRAM, cliquables.
+    const u32 ref = cramColorBits(raw);
+    QStringList dup;
+    int nDup = 0;
+    for (int i = 0, n = cramEntries(); i < n; i++)
+    {
+        if (i == idx || cramColorBits(cramRaw(i)) != ref) continue;
+        if (nDup < 40) dup << QString::fromLatin1("<a href='%1'>%1</a>").arg(i);
+        nDup++;
+    }
+    if (nDup)
+        lCramDup->setText(QtYabause::translate("<b>Same color</b> (%1): ").arg(nDup) + dup.join(QLatin1String(" "))
+                          + (nDup > 40 ? QString::fromUtf8(" …") : QString()));
+    else
+        lCramDup->setText(QString::fromLatin1("<span style='color:%1'>%2</span>").arg(dim.name())
+                          .arg(QtYabause::translate("No other entry has this color.")));
+}
+
+void UIDebugVDP2Viewer::fitColorRam()
+{
+    QGraphicsScene *sc = gvColorRam->scene();
+    if (sc && !sc->sceneRect().isEmpty())
+        gvColorRam->fitInView(sc->sceneRect(), Qt::KeepAspectRatio);
+}
+
+// ============================================================
+//  cramEntryText -- description texte d'une entree CRAM (une ligne, pour
+//  les info-bulles et le texte brut).
+// ============================================================
+QString UIDebugVDP2Viewer::cramEntryText(int idx) const
+{
+    if (!Vdp2Regs || !Vdp2ColorRam || idx < 0) return QString();
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const u32 raw = cramRaw(idx);
+    const QColor c = cramColor(idx);
+    return QString::fromLatin1("C=%1 (0x%2) - %3 - R=%4 G=%5 B=%6 - 0x%7")
+        .arg(idx).arg(hexs(idx, 3)).arg(paletteText(-1, idx))
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(hexs(raw, (mode <= 1) ? 4 : 8));
+}
+
+// ============================================================
+//  describeScreenPixel -- texte (HTML) de l'inspecteur pour le pixel
+//  (px, py) de l'image affichee.
+//
+//  L'image d'une couche NBG est la texture screen_fbotex, deja passee par
+//  Yglprg_normal_cram_f (ogl_shader.c) qui a remplace l'index par sa
+//  couleur CRAM : il n'y reste que R, G, B (bit 0 de B = drapeau CC, cf.
+//  VDP2COLOR dans ygl.h) et A = (alpha & 0xF8) | priorite. L'index est donc
+//  recalcule a la source par Vdp2DebugPixelSource() (vdp2debug.c), puis la
+//  couleur CRAM correspondante est comparee a la couleur affichee.
+//  Pour SPRITE, la texture extraite est le framebuffer VDP1 brut
+//  (R = octet bas, G = octet haut du mot).
+//
+//  Ligne 1 : pixel, couleur affichee, priorite, et l'index CRAM en gras
+//            sous la forme courte "C=223".
+//  Ligne 2 : d'ou vient le point (VRAM, pattern name, sprite).
+//  Ligne 3 : palette, decalage CRAOF, controle avec l'affichage.
+// ============================================================
+QString UIDebugVDP2Viewer::describeScreenPixel(int px, int py, int *cramIndexOut) const
+{
+    if (cramIndexOut) *cramIndexOut = -1;
+    lPixelInfo->setToolTip(QString());
+    const QColor dim = mixDim(palette());
+    const QColor c = currentImage.pixelColor(px, py);
+    const int screen = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+
+    QString l1 = QString::fromLatin1("Pixel (%1, %2) &nbsp;R=%3 G=%4 B=%5").arg(px).arg(py)
+                     .arg(c.red()).arg(c.green()).arg(c.blue());
+    u32 sprWord = 0;
+    if (screen == SPRITE)
+    {
+        const QColor rc = mSpriteRaw.isNull() ? c : mSpriteRaw.pixelColor(px, py);
+        sprWord = (u32)rc.red() | ((u32)rc.green() << 8);
+        l1 += QString::fromUtf8(" &nbsp;· %1 0x%2").arg(QtYabause::translate("VDP1 word")).arg(hexs(sprWord, 4));
+    }
+    else if (c.alpha() != 0)
+        l1 += QString::fromUtf8(" &nbsp;· %1 %2 · CC %3").arg(QtYabause::translate("prio"))
+                  .arg(c.alpha() & 7).arg((c.blue() & 1) ? QtYabause::translate("on") : QtYabause::translate("off"));
+    else
+        l1 += QString::fromUtf8(" &nbsp;· ") + QtYabause::translate("transparent");
+
+    if (!Vdp2Regs) return l1;
+
+    vdp2debugpixel_struct src;
+    if (!Vdp2DebugPixelSource((u32)screen, px, py, sprWord, &src))
+        return l1 + QString::fromLatin1("<br><span style='color:%1'>%2</span>").arg(dim.name())
+                        .arg(QString::fromUtf8(src.note).toHtmlEscaped());
+
+    static const char *cn[] = { "16c", "256c", "2048c", "RGB 32K", "RGB 16M" };
+    QString l2;
+    if (screen == SPRITE)
+    {
+        l2 = QString::fromLatin1("Sprite type %1").arg(hexs(src.spritetype, 1));
+        if (src.transparent) l2 += QLatin1String(" : ") + QtYabause::translate("transparent dot (word 0)");
+        else if (src.direct_rgb) l2 += QString::fromLatin1(" : RGB 0x%1").arg(hexs(src.rgb, 4));
+        else
+        {
+            l2 += QString::fromUtf8(" : DC 0x%1 · PR=%2 (prio %3) · CC=%4 (%5/31)")
+                .arg(hexs(src.dot, 3)).arg(src.sprprio).arg(src.sprprioval).arg(src.sprcc).arg(src.sprccratio);
+            if (src.sprshadow) l2 += QLatin1String(" · ") + QtYabause::translate("normal shadow");
+        }
+    }
+    else
+    {
+        l2 = QString::fromUtf8("%1 %2 · dot 0x%3 @0x%4 (x=%5, y=%6)")
+            .arg(src.isbitmap ? QtYabause::translate("bitmap") : QtYabause::translate("cell"))
+            .arg(QLatin1String(cn[src.colornumber < 0 || src.colornumber > 4 ? 0 : src.colornumber]))
+            .arg(hexs(src.dot, 1)).arg(hexs(src.vramaddr, 5)).arg(src.srcx).arg(src.srcy);
+        if (!src.isbitmap)
+            l2 += QString::fromUtf8(" · PN 0x%1 @0x%2 · char 0x%3%4%5")
+                .arg(hexs(src.pndata, (src.pndata > 0xFFFF) ? 8 : 4)).arg(hexs(src.pnaddr, 5))
+                .arg(hexs((u32)src.charnum, 1))
+                .arg((src.flip & 1) ? " H" : "").arg((src.flip & 2) ? " V" : "");
+        if (src.transparent)
+            l2 += QLatin1String(" → ") + QtYabause::translate("transparent (color 0)");
+        else if (src.direct_rgb)
+            l2 += QString::fromUtf8(" → RGB 0x%1").arg(hexs(src.rgb, src.colornumber == 3 ? 4 : 8));
+    }
+
+    QString l3;
+    if (src.cramindex >= 0 && !src.transparent)
+    {
+        const int idx = src.cramindex;
+        if (cramIndexOut) *cramIndexOut = idx;
+        const QColor cc = cramColor(idx);
+        l1 += QString::fromUtf8(" &nbsp;· C=%1 <span style='color:%2'>(0x%3)</span>"
+                                  " <span style='background-color:%4'>&nbsp;&nbsp;&nbsp;&nbsp;</span>")
+                  .arg(idx).arg(dim.name()).arg(hexs(idx, 3)).arg(cc.name());
+        l3 = paletteText(src.colornumber, idx).toHtmlEscaped();
+        if (src.coloroffset)
+            l3 += QString::fromUtf8(" · CRAOF 0x%1").arg(hexs(src.coloroffset, 3));
+        l3 += QString::fromUtf8(" · CRAM %1, %2, %3").arg(cc.red()).arg(cc.green()).arg(cc.blue());
+        if (screen != SPRITE)
+        {
+            // Le bit 0 de B affiche porte le drapeau CC : on le masque.
+            const bool same = cc.red() == c.red() && cc.green() == c.green() &&
+                              (cc.blue() & 0xFE) == (c.blue() & 0xFE);
+            if (same)
+                l3 += QString::fromUtf8(" <span style='color:#46a758'>✓ %1</span>").arg(QtYabause::translate("matches the display"));
+            else
+            {
+                QStringList why;
+                if (Vdp2Regs->CLOFEN & (1 << screen)) why << QtYabause::translate("color offset (CLOFEN) on");
+                why << QtYabause::translate("CRAM changed during the frame")
+                    << QtYabause::translate("or rendering differs from the source");
+                l3 += QString::fromUtf8(" <span style='color:#e5484d'>⚠ %1</span> (%2)")
+                          .arg(QtYabause::translate("differs from the display")).arg(why.join(QLatin1String(", ")).toHtmlEscaped());
+            }
+        }
+    }
+
+    // Une seule ligne dans l'inspecteur (pixel, couleur, priorite, C=).
+    // Le detail (origine du point, palette, controle avec l'affichage)
+    // passe en info-bulle de lPixelInfo, pour rester consultable.
+    QString tip = l2;
+    if (!l3.isEmpty()) tip += QLatin1String("<br>") + l3;
+    if (src.note[0])
+        tip += QString::fromLatin1("<br><span style='color:%1'>%2</span>")
+                   .arg(dim.name()).arg(QString::fromUtf8(src.note).toHtmlEscaped());
+    lPixelInfo->setToolTip(tip);
+    return l1;
+}
+
+// ============================================================
+//  Onglet Registers : filtre. Garde les lignes qui contiennent le texte
+//  (sans tenir compte de la casse) et l'en-tete "===" de leur section.
+// ============================================================
+static QString filterRegText(const QString &full, const QString &needle, int *matches)
+{
+    if (needle.isEmpty()) return full;
+    // Un en-tete de section qui correspond fait garder toute sa section
+    // ("BGON" garde le detail de BGON dans la colonne Decoded).
+    QString out, header;
+    bool headerShown = false, wholeSection = false;
+    const QStringList lines = full.split(QLatin1Char('\n'));
+    for (int i = 0; i < lines.size(); i++)
+    {
+        const QString &l = lines[i];
+        if (l.trimmed().startsWith(QLatin1String("===")))
+        {
+            header = l; headerShown = false;
+            wholeSection = l.contains(needle, Qt::CaseInsensitive);
+            if (wholeSection) { out += l + QLatin1Char('\n'); headerShown = true; (*matches)++; }
+            continue;
+        }
+        if (!wholeSection && !l.contains(needle, Qt::CaseInsensitive)) continue;
+        if (!headerShown && !header.isEmpty()) { out += header + QLatin1Char('\n'); headerShown = true; }
+        out += l + QLatin1Char('\n');
+        (*matches)++;
+    }
+    return out;
+}
+
+void UIDebugVDP2Viewer::applyRegFilter()
+{
+    const QString f = leRegFilter->text().trimmed();
+    int n = 0;
+    pteRawRegs->setPlainText(filterRegText(mRawRegsText, f, &n));
+    pteDecodedRegs->setPlainText(filterRegText(mDecRegsText, f, &n));
+    lRegFilterCount->setText(f.isEmpty() ? QString() : QtYabause::translate("%1 line(s)").arg(n));
+}
+
+void UIDebugVDP2Viewer::on_leRegFilter_textChanged(const QString &) { applyRegFilter(); }
+
+void UIDebugVDP2Viewer::on_cbStatsText_toggled(bool checked)
+{
+    twStats->setVisible(!checked);
+    pteStats->setVisible(checked);
+}
+
+// ============================================================
+//  Onglet VRAM Hex : "Aller a". Les adresses viennent des lignes
+//  "... Address = XXXX" des Vdp2DebugStatsXXX() des couches actives
+//  (plans, bitmap, tables de line scroll / vertical cell scroll, fond,
+//  couleur de ligne...). Les adresses CPU 0x05Exxxxx sont ramenees en
+//  offset VRAM.
+// ============================================================
+void UIDebugVDP2Viewer::updateVramJumps()
+{
+    const QString keep = cbVramJump->currentText();
+    cbVramJump->blockSignals(true);
+    cbVramJump->clear();
+    cbVramJump->addItem(QString::fromUtf8("—"), -1);
+    if (Vdp2Regs)
+    {
+        struct Layer { const char *name; void (*fn)(char *, int *); bool general; };
+        static const Layer layers[] = {
+            {"NBG0", Vdp2DebugStatsNBG0, false}, {"NBG1", Vdp2DebugStatsNBG1, false},
+            {"NBG2", Vdp2DebugStatsNBG2, false}, {"NBG3", Vdp2DebugStatsNBG3, false},
+            {"RBG0", Vdp2DebugStatsRBG0, false}, {"RBG1", Vdp2DebugStatsRBG1, false},
+            {"General", Vdp2DebugStatsGeneral, true},
+        };
+        const u32 vramSize = ((Vdp2Regs->VRSIZE >> 15) & 1) ? 0x100000u : 0x80000u;
+        QStringList seen;
+        for (const Layer &L : layers)
+        {
+            char buf[VDP2_DEBUG_STRING_SIZE];
+            memset(buf, 0, sizeof(buf));
+            int en = 0;
+            L.fn(buf, &en);
+            if (!en) continue;
+            const QStringList lines = QString::fromUtf8(buf).remove(QLatin1Char('\r')).split(QLatin1Char('\n'));
+            QString section;
+            for (int k = 0; k < lines.size(); k++)
+            {
+                const QString l = lines[k].trimmed();
+                if (L.general && k + 1 < lines.size() && lines[k + 1].trimmed().startsWith(QLatin1String("---")))
+                { section = l; section.remove(QLatin1String(" Stuff")); continue; }
+                const int p = l.indexOf(QLatin1String("Address = "));
+                if (p < 0) continue;
+                bool ok = false;
+                u32 a = l.mid(p + 10).section(QLatin1Char(' '), 0, 0).toUInt(&ok, 16);
+                if (!ok) continue;
+                if (a >= 0x05E00000u && a < 0x05F00000u) a -= 0x05E00000u;
+                if (a >= vramSize) continue;
+                QString what = l.left(p + 7).trimmed();
+                if (L.general) what = section + QLatin1Char(' ') + what;
+                const QString text = QString::fromUtf8("%1 · %2 · 0x%3").arg(QLatin1String(L.name)).arg(what).arg(hexs(a, 5));
+                if (seen.contains(text)) continue;
+                seen << text;
+                cbVramJump->addItem(text, (uint)a);
+            }
+        }
+    }
+    const int k = cbVramJump->findText(keep);
+    cbVramJump->setCurrentIndex(k >= 0 ? k : 0);
+    cbVramJump->blockSignals(false);
+}
+
+void UIDebugVDP2Viewer::on_cbVramJump_activated(int index)
+{
+    const QVariant v = cbVramJump->itemData(index);
+    if (!v.isValid() || v.toInt() < 0 || !Vdp2Regs) return;
+    const u32 a = v.toUInt();
+    const u32 mul = ((Vdp2Regs->VRSIZE >> 15) & 1) ? 2u : 1u;
+    const int bank = (a < 0x40000u * mul) ? 0 : 1;     // VRAM-A / VRAM-B
+    const u32 base = bank ? 0x40000u * mul : 0;
+    cbVramBank->blockSignals(true);
+    cbVramBank->setCurrentIndex(bank);
+    cbVramBank->blockSignals(false);
+    leVramOffset->setText(QString::number(a - base, 16).toUpper());
+    updateVramHex();
+}
+
+void UIDebugVDP2Viewer::on_cbVramBank_currentIndexChanged(int){ updateVramHex(); }
+void UIDebugVDP2Viewer::on_pbVramGo_clicked()                 { updateVramHex(); }
+
+// ============================================================
+//  on_pbVramExport_clicked - enregistre la banque VRAM selectionnee dans
+//  un fichier binaire brut.
+//
+//  L'onglet hexa n'affiche que 512 octets a la fois, ce qui suffit pour
+//  jeter un oeil mais pas pour comparer une table de noms de motifs ou un
+//  jeu de tuiles entier. Le fichier brut permet de traiter la banque avec
+//  n'importe quel outil externe.
+//
+//  La base et la taille viennent de vramBankRange(), la meme fonction que
+//  l'affichage hexa : les deux ne peuvent pas diverger.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbVramExport_clicked()
+{
+    if (!Vdp2Ram) {
+        CommonDialogs::error(QtYabause::translate("VDP2 RAM not available."));
+        return;
+    }
+
+    u32 base=0, bSize=0;
+    vramBankRange(&base, &bSize);
+
+    /* Le tableau fait 512 Ko en 4 Mbit et 1 Mo en 8 Mbit ; on borne pour ne
+     * jamais lire au-dela, y compris si VRSIZE a change entre-temps. */
+    const u32 ramSize = (Vdp2Regs && ((Vdp2Regs->VRSIZE >> 15) & 1)) ? 0x100000u : 0x80000u;
+    if (base >= ramSize) return;
+    if (base + bSize > ramSize) bSize = ramSize - base;
+
+    /* Nom par defaut portant la banque et son adresse : en comparant
+     * plusieurs captures on retrouve tout de suite laquelle est laquelle. */
+    const QString label = cbVramBank->currentText().section(' ', 0, 0);
+    const QString suggested = QString("vdp2_vram_%1_0x%2_%3.bin")
+        .arg(label)
+        .arg(base, 5, 16, QChar('0'))
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    QString path = CommonDialogs::getSaveFileName(suggested,
+        QtYabause::translate("Choose a location for the VRAM dump"),
+        QtYabause::translate("Binary files (*.bin)"));
+    if (path.isEmpty())
+        return;
+
+    if (!path.endsWith(".bin", Qt::CaseInsensitive))
+        path += ".bin";
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+        return;
+    }
+    const qint64 written = f.write(reinterpret_cast<const char *>(Vdp2Ram + base), bSize);
+    f.close();
+    if (written != (qint64)bSize)
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+}
+void UIDebugVDP2Viewer::on_cbCramHex_toggled(bool)            { updateColorRam(); }
+
+// ============================================================
+//  on_pbDumpLayers_clicked -- export en masse des couches VDP2.
+//
+//  layer_<NOM>.png : chaque couche telle que le moteur la dessine (zone
+//    visible, avec scroll/zoom/fenetres), via Vdp2DebugTexture() -- comme
+//    le visualiseur et "Save As Bitmap". SPRITE = framebuffer VDP1.
+//  map_<NOM>.png   : la carte COMPLETE du fond (tous les plans/pages, hors
+//    ecran compris, 2x2 plans pour les NBG, 4x4 pour les RBG) ou le bitmap
+//    entier, relu depuis la VRAM sans scroll, zoom ni rotation (vdpedit.c).
+//    C'est ce qu'il faut pour recuperer un decor entier ou ses tuiles.
+//  palette.png     : la CRAM courante, une case 8x8 par couleur, 32 colonnes.
+// ============================================================
+namespace {
+struct MapLayer { int layer; const char *name; };
+const MapLayer kMapLayers[] = {
+    { VDPEDIT_NBG0, "NBG0" }, { VDPEDIT_NBG1, "NBG1" }, { VDPEDIT_NBG2, "NBG2" }, { VDPEDIT_NBG3, "NBG3" },
+    { VDPEDIT_RBG0, "RBG0" }, { VDPEDIT_RBG0B, "RBG0B" }, { VDPEDIT_RBG1, "RBG1" }
+};
+
+QImage cramPicture()
+{
+    const int n = VdpEditCramColorCount(), cols = 32;
+    QImage img(cols * 8, (n / cols) * 8, QImage::Format_ARGB32);
+    for (int i = 0; i < n; i++) {
+        const QRgb c = VdpEditCramArgb((u32)i);
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++)
+                img.setPixel((i % cols) * 8 + x, (i / cols) * 8 + y, c);
+    }
+    return img;
+}
+}
+
+void UIDebugVDP2Viewer::on_pbDumpLayers_clicked()
+{
+    if (!Vdp2Regs)
+        return;
+    const QString dir = CommonDialogs::getExistingDirectory(
+        QString(), QtYabause::translate("Select output folder for VDP2 layers"));
+    if (dir.isEmpty())
+        return;
+    QDir().mkpath(dir);
+
+    static const struct { int id; const char *name; } layers[] = {
+        { NBG0, "NBG0" }, { NBG1, "NBG1" }, { NBG2, "NBG2" }, { NBG3, "NBG3" },
+        { RBG0, "RBG0" }, { RBG1, "RBG1" }, { SPRITE, "SPRITE" }
+    };
+
+    QStringList written, failed;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); ++i) {
+        int w = 0, h = 0;
+        pixel_t *tex = Vdp2DebugTexture(layers[i].id, &w, &h);
+        if (!tex)
+            continue; // couche desactivee (BGON) ou sans sortie
+        // Meme orientation que displayCurrentScreen() : les couches sont lues
+        // par glGetTexImage (bas en haut), sauf SPRITE deja a l'endroit.
+        QImage img = QImage((const uchar *)tex, w, h, QImage::Format_RGBA8888)
+                         .mirrored(false, layers[i].id != SPRITE);
+        if (layers[i].id == SPRITE) {
+            // Meme rendu que l'ecran : le framebuffer VDP1 ramene a sa
+            // taille logique, chaque mot passe par la CRAM comme le fait le
+            // VDP2 (colorizeSprite). Les mots bruts restent exportes a part.
+            const QImage raw = spriteLogicalImage(img);
+            (raw.save(QDir(dir).filePath("layer_SPRITE_raw.png")) ? written : failed) << "layer_SPRITE_raw.png";
+            img = colorizeSprite(raw, false);
+        } else {
+            img = img.copy();
+        }
+        const QString name = QString("layer_%1.png").arg(layers[i].name);
+        (img.save(QDir(dir).filePath(name)) ? written : failed) << name;
+        free(tex);
+    }
+
+    for (size_t n = 0; n < sizeof(kMapLayers) / sizeof(kMapLayers[0]); ++n) {
+        VdpEditBg bg;
+        if (VdpEditBgGet(kMapLayers[n].layer, &bg) != 0)
+            continue;   // couche eteinte
+        if (kMapLayers[n].layer == VDPEDIT_RBG0B && (Vdp2Regs->RPMD & 3) == 0)
+            continue;   // parametre B inutilise
+        int w = 0, h = 0;
+        u32 *map = VdpEditBgRender(&bg, &w, &h);
+        if (!map)
+            continue;
+        const QString name = QString("map_%1.png").arg(kMapLayers[n].name);
+        (QImage((const uchar *)map, w, h, QImage::Format_ARGB32).save(QDir(dir).filePath(name)) ? written : failed) << name;
+        free(map);
+    }
+
+    (cramPicture().save(QDir(dir).filePath("palette.png")) ? written : failed) << "palette.png";
+
+    QApplication::restoreOverrideCursor();
+
+    QString msg = QtYabause::translate("%1 file(s) written to:\n%2").arg(written.size()).arg(dir);
+    if (written.isEmpty())
+        msg = QtYabause::translate("No layer produced any output (all layers disabled?).");
+    if (!failed.isEmpty())
+        msg += "\n\n" + QtYabause::translate("Failed:") + "\n" + failed.join("\n");
+    QMessageBox::information(this, QtYabause::translate("Dump all layers"), msg);
+}
+
+// ============================================================
+//  on_pbImportLayers_clicked -- reimporte les images editees d'un dump.
+//
+//  map_<NOM>.png : seuls les caracteres (ou lignes de bitmap) dont l'image
+//    differe de l'etat courant sont reecrits (couleur la plus proche de la
+//    palette de chaque cellule, flips inverses) ; les autres ne sont pas
+//    touches. Un caractere utilise a plusieurs endroits change partout : les
+//    copies non editees sont comptees dans "blocs encore differents".
+//  palette.png : chaque case dont la couleur a change est ecrite en CRAM.
+//  Les cartes sont traitees AVANT la palette, pour que la comparaison se
+//  fasse avec la palette telle qu'elle etait au moment du dump.
+//  Les edits sont persistants (vdpedit.c, reappliques a chaque V-blank).
+//  layer_*.png n'est pas reimportable : c'est la vue finale (scroll, zoom,
+//  priorites) et non des donnees.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbImportLayers_clicked()
+{
+    if (!Vdp2Regs)
+        return;
+    const QString dir = CommonDialogs::getExistingDirectory(
+        QString(), QtYabause::translate("Select the VDP2 dump folder"));
+    if (dir.isEmpty())
+        return;
+
+    QStringList lines;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    for (size_t n = 0; n < sizeof(kMapLayers) / sizeof(kMapLayers[0]); ++n) {
+        const QString name = QString("map_%1.png").arg(kMapLayers[n].name);
+        const QFileInfo fi(QDir(dir).filePath(name));
+        if (!fi.exists())
+            continue;
+        QImage img(fi.filePath());
+        if (img.isNull()) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("unreadable image"));
+            continue;
+        }
+        img = img.convertToFormat(QImage::Format_ARGB32);
+        VdpEditBg bg;
+        const int got = VdpEditBgGet(kMapLayers[n].layer, &bg);
+        int st[4] = { 0, 0, 0, 0 };
+        const int rc = (got == 0)
+            ? VdpEditBgImport(&bg, reinterpret_cast<const u32 *>(img.constBits()), img.width(), img.height(), st)
+            : got;
+        if (rc == 0) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate(
+                "%1 character(s)/row(s) changed, %2 conflict(s), %3 dot(s) mapped to the nearest palette color, "
+                "%4 block(s) still different from your image").arg(st[0]).arg(st[1]).arg(st[3]).arg(st[2]));
+        } else if (rc == -2) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("size differs from the current map"));
+        } else if (rc == -3) {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("layer is disabled"));
+        } else {
+            lines << QString("%1: %2").arg(name, QtYabause::translate("invalid"));
+        }
+    }
+
+    {
+        const QFileInfo fi(QDir(dir).filePath("palette.png"));
+        if (fi.exists()) {
+            QImage img(fi.filePath());
+            const QImage cur = cramPicture();
+            if (img.isNull()) {
+                lines << QString("palette.png: %1").arg(QtYabause::translate("unreadable image"));
+            } else if (img.size() != cur.size()) {
+                lines << QString("palette.png: %1").arg(QtYabause::translate("size differs from the current palette"));
+            } else {
+                img = img.convertToFormat(QImage::Format_ARGB32);
+                const int n = VdpEditCramColorCount();
+                int changed = 0;
+                for (int i = 0; i < n; i++) {
+                    const QRgb p = img.pixel((i % 32) * 8 + 4, (i / 32) * 8 + 4);
+                    const QRgb c = cur.pixel((i % 32) * 8 + 4, (i / 32) * 8 + 4);
+                    if ((p & 0xF8F8F8) != (c & 0xF8F8F8) &&
+                        VdpEditSetCramColor((u32)i, qRed(p), qGreen(p), qBlue(p)) == 0)
+                        changed++;
+                }
+                lines << QString("palette.png: %1").arg(QtYabause::translate("%1 color(s) changed").arg(changed));
+            }
+        }
+    }
+
+    QApplication::restoreOverrideCursor();
+
+    if (lines.isEmpty())
+        lines << QtYabause::translate("No map_*.png or palette.png found in this folder.");
+    QMessageBox::information(this, QtYabause::translate("Import edited layers"), lines.join("\n"));
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+// Ouvre l'editeur graphique sur la couche selectionnee. SPRITE = la couche
+// sprite du VDP2, c'est-a-dire la trame VDP1 : l'editeur s'ouvre sur sa vue
+// "couche sprite", ou cliquer un sprite l'ouvre.
+void UIDebugVDP2Viewer::on_pbOpenEditor_clicked()
+{
+    const int id = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+    {
+        UIDebugGfxEditor ed(this);
+        switch (id) {
+        case NBG0: ed.openLayer(VDPEDIT_NBG0); break;
+        case NBG1: ed.openLayer(VDPEDIT_NBG1); break;
+        case NBG2: ed.openLayer(VDPEDIT_NBG2); break;
+        case NBG3: ed.openLayer(VDPEDIT_NBG3); break;
+        case RBG0: ed.openLayer(VDPEDIT_RBG0); break;
+        case RBG1: ed.openLayer(VDPEDIT_RBG1); break;
+        default:   ed.openLayer(-1); break;   // SPRITE
+        }
+        ed.exec();
+    }
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+void UIDebugVDP2Viewer::on_pbSaveEdits_clicked()
+{
+    UIEditsExport dlg(this);
+    dlg.exec();
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+void UIDebugVDP2Viewer::on_pbRevertEdits_clicked()
+{
+    if (VdpEditCount(-1) == 0)
+        return;
+    if (QMessageBox::question(this, QtYabause::translate("Revert all edits"),
+            QtYabause::translate("Put every original graphic and color back and forget all %1 edit(s)?")
+                .arg(VdpEditCount(-1)), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    VdpEditRevertAll();
+    updateColorRam();
+    displayCurrentScreen();
+}
+
+void UIDebugVDP2Viewer::on_pbSaveAsBitmap_clicked()
+{
+    QStringList filters;
+    foreach(QByteArray ba, QImageWriter::supportedImageFormats()) {
+        QString fmt = QString(ba).toLower();
+        if (!filters.contains(fmt, Qt::CaseInsensitive))
+            filters << QString("%1 Images (*.%2)").arg(fmt.toUpper()).arg(fmt);
+    }
+    if (currentImage.isNull())
+        return;
+    // Save exactly what's on screen: currentImage is the same mirrored
+    // copy displayCurrentScreen() already builds and hands to the
+    // QGraphicsScene, so this can no longer drift from what's displayed
+    // (it used to redo the raw-buffer-to-QImage conversion independently
+    // here, duplicating displayCurrentScreen()'s logic).
+    const QString s=CommonDialogs::getSaveFileName(QString(),QtYabause::translate("Choose a location for your bitmap"),filters.join(";;"));
+    if(!s.isEmpty())if(!currentImage.save(s))CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+}
+
+
+// ============================================================
+//  Vertical cell scroll -- dump par ligne de champ
+// ============================================================
+// Pourquoi ce dump ne peut pas etre remplace par une lecture de la VRAM :
+// les registres et la VRAM ne donnent que le DERNIER etat ecrit. Un jeu qui
+// reecrit la table de vertical cell scroll en cours de trame -- typiquement
+// un ecran splitte, ou chaque moitie a ses propres offsets verticaux -- ne
+// laisse a l'instant de la pause que les valeurs de la derniere moitie
+// balayee. La seule trace de ce qui s'est reellement applique ligne par
+// ligne est cell_scroll_data[], rempli par Vdp2HBlankIN().
+//
+// Attention a l'unite : cell_scroll_data[] est indexe par ligne de CHAMP
+// (0..VBlankLineCount-1), comme tous les instantanes pris en H-blank, alors
+// que la geometrie de plan est lue en lignes d'AFFICHAGE. En double-density
+// interlace les deux different d'un facteur 2 -- c'est exactement le genre
+// de decalage que ce dump sert a mettre en evidence.
+//
+// On n'imprime que les lignes ou le contenu CHANGE, sous forme de plages :
+// une table reecrite en milieu de trame produit alors deux plages, et la
+// ligne de bascule saute aux yeux.
+//
+// Format des valeurs : format standard des tables de scroll (partie entiere
+// bits 26-16, partie fractionnaire bits 15-8) ; le vertical cell scroll
+// n'utilise pas la partie fractionnaire. Le brut est affiche a cote pour ne
+// rien masquer si l'interpretation ci-dessus ne colle pas.
+static std::string buildVCellScrollDump()
+{
+    char b[512];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    // SCRCTL (ST-058-R2 3.20) : bit 0 = N0VCSC, bit 8 = N1VCSC.
+    const int n0 = (r.SCRCTL & 0x0001) ? 1 : 0;
+    const int n1 = (r.SCRCTL & 0x0100) ? 1 : 0;
+    const u32 base = 0x05E00000u | ((r.VCSTA.all & 0x7FFFEu) << 1);
+
+    snprintf(b, sizeof b, "  VCSTA = 0x%08X    NBG0 VCS = %s    NBG1 VCS = %s\n",
+             (unsigned)base, n0 ? "ON" : "off", n1 ? "ON" : "off");
+    o += b;
+
+    /* Timings deduits des cycle patterns, pas de SCRCTL seul. Le creneau ou
+     * tombe la commande VCS determine si la lecture arrive trop tard pour la
+     * cellule visee : NBG0 est retarde des T3 et repete des T2, NBG1 retarde
+     * des T4 (pas de repetition -- l'asymetrie est materielle). Les jeux qui
+     * programment des patterns "illegaux" dependent de ce comportement. */
+    {
+        Vdp2VCellScrollTiming t;
+        Vdp2VCellScrollTiming_Current(&t);
+        snprintf(b, sizeof b,
+                 "  Acces (cycle patterns) : pas=%d o    NBG0 offset=+%d o    NBG1 offset=+%d o\n"
+                 "                           NBG0 delay=%s repeat=%s    NBG1 delay=%s\n",
+                 t.inc, t.offset[0], t.offset[1],
+                 t.delay[0] ? "OUI" : "non", t.repeat[0] ? "OUI" : "non",
+                 t.delay[1] ? "OUI" : "non");
+        o += b;
+        if (n0 + n1 > 0 && t.inc != (n0 + n1) * 4)
+            o += "  ATTENTION : SCRCTL active une couche dont aucune commande VCS\n"
+                 "              n'est programmee dans les cycle patterns\n";
+    }
+
+    if (!n0 && !n1) {
+        o += "  (vertical cell scroll desactive sur les deux couches)\n";
+        return o;
+    }
+
+    // ST-058-R2 5.3 Fig 5.6 p.134 : une entree par colonne de cellule
+    // AFFICHEE, dans l'ordre des cellules a partir du bord GAUCHE de l'ecran
+    // (et non a partir de la position scrollee). Fig 5.8 p.136 : quand les
+    // deux couches partagent la table, les entrees alternent, NBG0 en tete,
+    // d'ou l'offset de +1 longword pour NBG1.
+    // Colonnes affichees par HRESO (2.1) : 320/352/640/704 dots, 8 dots par
+    // cellule, les quatre memes largeurs se repetant pour les modes moniteur
+    // exclusif (HRESO 100-111).
+    static const int colsForHreso[8] = { 40, 44, 80, 88, 40, 44, 80, 88 };
+    const int cols = colsForHreso[r.TVMD & 0x7];
+    const int nlay = n0 + n1;
+    const int cap  = (int)(sizeof(cell_scroll_data[0].data)
+                         / sizeof(cell_scroll_data[0].data[0]));
+
+    int need = cols * nlay;
+    snprintf(b, sizeof b, "  %d colonnes x %d couche(s) = %d entrees utiles"
+                          " (capacite cell_scroll_data[].data = %d)\n",
+             cols, nlay, need, cap);
+    o += b;
+    if (need > cap) {
+        snprintf(b, sizeof b, "  ATTENTION : la table depasse la capacite du"
+                              " tampon, %d entrees non capturees\n", need - cap);
+        o += b;
+        need = cap;
+    }
+
+    int lines = yabsys.VBlankLineCount;
+    const int maxLines = (int)(sizeof(cell_scroll_data)
+                             / sizeof(cell_scroll_data[0]));
+    if (lines > maxLines) lines = maxLines;
+    if (lines <= 0) { o += "  (aucune ligne capturee)\n"; return o; }
+
+    // Rend une liste de valeurs par colonne, compressee par plages de valeurs
+    // identiques consecutives -- sans perte, mais lisible quand les 40
+    // colonnes portent le meme offset.
+    auto renderLayer = [&](const char *name, int lane, int line) {
+        std::string row;
+        int c = 0;
+        while (c < cols) {
+            const int idx = c * nlay + lane;
+            if (idx >= need) break;
+            const u32 v = cell_scroll_data[line].data[idx];
+            int run = 1;
+            while (c + run < cols) {
+                const int j = (c + run) * nlay + lane;
+                if (j >= need || cell_scroll_data[line].data[j] != v) break;
+                run++;
+            }
+            // partie entiere = bits 26-16, signee sur 11 bits
+            int ip = (int)((v >> 16) & 0x7FF);
+            if (ip & 0x400) ip -= 0x800;
+            if (!row.empty()) row += "  |  ";
+            if (run > 1) snprintf(b, sizeof b, "0x%08X(y=%d) x%d", (unsigned)v, ip, run);
+            else         snprintf(b, sizeof b, "0x%08X(y=%d)",     (unsigned)v, ip);
+            row += b;
+            c += run;
+        }
+        snprintf(b, sizeof b, "      %s: %s\n", name, row.c_str());
+        return std::string(b);
+    };
+
+    const size_t cmpBytes = (size_t)need * sizeof(cell_scroll_data[0].data[0]);
+    int runs = 0;
+    const int maxRuns = 64;
+    int start = 0;
+
+    for (int l = 1; l <= lines; l++) {
+        const bool last = (l == lines);
+        if (!last && memcmp(cell_scroll_data[l].data,
+                            cell_scroll_data[start].data, cmpBytes) == 0)
+            continue;
+
+        if (runs == maxRuns) {
+            snprintf(b, sizeof b, "  ... (plus de %d changements, sortie tronquee ;"
+                                  " la table change quasiment a chaque ligne)\n", maxRuns);
+            o += b;
+            return o;
+        }
+        runs++;
+
+        if (l - 1 == start) snprintf(b, sizeof b, "  ligne de champ %3d :\n", start);
+        else                snprintf(b, sizeof b, "  lignes de champ %3d-%3d :\n", start, l - 1);
+        o += b;
+        if (n0) o += renderLayer("NBG0", 0, start);
+        if (n1) o += renderLayer("NBG1", n0 ? 1 : 0, start);
+
+        start = l;
+    }
+
+    snprintf(b, sizeof b, "  -> %d plage(s) distincte(s) sur %d lignes de champ\n",
+             runs, lines);
+    o += b;
+    if (runs == 1)
+        o += "  (table constante sur toute la trame : aucune reecriture en cours"
+             " de balayage)\n";
+    return o;
+}
+
+
+// ============================================================
+//  Defilement horizontal -- dump par ligne de champ
+// ============================================================
+// Meme lecture que le dump de vertical cell scroll ci-dessus, sur l'autre
+// axe. Trois sources se combinent pour donner le decalage horizontal d'une
+// ligne, et elles ne sont pas capturees au meme endroit :
+//
+//   SCXIN/SCXDN : registres, capturés par ligne dans Vdp2Lines[] ;
+//   table de line scroll : capturee par ligne dans line_scroll_data[] ;
+//   zoom (LZMX)  : idem, quand LSS le prevoit.
+//
+// Le total est ce que le renderer appelle sx. Si les deux moities d'un ecran
+// splitte doivent avoir des positions horizontales distinctes, la bascule
+// doit apparaitre ici, a la meme ligne que celle du dump VCS.
+//
+// On n'imprime que les lignes ou le total CHANGE, sous forme de plages.
+static std::string buildLineScrollDump()
+{
+    char b[512];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    // SCRCTL (ST-058-R2 3.20) : bit sh+1 = LSCX, sh+2 = LSCY, sh+3 = LZMX,
+    // bits sh+5..sh+4 = LSS. sh = 0 pour NBG0, 8 pour NBG1.
+    const int sx0 = (r.SCRCTL & 0x0002) ? 1 : 0;
+    const int sx1 = (r.SCRCTL & 0x0200) ? 1 : 0;
+
+    snprintf(b, sizeof b,
+             "  LSTA0 = 0x%08X   LSTA1 = 0x%08X\n"
+             "  NBG0 LineScrollX = %s   NBG1 LineScrollX = %s\n",
+             (unsigned)(0x05E00000u | ((r.LSTA0.all & 0x7FFFEu) << 1)),
+             (unsigned)(0x05E00000u | ((r.LSTA1.all & 0x7FFFEu) << 1)),
+             sx0 ? "ON" : "off", sx1 ? "ON" : "off");
+    o += b;
+
+    int lines = yabsys.VBlankLineCount;
+    const int maxLines = (int)(sizeof(line_scroll_data)
+                             / sizeof(line_scroll_data[0]));
+    if (lines > maxLines) lines = maxLines;
+    if (lines <= 0) { o += "  (aucune ligne capturee)\n"; return o; }
+
+    // Partie entiere du scroll : SCXIN sur 11 bits (bits 10-0), et pour la
+    // table de line scroll le meme format que partout ailleurs (26-16).
+    auto reg = [](u16 v) { int x = v & 0x7FF; if (x & 0x400) x -= 0x800; return x; };
+    auto tbl = [](u32 v) { int x = (int)((v >> 16) & 0x7FF); if (x & 0x400) x -= 0x800; return x; };
+
+    struct Row { int n0r, n1r, n0t, n1t; };
+    auto rowAt = [&](int l) {
+        Row w;
+        w.n0r = reg(Vdp2Lines[l].SCXIN0);
+        w.n1r = reg(Vdp2Lines[l].SCXIN1);
+        w.n0t = sx0 ? tbl(line_scroll_data[l].n0[0][0]) : 0;
+        w.n1t = sx1 ? tbl(line_scroll_data[l].n1[0][0]) : 0;
+        return w;
+    };
+    auto same = [](const Row &a, const Row &c) {
+        return a.n0r == c.n0r && a.n1r == c.n1r && a.n0t == c.n0t && a.n1t == c.n1t;
+    };
+
+    int runs = 0, start = 0;
+    const int maxRuns = 64;
+
+    for (int l = 1; l <= lines; l++) {
+        const bool last = (l == lines);
+        if (!last && same(rowAt(l), rowAt(start))) continue;
+
+        if (runs == maxRuns) {
+            o += "  ... (plus de 64 changements, sortie tronquee)\n";
+            return o;
+        }
+        runs++;
+
+        const Row w = rowAt(start);
+        if (l - 1 == start) snprintf(b, sizeof b, "  ligne de champ %3d :\n", start);
+        else                snprintf(b, sizeof b, "  lignes de champ %3d-%3d :\n", start, l - 1);
+        o += b;
+        snprintf(b, sizeof b,
+                 "      NBG0: SCXIN=%5d  table=%5d  total=%5d\n"
+                 "      NBG1: SCXIN=%5d  table=%5d  total=%5d\n",
+                 w.n0r, w.n0t, w.n0r + w.n0t,
+                 w.n1r, w.n1t, w.n1r + w.n1t);
+        o += b;
+
+        start = l;
+    }
+
+    snprintf(b, sizeof b, "  -> %d plage(s) distincte(s) sur %d lignes de champ\n",
+             runs, lines);
+    o += b;
+    if (runs == 1)
+        o += "  (defilement horizontal constant sur toute la trame)\n";
+    return o;
+}
+
+
+// ============================================================
+//  Back screen et line color screen -- dump par ligne
+// ============================================================
+// BKTA bit 31 (BKCLMD, ST-058-R2 3.13) : 0 = couleur unique, 1 = une couleur
+// PAR LIGNE lue dans une table. LCTA bit 31 fait de meme pour le line color
+// screen (3.14). Ces deux tables sont voisines de la table de vertical cell
+// scroll -- dans Sonic Jam, BKTA = VCSTA + 0x150 -- et elles souffrent du
+// meme piege : le renderer qui les relit en fin de trame ne voit que le
+// dernier etat ecrit.
+//
+// C'est ce qui distingue une bordure NOIRE d'une bordure BLEUE autour d'un
+// ecran splitte : le jeu ecrit du noir dans les entrees hors cadre et la
+// couleur du ciel ailleurs. Une couleur unique etalee sur toute la trame
+// donne du bleu partout.
+//
+// Couleurs en 5:5:5 RGB (bit 15 ignore pour le back screen).
+static std::string buildBackScreenDump()
+{
+    char b[256];
+    std::string o;
+
+    if (!Vdp2Regs) return std::string("  (VDP2 non initialise)\n");
+    const Vdp2 &r = *Vdp2Regs;
+
+    auto section = [&](const char *name, u32 hi, u32 lo, int perLineBit) {
+        const u32 all  = ((u32)hi << 16) | (u32)lo;
+        const u32 addr = (all & 0x7FFFEu) << 1;
+        const int per  = (all >> perLineBit) & 1;
+        snprintf(b, sizeof b, "  %s = 0x%08X   table = 0x%08X   mode = %s\n",
+                 name, (unsigned)all, (unsigned)(0x05E00000u | addr),
+                 per ? "une couleur PAR LIGNE" : "couleur unique");
+        o += b;
+
+        if (!per) {
+            const u16 c = Vdp2RamReadWord(NULL, Vdp2Ram, addr);
+            snprintf(b, sizeof b, "      couleur = 0x%04X  (R=%2d G=%2d B=%2d)\n",
+                     c, c & 0x1F, (c >> 5) & 0x1F, (c >> 10) & 0x1F);
+            o += b;
+            return;
+        }
+
+        int lines = yabsys.VBlankLineCount;
+        if (lines > VDP2_LINE_SNAPSHOT_MAX) lines = VDP2_LINE_SNAPSHOT_MAX;
+        if (lines <= 0) { o += "      (aucune ligne)\n"; return; }
+
+        // Plages de lignes consecutives de meme couleur.
+        int runs = 0, start = 0;
+        for (int l = 1; l <= lines; l++) {
+            const bool last = (l == lines);
+            const u16 cs = Vdp2RamReadWord(NULL, Vdp2Ram, addr + (u32)start * 2);
+            if (!last && Vdp2RamReadWord(NULL, Vdp2Ram, addr + (u32)l * 2) == cs)
+                continue;
+            if (runs == 48) { o += "      ... (tronque)\n"; return; }
+            runs++;
+            if (l - 1 == start)
+                snprintf(b, sizeof b, "      ligne %3d      : 0x%04X (R=%2d G=%2d B=%2d)\n",
+                         start, cs, cs & 0x1F, (cs >> 5) & 0x1F, (cs >> 10) & 0x1F);
+            else
+                snprintf(b, sizeof b, "      lignes %3d-%3d : 0x%04X (R=%2d G=%2d B=%2d)\n",
+                         start, l - 1, cs, cs & 0x1F, (cs >> 5) & 0x1F, (cs >> 10) & 0x1F);
+            o += b;
+            start = l;
+        }
+        snprintf(b, sizeof b, "      -> %d plage(s) sur %d lignes\n", runs, lines);
+        o += b;
+        if (runs == 1)
+            o += "      ATTENTION : mode par ligne mais une seule couleur sur toute\n"
+                 "                  la trame -- table lue trop tard ?\n";
+    };
+
+    section("BKTA", r.BKTAU, r.BKTAL, 31);
+    o += "\n";
+    section("LCTA", r.LCTA.part.U, r.LCTA.part.L, 31);
+    return o;
+}
+
+
+// ============================================================
+//  Color RAM -- entrees utiles
+// ============================================================
+// L'export ne donnait que "Color RAM Mode = 0", sans aucune valeur. Or
+// l'entree 0 est celle que remontent tous les pixels dont le code de couleur
+// utile est nul -- typiquement un polygone VDP1 ecrit avec CMDCOLR = 0xF000
+// en sprite type 7 palette-only, ou 0xF000 & 0x1FF vaut 0. Sa couleur decide
+// donc de ce que voit le joueur a la place, et il faut pouvoir la lire.
+//
+// Modes (RAMCTL bits 13-12, ST-058-R2 3.2) :
+//   0 = RGB 5:5:5, 1024 mots, 2 banques
+//   1 = RGB 5:5:5, 2048 mots, 1 banque
+//   2 = RGB 8:8:8, 1024 longwords
+static std::string buildColorRamDump()
+{
+    char b[256];
+    std::string o;
+
+    if (!Vdp2ColorRam || !Vdp2Regs) return std::string("  (Color RAM indisponible)\n");
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 0x3;
+    static const char *modeName[4] = {
+        "RGB 5:5:5, 1024 mots, 2 banques",
+        "RGB 5:5:5, 2048 mots, 1 banque",
+        "RGB 8:8:8, 1024 longwords",
+        "(reglage interdit)"
+    };
+    snprintf(b, sizeof b, "  Mode = %d  (%s)\n", mode, modeName[mode]);
+    o += b;
+
+    auto entry = [&](int idx, unsigned *raw, int *r, int *g, int *bl) {
+        if (mode == 2) {
+            const u32 addr = (u32)(idx * 4) & 0xFFF;
+            const u16 msw = T2ReadWord(Vdp2ColorRam, addr);
+            const u16 lsw = T2ReadWord(Vdp2ColorRam, addr + 2);
+            *raw = ((unsigned)msw << 16) | lsw;
+            *r = msw & 0xFF; *g = (lsw >> 8) & 0xFF; *bl = lsw & 0xFF;
+        } else {
+            const u16 w = T2ReadWord(Vdp2ColorRam, (u32)(idx * 2) & 0xFFF);
+            *raw = w;
+            *r = w & 0x1F; *g = (w >> 5) & 0x1F; *bl = (w >> 10) & 0x1F;
+        }
+    };
+
+    /* L'entree 0 en premier et isolee : c'est la plus souvent en cause. */
+    {
+        unsigned raw; int r, g, bl;
+        entry(0, &raw, &r, &g, &bl);
+        snprintf(b, sizeof b,
+                 "  Entree 0 = 0x%0*X   R=%3d G=%3d B=%3d   %s\n",
+                 mode == 2 ? 8 : 4, raw, r, g, bl,
+                 (r == 0 && g == 0 && bl == 0) ? "(noir)" : "(NON NOIRE)");
+        o += b;
+    }
+
+    o += "  Les 32 premieres entrees :\n";
+    for (int row = 0; row < 4; row++) {
+        std::string line = "   ";
+        for (int c = 0; c < 8; c++) {
+            unsigned raw; int r, g, bl;
+            entry(row * 8 + c, &raw, &r, &g, &bl);
+            snprintf(b, sizeof b, " %0*X", mode == 2 ? 8 : 4, raw);
+            line += b;
+        }
+        snprintf(b, sizeof b, "  %3d-%3d :%s\n", row * 8, row * 8 + 7, line.c_str());
+        o += b;
+    }
+
+    /* Offsets par couche : une couche peut viser une autre zone de la CRAM. */
+    snprintf(b, sizeof b,
+             "  CRAOFA = 0x%04X  (NBG0=0x%03X NBG1=0x%03X NBG2=0x%03X NBG3=0x%03X)\n"
+             "  CRAOFB = 0x%04X  (RBG0=0x%03X SPR=0x%03X RBG1=0x%03X)\n",
+             Vdp2Regs->CRAOFA,
+             (Vdp2Regs->CRAOFA & 7) << 8, ((Vdp2Regs->CRAOFA >> 4) & 7) << 8,
+             ((Vdp2Regs->CRAOFA >> 8) & 7) << 8, ((Vdp2Regs->CRAOFA >> 12) & 7) << 8,
+             Vdp2Regs->CRAOFB,
+             (Vdp2Regs->CRAOFB & 7) << 8, ((Vdp2Regs->CRAOFB >> 4) & 7) << 8,
+             ((Vdp2Regs->CRAOFB >> 8) & 7) << 8);
+    o += b;
+    return o;
+}
+
+// ============================================================
+//  on_pbExportDebugInfo_clicked
+//  Sauvegarde le contenu texte des onglets "Registers" (raw + decoded)
+//  et "Debug" dans un unique fichier .txt choisi par l'utilisateur.
+// ============================================================
+void UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked()
+{
+    // On rafraîchit les deux onglets avant export pour être sûr d'écrire
+    // l'état courant, même si l'utilisateur n'a pas visité ces onglets
+    // depuis le dernier "Next Frame".
+    updateVdp2Registers();
+    updateStats();
+
+    const QString suggested = QString("vdp2_registers_debug_%1.txt")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+
+    QString s = CommonDialogs::getSaveFileName(suggested,
+        QtYabause::translate("Choose a location for the text file"),
+        QtYabause::translate("Text files (*.txt)"));
+    if (s.isEmpty())
+        return;
+
+    // Certains dialogues natifs n'ajoutent pas automatiquement l'extension
+    // du filtre sélectionné : on la garantit nous-mêmes plutôt que de
+    // dépendre de ce comportement, qui varie selon la plateforme.
+    if (!s.endsWith(".txt", Qt::CaseInsensitive))
+        s += ".txt";
+
+    QFile f(s);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+        return;
+    }
+
+    QTextStream ts(&f);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    ts.setCodec("UTF-8");
+#endif
+
+    ts << "Yabause VDP2 Debug Export\n";
+    ts << "Generated: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+    ts << "==================================================\n\n";
+
+    ts << "########## REGISTERS - RAW VALUES ##########\n\n";
+    ts << mRawRegsText << "\n\n";      // texte complet, meme si un filtre est actif
+
+    ts << "########## REGISTERS - DECODED ##########\n\n";
+    ts << mDecRegsText << "\n\n";
+
+    ts << "########## VERTICAL CELL SCROLL (par ligne de champ) ##########\n\n";
+    ts << QString::fromStdString(buildVCellScrollDump()) << "\n\n";
+
+    ts << "########## DEFILEMENT HORIZONTAL (par ligne de champ) ##########\n\n";
+    ts << QString::fromStdString(buildLineScrollDump()) << "\n\n";
+
+    ts << "########## BACK SCREEN / LINE COLOR (par ligne) ##########\n\n";
+    ts << QString::fromStdString(buildBackScreenDump()) << "\n\n";
+
+    ts << "########## COLOR RAM ##########\n\n";
+    ts << QString::fromStdString(buildColorRamDump()) << "\n\n";
+
+    ts << "########## DEBUG ##########\n\n";
+    ts << pteStats->toPlainText() << "\n";
+
+    ts.flush();
+    f.close();
+
+    if (f.error() != QFile::NoError)
+        CommonDialogs::error(QtYabause::translate("An error occured while writing file."));
+}
