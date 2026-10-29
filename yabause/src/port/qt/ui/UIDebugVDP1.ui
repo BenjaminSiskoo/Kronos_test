@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1500</width>
-    <height>520</height>
+    <width>1180</width>
+    <height>640</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -43,10 +43,13 @@
         <item>
          <widget class="QLabel" name="lCommandColorLegend">
           <property name="text">
-           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;</string>
+           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;&lt;br&gt;Color calc: SH Shadow · HL Half-luminance · HT Half-transparency · G Gouraud · G+HL · G+HT · CC5! prohibited · &lt;b&gt;bold&lt;/b&gt; = MSB On · Mesh</string>
           </property>
           <property name="textFormat">
            <enum>Qt::RichText</enum>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -62,7 +65,7 @@
         <item>
          <widget class="QPlainTextEdit" name="pteCommandInfo">
           <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Expanding">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>0</horstretch>
             <verstretch>0</verstretch>
            </sizepolicy>
@@ -94,7 +97,7 @@
          <property name="title">
           <string>Texture</string>
          </property>
-         <layout class="QVBoxLayout" name="verticalLayout_5">
+         <layout class="QVBoxLayout" name="verticalLayout_5" stretch="1,0,0,0">
           <item>
            <widget class="QGraphicsView" name="gvTexture">
             <property name="sizePolicy">
@@ -110,7 +113,7 @@
              <bool>true</bool>
             </property>
             <property name="styleSheet">
-             <string notr="true">background-color: transparent;</string>
+             <string notr="true">QGraphicsView { background-color: transparent; }</string>
             </property>
             <property name="backgroundBrush">
              <brush brushstyle="NoBrush">
@@ -128,6 +131,9 @@
             <property name="text">
              <string>No texture</string>
             </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
            </widget>
           </item>
           <item>
@@ -135,20 +141,10 @@
             <property name="text">
              <string>Move the mouse over the texture to inspect a pixel.</string>
             </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
            </widget>
-          </item>
-          <item>
-           <spacer name="verticalSpacer">
-            <property name="orientation">
-             <enum>Qt::Vertical</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>20</width>
-              <height>20</height>
-             </size>
-            </property>
-           </spacer>
           </item>
           <item>
            <layout class="QHBoxLayout" name="horizontalLayout_2">
@@ -164,6 +160,16 @@
                </size>
               </property>
              </spacer>
+            </item>
+            <item>
+             <widget class="QCheckBox" name="cbOpaque">
+              <property name="toolTip">
+               <string>Show transparent texels with their color instead of the checkerboard</string>
+              </property>
+              <property name="text">
+               <string>Opaque</string>
+              </property>
+             </widget>
             </item>
             <item>
              <widget class="QPushButton" name="pbResetZoom">
@@ -218,7 +224,7 @@
         <item>
          <widget class="QPlainTextEdit" name="pteVdp1Regs">
           <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Expanding">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>0</horstretch>
             <verstretch>0</verstretch>
            </sizepolicy>
@@ -240,14 +246,33 @@
     </layout>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_7">
+    <layout class="QHBoxLayout" name="horizontalLayout_info">
      <item>
       <widget class="QLabel" name="lVDP1Info">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>3</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
        <property name="text">
         <string>TextLabel</string>
        </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+       <property name="textInteractionFlags">
+        <set>Qt::TextSelectableByMouse</set>
+       </property>
       </widget>
      </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_7">
      <item>
       <widget class="QPushButton" name="pbNextButton">
         <property name="text">
@@ -274,6 +299,19 @@
         <string>Frame Preview...</string>
        </property>
       </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="dbbButtons">

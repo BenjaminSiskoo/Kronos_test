@@ -587,7 +587,14 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
     0x001f PORT-AD (8ch, write: bits 0-2 - set channel, read: channel data with autoinc channel number)
 */
    addr = addr&0x1F;
-   u8 val = 0x0;
+   /* Default value for registers not handled below. The IOGA (315-5649)
+      returns 0xFF for every unhandled register (MAME sega/315_5649.cpp,
+      read(): "uint8_t data = 0xff"; unconnected analog channels of PORT-AD
+      0x1F also read 0xFF), except the RS-422 receive registers 0x17/0x19
+      whose callbacks default to 0. Even addresses fall outside the
+      umask32(0x00ff00ff) byte lanes the chip is wired to (MAME stv_mem)
+      and keep returning 0. */
+   u8 val = (addr & 1) ? ((addr == 0x17 || addr == 0x19) ? 0x00 : 0xFF) : 0x00;
    if (PerCritcrshEnabled()) {
      if (addr == 0x01) return PerCritcrshRead(0); // hammer X
      if (addr == 0x03) return PerCritcrshRead(1); // hammer Y
@@ -631,6 +638,15 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
 u16 FASTCALL IOPortReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
 {
    return IOPortReadByte(context, memory, addr|1);
+}
+
+/* Long read: two word accesses, each one reaching the odd byte of its
+   word (umask32(0x00ff00ff) in MAME stv_mem). Used to return 0. */
+u32 FASTCALL IOPortReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
+{
+   u32 hi = IOPortReadByte(context, memory, (addr & ~3) | 1);
+   u32 lo = IOPortReadByte(context, memory, (addr & ~3) | 3);
+   return (hi << 16) | lo;
 }
 
 void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 addr, UNUSED u8 val)
@@ -683,6 +699,20 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
       m_ioga_mode = val;
       break;
   }
+}
+
+/* Word write: only the low byte (odd lane) reaches the IOGA. Used to be
+   dropped by UnhandledMemoryWriteWord. */
+void FASTCALL IOPortWriteWord(SH2_struct *context, UNUSED u8* memory, u32 addr, u16 val)
+{
+   IOPortWriteByte(context, memory, addr | 1, (u8)(val & 0xFF));
+}
+
+/* Long write: the low byte of each word, upper word first (big-endian). */
+void FASTCALL IOPortWriteLong(SH2_struct *context, UNUSED u8* memory, u32 addr, u32 val)
+{
+   IOPortWriteByte(context, memory, (addr & ~3) | 1, (u8)((val >> 16) & 0xFF));
+   IOPortWriteByte(context, memory, (addr & ~3) | 3, (u8)(val & 0xFF));
 }
 
 //////////////////////////////////////////////////////////////////////////////

@@ -21,6 +21,7 @@
     \brief VDP2 debug functions
 */
 
+#include <string.h>
 #include "vdp2.h"
 #include "vdp1.h"
 #include "ygl.h"
@@ -131,7 +132,14 @@ static INLINE char *AddBitmapInfoString(char *outstring, int wh, int palnum, int
    }
 
    AddString(outstring, "Bitmap Address = %X\r\n", (mapofn & 0x7) * 0x20000);
-   AddString(outstring, "Bitmap Palette Address = %X\r\n", (palnum & 0x7) << 4);
+   /* Le champ NxBMP (3 bits) donne les bits 6-4 du numero de palette, soit
+    * les bits 10-8 de l'index CRAM (cf. vidcs.c : paladdr = NxBMP << 4, puis
+    * index = (paladdr << 4) | dot). L'ancien libelle "Palette Address"
+    * affichait paladdr (NxBMP << 4), qui n'est ni une adresse ni un index :
+    * NxBMP=1 s'affichait "10" alors que la palette commence a l'index 0x100.
+    * Le decalage CRAOFA s'ajoute a cet index. */
+   AddString(outstring, "Bitmap Palette Number = %d (Color RAM index 0x%03X)\r\n",
+             (palnum & 0x7), (palnum & 0x7) << 8);
 
    return outstring;
 }
@@ -278,28 +286,35 @@ static INLINE char *AddMapInfo(char *outstring, int patternwh, u16 PNC, u8 PLSZ,
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* CCCTL (ST-058-R2, registre 1800ECH) :
+ *   bits 6-0  : xxCCEN, calcul de couleur par ecran (N0 N1 N2 N3 R0 LC SP)
+ *   bit 8     : CCMD   (0 = selon le taux, 1 = addition)
+ *   bit 9     : CCRTMD (0 = taux de l'ecran du dessus, 1 = du second ecran)
+ *   bit 10    : EXCCEN (calcul de couleur etendu)
+ *   bits 14-12: BOKN   (ecran de gradation : 0 SPR, 1 RBG0, 2 NBG0/RBG1,
+ *                       4 NBG1, 5 NBG2, 6 NBG3)
+ *   bit 15    : BOKEN  (gradation)
+ * L'ancien code comparait les bits 10-8 au numero d'ecran (jamais la
+ * gradation, et EXCCEN pris pour elle quand le numero valait 4), et
+ * n'affichait plus du tout l'etat "active" des que CCRTMD valait 1. */
 static INLINE char *AddColorCalcInfo(char *outstring, u16 calcenab, u16 gradnum, u16 calcratio, u16 sfcnum)
 {
-   if ((Vdp2Regs->CCCTL & 0x200) == 0) {
-     if (Vdp2Regs->CCCTL & calcenab)
-     {
-       AddString(outstring, "Color Calculation Enabled\r\n");
-
-       if ((Vdp2Regs->CCCTL & 0x8000) && (Vdp2Regs->CCCTL & 0x0700) == gradnum)
-       {
-         AddString(outstring, "Gradation Calculation Enabled\r\n");
-       }
-       else if (Vdp2Regs->CCCTL & 0x0400)
-       {
+   const u16 cc = Vdp2Regs->CCCTL;
+   if (cc & calcenab)
+   {
+      AddString(outstring, "Color Calculation Enabled (%s)\r\n", (cc & 0x100) ? "add" : "ratio");
+      /* La gradation (BOKEN/BOKN, comparee a gradnum) est deja affichee
+       * par chaque ecran via getBlur(), qui tient compte du mode CRAM. */
+      (void)gradnum;
+      if (cc & 0x0400)
          AddString(outstring, "Extended Color Calculation Enabled\r\n");
-       }
-       else
-       {
-         AddString(outstring, "Special Color Calculation Mode = %d\r\n", sfcnum);
-       }
-     }
-   } else {
-      AddString(outstring, "Color calculation per second screen\r\n");
+      AddString(outstring, "Special Color Calculation Mode = %d\r\n", sfcnum);
+      if (cc & 0x200)
+         AddString(outstring, "Ratio taken from the second screen (CCRTMD=1)\r\n");
+   }
+   else
+   {
+      AddString(outstring, "Color Calculation Disabled\r\n");
    }
    AddString(outstring, "Color Calculation Ratio = %d:%d\r\n", 31 - calcratio, 1 + calcratio);
 
@@ -429,6 +444,91 @@ static char *AddRotCoefInfo(char *outstring)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Raisons pour lesquelles un ecran dont le bit BGON est a 1 n'est pourtant
+ * pas affiche. Memes regles que isEnabled() du renderer (vidcs.c,
+ * ST-058-R2 sec. 4.1 et p.61) plus la priorite 0 (ecran transparent). Sans
+ * cette ligne le panneau decrivait comme actif un ecran que le renderer
+ * ne dessine pas (ex. NBG2 sous un NBG0 en 2048 couleurs). */
+static char *AddDisplayConflict(char *outstring, int screen, int priority)
+{
+   const u16 bgon = Vdp2Regs->BGON;
+   const int r0on = (bgon & 0x10) != 0, r1on = (bgon & 0x20) != 0;
+   const int n0on = (bgon & 0x1) != 0, n1on = (bgon & 0x2) != 0;
+   const int n0color = (Vdp2Regs->CHCTLA >> 4) & 0x7;
+   const int n1color = (Vdp2Regs->CHCTLA >> 12) & 0x3;
+
+   if (screen >= NBG0 && screen <= NBG3 && r0on && r1on)
+      AddString(outstring, "*** NOT DISPLAYED: RBG0 and RBG1 both on ***\r\n");
+   if (screen == NBG0 && r1on && !r0on)
+      AddString(outstring, "*** RBG1 without RBG0: prohibited setting ***\r\n");
+   if (screen == RBG1 && !r0on)
+      AddString(outstring, "*** NOT DISPLAYED: RBG1 requires RBG0 ***\r\n");
+   /* AddString est un bloc { } : accolades obligatoires devant un else. */
+   if ((screen == NBG1 || screen == NBG2 || screen == NBG3) && n0on && n0color >= 4) {
+      AddString(outstring, "*** NOT DISPLAYED: NBG0 uses 16M colors ***\r\n");
+   } else if (screen == NBG2 && n0on && n0color >= 2) {
+      AddString(outstring, "*** NOT DISPLAYED: NBG0 uses 2048 or more colors ***\r\n");
+   }
+   if (screen == NBG3 && n1on && n1color >= 2)
+      AddString(outstring, "*** NOT DISPLAYED: NBG1 uses 2048 or more colors ***\r\n");
+   if (priority == 0)
+      AddString(outstring, "*** NOT DISPLAYED: priority 0 ***\r\n");
+   return outstring;
+}
+
+/* Position de scroll brute : partie entiere 11 bits + fraction 8 bits.
+ * L'ancien affichage -(SCxIN % 512) etait signe a l'envers, ignorait la
+ * fraction et repliait sur 512 quelle que soit la taille de l'ecran (un
+ * bitmap 512x256 scrolle de 240 lignes s'affichait "y = -240", un
+ * scroll de 496 sur un bitmap de 256 lignes "y = -496"). */
+static char *AddScrollString(char *outstring, u16 xi, u16 xd, u16 yi, u16 yd)
+{
+   AddString(outstring, "Screen Scroll x = %.3f, y = %.3f\r\n",
+             (xi & 0x7FF) + ((xd >> 8) & 0xFF) / 256.0,
+             (yi & 0x7FF) + ((yd >> 8) & 0xFF) / 256.0);
+   return outstring;
+}
+
+/* Increment de coordonnee (registre) et facteur de zoom affiche (son
+ * inverse). Un increment nul donnait "inf" ; le renderer n'affiche alors
+ * pas l'ecran (Vdp2DrawNBG0/1 retournent). */
+static char *AddZoomString(char *outstring, u32 zx, u32 zy)
+{
+   zx &= 0x7FF00; zy &= 0x7FF00;
+   AddString(outstring, "Coordinate inc x = %.4f, y = %.4f\r\n", zx / 65536.0, zy / 65536.0);
+   if (zx == 0 || zy == 0) {
+      AddString(outstring, "*** Coordinate increment 0: screen not drawn ***\r\n");
+   } else {
+      AddString(outstring, "Zoom factor x = %.4f, y = %.4f\r\n", 65536.0 / zx, 65536.0 / zy);
+   }
+   return outstring;
+}
+
+/* Line scroll / line zoom / vertical cell scroll (SCRCTL, 6 bits par ecran).
+ * La table et l'intervalle etaient affiches seulement pour le line scroll
+ * (test & 0x6) : avec le line zoom seul (bit 3), on ne voyait pas ou etait
+ * la table qu'il lit. L'intervalle est double en single-density interlace
+ * (ReadLineScrollData, vidshared.h). */
+static char *AddLineScrollString(char *outstring, u16 reg, u32 lsta)
+{
+   if (reg & 0x8) AddString(outstring, "Line Zoom enabled\r\n");
+   if (reg & 0x4) AddString(outstring, "Line Scroll Vertical enabled\r\n");
+   if (reg & 0x2) AddString(outstring, "Line Scroll Horizontal enabled\r\n");
+   if (reg & 0xE)
+   {
+      int inc = 1 << ((reg >> 4) & 0x3);
+      if (((Vdp2Regs->TVMD >> 6) & 0x3) == 0x2) inc *= 2;
+      AddString(outstring, "Line Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((lsta & 0x7FFFE) << 1)));
+      AddString(outstring, "Line Scroll Interval = every %d line(s)\r\n", inc);
+   }
+   if (reg & 0x1)
+   {
+      AddString(outstring, "Vertical Cell Scroll enabled\r\n");
+      AddString(outstring, "Vertical Cell Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((Vdp2Regs->VCSTA.all & 0x7FFFE) << 1)));
+   }
+   return outstring;
+}
+
 void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
 {
    int patternwh=((Vdp2Regs->CHCTLB & 0x100) >> 8) + 1;
@@ -442,6 +542,8 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
       int coeftbl=0, coefmode=0;
 
       *isenabled = 1;
+
+      outstring = AddDisplayConflict(outstring, RBG0, Vdp2Regs->PRIR & 0x7);
 
       // Which Rotation Parameter is being used
       switch (Vdp2Regs->RPMD & 0x3)
@@ -472,26 +574,24 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
             // Parameter A+B switched via rotation parameter window
             AddString(outstring, "Parameter A/B switched parameter window\r\n");
             outstring = AddRotCoefInfo(outstring);
+            /* ST-058-R2 1800D6H (WCTLD) : W0E bit 1 / W0A bit 0, W1E bit 3 /
+             * W1A bit 2, LOG bit 7. Les deux fenetres peuvent etre actives
+             * ensemble : l'ancien "else if" masquait W1 des que W0 l'etait,
+             * et la zone (dedans/dehors) n'etait jamais affichee. */
             if (Vdp2Regs->WCTLD & 0x2)
             {
-               AddString(outstring, "Rotation Window 0 Enabled\r\n");
                CalcWindowCoordinates(0, &hstart, &vstart, &hend, &vend);
-               AddString(outstring, "Horizontal start = %d\r\n", hstart);
-               AddString(outstring, "Vertical start = %d\r\n", vstart);
-               AddString(outstring, "Horizontal end = %d\r\n", hend);
-               AddString(outstring, "Vertical end = %d\r\n", vend);
+               AddString(outstring, "Rotation Window 0 (%s): (%d,%d)-(%d,%d)\r\n",
+                         (Vdp2Regs->WCTLD & 0x1) ? "outside" : "inside", hstart, vstart, hend, vend);
             }
-            /* ST-058-R2 1800D6H : bit 3 = RPW1E (enable), bit 2 = RPW1A
-             * (inside/outside). Le test portait sur le bit de zone. */
-            else if (Vdp2Regs->WCTLD & 0x8)
+            if (Vdp2Regs->WCTLD & 0x8)
             {
-               AddString(outstring, "Rotation Window 1 Enabled\r\n");
                CalcWindowCoordinates(1, &hstart, &vstart, &hend, &vend);
-               AddString(outstring, "Horizontal start = %d\r\n", hstart);
-               AddString(outstring, "Vertical start = %d\r\n", vstart);
-               AddString(outstring, "Horizontal end = %d\r\n", hend);
-               AddString(outstring, "Vertical end = %d\r\n", vend);
+               AddString(outstring, "Rotation Window 1 (%s): (%d,%d)-(%d,%d)\r\n",
+                         (Vdp2Regs->WCTLD & 0x4) ? "outside" : "inside", hstart, vstart, hend, vend);
             }
+            if ((Vdp2Regs->WCTLD & 0xA) == 0xA)
+               AddString(outstring, "Rotation Window Logic: %s\r\n", (Vdp2Regs->WCTLD & 0x80) ? "AND" : "OR");
             break;
       }
 
@@ -687,7 +787,6 @@ void Vdp2DebugStatsRBG0(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0010);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>8)&0x03);
    }
    else
    {
@@ -710,6 +809,8 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
    {
       // enabled
       *isenabled = 1;
+
+      outstring = AddDisplayConflict(outstring, NBG0, Vdp2Regs->PRINA & 0x7);
 
       // Mosaic
       outstring = AddMosaicString(outstring, 0x1);
@@ -768,13 +869,13 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
      // Screen scroll values
      AddString(outstring, "Screen Scroll x = %f, y = %f\r\n", (float)(reg->getLong(0x70) & 0x7FFFF00) / 65536, (float)(reg->getLong(0x74) & 0x7FFFF00) / 65536);
 */
-     AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXIN0 & 0x7FF) % 512), - ((Vdp2Regs->SCYIN0 & 0x7FF) % 512));
+     outstring = AddScrollString(outstring, Vdp2Regs->SCXIN0, Vdp2Regs->SCXDN0, Vdp2Regs->SCYIN0, Vdp2Regs->SCYDN0);
 
      // Coordinate Increments
      /* ST-058-R2 ch.5.2 p.126 : ce que l'on imprime ici est 1/increment,
       * c'est-a-dire le FACTEUR DE ZOOM (pixels ecran par pixel de motif), pas
       * l'increment de coordonnee lui-meme. Le libelle disait l'inverse. */
-     AddString(outstring, "Zoom factor x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN0.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMYN0.all & 0x7FF00));
+     outstring = AddZoomString(outstring, Vdp2Regs->ZMXN0.all, Vdp2Regs->ZMYN0.all);
 
      // Reduction Enable
      switch (Vdp2Regs->ZMCTL & 3)
@@ -789,48 +890,7 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
         default: break;
      }
 
-     if (lineVerticalScrollReg & 0x8)
-     {
-        AddString(outstring, "Line Zoom enabled\r\n");
-     }
-
-     if (lineVerticalScrollReg & 0x4)
-     {
-        AddString(outstring, "Line Scroll Vertical enabled\r\n");
-     }
-
-     if (lineVerticalScrollReg & 0x2)
-     {
-        AddString(outstring, "Line Scroll Horizontal enabled\r\n");
-     }
-
-     if (lineVerticalScrollReg & 0x6)
-     {
-        AddString(outstring, "Line Scroll Enabled\r\n");
-        AddString(outstring, "Line Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((Vdp2Regs->LSTA0.all & 0x7FFFE) << 1)));
-
-        switch (lineVerticalScrollReg >> 4)
-        {
-           case 0:
-              AddString(outstring, "Line Scroll Interval = Each Line\r\n");
-              break;
-           case 1:
-              AddString(outstring, "Line Scroll Interval = Every 2 Lines\r\n");
-              break;
-           case 2:
-              AddString(outstring, "Line Scroll Interval = Every 4 Lines\r\n");
-              break;
-           case 3:
-              AddString(outstring, "Line Scroll Interval = Every 8 Lines\r\n");
-              break;
-        }
-     }
-
-     if (lineVerticalScrollReg & 0x1)
-     {
-        AddString(outstring, "Vertical Cell Scroll enabled\r\n");
-        AddString(outstring, "Vertical Cell Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((Vdp2Regs->VCSTA.all & 0x7FFFE) << 1)));
-     }
+     outstring = AddLineScrollString(outstring, lineVerticalScrollReg, Vdp2Regs->LSTA0.all);
       AddString(outstring, "Gradation Calculation %s\n", (getBlur(Vdp2Regs, layer)==0)?"Disabled":"Enabled");
       // Window Control
       outstring = AddWindowInfoString(outstring, Vdp2Regs->WCTLA, 0);
@@ -858,7 +918,6 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0001);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>0)&0x03);
 
    }
    else
@@ -869,10 +928,8 @@ void Vdp2DebugStatsNBG0(char *outstring, int *isenabled)
 }
 void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
 {
-   u16 lineVerticalScrollReg = Vdp2Regs->SCRCTL & 0x3F;
-   int isbitmap=Vdp2Regs->CHCTLA & 0x2;
    int patternwh=(Vdp2Regs->CHCTLA & 0x1) + 1;
-   u8 map[4];
+   u8 map[16];
    int layer;
 
    if (Vdp2Regs->BGON & 0x20)
@@ -884,6 +941,8 @@ void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
      {
         AddString(outstring, "Coefficient Table Enabled(Mode %d)\r\n", (Vdp2Regs->KTCTL >> 10) & 0x3);
      }
+
+      outstring = AddDisplayConflict(outstring, RBG1, Vdp2Regs->PRINA & 0x7);
 
       // Mosaic
       outstring = AddMosaicString(outstring, 0x1);
@@ -924,11 +983,19 @@ void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
           AddString(outstring, "Supplementary Color number = %d\r\n", supplementdata & 0x1f);
        }
 
-       map[0] = Vdp2Regs->MPABN0 & 0xFF;
-       map[1] = Vdp2Regs->MPABN0 >> 8;
-       map[2] = Vdp2Regs->MPCDN0 & 0xFF;
-       map[3] = Vdp2Regs->MPCDN0 >> 8;
-       outstring = AddMapInfo(outstring, patternwh, Vdp2Regs->PNCN0, Vdp2Regs->PLSZ & 0x3, (Vdp2Regs->MPOFN & 0x7) << 6, 4, map);
+       /* RBG1 utilise le parametre de rotation B : 16 plans MPABRB..MPOPRB,
+        * taille RBPLSZ et decalage RBMP (MPOFR bits 6-4), comme le
+        * renderer (Vdp2DrawRBG1_part, vidcs.c). L'ancien code affichait les
+        * plans A-D de NBG0 (MPABN0/MPCDN0, N0PLSZ, MPOFN), sans rapport
+        * avec ce que RBG1 lit. Le pattern name, lui, est bien celui de
+        * NBG0 (PNCN0). */
+       {
+          const u16 r[8] = { Vdp2Regs->MPABRB, Vdp2Regs->MPCDRB, Vdp2Regs->MPEFRB, Vdp2Regs->MPGHRB,
+                             Vdp2Regs->MPIJRB, Vdp2Regs->MPKLRB, Vdp2Regs->MPMNRB, Vdp2Regs->MPOPRB };
+          int k;
+          for (k = 0; k < 8; k++) { map[2 * k] = r[k] & 0xFF; map[2 * k + 1] = r[k] >> 8; }
+       }
+       outstring = AddMapInfo(outstring, patternwh, Vdp2Regs->PNCN0, (Vdp2Regs->PLSZ >> 12) & 0x3, (Vdp2Regs->MPOFR & 0x70) << 2, 16, map);
 
 
       layer = RBG1;
@@ -1001,7 +1068,6 @@ void Vdp2DebugStatsRBG1(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0001);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>0)&0x03);
 
    }
    else
@@ -1024,6 +1090,8 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
    {
       // enabled
       *isenabled = 1;
+
+      outstring = AddDisplayConflict(outstring, NBG1, (Vdp2Regs->PRINA >> 8) & 0x7);
 
       // Mosaic
       outstring = AddMosaicString(outstring, 0x2);
@@ -1132,14 +1200,14 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
       // Screen scroll values
       AddString(outstring, "Screen Scroll x = %f, y = %f\r\n", (float)(reg->getLong(0x80) & 0x7FFFF00) / 65536, (float)(reg->getLong(0x84) & 0x7FFFF00) / 65536);
 */
-         AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXIN1 & 0x7FF) % 512), - ((Vdp2Regs->SCYIN1 & 0x7FF) % 512));
+         outstring = AddScrollString(outstring, Vdp2Regs->SCXIN1, Vdp2Regs->SCXDN1, Vdp2Regs->SCYIN1, Vdp2Regs->SCYDN1);
 
       // Coordinate Increments
       /* ST-058-R2 ch.5.2 p.126 : valeur imprimee = 1/increment, soit le
        * facteur de zoom. Le libelle disait "Coordinate Increments", l'inverse.
        * Et l'axe Y lisait ZMXN1 au lieu de ZMYN1 : NBG1 affichait toujours le
        * meme zoom sur les deux axes, quel que soit ZMYN1. */
-      AddString(outstring, "Zoom factor x = %f, y = %f\r\n", (float) 65536 / (Vdp2Regs->ZMXN1.all & 0x7FF00), (float) 65536 / (Vdp2Regs->ZMYN1.all & 0x7FF00));
+      outstring = AddZoomString(outstring, Vdp2Regs->ZMXN1.all, Vdp2Regs->ZMYN1.all);
 
       // Reduction Enable
       switch ((Vdp2Regs->ZMCTL >> 8) & 3)
@@ -1154,47 +1222,7 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
          default: break;
       }
 
-      if (lineVerticalScrollReg & 0x8)
-      {
-         AddString(outstring, "Line Zoom X enabled\r\n");
-      }
-
-      if (lineVerticalScrollReg & 0x4)
-      {
-         AddString(outstring, "Line Scroll Vertical enabled\r\n");
-      }
-
-      if (lineVerticalScrollReg & 0x2)
-      {
-         AddString(outstring, "Line Scroll Horizontal enabled\r\n");
-      }
-
-      if (lineVerticalScrollReg & 0x6)
-      {
-         AddString(outstring, "Line Scroll Enabled\r\n");
-         AddString(outstring, "Line Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((Vdp2Regs->LSTA1.all & 0x7FFFE) << 1)));
-         switch (lineVerticalScrollReg >> 4)
-         {
-            case 0:
-               AddString(outstring, "Line Scroll Interval = Each Line\r\n");
-               break;
-            case 1:
-               AddString(outstring, "Line Scroll Interval = Every 2 Lines\r\n");
-               break;
-            case 2:
-               AddString(outstring, "Line Scroll Interval = Every 4 Lines\r\n");
-               break;
-            case 3:
-               AddString(outstring, "Line Scroll Interval = Every 8 Lines\r\n");
-               break;
-         }
-      }
-
-      if (lineVerticalScrollReg & 0x1)
-      {
-         AddString(outstring, "Vertical Cell Scroll enabled\r\n");
-         AddString(outstring, "Vertical Cell Scroll Table Address = %08X\r\n", (int)(0x05E00000 + ((Vdp2Regs->VCSTA.all & 0x7FFFE) << 1)));
-      }
+      outstring = AddLineScrollString(outstring, lineVerticalScrollReg, Vdp2Regs->LSTA1.all);
       AddString(outstring, "Gradation Calculation %s\n", (getBlur(Vdp2Regs, NBG1)==0)?"Disabled":"Enabled");
       // Window Control
       outstring = AddWindowInfoString(outstring, Vdp2Regs->WCTLA >> 8, 0);
@@ -1222,7 +1250,6 @@ void Vdp2DebugStatsNBG1(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0002);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>2)&0x03);
    }
    else
      // disabled
@@ -1244,6 +1271,8 @@ void Vdp2DebugStatsNBG2(char *outstring, int *isenabled)
 
       // enabled
       *isenabled = 1;
+
+      outstring = AddDisplayConflict(outstring, NBG2, Vdp2Regs->PRINB & 0x7);
 
       // Mosaic
       outstring = AddMosaicString(outstring, 0x4);
@@ -1332,7 +1361,7 @@ void Vdp2DebugStatsNBG2(char *outstring, int *isenabled)
       AddString(outstring, "Cell Data Address = %X\r\n", charAddr);
 */
       // Screen scroll values
-      AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXN2 & 0x7FF) % 512), - ((Vdp2Regs->SCYN2 & 0x7FF) % 512));
+      outstring = AddScrollString(outstring, Vdp2Regs->SCXN2, 0, Vdp2Regs->SCYN2, 0);
 
       AddString(outstring, "Gradation Calculation %s\n", (getBlur(Vdp2Regs, NBG2)==0)?"Disabled":"Enabled");
       // Window Control
@@ -1361,7 +1390,6 @@ void Vdp2DebugStatsNBG2(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0004);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>4)&0x03);
    }
    else
    {
@@ -1385,6 +1413,8 @@ void Vdp2DebugStatsNBG3(char *outstring, int *isenabled)
 
       // enabled
       *isenabled = 1;
+
+      outstring = AddDisplayConflict(outstring, NBG3, (Vdp2Regs->PRINB >> 8) & 0x7);
 
       // Mosaic
       outstring = AddMosaicString(outstring, 0x8);
@@ -1476,7 +1506,7 @@ void Vdp2DebugStatsNBG3(char *outstring, int *isenabled)
       AddString(outstring, "Cell Data Address = %X\r\n", charAddr);
 */
       // Screen scroll values
-      AddString(outstring, "Screen Scroll x = %d, y = %d\r\n", - ((Vdp2Regs->SCXN3 & 0x7FF) % 512), - ((Vdp2Regs->SCYN3 & 0x7FF) % 512));
+      outstring = AddScrollString(outstring, Vdp2Regs->SCXN3, 0, Vdp2Regs->SCYN3, 0);
 
       AddString(outstring, "Gradation Calculation %s\n", (getBlur(Vdp2Regs, NBG3)==0)?"Disabled":"Enabled");
       // Window Control
@@ -1503,7 +1533,6 @@ void Vdp2DebugStatsNBG3(char *outstring, int *isenabled)
       // Color Offset
       outstring = AddColorOffsetInfo(outstring, 0x0008);
 
-      AddString(outstring, "Special Color Calculation %d\r\n",(Vdp2Regs->SFCCMD>>6)&0x03);
    }
    else
    {
@@ -1572,8 +1601,10 @@ void Vdp2DebugStatsSprite(char *outstring, int *isenabled)
   if (Vdp2Regs->SPCTL & 0x10)
   {
      AddString(outstring, "Sprite Window Enabled\r\n");
-     AddString(outstring, "Sprite Gradation Calculation %s\n", (getBlur(Vdp2Regs, SPRITE)==0)?"Disabled":"Enabled");
   }
+  /* La gradation ne depend pas de la fenetre sprite : elle n'etait
+   * affichee que si SPWINEN valait 1. */
+  AddString(outstring, "Sprite Gradation Calculation %s\r\n", (getBlur(Vdp2Regs, SPRITE)==0)?"Disabled":"Enabled");
 
   if (Vdp2Regs->LNCLEN & 0x20)
   {
@@ -1582,16 +1613,20 @@ void Vdp2DebugStatsSprite(char *outstring, int *isenabled)
 
   outstring = AddWindowInfoString(outstring, Vdp2Regs->WCTLC >> 8, 1);
 
-  AddString(outstring, "Color RAM Offset = %X\r\n", (Vdp2Regs->CRAOFB >> 4) & 0x7);
+  /* SPCAOS (CRAOFB bits 6-4) en index CRAM, comme les autres ecrans
+   * ("Color Ram Address Offset = 100" pour 1) ; il s'affichait brut. */
+  AddString(outstring, "Color Ram Address Offset = %X\r\n", ((Vdp2Regs->CRAOFB >> 4) & 0x7) << 8);
   if (Vdp2Regs->CCCTL & 0x40)
   {
      AddString(outstring, "Color Calculation Enabled\r\n");
 
-     if (Vdp2Regs->CCCTL & 0x8000 && (Vdp2Regs->CCCTL & 0x0700) == 0)
+     /* BOKEN = bit 15, BOKN = bits 14-12 (0 = sprite) ; l'ancien test
+      * portait sur les bits 10-8 (EXCCEN/CCRTMD/CCMD). */
+     if ((Vdp2Regs->CCCTL & 0x8000) && ((Vdp2Regs->CCCTL >> 12) & 0x7) == 0)
      {
         AddString(outstring, "Gradation Calculation Enabled\r\n");
      }
-     else if (Vdp2Regs->CCCTL & 0x0400)
+     if (Vdp2Regs->CCCTL & 0x0400)
      {
         AddString(outstring, "Extended Color Calculation Enabled\r\n");
      }
@@ -1730,9 +1765,12 @@ void Vdp2DebugStatsGeneral(char *outstring, int *isenabled)
 
     // Latch stuff
     AddString(outstring, "Latches HV counter when %s\r\n", Vdp2Regs->EXTEN & 0x200 ? "external signal triggers it" : "external latch flag is read");
+    /* EXTEN bit 8 = EXSYEN (synchro externe autorisee) ; la presence du
+     * signal est TVSTAT bit 8 (EXSYFG). L'ancien libelle confondait les
+     * deux. */
     if (Vdp2Regs->EXTEN & 0x100)
     {
-       AddString(outstring, "External Sync is being inputed\r\n");
+       AddString(outstring, "External Sync enabled%s\r\n", (Vdp2Regs->TVSTAT & 0x100) ? " (signal present)" : "");
     }
 
     // Screen status stuff
@@ -1765,14 +1803,9 @@ void Vdp2DebugStatsGeneral(char *outstring, int *isenabled)
     AddString(outstring, "-----------------------\r\n");
     AddString(outstring, "Mode = %s\r\n", Vdp2Regs->LCTA.part.U & 0x8000 ? "Color per line" : "Single color");
     AddString(outstring, "Address = %08lX\r\n", 0x05E00000UL | ((Vdp2Regs->LCTA.all & 0x7FFFFUL) * 2));
-    if ((Vdp2Regs->CCCTL & 0x200) == 0) {
-      if (Vdp2Regs->CCCTL & 0x0020)
-      {
-        AddString(outstring, "Color Calculation Enabled\r\n");
-      }
-    } else {
-       AddString(outstring, "Color calculation per second screen\r\n");
-    }
+    /* LCCCEN = CCCTL bit 5 ; CCRTMD (bit 9) ne change que l'origine du
+     * taux, pas l'activation, qui n'etait plus affichee des qu'il valait 1. */
+    AddString(outstring, "Color Calculation %s\r\n", (Vdp2Regs->CCCTL & 0x0020) ? "Enabled" : "Disabled");
     {
       u16 calcratio = Vdp2Regs->CCRLB & 0x1F;
       AddString(outstring, "Color Calculation Ratio = %d:%d\r\n", 31 - calcratio, 1 + calcratio);
@@ -1835,6 +1868,434 @@ pixel_t *Vdp2DebugTexture(u32 screen, int * w, int * h)
    pixel_t * bitmap = VIDCore->getVdp2ScreenExtract(screen, w, h);
 
    return bitmap;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//  Vdp2DebugPixelSource -- index de couleur d'un pixel du VDP2 Viewer
+//
+//  Voir vdp2debug.h. Le decodage suit les memes regles que le renderer
+//  (vidshared.[ch] : CalcPlaneAddr/ReadPatternData, vidcs.c :
+//  Vdp2PatternAddrPos, Vdp2GenLineinfo, decodeurs de sprite de
+//  common_glshader.c), elles-memes tirees de ST-058-R2. Deux differences
+//  voulues avec le chemin bitmap/zoom du renderer :
+//    - les fractions de scroll (SCXDNx/SCYDNx) et de line scroll (bits 15-8)
+//      sont conservees, alors que vidcs.c ne garde que la partie entiere ;
+//    - l'index est toujours replie sur la taille de la CRAM (11 ou 10 bits).
+//  Le VDP2 Viewer compare ensuite la couleur CRAM obtenue a celle affichee
+//  et signale tout ecart : un ecart designe soit l'une de ces differences,
+//  soit une CRAM modifiee en cours de trame, soit un defaut du renderer.
+//////////////////////////////////////////////////////////////////////////////
+
+static INLINE u8 PixDbgByte(u32 addr)  { return T1ReadByte(Vdp2Ram, addr & 0x7FFFF); }
+static INLINE u16 PixDbgWord(u32 addr) { return T1ReadWord(Vdp2Ram, addr & 0x7FFFE); }
+static INLINE u32 PixDbgLong(u32 addr)
+{
+   return ((u32)PixDbgWord(addr) << 16) | PixDbgWord(addr + 2);
+}
+
+static INLINE int PixDbgCramWrap(const Vdp2 *regs, int idx)
+{
+   /* RAMCTL.CRMD = 2 : 1024 entrees de 32 bits ; sinon 2048 de 16 bits
+    * (meme repli que Vdp2CramIndexWrap, vidcs.c). */
+   return (((regs->RAMCTL >> 12) & 3) == 2) ? (idx & 0x3FF) : (idx & 0x7FF);
+}
+
+static void PixDbgNote(vdp2debugpixel_struct *out, const char *txt)
+{
+   size_t len = strlen(out->note);
+   if (len + strlen(txt) + 3 >= sizeof(out->note)) return;
+   if (len) { strcat(out->note, "; "); }
+   strcat(out->note, txt);
+}
+
+/* Registres en vigueur sur la ligne d'affichage y (instantane H-blank). */
+static const Vdp2 *PixDbgRegsForLine(int y, int ilace)
+{
+   int fl = y >> ilace;
+   if (fl < 0) fl = 0;
+   if (fl >= VDP2_LINE_SNAPSHOT_MAX) return Vdp2Regs;
+   return &Vdp2Lines[fl];
+}
+
+/* Lit un point de 'colornumber' a l'index lineaire 'pos' (en points) depuis
+ * 'base'. Retourne l'adresse lue dans *addr. */
+static u32 PixDbgReadDot(u32 base, u32 pos, int colornumber, u32 *addr)
+{
+   switch (colornumber)
+   {
+      case 0: /* 16 couleurs : 2 points par octet, pair = quartet haut */
+         *addr = base + (pos >> 1);
+         return (pos & 1) ? (PixDbgByte(*addr) & 0xF) : (PixDbgByte(*addr) >> 4);
+      case 1: /* 256 couleurs */
+         *addr = base + pos;
+         return PixDbgByte(*addr);
+      case 2: /* 2048 couleurs (11 bits utiles) */
+      case 3: /* RGB 32K */
+         *addr = base + pos * 2;
+         return PixDbgWord(*addr);
+      default: /* RGB 16M */
+         *addr = base + pos * 4;
+         return PixDbgLong(*addr);
+   }
+}
+
+static int PixDbgNBG(int n, int x, int y, vdp2debugpixel_struct *out)
+{
+   const int ilace = (((Vdp2Regs->TVMD >> 6) & 3) == 3) ? 1 : 0;
+   const Vdp2 *R = PixDbgRegsForLine(y, ilace);
+   int colornumber, isbitmap, bmsz = 0, chsz, plsz = 0, tpon;
+   u16 pnc = 0, mpab = 0, mpcd = 0;
+   u32 mapofs, coloroffset, bmppal = 0;
+   u32 u, v;
+
+   /* Mosaique (MZCTL bits 3-0 = N0..N3) : le point affiche est celui du
+    * coin haut-gauche du bloc. */
+   if (R->MZCTL & (1 << n))
+   {
+      int mzx = ((R->MZCTL >> 8) & 0xF) + 1;
+      int mzy = ((R->MZCTL >> 12) & 0xF) + 1;
+      x -= x % mzx;
+      y -= y % mzy;
+      R = PixDbgRegsForLine(y, ilace);
+      PixDbgNote(out, "mosaique appliquee");
+   }
+
+   switch (n)
+   {
+      case 0:
+         colornumber = (R->CHCTLA >> 4) & 0x7;
+         isbitmap    = (R->CHCTLA >> 1) & 0x1;
+         bmsz        = (R->CHCTLA >> 2) & 0x3;
+         chsz        =  R->CHCTLA & 0x1;
+         pnc = R->PNCN0; plsz = R->PLSZ & 0x3;
+         mpab = R->MPABN0; mpcd = R->MPCDN0;
+         mapofs = R->MPOFN & 0x7;
+         coloroffset = (R->CRAOFA & 0x7) << 8;
+         bmppal = R->BMPNA & 0x7;
+         tpon = (R->BGON >> 8) & 1;
+         break;
+      case 1:
+         colornumber = (R->CHCTLA >> 12) & 0x3;
+         isbitmap    = (R->CHCTLA >> 9) & 0x1;
+         bmsz        = (R->CHCTLA >> 10) & 0x3;
+         chsz        = (R->CHCTLA >> 8) & 0x1;
+         pnc = R->PNCN1; plsz = (R->PLSZ >> 2) & 0x3;
+         mpab = R->MPABN1; mpcd = R->MPCDN1;
+         mapofs = (R->MPOFN >> 4) & 0x7;
+         coloroffset = ((R->CRAOFA >> 4) & 0x7) << 8;
+         bmppal = (R->BMPNA >> 8) & 0x7;
+         tpon = (R->BGON >> 9) & 1;
+         break;
+      case 2:
+         colornumber = (R->CHCTLB >> 1) & 0x1;
+         isbitmap = 0;
+         chsz = R->CHCTLB & 0x1;
+         pnc = R->PNCN2; plsz = (R->PLSZ >> 4) & 0x3;
+         mpab = R->MPABN2; mpcd = R->MPCDN2;
+         mapofs = (R->MPOFN >> 8) & 0x7;
+         coloroffset = ((R->CRAOFA >> 8) & 0x7) << 8;
+         tpon = (R->BGON >> 10) & 1;
+         break;
+      default:
+         colornumber = (R->CHCTLB >> 5) & 0x1;
+         isbitmap = 0;
+         chsz = (R->CHCTLB >> 4) & 0x1;
+         pnc = R->PNCN3; plsz = (R->PLSZ >> 6) & 0x3;
+         mpab = R->MPABN3; mpcd = R->MPCDN3;
+         mapofs = (R->MPOFN >> 12) & 0x7;
+         coloroffset = ((R->CRAOFA >> 12) & 0x7) << 8;
+         tpon = (R->BGON >> 11) & 1;
+         break;
+   }
+
+   if (colornumber > 4) { strcpy(out->note, "nombre de couleurs reserve (CHCTLA)"); return 0; }
+
+   out->colornumber = colornumber;
+   out->isbitmap = isbitmap;
+   out->coloroffset = coloroffset;
+
+   /* ---- Coordonnees dans l'ecran de scroll, en virgule fixe 8 bits ---- */
+   if (n <= 1)
+   {
+      const u16 scrctl = (n == 0) ? (R->SCRCTL & 0x3F) : ((R->SCRCTL >> 8) & 0x3F);
+      const u32 scx8 = ((u32)((n == 0) ? R->SCXIN0 : R->SCXIN1) & 0x7FF) << 8
+                     | (((n == 0) ? R->SCXDN0 : R->SCXDN1) >> 8);
+      const u32 scy8 = ((u32)((n == 0) ? R->SCYIN0 : R->SCYIN1) & 0x7FF) << 8
+                     | (((n == 0) ? R->SCYDN0 : R->SCYDN1) >> 8);
+      u32 zx8 = (n == 0) ? (((R->ZMXN0.part.I & 7) << 8) | (R->ZMXN0.part.D >> 8))
+                         : (((R->ZMXN1.part.I & 7) << 8) | (R->ZMXN1.part.D >> 8));
+      const u32 zy8 = (n == 0) ? (((R->ZMYN0.part.I & 7) << 8) | (R->ZMYN0.part.D >> 8))
+                               : (((R->ZMYN1.part.I & 7) << 8) | (R->ZMYN1.part.D >> 8));
+      u32 lsx8 = 0, lsy8 = 0;
+      int lscx = (scrctl >> 1) & 1, lscy = (scrctl >> 2) & 1, lzmx = (scrctl >> 3) & 1;
+      int b = y;
+
+      if (lscx || lscy || lzmx)
+      {
+         /* Intervalle 2^LSS, double en single-density interlace (LSMD=2),
+          * comme ReadLineScrollData (vidshared.h). La table est lue au debut
+          * de chaque bloc et tenue sur le bloc (Vdp2GenLineinfo). */
+         int lineinc = 1 << ((scrctl >> 4) & 3);
+         int fl, sub, k = 0;
+         const u32 *snap;
+         if (((Vdp2Regs->TVMD >> 6) & 3) == 2) lineinc *= 2;
+         b = y - (y % lineinc);
+         fl = b >> ilace;
+         sub = ilace ? (b & 1) : 0;
+         if (fl >= VDP2_LINE_SNAPSHOT_MAX) fl = VDP2_LINE_SNAPSHOT_MAX - 1;
+         snap = (n == 1) ? line_scroll_data[fl].n1[sub] : line_scroll_data[fl].n0[sub];
+         /* Longwords tasses dans l'ordre SX, SY, SZ (seuls les actifs).
+          * SX/SY : entier bits 26-16, fraction bits 15-8.
+          * SZ    : entier bits 18-16, fraction bits 15-8. */
+         if (lscx) { lsx8 = (((snap[k] >> 16) & 0x7FF) << 8) | ((snap[k] >> 8) & 0xFF); k++; }
+         if (lscy) { lsy8 = (((snap[k] >> 16) & 0x7FF) << 8) | ((snap[k] >> 8) & 0xFF); k++; }
+         if (lzmx) { zx8  = (((snap[k] >> 16) & 0x7) << 8)   | ((snap[k] >> 8) & 0xFF); }
+      }
+
+      u = (scx8 + lsx8 + (u32)x * zx8) >> 8;
+      if (lscy) v = (scy8 + lsy8 + (u32)(y - b) * zy8) >> 8;
+      else      v = (scy8 + (u32)y * zy8) >> 8;
+
+      if (scrctl & 1) PixDbgNote(out, "vertical cell scroll actif : non pris en compte");
+   }
+   else
+   {
+      int fl = y >> ilace;
+      if (fl >= VDP2_LINE_SNAPSHOT_MAX) fl = VDP2_LINE_SNAPSHOT_MAX - 1;
+      u = (u32)((((n == 2) ? R->SCXN2 : R->SCXN3) & 0x7FF) + x);
+      v = (u32)(Vdp2Nbg23LineScrollY[n - 2][fl] + y);
+   }
+
+   /* ---- Lecture du point ---- */
+   if (isbitmap)
+   {
+      static const int bw[4] = { 512, 512, 1024, 1024 };
+      static const int bh[4] = { 256, 512, 256, 512 };
+      const u32 w = (u32)bw[bmsz], h = (u32)bh[bmsz];
+      const u32 base = mapofs * 0x20000;
+      u &= w - 1; v &= h - 1;
+      out->srcx = (int)u; out->srcy = (int)v;
+      out->charnum = -1;
+      out->dot = PixDbgReadDot(base, v * w + u, colornumber, &out->vramaddr);
+      if (colornumber <= 1) out->palette = (int)(bmppal << 4);
+   }
+   else
+   {
+      const int patternwh = chsz ? 2 : 1;
+      const int pnwords   = (pnc & 0x8000) ? 1 : 2;
+      const int auxmode   = (pnc >> 14) & 1;
+      const u32 supp      = pnc & 0x3FF;
+      int planew = 1, planeh = 1, pagewh, planeidx, ox, oy, k;
+      u32 pagebytes, mask, tmp, planeaddr, px, py, pnaddr, charaddr, cellbytes;
+      static const int bits[5] = { 4, 8, 16, 16, 32 };
+
+      if (plsz == 1) { planew = 2; }
+      else if (plsz == 3) { planew = planeh = 2; }
+      else if (plsz == 2) { PixDbgNote(out, "PLSZ=2 (reserve) traite comme 1x1"); }
+
+      /* Carte NBG = 2x2 plans (A B / C D). */
+      u &= (u32)(2 * planew * 512 - 1);
+      v &= (u32)(2 * planeh * 512 - 1);
+      out->srcx = (int)u; out->srcy = (int)v;
+      planeidx = (int)((v / (u32)(planeh * 512)) * 2 + (u / (u32)(planew * 512)));
+      switch (planeidx)
+      {
+         case 0:  tmp = mpab & 0xFF; break;
+         case 1:  tmp = mpab >> 8;   break;
+         case 2:  tmp = mpcd & 0xFF; break;
+         default: tmp = mpcd >> 8;   break;
+      }
+      tmp |= mapofs << 6;
+
+      /* Equivalent de CalcPlaneAddr (vidshared.h) : numero de page masque a
+       * la taille de la VRAM, bits bas ignores selon la taille du plan. */
+      pagewh = 64 / patternwh;
+      pagebytes = (u32)(pagewh * pagewh * pnwords * 2);
+      mask = 0x80000 / pagebytes - 1;
+      planeaddr = (((tmp & mask) >> (planew + planeh - 2)) * (u32)(planew * planeh)) * pagebytes;
+
+      px = u % (u32)(planew * 512);
+      py = v % (u32)(planeh * 512);
+      pnaddr = planeaddr
+             + (((py / 512) * (u32)planew + (px / 512)) * (u32)(pagewh * pagewh)
+                + ((py % 512) / (u32)(8 * patternwh)) * (u32)pagewh
+                + ((px % 512) / (u32)(8 * patternwh))) * (u32)(pnwords * 2);
+      out->pnaddr = pnaddr & 0x7FFFF;
+
+      /* Decodage du pattern name : meme logique que Vdp2PatternAddrPos. */
+      if (pnwords == 1)
+      {
+         u16 pn = PixDbgWord(pnaddr);
+         out->pndata = pn;
+         out->palette = (colornumber == 0)
+            ? (int)(((pn & 0xF000) >> 12) | ((supp & 0xE0) >> 1))
+            : (int)((pn & 0x7000) >> 8);
+         if (auxmode == 0)
+         {
+            out->flip = (pn & 0xC00) >> 10;
+            charaddr = (patternwh == 1)
+               ? ((pn & 0x3FF) | ((supp & 0x1F) << 10))
+               : (((pn & 0x3FF) << 2) | (supp & 0x3) | ((supp & 0x1C) << 10));
+         }
+         else
+         {
+            out->flip = 0;
+            charaddr = (patternwh == 1)
+               ? ((pn & 0xFFF) | ((supp & 0x1C) << 10))
+               : (((pn & 0xFFF) << 2) | (supp & 0x3) | ((supp & 0x10) << 10));
+         }
+      }
+      else
+      {
+         u16 pn1 = PixDbgWord(pnaddr), pn2 = PixDbgWord(pnaddr + 2);
+         out->pndata = ((u32)pn1 << 16) | pn2;
+         charaddr = pn2 & 0x7FFF;
+         out->flip = (pn1 & 0xC000) >> 14;
+         out->palette = (colornumber == 0) ? (int)(pn1 & 0x7F) : (int)(pn1 & 0x70);
+      }
+      if (!(R->VRSIZE & 0x8000)) charaddr &= 0x3FFF;
+      out->charnum = (int)charaddr;
+      if (colornumber >= 2) out->palette = -1;
+
+      /* Point dans le motif (1x1 ou 2x2 cellules, retournement global),
+       * cellules d'un motif 2x2 dans l'ordre HG, HD, BG, BD. */
+      ox = (int)((px % 512) % (u32)(8 * patternwh));
+      oy = (int)((py % 512) % (u32)(8 * patternwh));
+      if (out->flip & 1) ox = 8 * patternwh - 1 - ox;
+      if (out->flip & 2) oy = 8 * patternwh - 1 - oy;
+      k = (oy >> 3) * patternwh + (ox >> 3);
+      cellbytes = (u32)(64 * bits[colornumber] / 8);
+      out->dot = PixDbgReadDot(charaddr * 0x20 + (u32)k * cellbytes,
+                               (u32)((oy & 7) * 8 + (ox & 7)), colornumber, &out->vramaddr);
+   }
+   out->vramaddr &= 0x7FFFF;
+
+   /* ---- Transparence et index CRAM ---- */
+   switch (colornumber)
+   {
+      case 0:
+      case 1:
+         out->transparent = (out->dot == 0) && !tpon;
+         if (!out->transparent)
+            out->cramindex = PixDbgCramWrap(R, (int)(coloroffset + (((u32)out->palette << 4) | out->dot)));
+         break;
+      case 2:
+         out->dot &= 0x7FF;
+         out->transparent = (out->dot == 0) && !tpon;
+         if (!out->transparent)
+            out->cramindex = PixDbgCramWrap(R, (int)(coloroffset + out->dot));
+         break;
+      case 3:
+         out->direct_rgb = 1; out->rgb = out->dot & 0xFFFF;
+         out->transparent = !(out->dot & 0x8000) && !tpon;
+         break;
+      default:
+         out->direct_rgb = 1; out->rgb = out->dot;
+         out->transparent = !(out->dot & 0x80000000) && !tpon;
+         break;
+   }
+
+   PixDbgNote(out, "VRAM lue en fin de trame");
+   out->valid = 1;
+   return 1;
+}
+
+static int PixDbgSprite(u32 word, vdp2debugpixel_struct *out)
+{
+   const Vdp2 *R = Vdp2Regs;
+   const int type = R->SPCTL & 0xF;
+   int pr = 0, cc = 0, prbits = 0, ccbits = 0;
+   u32 dc;
+
+   out->colornumber = -1;
+   out->spritetype = type;
+   out->dot = word;
+
+   if (word == 0) { out->transparent = 1; out->valid = 1; return 1; }
+   /* Types 8-F : seul l'octet bas est significatif (getCode_8_16). */
+   if (type >= 8) word &= 0xFF;
+
+   /* SPCLMD (bit 5) : mot a MSB=1 = RGB direct (types 0-7, mot 16 bits). */
+   if (type < 8 && (R->SPCTL & 0x20) && (word & 0x8000))
+   {
+      out->direct_rgb = 1;
+      out->rgb = word & 0x7FFF;
+      out->valid = 1;
+      return 1;
+   }
+
+   /* Champs PR / CC / DC par type : memes masques que les decodeurs
+    * Yglprg_vdp2_sprite_type_0..F (common_glshader.c). Les types 8-F ne
+    * portent que l'octet bas. */
+   switch (type)
+   {
+      case 0x0: pr = (word >> 14) & 3; cc = (word >> 11) & 7; dc = word & 0x7FF; prbits = 2; ccbits = 3; break;
+      case 0x1: pr = (word >> 13) & 7; cc = (word >> 11) & 3; dc = word & 0x7FF; prbits = 3; ccbits = 2; break;
+      case 0x2: pr = (word >> 14) & 1; cc = (word >> 11) & 7; dc = word & 0x7FF; prbits = 1; ccbits = 3; break;
+      case 0x3: pr = (word >> 13) & 3; cc = (word >> 11) & 3; dc = word & 0x7FF; prbits = 2; ccbits = 2; break;
+      case 0x4: pr = (word >> 13) & 3; cc = (word >> 10) & 7; dc = word & 0x3FF; prbits = 2; ccbits = 3; break;
+      case 0x5: pr = (word >> 12) & 7; cc = (word >> 11) & 1; dc = word & 0x7FF; prbits = 3; ccbits = 1; break;
+      case 0x6: pr = (word >> 12) & 7; cc = (word >> 10) & 3; dc = word & 0x3FF; prbits = 3; ccbits = 2; break;
+      case 0x7: pr = (word >> 12) & 7; cc = (word >>  9) & 7; dc = word & 0x1FF; prbits = 3; ccbits = 3; break;
+      case 0x8: pr = (word >> 7) & 1; dc = word & 0x7F; prbits = 1; break;
+      case 0x9: pr = (word >> 7) & 1; cc = (word >> 6) & 1; dc = word & 0x3F; prbits = 1; ccbits = 1; break;
+      case 0xA: pr = (word >> 6) & 3; dc = word & 0x3F; prbits = 2; break;
+      case 0xB: cc = (word >> 6) & 3; dc = word & 0x3F; ccbits = 2; break;
+      case 0xC: pr = (word >> 7) & 1; dc = word & 0xFF; prbits = 1; break;
+      case 0xD: pr = (word >> 7) & 1; cc = (word >> 6) & 1; dc = word & 0xFF; prbits = 1; ccbits = 1; break;
+      case 0xE: pr = (word >> 6) & 3; dc = word & 0xFF; prbits = 2; break;
+      default:  cc = (word >> 6) & 3; dc = word & 0xFF; ccbits = 2; break;
+   }
+   (void)prbits; (void)ccbits;
+
+   out->dot = dc;
+   out->sprprio = pr;
+   out->sprcc = cc;
+   {
+      const u16 pris[4] = { R->PRISA, R->PRISB, R->PRISC, R->PRISD };
+      const u16 ccrs[4] = { R->CCRSA, R->CCRSB, R->CCRSC, R->CCRSD };
+      out->sprprioval = (pris[(pr >> 1) & 3] >> ((pr & 1) * 8)) & 0x7;
+      out->sprccratio = (ccrs[(cc >> 1) & 3] >> ((cc & 1) * 8)) & 0x1F;
+   }
+   if (type < 8 && dc == 0x7FE) out->sprshadow = 1;
+
+   /* Decalage CRAOFB.SPCAOS (bits 6-4). */
+   out->coloroffset = ((R->CRAOFB >> 4) & 0x7) << 8;
+   out->cramindex = PixDbgCramWrap(R, (int)(out->coloroffset + dc));
+   out->palette = -1;
+   out->valid = 1;
+   return 1;
+}
+
+int Vdp2DebugPixelSource(u32 screen, int x, int y, u32 spriteword,
+                         vdp2debugpixel_struct *out)
+{
+   if (out == NULL) return 0;
+   memset(out, 0, sizeof(*out));
+   out->palette = -1;
+   out->cramindex = -1;
+   out->charnum = -1;
+   out->spritetype = -1;
+   out->sprprio = -1;
+   out->sprcc = -1;
+
+   if (Vdp2Regs == NULL || Vdp2Ram == NULL || x < 0 || y < 0)
+   {
+      strcpy(out->note, "VDP2 non initialise");
+      return 0;
+   }
+
+   switch (screen)
+   {
+      case NBG0: return PixDbgNBG(0, x, y, out);
+      case NBG1: return PixDbgNBG(1, x, y, out);
+      case NBG2: return PixDbgNBG(2, x, y, out);
+      case NBG3: return PixDbgNBG(3, x, y, out);
+      case SPRITE: return PixDbgSprite(spriteword & 0xFFFF, out);
+      default:
+         strcpy(out->note, "RBG : decodage par parametres de rotation non disponible");
+         return 0;
+   }
 }
 
 //////////////////////////////////////////////////////////////////////////////

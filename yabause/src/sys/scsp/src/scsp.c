@@ -334,7 +334,12 @@ struct Slot
 
 struct Scsp
 {
+   /* SOUS : anneau de 64 mots, deux generations de 32 sorties de slot
+      (ST-077-R2 p.45-46), parcouru d'une case par pas de slot. */
    u16 sound_stack[64];
+   /* position courante de l'anneau, avancee de 1 a chaque pas de slot
+      (32 fois par echantillon), voir op2 / op7 */
+   u32 sound_stack_pos;
    struct Slot slots[32];
 
    int debug_mode;
@@ -563,11 +568,6 @@ void op1(struct Slot * slot)
    slot->state.waveform_phase_value += (phase_increment + plfo_shifted);
 }
 
-int get_slot(struct Slot * slot, int mdsl)
-{
-   return (mdsl + slot->state.num) & 0x1f;
-}
-
 //address pointer calculation
 //modulation data read
 void op2(struct Slot * slot, struct Scsp * s)
@@ -578,21 +578,42 @@ void op2(struct Slot * slot, struct Scsp * s)
    if (slot_is_stopped(slot))
       return;
 
-   if (slot->regs.mdl)
+   /* Modulation FM, ST-077-R2 (registres SOUS / MDL / MDXSL / MDYSL p.46,
+      figures 4.28 a 4.31 p.53-57, equation 4.1 p.58, exemples p.60-64,
+      tableau 4.17 p.67).
+
+      SOUS est un anneau de 64 mots qui contient deux generations de sorties
+      de slot (generation A en 100600H, B en 100640H, un mot par slot). Le
+      slot k de l'echantillon t ecrit en (32 t + k) mod 64, six pas apres son
+      entree dans le pipeline (OP7, figure 4.31). MDXSL / MDYSL (6 bits) sont
+      relatifs au slot courant : il lit (32 t + k + MDSL) mod 64, ce qui donne
+      exactement l'equation 4.1 du manuel (de 1CH a 3BH : derniere generation,
+      sinon l'echantillon d'avant). Exemple du manuel pour une auto-
+      contre-reaction : 20H = dernier echantillon, 00H = echantillon d'avant.
+
+      Ce coeur utilisait une pile a places fixes indexee par
+      (slot + MDSL) & 0x1F (5 bits) : avec MDXSL = 20H et MDYSL = 00H, X et Y
+      lisaient tous deux l'echantillon d'avant, le cas que le manuel deconseille
+      p.60 parce qu'il fait osciller la contre-reaction ("oscillation may occur
+      as the same sample is input"). Il ne tenait pas compte non plus de
+      STWINH (voir op7). Resultat : un souffle a la place du son FM dans
+      l'intro de Taisen Tanto-R Sashissu (ST-V), slots SA = 04A80, LEA = 7F,
+      MDL = 10, MDXSL = 20H, MDYSL = 00H.
+
+      Calcul (p.54 et p.66-67) : ZD = XD / 2 + YD / 2 (les deux entrees sont
+      divisees par 2 avant l'addition) ; pour ZD maximal le decalage
+      d'adresse vaut 32 mots a MDL = 5 et double a chaque pas jusqu'a 32768 a
+      MDL = F (tableau 4.17), soit ZD >> (15 - MDL). MDL = 0 a 4 : pas de
+      modulation (tableau 4.15). */
+   if (slot->regs.mdl >= 5)
    {
-      //averaging operation
-      u32 x_sel = get_slot(slot, slot->regs.mdxsl);
-      u32 y_sel = get_slot(slot, slot->regs.mdysl);
-      s16 xd = s->sound_stack[x_sel];
-      s16 yd = s->sound_stack[y_sel];
+      const u32 x_sel = (s->sound_stack_pos - 1 + slot->regs.mdxsl) & 0x3f;
+      const u32 y_sel = (s->sound_stack_pos - 1 + slot->regs.mdysl) & 0x3f;
+      const s32 xd = (s16)s->sound_stack[x_sel];
+      const s32 yd = (s16)s->sound_stack[y_sel];
+      const s32 zd = (xd >> 1) + (yd >> 1);
 
-      s32 zd = (xd + yd) / 2;
-
-      //modulation operation
-      u16 shift = 0xf - (slot->regs.mdl);
-      zd >>= shift;
-
-      md_out = zd;
+      md_out = zd >> (15 - slot->regs.mdl);
    }
 
    //address pointer
@@ -924,11 +945,14 @@ void op6(struct Slot * slot)
 }
 
 //sound stack write
+// Ecriture dans l'anneau SOUS a la case du slot (position courante - 6 : le
+// slot ecrit ici est entre dans le pipeline six pas plus tot, figure 4.31),
+// voir op2. STWINH = 1 interdit cette ecriture (ST-077-R2 p.46) : la case
+// garde sa valeur precedente. Ce coeur l'ignorait.
 void op7(struct Slot * slot, struct Scsp*s)
 {
-   u32 previous = s->sound_stack[slot->state.num + 32];
-   s->sound_stack[slot->state.num + 32] = slot->state.output;
-   s->sound_stack[slot->state.num] = previous;
+   if (!slot->regs.si)
+      s->sound_stack[(s->sound_stack_pos - 6) & 0x3f] = slot->state.output;
 
    slot->state.sample_counter++;
    slot->state.lfo_counter++;
@@ -1645,13 +1669,17 @@ void generate_sample(struct Scsp * s, int rbp, int rbl, s16 * out_l, s16* out_r,
       int last_step = (step_num - 6) & 0x1f;
       int debug_muted = 0;
 
+      // op7 d'abord : un slot ecrit dans SOUS au meme pas que l'OP2 qui le
+      // lit doit etre visible (ST-077-R2 p.57 : jusqu'a 27 slots ecrits sont
+      // utilisables par le slot 0, limite 3BH de l'equation 4.1).
+      op7(&s->slots[(step_num - 6) & 0x1f],s);//sound stack write
       op1(&s->slots[step_num]);//phase, pitch lfo
       op2(&s->slots[(step_num - 1) & 0x1f],s);//address pointer, modulation data read
       op3(&s->slots[(step_num - 2) & 0x1f]);//waveform dram read
       op4(&s->slots[(step_num - 3) & 0x1f]);//interpolation, eg, amplitude lfo
       op5(&s->slots[(step_num - 4) & 0x1f]);//level calc 1
       op6(&s->slots[(step_num - 5) & 0x1f]);//level calc 2
-      op7(&s->slots[(step_num - 6) & 0x1f],s);//sound stack write
+      s->sound_stack_pos = (s->sound_stack_pos + 1) & 0x3f;
 
       if (s->debug_mode)
       {
@@ -5816,6 +5844,8 @@ if (IsM68KRunning != newM68state) {
 
   MemStateRead((void *)&new_scsp_cycles, 1, sizeof(u32), stream);
   MemStateRead((void *)new_scsp.sound_stack, 64, sizeof(u16), stream);
+  /* position de l'anneau SOUS non sauvegardee : repart alignee sur le pas 0 */
+  new_scsp.sound_stack_pos = 0;
   for (i = 0; i < 32; i++) {
     MemStateRead((void *)&new_scsp.slots[i].regs.kx, sizeof(u8), 1, stream);
     MemStateRead((void *)&new_scsp.slots[i].regs.kb, sizeof(u8),  1,stream);
@@ -6541,12 +6571,16 @@ ScspSlotDebugAudio (u32 *workbuf, s16 *buf, u32 len)
           break;
         }
 
+      // Positions de l'anneau SOUS que verrait ce slot dans generate_sample()
+      // (32 t + slot + 1 pour op2, + 6 pour op7), t = parite de l'echantillon
+      debug_preview_scsp.sound_stack_pos = (32 * (i & 1) + slot->state.num + 1) & 0x3f;
       op1(slot);
       op2(slot, &debug_preview_scsp);
       op3_lfsr(slot, &debug_preview_lfsr);
       op4(slot);
       op5(slot);
       op6(slot);
+      debug_preview_scsp.sound_stack_pos = (32 * (i & 1) + slot->state.num + 6) & 0x3f;
       op7(slot, &debug_preview_scsp);
 
       // The noise generator steps once per slot, 32 times per sample: a slot

@@ -22,6 +22,22 @@
 #include "../CommonDialogs.h"
 #include <QPushButton>
 
+namespace {
+
+// Each change of search type installs a new validator on the value field.
+// Since HexValidator now forwards its parent, every validator is owned by
+// the line edit, but the replaced ones stayed alive as its children until
+// the dialog closed. Delete the previous one as soon as it is replaced.
+void setValueValidator(QLineEdit *le, QValidator *v)
+{
+   const QValidator *old = le->validator();
+   le->setValidator(v);
+   if (old && old != v && old->parent() == le)
+      delete old;
+}
+
+}
+
 UIMemorySearch::UIMemorySearch( QWidget* p )
 	: QDialog( p )
 {
@@ -76,7 +92,9 @@ void UIMemorySearch::setParameters(int type, QString string, u32 startAddress, u
 void UIMemorySearch::adjustSearchValueQValidator()
 {
    // Figure out range
-   int min, max;
+   // 64-bit so that the 32-bit range fits: in an int, 0xFFFFFFFF became -1
+   // and the signed 32-bit bounds came out as min = 0, max = -1.
+   qint64 min, max;
 
    min = 0;
 
@@ -85,19 +103,19 @@ void UIMemorySearch::adjustSearchValueQValidator()
    switch (data)
    {
       case SEARCHHEX:
-         leValue->setValidator(new HexValidator(0x00000000, 0xFFFFFFFF, leValue));
+         setValueValidator(leValue, new HexValidator(0x00000000, 0xFFFFFFFF, leValue));
          leValue->setText("");
          break;
       case SEARCHSTRING:
-         leValue->setValidator(NULL);
+         setValueValidator(leValue, NULL);
          leValue->setText("");
          break;
       case SEARCHREL8BIT:
-         leValue->setValidator(new QRegExpValidator(QRegExp("([0-9a-fA-F]{1,2})(,\\s*[0-9a-fA-F]{1,2})*"), leValue));
+         setValueValidator(leValue, new QRegExpValidator(QRegExp("([0-9a-fA-F]{1,2})(,\\s*[0-9a-fA-F]{1,2})*"), leValue));
          leValue->setText("");
          break;
       case SEARCHREL16BIT:
-         leValue->setValidator(new QRegExpValidator(QRegExp("([0-9a-fA-F]{1,4})(,\\s*[0-9a-fA-F]{1,4})*"), leValue));
+         setValueValidator(leValue, new QRegExpValidator(QRegExp("([0-9a-fA-F]{1,4})(,\\s*[0-9a-fA-F]{1,4})*"), leValue));
          leValue->setText("");
          break;
       default: 
@@ -110,7 +128,7 @@ void UIMemorySearch::adjustSearchValueQValidator()
          else if (data == SEARCHWORD)
             max = 0xFFFF;
          else if (data == SEARCHLONG)
-            max = 0xFFFFFFFF;
+            max = 0xFFFFFFFFLL;
 			else
 				max = 0xFF;
 
@@ -123,12 +141,14 @@ void UIMemorySearch::adjustSearchValueQValidator()
          if (data == SEARCHLONG)
          {
             if (isSigned)
-               leValue->setValidator(new QRegExpValidator(QRegExp("-?\\d{1,10}"), leValue));
+               setValueValidator(leValue, new QRegExpValidator(QRegExp("-?\\d{1,10}"), leValue));
             else
-               leValue->setValidator(new QRegExpValidator(QRegExp("\\d{1,10}"), leValue));
+               setValueValidator(leValue, new QRegExpValidator(QRegExp("\\d{1,10}"), leValue));
          }
          else
-            leValue->setValidator(new QIntValidator(min, max, leValue));
+            // Only 8 and 16-bit values reach this point (32-bit ones use the
+            // regular expressions above), so both bounds fit in an int.
+            setValueValidator(leValue, new QIntValidator(static_cast<int>(min), static_cast<int>(max), leValue));
          leValue->setText("");
          break;
       }
@@ -143,8 +163,26 @@ void UIMemorySearch::on_leValue_textChanged( const QString & text )
 void UIMemorySearch::accept()
 {
    QString value = leValue->text();
-   u32 startAddress = leStartAddress->text().toUInt(0, 16);
-   u32 endAddress = leEndAddress->text().toUInt(0, 16);
+   // The hex validators accept an empty field, and toUInt() then returns 0:
+   // report the field that is wrong instead of a misleading range error.
+   bool startOk = false;
+   bool endOk = false;
+   u32 startAddress = leStartAddress->text().trimmed().toUInt(&startOk, 16);
+   u32 endAddress = leEndAddress->text().trimmed().toUInt(&endOk, 16);
+
+   if (!startOk)
+   {
+      CommonDialogs::error(QtYabause::translate("Invalid Start Address"), QtYabause::translate("Error"));
+      leStartAddress->setFocus();
+      return;
+   }
+
+   if (!endOk)
+   {
+      CommonDialogs::error(QtYabause::translate("Invalid End Address"), QtYabause::translate("Error"));
+      leEndAddress->setFocus();
+      return;
+   }
 
    if (startAddress >= endAddress)
    {

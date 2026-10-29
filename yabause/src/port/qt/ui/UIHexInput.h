@@ -29,12 +29,18 @@ class HexValidator : public QValidator
 private:
    unsigned int t, b;
 public:
-   explicit HexValidator(QObject *parent = 0);
-   HexValidator(unsigned int top, unsigned int bottom, QObject *parent = 0)
+   // The parent must reach QValidator: the line edit passed here then owns
+   // the validator and deletes it with itself. Without it every validator
+   // created with "new HexValidator(..., lineEdit)" was leaked.
+   // The one-argument constructor was declared but never defined; it now
+   // accepts the full 32-bit range.
+   explicit HexValidator(QObject *parent = 0)
+      : QValidator(parent), t(0x00000000), b(0xFFFFFFFF)
    {
-      //QValidator(parent);
-      t = top;
-      b = bottom;
+   }
+   HexValidator(unsigned int top, unsigned int bottom, QObject *parent = 0)
+      : QValidator(parent), t(top), b(bottom)
+   {
    }
    virtual void fixup(QString &input) const {
       input = input.toUpper();

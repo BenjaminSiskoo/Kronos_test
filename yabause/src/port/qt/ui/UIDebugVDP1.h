@@ -19,12 +19,16 @@
 #ifndef UIDEBUGVDP1_H
 #define UIDEBUGVDP1_H
 
+class QGraphicsPixmapItem;
+
 #include "ui_UIDebugVDP1.h"
 #include "../QtYabause.h"
 #include "UIYabause.h"
 #include <QImage>
+#include <QPixmap>
 #include <QBrush>
 #include <vector>
+#include <string>
 
 class QGraphicsView;
 class QGraphicsRectItem;
@@ -52,6 +56,10 @@ protected:
     // rgbSwapped), pour que l'inspecteur de pixel (survol de gvTexture)
     // lise exactement ce qui est visible sans reconvertir le buffer brut.
     QImage currentTextureImage;
+    // Element pixmap de la texture dans la scene de gvTexture : la case
+    // Opaque remplace son image sans reconstruire la scene (zoom conserve).
+    QGraphicsPixmapItem *mTexPixItem = nullptr;
+    QPixmap texturePixmap() const;
 
     // Adresse VRAM de chaque entrée de la liste, relevée en un seul parcours
     // de la table (Vdp1DebugGetCommandList). Le nom, le détail, la texture et
@@ -79,6 +87,12 @@ protected:
     QImage mFrameImage;
     std::vector<int> mFrameBoxes; // 4 entiers par commande : x0 y0 x1 y1
 
+    // Graphe de charge VDP1 (Vdp1LoadGraph, défini dans UIDebugVDP1.cpp) et
+    // texte des commandes les plus coûteuses, calculé par fillCommandList et
+    // affiché par updateVdp1Registers.
+    QWidget *mLoadGraph = nullptr;
+    std::string mTopCostText;
+
     void fillCommandList();
     void updateVdp1Registers();
     void syncOnVdp1Entry(int cursel);
@@ -98,6 +112,7 @@ protected slots:
     void on_pbSaveRawSprite_clicked();
     void on_pbNextButton_clicked();
     void on_pbResetZoom_clicked();
+    void on_cbOpaque_toggled(bool checked);
     void on_lwCommandRaw_itemSelectionChanged();
     void on_lwCommandList_itemSelectionChanged();
     void on_pbExportDebugInfo_clicked();

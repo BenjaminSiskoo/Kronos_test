@@ -13,12 +13,20 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
 #include <cmath>
+#include <QHeaderView>
+#include <QMap>
+#include <QPainter>
+#include <QPixmap>
+#include <QScrollBar>
+#include <QTreeWidget>
+#include <QGraphicsSimpleTextItem>
 
 extern "C" {
 #include "vdp1.h"
@@ -102,14 +110,219 @@ static QColor cramColor(int idx) {
     }
 }
 
+// Mot brut d'une entree CRAM : 16 bits en mode 0/1, 32 bits (MSW:LSW) en
+// mode 2. Meme adressage que cramColor().
+static u32 cramRaw(int idx) {
+    if (!Vdp2ColorRam || !Vdp2Regs) return 0;
+    if (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1)
+        return T2ReadWord(Vdp2ColorRam, (u32)(idx * 2) & 0xFFF);
+    const u32 addr = (u32)(idx * 4) & 0xFFC;
+    return ((u32)T2ReadWord(Vdp2ColorRam, addr) << 16) | T2ReadWord(Vdp2ColorRam, addr + 2);
+}
+
+// Nombre d'entrees affichees par updateColorRam().
+static int cramEntries() {
+    if (!Vdp2Regs) return 0;
+    return (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1) ? 2048 : 1024;
+}
+
+// Partie couleur d'un mot CRAM, sans le bit MSB (bit 15 en mode 0/1,
+// bit 31 en mode 2) qui sert au calcul de couleur special et non a la
+// couleur : deux entrees qui ne different que par ce bit affichent la meme
+// couleur.
+static u32 cramColorBits(u32 raw) {
+    if (!Vdp2Regs) return raw;
+    return (((Vdp2Regs->RAMCTL >> 12) & 3) <= 1) ? (raw & 0x7FFF) : (raw & 0xFFFFFF);
+}
+
+// Geometrie des cases de l'onglet Color RAM (updateColorRam / cramIndexAt).
+static const int CRAM_SW = 10, CRAM_SH = 10, CRAM_COLS = 64;
+
+// Numero de palette et rang dans la palette, pour un index CRAM donne.
+// Les palettes 16 et 256 couleurs sont alignees sur leur taille dans la CRAM
+// (index = palette * taille + couleur), le decalage CRAOFx y compris.
+static QString paletteText(int colornumber, int idx) {
+    switch (colornumber) {
+        case 0:  return QtYabause::translate("16c palette %1, color %2").arg(idx >> 4).arg(idx & 0xF);
+        case 1:  return QtYabause::translate("256c palette %1, color %2").arg(idx >> 8).arg(idx & 0xFF);
+        case 2:  return QtYabause::translate("2048c (no palette), color %1").arg(idx);
+        default: return QtYabause::translate("16c palette %1 color %2 / 256c palette %3 color %4")
+                     .arg(idx >> 4).arg(idx & 0xF).arg(idx >> 8).arg(idx & 0xFF);
+    }
+}
+
+// Hexadecimal majuscule sur 'w' chiffres minimum (prefixe 0x non inclus).
+static QString hexs(u32 v, int w) {
+    return QString("%1").arg(v, w, 16, QChar('0')).toUpper();
+}
+
+// Texte secondaire qui suit le theme (clair ou sombre), comme dimColor()
+// de UIDebugSCSPChan.
+static QColor mixDim(const QPalette &pal)
+{
+    const QColor a = pal.color(QPalette::WindowText), b = pal.color(QPalette::Window);
+    return QColor((int)(a.red() * 0.6 + b.red() * 0.4), (int)(a.green() * 0.6 + b.green() * 0.4),
+                  (int)(a.blue() * 0.6 + b.blue() * 0.4));
+}
+
+// ============================================================
+//  Geometrie de la grille Color RAM. 64 cases par rangee ; un espace
+//  supplementaire toutes les 16 colonnes (palette 16 couleurs) et toutes
+//  les 4 rangees (palette 256 couleurs = 256 entrees), pour lire les
+//  palettes d'un coup d'oeil. A gauche : etiquette de la zone CRAOF des
+//  couches actives puis index de la rangee ; en haut : colonnes.
+// ============================================================
+namespace {
+const int CRAM_TAGW = 26;                    // etiquettes N0/N1/.../SPR
+const int CRAM_LBLW = 30;                    // index de rangee
+const int CRAM_LM = CRAM_TAGW + CRAM_LBLW;   // marge gauche
+const int CRAM_TM = 12;                      // marge haute
+const int CRAM_PITCH = CRAM_SW + 1;          // case + espace
+const int CRAM_GGAP = 3;                     // espace entre palettes
+inline double cramCellX(int col) { return CRAM_LM + col * CRAM_PITCH + (col / 16) * CRAM_GGAP; }
+inline double cramCellY(int row) { return CRAM_TM + row * CRAM_PITCH + (row / 4) * CRAM_GGAP; }
+}
+
+// Couches actives dont la zone CRAOF commence au bloc de 256 entrees 'block'.
+// CRAOFA : N0 bits 2-0, N1 6-4, N2 10-8, N3 14-12 ; CRAOFB : R0 bits 2-0,
+// SPR 6-4 (ST-058-R2 1800E4H/E6H). RBG1 utilise le decalage de NBG0.
+static QStringList cramLayersAtBlock(int block)
+{
+    QStringList out;
+    if (!Vdp2Regs) return out;
+    const Vdp2 *r = Vdp2Regs;
+    const int mode2 = (((r->RAMCTL >> 12) & 3) == 2);
+    struct { const char *n; int on; int ofs; } l[] = {
+        { "N0", r->BGON & 0x01, r->CRAOFA & 7 },        { "N1", r->BGON & 0x02, (r->CRAOFA >> 4) & 7 },
+        { "N2", r->BGON & 0x04, (r->CRAOFA >> 8) & 7 }, { "N3", r->BGON & 0x08, (r->CRAOFA >> 12) & 7 },
+        { "R0", r->BGON & 0x10, r->CRAOFB & 7 },        { "R1", r->BGON & 0x20, r->CRAOFA & 7 },
+        { "SPR", 1, (r->CRAOFB >> 4) & 7 }
+    };
+    for (size_t i = 0; i < sizeof(l) / sizeof(l[0]); i++)
+        if (l[i].on && (mode2 ? (l[i].ofs & 3) : l[i].ofs) == block)
+            out << QString::fromLatin1(l[i].n);
+    return out;
+}
+
+// ============================================================
+//  Arbre groupe des textes Vdp2DebugStatsXXX() (onglet Debug du viewer et
+//  fenetre UIDebugVDP2). Le texte est plat, une information par ligne
+//  ("Libelle = valeur") ; on le range par theme, comme groupForSlotLabel()
+//  du debogueur SCSP. L'ordre des regles compte : "Line Color..." doit
+//  tomber dans Couleur avant que "Line " ne l'envoie dans Scroll.
+// ============================================================
+static QString statsGroupForLabel(const QString &l)
+{
+    struct Rule { const char *group; const char *prefixes[16]; };
+    static const Rule rules[] = {
+        { "Warnings",   { "***", 0 } },
+        { "Color",      { "Line Color", "Color", "Gradation", "Extended", "Special Color Calculation",
+                          "Ratio", "R = ", "Transparent Shadow", "Sprite Gradation", 0 } },
+        { "Priority",   { "Priority", "Special Priority Mode", 0 } },
+        { "Format",     { "4-bit", "8-bit", "16-bit", "32-bit", "Unsupported", "Bitmap", "Tile(", "Mosaic", 0 } },
+        { "Map",        { "Plane", "Pattern Name", "Character Number", "Special Priority bit",
+                          "Supplementary", 0 } },
+        { "Scroll & zoom", { "Screen Scroll", "Coordinate inc", "Zoom factor", "Horizontal Reduction",
+                          "Line Zoom", "Line Scroll", "Vertical Cell", 0 } },
+        { "Rotation",   { "Using Parameter", "Parameter", "Coefficient", "Rotation", "Read ", 0 } },
+        { "Windows",    { "Using Window", "Using Sprite Window", "Horizontal start", "Vertical start",
+                          "Horizontal end", "Vertical end", "Valid area", "Window", "Line Window",
+                          "Line Table", 0 } },
+        { "Sprite",     { "Sprite", "Screen Mode", "VDP1", "Erased", "Erase", "Prohibited", "Invalid", 0 } },
+    };
+    const QString t = l.trimmed();
+    for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); r++)
+        for (int k = 0; rules[r].prefixes[k]; k++)
+            if (t.startsWith(QString::fromLatin1(rules[r].prefixes[k])))
+                return QtYabause::translate(QString::fromLatin1(rules[r].group));
+    return QtYabause::translate("Other");
+}
+
+// Coupe "Libelle = valeur" ou "Libelle: valeur" ;
+// "Screen Scroll x = 1, y = 2" devient "Screen Scroll" / "x 1, y 2".
+static void statsSplitLine(const QString &line, QString *label, QString *value)
+{
+    const QString t = line.trimmed();
+    int p = t.indexOf(QLatin1String(" = "));
+    int len = 3;
+    if (p < 0) { p = t.indexOf(QLatin1String(": ")); len = 2; }
+    if (p > 0) { *label = t.left(p); *value = t.mid(p + len).trimmed(); }
+    else       { *label = t; value->clear(); }
+    if (label->endsWith(QLatin1String(" x")) && value->contains(QLatin1String(", y = ")))
+    {
+        label->chop(2);
+        *value = QLatin1String("x ") + value->replace(QLatin1String(", y = "), QLatin1String(", y "));
+    }
+}
+
+void Vdp2FillStatsTree(QTreeWidget *tree, QTreeWidgetItem *parent, const QString &rawText, bool general)
+{
+    const QColor warnCol(229, 72, 77);
+    QFont mono(QString::fromLatin1("Courier New"));
+    mono.setStyleHint(QFont::Monospace);
+
+    const QString text = QString(rawText).remove(QLatin1Char('\r'));
+    QMap<QString, QTreeWidgetItem *> groups;
+    QStringList order;
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QString section;   // Vdp2DebugStatsGeneral : "Titre" suivi de "-----"
+    for (int k = 0; k < lines.size(); k++)
+    {
+        const QString line = lines[k];
+        if (line.trimmed().startsWith(QLatin1String("---"))) continue;
+        if (general && k + 1 < lines.size() && lines[k + 1].trimmed().startsWith(QLatin1String("---")))
+        {
+            section = line.trimmed();
+            continue;
+        }
+        QString label, value;
+        statsSplitLine(line, &label, &value);
+        const bool warn = label.startsWith(QLatin1String("***"));
+        QString g = general ? (section.isEmpty() ? QtYabause::translate("Display") : section)
+                            : statsGroupForLabel(label);
+        if (warn) g = QtYabause::translate("Warnings");
+        if (!groups.contains(g))
+        {
+            QTreeWidgetItem *gi = new QTreeWidgetItem();
+            gi->setText(0, g);
+            QFont f = gi->font(0); f.setBold(true); gi->setFont(0, f);
+            gi->setForeground(0, warn ? warnCol : tree->palette().color(QPalette::Highlight));
+            gi->setFirstColumnSpanned(true);
+            gi->setFlags(Qt::ItemIsEnabled);
+            groups.insert(g, gi);
+            if (warn) order.prepend(g); else order.append(g);
+        }
+        QTreeWidgetItem *it = new QTreeWidgetItem(groups[g]);
+        if (warn) label = label.mid(3).remove(QLatin1String("***")).trimmed();
+        it->setText(0, label);
+        it->setText(1, value);
+        it->setToolTip(0, line.trimmed());
+        it->setToolTip(1, value);
+        if (warn)
+        {
+            it->setForeground(0, warnCol);
+            QFont f = it->font(0); f.setBold(true); it->setFont(0, f);
+        }
+        if (!value.isEmpty() && (value.at(0).isDigit() || value.at(0) == QLatin1Char('-')))
+            it->setFont(1, mono);
+    }
+    for (int k = 0; k < order.size(); k++)
+    {
+        if (parent) parent->addChild(groups[order[k]]);
+        else        tree->addTopLevelItem(groups[order[k]]);
+        groups[order[k]]->setExpanded(true);
+    }
+}
+
+
 // ============================================================
 //  updateVdp2Registers  (raw + decoded)
 // ============================================================
 void UIDebugVDP2Viewer::updateVdp2Registers()
 {
     if (!Vdp2Regs) {
-        pteRawRegs->setPlainText(QtYabause::translate("VDP2 not initialised."));
-        pteDecodedRegs->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        mRawRegsText = mDecRegsText = QtYabause::translate("VDP2 not initialised.");
+        applyRegFilter();
         return;
     }
     const Vdp2 &r = *Vdp2Regs;
@@ -193,7 +406,7 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
     R(0x25F80118,"COAB",  r.COAB);   R(0x25F8011A,"COBR",  r.COBR);
     R(0x25F8011C,"COBG",  r.COBG);   R(0x25F8011E,"COBB",  r.COBB);
 #undef R
-    pteRawRegs->setPlainText(QString::fromStdString(raw.str()));
+    mRawRegsText = QString::fromStdString(raw.str());
 
     /* ---- DECODED pane ---- */
     auto s9=[](u16 v)->int{int x=v&0x1FF;if(x&0x100)x-=0x200;return x;};
@@ -650,7 +863,8 @@ void UIDebugVDP2Viewer::updateVdp2Registers()
         bool useB=(r.CLOFSL>>i)&1;
         d<<"  "<<op[i]<<": bank"<<(useB?"B":"A")<<" R="<<DEC(s9(useB?r.COBR:r.COAR))<<" G="<<DEC(s9(useB?r.COBG:r.COAG))<<" B="<<DEC(s9(useB?r.COBB:r.COAB))<<"\n";}}
 
-    pteDecodedRegs->setPlainText(QString::fromStdString(d.str()));
+    mDecRegsText = QString::fromStdString(d.str());
+    applyRegFilter();
 }
 
 // ============================================================
@@ -682,11 +896,18 @@ void UIDebugVDP2Viewer::wheelEvent(QWheelEvent *event)
 
 
 // ============================================================
-//  updateStats  — aggregate the 8 VDP2 debug text functions
+//  updateStats -- onglet Debug : arbre groupe (une branche par couche
+//  active, plus Sprite et General) et le meme texte brut (case "Plain
+//  text", utilise aussi par l'export). L'arbre n'est reconstruit que si le
+//  texte change ; les branches repliees le restent.
 // ============================================================
 void UIDebugVDP2Viewer::updateStats()
 {
-    if (!Vdp2Regs) { pteStats->setPlainText(QtYabause::translate("VDP2 not initialised.")); return; }
+    if (!Vdp2Regs) {
+        pteStats->setPlainText(QtYabause::translate("VDP2 not initialised."));
+        twStats->clear();
+        return;
+    }
     std::ostringstream out;
     struct Layer { const char *name; void (*fn)(char*,int*); };
     static Layer layers[] = {
@@ -699,19 +920,52 @@ void UIDebugVDP2Viewer::updateStats()
         {"SPRITE",  Vdp2DebugStatsSprite},
         {"GENERAL", Vdp2DebugStatsGeneral},
     };
+    QStringList names, texts;
     for (auto &l : layers) {
-        char buf[4096] = {};
+        char buf[VDP2_DEBUG_STRING_SIZE] = {};
         int en = 0;
         l.fn(buf, &en);
         if (en || l.fn == Vdp2DebugStatsSprite || l.fn == Vdp2DebugStatsGeneral) {
             out << "========== " << l.name << " ==========\n" << buf << "\n";
+            names << QString::fromLatin1(l.name);
+            texts << QString::fromUtf8(buf);
         }
     }
-    pteStats->setPlainText(QString::fromStdString(out.str()));
+    const QString all = QString::fromStdString(out.str());
+    if (all == pteStats->toPlainText() && twStats->topLevelItemCount() > 0) return;
+    pteStats->setPlainText(all);
+
+    QStringList collapsed;
+    for (int i = 0; i < twStats->topLevelItemCount(); i++)
+        if (!twStats->topLevelItem(i)->isExpanded()) collapsed << twStats->topLevelItem(i)->text(0);
+    const int scroll = twStats->verticalScrollBar()->value();
+
+    twStats->setUpdatesEnabled(false);
+    twStats->clear();
+    for (int i = 0; i < names.size(); i++) {
+        QTreeWidgetItem *top = new QTreeWidgetItem(twStats);
+        top->setText(0, names[i]);
+        QFont f = top->font(0); f.setBold(true); f.setPointSizeF(f.pointSizeF() * 1.15); top->setFont(0, f);
+        top->setFirstColumnSpanned(true);
+        if (texts[i].contains(QLatin1String("***")))
+            top->setForeground(0, QColor(229, 72, 77));
+        Vdp2FillStatsTree(twStats, top, texts[i], names[i] == QLatin1String("GENERAL"));
+        top->setExpanded(!collapsed.contains(names[i]));
+    }
+    twStats->setUpdatesEnabled(true);
+    twStats->verticalScrollBar()->setValue(scroll);
 }
 
 // ============================================================
-//  updateColorRam  — draw all Color RAM palette swatches
+//  updateColorRam -- onglet Color RAM.
+//   - grille de 64 cases par rangee, espacee par palette 16 (colonnes) et
+//     par palette 256 (groupes de 4 rangees), index de rangee a gauche ;
+//   - a gauche des blocs de 256 entrees : les couches actives dont la zone
+//     CRAOF commence la (N0..N3, R0, R1, SPR) ;
+//   - triangle dans le coin de la couleur 0 de chaque palette 16 (gris) et
+//     256 (magenta) : code de point transparent si TPON=0 ;
+//   - selection : cadre blanc ; meme couleur : pointilles jaunes ;
+//   - panneau lateral : voir showCramEntry().
 // ============================================================
 void UIDebugVDP2Viewer::updateColorRam()
 {
@@ -719,49 +973,91 @@ void UIDebugVDP2Viewer::updateColorRam()
     if (!scene) { scene = new QGraphicsScene(this); gvColorRam->setScene(scene); }
     scene->clear();
     pteColorRamHex->clear();
+    const bool showHex = cbCramHex->isChecked();
+    pteColorRamHex->setVisible(showHex);
 
     if (!Vdp2ColorRam || !Vdp2Regs) {
         lCramInfo->setText(QtYabause::translate("Color RAM not available"));
+        showCramEntry(-1);
         return;
     }
 
-    int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
-    int total = (mode <= 1) ? 2048 : 1024;
-    // ST-058-R2 §3.6 / RAMCTL[13:12] = CRMD :
-    //   0=RGB555 word (2048 entries x 2 bytes)
-    //   1=RGB555 banked (2048 entries x 2 bytes, banked access)
-    //   2=RGB888 (1024 entries x 4 bytes)
-    //   3=(rsvd)
-    lCramInfo->setText(QtYabause::translate("Color RAM mode %1  —  %2 entries  (%3 bytes each)")
-        .arg(mode).arg(total).arg(mode<=1?2:4));
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const int total = cramEntries();
+    // RAMCTL bits 13-12 = CRMD (ST-058-R2 p.43) : 0 = RGB555 x1024,
+    // 1 = RGB555 x2048, 2 = RGB888 x1024, 3 = interdit.
+    static const char *crmd[4] = { "RGB555, 1024 colors", "RGB555, 2048 colors", "RGB888, 1024 colors", "prohibited" };
+    mCramHeader = QtYabause::translate("Color RAM mode %1 (%2) — %3 entries of %4 bytes")
+        .arg(mode).arg(QLatin1String(crmd[mode])).arg(total).arg(mode <= 1 ? 2 : 4);
+    lCramInfo->setText(QString::fromLatin1("<b>%1</b>").arg(mCramHeader.toHtmlEscaped()));
 
-    const int SW=10, SH=10, COLS=64;
-    bool showHex = cbCramHex->isChecked();
+    const QColor text = palette().color(QPalette::WindowText);
+    const QColor dim = mixDim(palette());
+    QFont smallFont = font();
+    smallFont.setPixelSize(7);
+    QFont tagFont = smallFont; tagFont.setBold(true);
+
+    // Colonnes : debut de chaque palette 16
+    for (int c = 0; c < CRAM_COLS; c += 16) {
+        QGraphicsSimpleTextItem *t = scene->addSimpleText(QString::fromLatin1("+%1").arg(c), smallFont);
+        t->setBrush(dim);
+        t->setPos(cramCellX(c), 1);
+    }
+    const int rows = (total + CRAM_COLS - 1) / CRAM_COLS;
+    for (int r = 0; r < rows; r++) {
+        QGraphicsSimpleTextItem *t = scene->addSimpleText(hexs(r * CRAM_COLS, 3), smallFont);
+        t->setBrush((r % 4) == 0 ? text : dim);
+        t->setPos(CRAM_TAGW + 2, cramCellY(r) + 1);
+        if ((r % 4) == 0) {
+            const QStringList users = cramLayersAtBlock(r / 4);
+            for (int k = 0; k < users.size() && k < 4; k++) {
+                QGraphicsSimpleTextItem *u = scene->addSimpleText(users[k], tagFont);
+                u->setBrush(QColor(62, 99, 221));
+                u->setPos(1, cramCellY(r) + 1 + k * 9);
+            }
+        }
+    }
+
     std::ostringstream hex;
-
     for (int i = 0; i < total; i++) {
-        int x = (i % COLS)*(SW+1), y = (i / COLS)*(SH+1);
-        scene->addRect(x,y,SW,SH, QPen(Qt::NoPen), QBrush(cramColor(i)));
+        const double x = cramCellX(i % CRAM_COLS), y = cramCellY(i / CRAM_COLS);
+        scene->addRect(x, y, CRAM_SW, CRAM_SH, QPen(Qt::NoPen), QBrush(cramColor(i)));
+        if ((i & 0xF) == 0) {
+            QPolygonF tri;
+            tri << QPointF(x, y) << QPointF(x + 4, y) << QPointF(x, y + 4);
+            scene->addPolygon(tri, QPen(Qt::NoPen),
+                              QBrush((i & 0xFF) == 0 ? QColor(255, 0, 255) : QColor(128, 128, 128)));
+        }
         if (showHex) {
             if (i%16==0) hex<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<i<<": ";
-            if (mode <= 1) {
-                // 16-bit BGR555
-                u16 w = T2ReadWord(Vdp2ColorRam, (i*2) & 0xFFF);
-                hex<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<(unsigned)w<<" ";
-            } else {
-                // 32-bit XRGB888 — on affiche les deux mots (MSW puis LSW)
-                u32 addr = (u32)(i*4) & 0xFFC;
-                u16 msw = T2ReadWord(Vdp2ColorRam, addr);
-                u16 lsw = T2ReadWord(Vdp2ColorRam, addr+2);
-                hex<<std::hex<<std::uppercase
-                   <<std::setw(4)<<std::setfill('0')<<(unsigned)msw
-                   <<std::setw(4)<<std::setfill('0')<<(unsigned)lsw<<" ";
-            }
+            if (mode <= 1)
+                hex<<std::hex<<std::uppercase<<std::setw(4)<<std::setfill('0')<<(unsigned)cramRaw(i)<<" ";
+            else
+                hex<<std::hex<<std::uppercase<<std::setw(8)<<std::setfill('0')<<(unsigned)cramRaw(i)<<" ";
             if (i%16==15) hex<<"\n";
         }
     }
-    scene->setSceneRect(scene->itemsBoundingRect());
-    gvColorRam->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
+
+    // Selection (cadre plein) et entrees de meme couleur (pointilles) : une
+    // palette peut contenir plusieurs fois la meme couleur, et c'est ce qui
+    // rend trompeuse une recherche de l'index a partir du RGB affiche.
+    if (mSelCram >= 0 && mSelCram < total) {
+        const u32 ref = cramColorBits(cramRaw(mSelCram));
+        QPen dup(QColor(255, 220, 0)); dup.setWidthF(1.5); dup.setStyle(Qt::DashLine);
+        for (int i = 0; i < total; i++) {
+            if (i == mSelCram || cramColorBits(cramRaw(i)) != ref) continue;
+            scene->addRect(cramCellX(i % CRAM_COLS) - 1, cramCellY(i / CRAM_COLS) - 1, CRAM_SW + 1, CRAM_SH + 1, dup, Qt::NoBrush);
+        }
+        const double x = cramCellX(mSelCram % CRAM_COLS), y = cramCellY(mSelCram / CRAM_COLS);
+        QPen outer(Qt::white); outer.setWidthF(2.0);
+        QPen inner(Qt::black); inner.setWidthF(1.0);
+        scene->addRect(x - 2, y - 2, CRAM_SW + 3, CRAM_SH + 3, outer, Qt::NoBrush);
+        scene->addRect(x - 1, y - 1, CRAM_SW + 1, CRAM_SH + 1, inner, Qt::NoBrush);
+    }
+
+    scene->setSceneRect(scene->itemsBoundingRect().adjusted(-2, -2, 2, 2));
+    fitColorRam();
+    showCramEntry(mSelCram);
     if (showHex) pteColorRamHex->setPlainText(QString::fromStdString(hex.str()));
 }
 
@@ -897,6 +1193,55 @@ UIDebugVDP2Viewer::UIDebugVDP2Viewer(QWidget *p) : QDialog(p)
     // lui-meme ni ce QDialog. Alimente l'inspecteur de pixel (lPixelInfo).
     gvScreen->viewport()->installEventFilter(this);
     gvScreen->viewport()->setMouseTracking(true);
+    // Meme mecanisme pour l'onglet Color RAM : survol = infos de la case,
+    // clic = selection (cadre + doublons).
+    gvColorRam->viewport()->installEventFilter(this);
+    gvColorRam->viewport()->setMouseTracking(true);
+    // Inspecteur sur une seule ligne. Sans retour a la ligne et a hauteur
+    // fixe : un QLabel riche avec wordWrap calcule sa hauteur pour une
+    // largeur etroite et reservait un grand vide sous l'image.
+    lPixelInfo->setWordWrap(false);
+    lPixelInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    lPixelInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lPixelInfo->setTextFormat(Qt::RichText);
+    lCramInfo->setTextFormat(Qt::RichText);
+
+    // Onglet Color RAM : panneau lateral ; les doublons sont des liens.
+    frCramPanel->setObjectName("frCramPanel");
+    lCramTitle->setTextFormat(Qt::RichText);
+    lCramDetail->setTextFormat(Qt::RichText);
+    lCramDup->setTextFormat(Qt::RichText);
+    lCramDetail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    lCramDup->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    connect(lCramDup, &QLabel::linkActivated, this, [this](const QString &link) {
+        bool ok = false;
+        const int idx = link.toInt(&ok);
+        if (ok) { mSelCram = idx; updateColorRam(); }
+    });
+    lCramLegend->setText(QtYabause::translate(
+        "Grey corner: color 0 of a 16 color palette, magenta: of a 256 color palette (transparent when TPON=0). "
+        "White frame: selection, yellow dashes: same color. N0..SPR: start of the layer's Color RAM offset (CRAOF)."));
+    lCramLegend->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
+    splitterCram->setStretchFactor(0, 1);
+    splitterCram->setStretchFactor(1, 0);
+    gvColorRam->setRenderHint(QPainter::Antialiasing, false);
+    pteColorRamHex->setVisible(false);
+    showCramEntry(-1);
+
+    // Onglet Debug : arbre groupe, texte brut sur demande.
+    twStats->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    twStats->header()->setStretchLastSection(true);
+    pteStats->setVisible(false);
+    lStatsHint->setStyleSheet(QString::fromLatin1("QLabel { color: %1; }").arg(mixDim(palette()).name()));
+
+    // Style des cadres, dans l'esprit de UIDebugSCSPChan.
+    setStyleSheet(QString::fromLatin1(
+        "QFrame#frCramPanel { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        "QTabWidget::pane { border: 1px solid palette(mid); border-radius: 6px; top: -1px; }"
+        // Pas de gras sur l'onglet actif : la largeur des onglets est
+        // calculee avec la police normale, le titre en gras etait tronque
+        // ("creen Viewe").
+        "QTabBar::tab { padding: 6px 14px; }"));
 
     QtYabause::retranslateWidget(this);
 }
@@ -910,6 +1255,115 @@ UIDebugVDP2Viewer::~UIDebugVDP2Viewer()
         free(vdp2texture);
         vdp2texture = NULL;
     }
+}
+
+// ============================================================
+//  colorizeSprite -- couleurs reelles de la couche SPRITE.
+//
+//  Chaque mot du framebuffer VDP1 est decode comme le fait le VDP2
+//  (ST-058-R2 sec.9.1, decodeur Vdp2DebugPixelSource de vdp2debug.c) :
+//    - mot 0 : point non ecrit, transparent ;
+//    - RGB (SPCLMD=1 et bit 15 a 1, types 0-7) : RGB555 direct ; ses bits
+//      de priorite valent 0, il prend donc la priorite du registre 0 ;
+//    - palette : code couleur DC + decalage SPCAOS -> entree CRAM ;
+//    - priorite resultante 0 : transparent (un ecran de priorite 0 n'est
+//      pas affiche) -- c'est ce qui cache le fond efface de l'image ;
+//    - code d'ombre normale (DC = 0x7FE) : noir a demi transparent.
+//  Une table par mot (65536 entrees, remplie a la demande) evite de
+//  decoder deux fois la meme valeur. "Opaque" montre en noir les points
+//  transparents. Le calcul de couleur et le decalage de couleur ne sont
+//  pas appliques : c'est la couleur de la CRAM.
+// ============================================================
+static QImage colorizeSprite(const QImage &raw, bool opaque)
+{
+    QImage out(raw.size(), QImage::Format_ARGB32);
+    if (raw.isNull() || !Vdp2Regs) return out;
+    std::vector<QRgb> lut(65536, 0);
+    std::vector<unsigned char> done(65536, 0);
+    const QRgb clear = opaque ? qRgba(0, 0, 0, 255) : qRgba(0, 0, 0, 0);
+    for (int y = 0; y < raw.height(); y++)
+    {
+        const uchar *src = raw.constScanLine(y);   // RGBA8888 : octets R, G, B, A
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < raw.width(); x++)
+        {
+            const u16 w = (u16)(src[4 * x] | (src[4 * x + 1] << 8));
+            if (!done[w])
+            {
+                done[w] = 1;
+                vdp2debugpixel_struct d;
+                QRgb c = clear;
+                if (w != 0 && Vdp2DebugPixelSource(SPRITE, 0, 0, w, &d) && !d.transparent)
+                {
+                    if (d.direct_rgb)
+                    {
+                        if ((Vdp2Regs->PRISA & 7) != 0)
+                            c = qRgb((d.rgb & 0x1F) << 3, ((d.rgb >> 5) & 0x1F) << 3, ((d.rgb >> 10) & 0x1F) << 3);
+                    }
+                    else if (d.sprprioval != 0)
+                    {
+                        c = d.sprshadow ? qRgba(0, 0, 0, 128) : cramColor(d.cramindex).rgb();
+                    }
+                }
+                lut[w] = c;
+            }
+            dst[x] = lut[w];
+        }
+    }
+    return out;
+}
+
+// ============================================================
+//  spriteLogicalImage -- ramene la texture SPRITE a la taille du
+//  framebuffer VDP1 vu par le VDP2.
+//
+//  La texture extraite (GetCSVDP1fb) mesure 512*scale*vdp1wdensity x
+//  256*scale*vdp1hdensity (YglChangeResolution, commongl.c) : agrandie par
+//  le facteur de rendu 'scale', elle couvre tout le framebuffer (1024
+//  points de large en haute resolution), bien au-dela de la zone affichee.
+//
+//  Le facteur se deduit de la taille de rendu VDP2 (_Ygl->width =
+//  rwidth * scale, meme fonction) et non de vdp1wdensity : cette densite
+//  est mise a jour avec un temps de retard (commongl.c, valeurs
+//  "pending"), et une densite perimee en haute resolution coupait l'image
+//  de moitie. Le mode du framebuffer se lit dans TVMR (ST-013-R3 :
+//  TVM = 1 -> haute resolution 1024x256 ; ST-058-R2 sec.9.1).
+//
+//  On prend un point sur 'scale' (le framebuffer agrandi repete chaque
+//  point) puis on garde la zone affichee :
+//    largeur = 320/352/640/704 (TVMD HRESO), divisee par 2 si le VDP2 est
+//              en haute resolution et le framebuffer VDP1 non (un point
+//              VDP1 couvre alors deux points ecran) ;
+//    hauteur = 224/240/256 (TVMD VRESO), doublee si le framebuffer est en
+//              double densite (512 lignes logiques).
+//  Les coordonnees de l'inspecteur sont ainsi celles du framebuffer VDP1.
+// ============================================================
+static QImage spriteLogicalImage(const QImage &tex)
+{
+    if (tex.isNull() || !_Ygl || !Vdp2Regs) return tex;
+    int scale = 1;
+    if (_Ygl->rwidth > 0 && _Ygl->width > 0)
+        scale = qMax(1, (int)std::lround((double)_Ygl->width / _Ygl->rwidth));
+    // Garde-fou : la texture VDP1 fait au moins 512 points logiques de large.
+    while (scale > 1 && tex.width() / scale < 512) scale--;
+    const int lw = tex.width() / scale, lh = tex.height() / scale;
+
+    QImage out(lw, lh, tex.format());
+    for (int y = 0; y < lh; y++)
+    {
+        const quint32 *src = reinterpret_cast<const quint32 *>(tex.constScanLine(y * scale));
+        quint32 *dst = reinterpret_cast<quint32 *>(out.scanLine(y));
+        for (int x = 0; x < lw; x++) dst[x] = src[x * scale];
+    }
+
+    const bool vdp1Hires = (Vdp1Regs && (Vdp1Regs->TVMR & 0x7) == 1) || lw >= 1024;
+    static const int hres[8] = { 320, 352, 640, 704, 320, 352, 640, 704 };
+    static const int vres[4] = { 224, 240, 256, 256 };
+    int w = hres[Vdp2Regs->TVMD & 7];
+    if (w >= 640 && !vdp1Hires) w /= 2;
+    int h = vres[(Vdp2Regs->TVMD >> 4) & 3];
+    if (lh >= 512) h *= 2;
+    return out.copy(0, 0, qMin(w, lw), qMin(h, lh));
 }
 
 void UIDebugVDP2Viewer::displayCurrentScreen()
@@ -954,6 +1408,15 @@ void UIDebugVDP2Viewer::displayCurrentScreen()
         // vertical -- sauf SPRITE, deja dans le bon sens cote framebuffer
         // VDP1 (cf. VIDCSGetVdp2ScreenExtract, vidcs.c).
         currentImage = img.mirrored(false,idx!=SPRITE).copy();
+        // La texture SPRITE est le framebuffer VDP1 brut : sans conversion,
+        // les codes couleur s'affichaient comme des teintes de rouge/vert
+        // quasi noires. On les passe par la CRAM comme le fait le VDP2.
+        if (idx == SPRITE) {
+            mSpriteRaw = spriteLogicalImage(currentImage);
+            currentImage = colorizeSprite(mSpriteRaw, cbOpaque->isChecked());
+        } else {
+            mSpriteRaw = QImage();
+        }
         QPixmap px=QPixmap::fromImage(currentImage);
         sc->clear(); sc->setBackgroundBrush(Qt::Dense7Pattern);
         sc->addPixmap(px); sc->setSceneRect(sc->itemsBoundingRect());
@@ -1034,7 +1497,7 @@ void UIDebugVDP2Viewer::refreshActiveTab()
         case 1: updateVdp2Registers(); break;
         case 2: updateStats();         break;
         case 3: updateColorRam();      break;
-        case 4: updateVramHex();       break;
+        case 4: updateVramJumps(); updateVramHex(); break;
         default: break;
     }
 }
@@ -1090,9 +1553,11 @@ void UIDebugVDP2Viewer::on_pbResetZoom_clicked()
 // ============================================================
 bool UIDebugVDP2Viewer::eventFilter(QObject *watched, QEvent *event)
 {
+    const QString hint = QtYabause::translate("Move the mouse over the image to inspect a pixel.");
+
     if (watched == gvScreen->viewport())
     {
-        if (event->type() == QEvent::MouseMove)
+        if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress)
         {
             QMouseEvent *me = static_cast<QMouseEvent*>(event);
             QPointF scenePos = gvScreen->mapToScene(me->pos());
@@ -1102,23 +1567,416 @@ bool UIDebugVDP2Viewer::eventFilter(QObject *watched, QEvent *event)
             if (!currentImage.isNull() && px >= 0 && py >= 0 &&
                 px < currentImage.width() && py < currentImage.height())
             {
-                QColor c = currentImage.pixelColor(px, py);
-                lPixelInfo->setText(QtYabause::translate("Pixel (%1, %2)  R=%3 G=%4 B=%5 A=%6")
-                    .arg(px).arg(py)
-                    .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
+                int idx = -1;
+                QString html = describeScreenPixel(px, py, &idx);
+                if (event->type() == QEvent::MouseButtonPress &&
+                    me->button() == Qt::LeftButton && idx >= 0)
+                {
+                    // Clic : l'entree est mise en evidence dans l'onglet
+                    // Color RAM, avec ses doublons.
+                    mSelCram = idx;   // selection reprise par l'onglet Color RAM
+                }
+                lPixelInfo->setText(html);
             }
             else
             {
-                lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
+                lPixelInfo->setText(hint);
             }
         }
         else if (event->type() == QEvent::Leave)
         {
-            lPixelInfo->setText(QtYabause::translate("Move the mouse over the image to inspect a pixel."));
+            lPixelInfo->setText(hint);
+        }
+    }
+    else if (watched == gvColorRam->viewport())
+    {
+        if (event->type() == QEvent::Resize)
+        {
+            fitColorRam();
+        }
+        else if (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonPress)
+        {
+            QMouseEvent *me = static_cast<QMouseEvent*>(event);
+            const int idx = cramIndexAt(gvColorRam->mapToScene(me->pos()));
+            if (event->type() == QEvent::MouseButtonPress && me->button() == Qt::LeftButton)
+            {
+                mSelCram = idx;          // -1 (clic entre deux cases) = deselection
+                updateColorRam();        // redessine cadre + doublons
+            }
+            else
+            {
+                showCramEntry(idx >= 0 ? idx : mSelCram);
+            }
+        }
+        else if (event->type() == QEvent::Leave)
+        {
+            showCramEntry(mSelCram);
         }
     }
     return QDialog::eventFilter(watched, event);
 }
+
+// ============================================================
+//  cramIndexAt -- entree CRAM sous un point de la scene de gvColorRam,
+//  -1 entre deux cases ou hors de la grille.
+// ============================================================
+int UIDebugVDP2Viewer::cramIndexAt(const QPointF &p) const
+{
+    const double gx = p.x() - CRAM_LM, gy = p.y() - CRAM_TM;
+    if (gx < 0 || gy < 0) return -1;
+    const double gw = 16 * CRAM_PITCH + CRAM_GGAP, gh = 4 * CRAM_PITCH + CRAM_GGAP;
+    const int cg = (int)(gx / gw), rg = (int)(gy / gh);
+    const double wx = gx - cg * gw, wy = gy - rg * gh;
+    const int ci = (int)(wx / CRAM_PITCH), ri = (int)(wy / CRAM_PITCH);
+    if (ci >= 16 || ri >= 4) return -1;                         // espace entre palettes
+    if (wx - ci * CRAM_PITCH >= CRAM_SW || wy - ri * CRAM_PITCH >= CRAM_SH) return -1;
+    const int col = cg * 16 + ci, row = rg * 4 + ri;
+    if (col >= CRAM_COLS) return -1;
+    const int idx = row * CRAM_COLS + col;
+    return (idx < cramEntries()) ? idx : -1;
+}
+
+// ============================================================
+//  showCramEntry -- panneau lateral de l'onglet Color RAM.
+// ============================================================
+void UIDebugVDP2Viewer::showCramEntry(int idx)
+{
+    const QColor dim = mixDim(palette());
+    if (!Vdp2Regs || !Vdp2ColorRam || idx < 0 || idx >= cramEntries())
+    {
+        QPixmap px(56, 56); px.fill(Qt::transparent);
+        lCramSwatch->setPixmap(px);
+        lCramTitle->setText(QtYabause::translate("Hover a color to inspect it, click to select it."));
+        lCramDetail->clear();
+        lCramDup->clear();
+        return;
+    }
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const u32 raw = cramRaw(idx);
+    const QColor c = cramColor(idx);
+    const bool msb = (mode <= 1) ? ((raw & 0x8000) != 0) : ((raw & 0x80000000u) != 0);
+
+    QPixmap px(56, 56);
+    px.fill(c);
+    {
+        QPainter p(&px);
+        p.setPen(QPen(palette().color(QPalette::Mid), 1));
+        p.drawRect(0, 0, 55, 55);
+    }
+    lCramSwatch->setPixmap(px);
+
+    lCramTitle->setText(QString::fromLatin1("<span style='font-size:15pt; font-weight:600'>C=%1</span>"
+                                            "&nbsp;&nbsp;<span style='color:%2'>0x%3%4</span>")
+        .arg(idx).arg(dim.name()).arg(hexs(idx, 3))
+        .arg(idx == mSelCram ? QString::fromLatin1("<br>") + QtYabause::translate("selected") : QString()));
+
+    auto row = [&](const QString &k, const QString &v) {
+        return QString::fromLatin1("<tr><td style='color:%1; padding-right:10px'>%2</td><td>%3</td></tr>")
+            .arg(dim.name()).arg(k.toHtmlEscaped()).arg(v);
+    };
+    QString t = QLatin1String("<table cellspacing='0' cellpadding='1'>");
+    t += row(QtYabause::translate("Palette 16c"), QtYabause::translate("n°%1, color %2").arg(idx >> 4).arg(idx & 0xF));
+    t += row(QtYabause::translate("Palette 256c"), QtYabause::translate("n°%1, color %2").arg(idx >> 8).arg(idx & 0xFF));
+    t += row(QtYabause::translate("RGB (8 bits)"), QString::fromLatin1("%1, %2, %3").arg(c.red()).arg(c.green()).arg(c.blue()));
+    if (mode <= 1)
+        t += row(QtYabause::translate("RGB (5 bits)"), QString::fromLatin1("%1, %2, %3").arg(raw & 0x1F).arg((raw >> 5) & 0x1F).arg((raw >> 10) & 0x1F));
+    t += row(QtYabause::translate("Raw word"), QString::fromLatin1("<tt>0x%1</tt>").arg(hexs(raw, mode <= 1 ? 4 : 8)));
+    t += row(QtYabause::translate("MSB"), msb ? QtYabause::translate("1 (special color calculation)") : QString::fromLatin1("0"));
+    t += row(QtYabause::translate("Address"), QString::fromLatin1("<tt>0x%1</tt>").arg(hexs(0x05F00000u + (u32)idx * (mode <= 1 ? 2 : 4), 8)));
+    const QStringList users = cramLayersAtBlock(idx >> 8);
+    if (!users.isEmpty())
+        t += row(QtYabause::translate("CRAOF of"), users.join(QLatin1String(", ")));
+    t += QLatin1String("</table>");
+    if ((idx & 0xF) == 0)
+        t += QString::fromLatin1("<p style='color:%1'>%2</p>").arg(dim.name()).arg(((idx & 0xFF) == 0)
+            ? QtYabause::translate("Color 0 of a 16 and a 256 color palette: transparent dot code when TPON=0.")
+            : QtYabause::translate("Color 0 of a 16 color palette: transparent dot code when TPON=0."));
+    lCramDetail->setText(t);
+
+    // Doublons : meme couleur (hors bit MSB) ailleurs dans la CRAM, cliquables.
+    const u32 ref = cramColorBits(raw);
+    QStringList dup;
+    int nDup = 0;
+    for (int i = 0, n = cramEntries(); i < n; i++)
+    {
+        if (i == idx || cramColorBits(cramRaw(i)) != ref) continue;
+        if (nDup < 40) dup << QString::fromLatin1("<a href='%1'>%1</a>").arg(i);
+        nDup++;
+    }
+    if (nDup)
+        lCramDup->setText(QtYabause::translate("<b>Same color</b> (%1): ").arg(nDup) + dup.join(QLatin1String(" "))
+                          + (nDup > 40 ? QString::fromUtf8(" …") : QString()));
+    else
+        lCramDup->setText(QString::fromLatin1("<span style='color:%1'>%2</span>").arg(dim.name())
+                          .arg(QtYabause::translate("No other entry has this color.")));
+}
+
+void UIDebugVDP2Viewer::fitColorRam()
+{
+    QGraphicsScene *sc = gvColorRam->scene();
+    if (sc && !sc->sceneRect().isEmpty())
+        gvColorRam->fitInView(sc->sceneRect(), Qt::KeepAspectRatio);
+}
+
+// ============================================================
+//  cramEntryText -- description texte d'une entree CRAM (une ligne, pour
+//  les info-bulles et le texte brut).
+// ============================================================
+QString UIDebugVDP2Viewer::cramEntryText(int idx) const
+{
+    if (!Vdp2Regs || !Vdp2ColorRam || idx < 0) return QString();
+    const int mode = (Vdp2Regs->RAMCTL >> 12) & 3;
+    const u32 raw = cramRaw(idx);
+    const QColor c = cramColor(idx);
+    return QString::fromLatin1("C=%1 (0x%2) - %3 - R=%4 G=%5 B=%6 - 0x%7")
+        .arg(idx).arg(hexs(idx, 3)).arg(paletteText(-1, idx))
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(hexs(raw, (mode <= 1) ? 4 : 8));
+}
+
+// ============================================================
+//  describeScreenPixel -- texte (HTML) de l'inspecteur pour le pixel
+//  (px, py) de l'image affichee.
+//
+//  L'image d'une couche NBG est la texture screen_fbotex, deja passee par
+//  Yglprg_normal_cram_f (ogl_shader.c) qui a remplace l'index par sa
+//  couleur CRAM : il n'y reste que R, G, B (bit 0 de B = drapeau CC, cf.
+//  VDP2COLOR dans ygl.h) et A = (alpha & 0xF8) | priorite. L'index est donc
+//  recalcule a la source par Vdp2DebugPixelSource() (vdp2debug.c), puis la
+//  couleur CRAM correspondante est comparee a la couleur affichee.
+//  Pour SPRITE, la texture extraite est le framebuffer VDP1 brut
+//  (R = octet bas, G = octet haut du mot).
+//
+//  Ligne 1 : pixel, couleur affichee, priorite, et l'index CRAM en gras
+//            sous la forme courte "C=223".
+//  Ligne 2 : d'ou vient le point (VRAM, pattern name, sprite).
+//  Ligne 3 : palette, decalage CRAOF, controle avec l'affichage.
+// ============================================================
+QString UIDebugVDP2Viewer::describeScreenPixel(int px, int py, int *cramIndexOut) const
+{
+    if (cramIndexOut) *cramIndexOut = -1;
+    lPixelInfo->setToolTip(QString());
+    const QColor dim = mixDim(palette());
+    const QColor c = currentImage.pixelColor(px, py);
+    const int screen = cbScreen->itemData(cbScreen->currentIndex()).toInt();
+
+    QString l1 = QString::fromLatin1("Pixel (%1, %2) &nbsp;R=%3 G=%4 B=%5").arg(px).arg(py)
+                     .arg(c.red()).arg(c.green()).arg(c.blue());
+    u32 sprWord = 0;
+    if (screen == SPRITE)
+    {
+        const QColor rc = mSpriteRaw.isNull() ? c : mSpriteRaw.pixelColor(px, py);
+        sprWord = (u32)rc.red() | ((u32)rc.green() << 8);
+        l1 += QString::fromUtf8(" &nbsp;· %1 0x%2").arg(QtYabause::translate("VDP1 word")).arg(hexs(sprWord, 4));
+    }
+    else if (c.alpha() != 0)
+        l1 += QString::fromUtf8(" &nbsp;· %1 %2 · CC %3").arg(QtYabause::translate("prio"))
+                  .arg(c.alpha() & 7).arg((c.blue() & 1) ? QtYabause::translate("on") : QtYabause::translate("off"));
+    else
+        l1 += QString::fromUtf8(" &nbsp;· ") + QtYabause::translate("transparent");
+
+    if (!Vdp2Regs) return l1;
+
+    vdp2debugpixel_struct src;
+    if (!Vdp2DebugPixelSource((u32)screen, px, py, sprWord, &src))
+        return l1 + QString::fromLatin1("<br><span style='color:%1'>%2</span>").arg(dim.name())
+                        .arg(QString::fromUtf8(src.note).toHtmlEscaped());
+
+    static const char *cn[] = { "16c", "256c", "2048c", "RGB 32K", "RGB 16M" };
+    QString l2;
+    if (screen == SPRITE)
+    {
+        l2 = QString::fromLatin1("Sprite type %1").arg(hexs(src.spritetype, 1));
+        if (src.transparent) l2 += QLatin1String(" : ") + QtYabause::translate("transparent dot (word 0)");
+        else if (src.direct_rgb) l2 += QString::fromLatin1(" : RGB 0x%1").arg(hexs(src.rgb, 4));
+        else
+        {
+            l2 += QString::fromUtf8(" : DC 0x%1 · PR=%2 (prio %3) · CC=%4 (%5/31)")
+                .arg(hexs(src.dot, 3)).arg(src.sprprio).arg(src.sprprioval).arg(src.sprcc).arg(src.sprccratio);
+            if (src.sprshadow) l2 += QLatin1String(" · ") + QtYabause::translate("normal shadow");
+        }
+    }
+    else
+    {
+        l2 = QString::fromUtf8("%1 %2 · dot 0x%3 @0x%4 (x=%5, y=%6)")
+            .arg(src.isbitmap ? QtYabause::translate("bitmap") : QtYabause::translate("cell"))
+            .arg(QLatin1String(cn[src.colornumber < 0 || src.colornumber > 4 ? 0 : src.colornumber]))
+            .arg(hexs(src.dot, 1)).arg(hexs(src.vramaddr, 5)).arg(src.srcx).arg(src.srcy);
+        if (!src.isbitmap)
+            l2 += QString::fromUtf8(" · PN 0x%1 @0x%2 · char 0x%3%4%5")
+                .arg(hexs(src.pndata, (src.pndata > 0xFFFF) ? 8 : 4)).arg(hexs(src.pnaddr, 5))
+                .arg(hexs((u32)src.charnum, 1))
+                .arg((src.flip & 1) ? " H" : "").arg((src.flip & 2) ? " V" : "");
+        if (src.transparent)
+            l2 += QLatin1String(" → ") + QtYabause::translate("transparent (color 0)");
+        else if (src.direct_rgb)
+            l2 += QString::fromUtf8(" → RGB 0x%1").arg(hexs(src.rgb, src.colornumber == 3 ? 4 : 8));
+    }
+
+    QString l3;
+    if (src.cramindex >= 0 && !src.transparent)
+    {
+        const int idx = src.cramindex;
+        if (cramIndexOut) *cramIndexOut = idx;
+        const QColor cc = cramColor(idx);
+        l1 += QString::fromUtf8(" &nbsp;· C=%1 <span style='color:%2'>(0x%3)</span>"
+                                  " <span style='background-color:%4'>&nbsp;&nbsp;&nbsp;&nbsp;</span>")
+                  .arg(idx).arg(dim.name()).arg(hexs(idx, 3)).arg(cc.name());
+        l3 = paletteText(src.colornumber, idx).toHtmlEscaped();
+        if (src.coloroffset)
+            l3 += QString::fromUtf8(" · CRAOF 0x%1").arg(hexs(src.coloroffset, 3));
+        l3 += QString::fromUtf8(" · CRAM %1, %2, %3").arg(cc.red()).arg(cc.green()).arg(cc.blue());
+        if (screen != SPRITE)
+        {
+            // Le bit 0 de B affiche porte le drapeau CC : on le masque.
+            const bool same = cc.red() == c.red() && cc.green() == c.green() &&
+                              (cc.blue() & 0xFE) == (c.blue() & 0xFE);
+            if (same)
+                l3 += QString::fromUtf8(" <span style='color:#46a758'>✓ %1</span>").arg(QtYabause::translate("matches the display"));
+            else
+            {
+                QStringList why;
+                if (Vdp2Regs->CLOFEN & (1 << screen)) why << QtYabause::translate("color offset (CLOFEN) on");
+                why << QtYabause::translate("CRAM changed during the frame")
+                    << QtYabause::translate("or rendering differs from the source");
+                l3 += QString::fromUtf8(" <span style='color:#e5484d'>⚠ %1</span> (%2)")
+                          .arg(QtYabause::translate("differs from the display")).arg(why.join(QLatin1String(", ")).toHtmlEscaped());
+            }
+        }
+    }
+
+    // Une seule ligne dans l'inspecteur (pixel, couleur, priorite, C=).
+    // Le detail (origine du point, palette, controle avec l'affichage)
+    // passe en info-bulle de lPixelInfo, pour rester consultable.
+    QString tip = l2;
+    if (!l3.isEmpty()) tip += QLatin1String("<br>") + l3;
+    if (src.note[0])
+        tip += QString::fromLatin1("<br><span style='color:%1'>%2</span>")
+                   .arg(dim.name()).arg(QString::fromUtf8(src.note).toHtmlEscaped());
+    lPixelInfo->setToolTip(tip);
+    return l1;
+}
+
+// ============================================================
+//  Onglet Registers : filtre. Garde les lignes qui contiennent le texte
+//  (sans tenir compte de la casse) et l'en-tete "===" de leur section.
+// ============================================================
+static QString filterRegText(const QString &full, const QString &needle, int *matches)
+{
+    if (needle.isEmpty()) return full;
+    // Un en-tete de section qui correspond fait garder toute sa section
+    // ("BGON" garde le detail de BGON dans la colonne Decoded).
+    QString out, header;
+    bool headerShown = false, wholeSection = false;
+    const QStringList lines = full.split(QLatin1Char('\n'));
+    for (int i = 0; i < lines.size(); i++)
+    {
+        const QString &l = lines[i];
+        if (l.trimmed().startsWith(QLatin1String("===")))
+        {
+            header = l; headerShown = false;
+            wholeSection = l.contains(needle, Qt::CaseInsensitive);
+            if (wholeSection) { out += l + QLatin1Char('\n'); headerShown = true; (*matches)++; }
+            continue;
+        }
+        if (!wholeSection && !l.contains(needle, Qt::CaseInsensitive)) continue;
+        if (!headerShown && !header.isEmpty()) { out += header + QLatin1Char('\n'); headerShown = true; }
+        out += l + QLatin1Char('\n');
+        (*matches)++;
+    }
+    return out;
+}
+
+void UIDebugVDP2Viewer::applyRegFilter()
+{
+    const QString f = leRegFilter->text().trimmed();
+    int n = 0;
+    pteRawRegs->setPlainText(filterRegText(mRawRegsText, f, &n));
+    pteDecodedRegs->setPlainText(filterRegText(mDecRegsText, f, &n));
+    lRegFilterCount->setText(f.isEmpty() ? QString() : QtYabause::translate("%1 line(s)").arg(n));
+}
+
+void UIDebugVDP2Viewer::on_leRegFilter_textChanged(const QString &) { applyRegFilter(); }
+
+void UIDebugVDP2Viewer::on_cbStatsText_toggled(bool checked)
+{
+    twStats->setVisible(!checked);
+    pteStats->setVisible(checked);
+}
+
+// ============================================================
+//  Onglet VRAM Hex : "Aller a". Les adresses viennent des lignes
+//  "... Address = XXXX" des Vdp2DebugStatsXXX() des couches actives
+//  (plans, bitmap, tables de line scroll / vertical cell scroll, fond,
+//  couleur de ligne...). Les adresses CPU 0x05Exxxxx sont ramenees en
+//  offset VRAM.
+// ============================================================
+void UIDebugVDP2Viewer::updateVramJumps()
+{
+    const QString keep = cbVramJump->currentText();
+    cbVramJump->blockSignals(true);
+    cbVramJump->clear();
+    cbVramJump->addItem(QString::fromUtf8("—"), -1);
+    if (Vdp2Regs)
+    {
+        struct Layer { const char *name; void (*fn)(char *, int *); bool general; };
+        static const Layer layers[] = {
+            {"NBG0", Vdp2DebugStatsNBG0, false}, {"NBG1", Vdp2DebugStatsNBG1, false},
+            {"NBG2", Vdp2DebugStatsNBG2, false}, {"NBG3", Vdp2DebugStatsNBG3, false},
+            {"RBG0", Vdp2DebugStatsRBG0, false}, {"RBG1", Vdp2DebugStatsRBG1, false},
+            {"General", Vdp2DebugStatsGeneral, true},
+        };
+        const u32 vramSize = ((Vdp2Regs->VRSIZE >> 15) & 1) ? 0x100000u : 0x80000u;
+        QStringList seen;
+        for (const Layer &L : layers)
+        {
+            char buf[VDP2_DEBUG_STRING_SIZE];
+            memset(buf, 0, sizeof(buf));
+            int en = 0;
+            L.fn(buf, &en);
+            if (!en) continue;
+            const QStringList lines = QString::fromUtf8(buf).remove(QLatin1Char('\r')).split(QLatin1Char('\n'));
+            QString section;
+            for (int k = 0; k < lines.size(); k++)
+            {
+                const QString l = lines[k].trimmed();
+                if (L.general && k + 1 < lines.size() && lines[k + 1].trimmed().startsWith(QLatin1String("---")))
+                { section = l; section.remove(QLatin1String(" Stuff")); continue; }
+                const int p = l.indexOf(QLatin1String("Address = "));
+                if (p < 0) continue;
+                bool ok = false;
+                u32 a = l.mid(p + 10).section(QLatin1Char(' '), 0, 0).toUInt(&ok, 16);
+                if (!ok) continue;
+                if (a >= 0x05E00000u && a < 0x05F00000u) a -= 0x05E00000u;
+                if (a >= vramSize) continue;
+                QString what = l.left(p + 7).trimmed();
+                if (L.general) what = section + QLatin1Char(' ') + what;
+                const QString text = QString::fromUtf8("%1 · %2 · 0x%3").arg(QLatin1String(L.name)).arg(what).arg(hexs(a, 5));
+                if (seen.contains(text)) continue;
+                seen << text;
+                cbVramJump->addItem(text, (uint)a);
+            }
+        }
+    }
+    const int k = cbVramJump->findText(keep);
+    cbVramJump->setCurrentIndex(k >= 0 ? k : 0);
+    cbVramJump->blockSignals(false);
+}
+
+void UIDebugVDP2Viewer::on_cbVramJump_activated(int index)
+{
+    const QVariant v = cbVramJump->itemData(index);
+    if (!v.isValid() || v.toInt() < 0 || !Vdp2Regs) return;
+    const u32 a = v.toUInt();
+    const u32 mul = ((Vdp2Regs->VRSIZE >> 15) & 1) ? 2u : 1u;
+    const int bank = (a < 0x40000u * mul) ? 0 : 1;     // VRAM-A / VRAM-B
+    const u32 base = bank ? 0x40000u * mul : 0;
+    cbVramBank->blockSignals(true);
+    cbVramBank->setCurrentIndex(bank);
+    cbVramBank->blockSignals(false);
+    leVramOffset->setText(QString::number(a - base, 16).toUpper());
+    updateVramHex();
+}
+
 void UIDebugVDP2Viewer::on_cbVramBank_currentIndexChanged(int){ updateVramHex(); }
 void UIDebugVDP2Viewer::on_pbVramGo_clicked()                 { updateVramHex(); }
 
@@ -1664,10 +2522,10 @@ void UIDebugVDP2Viewer::on_pbExportDebugInfo_clicked()
     ts << "==================================================\n\n";
 
     ts << "########## REGISTERS - RAW VALUES ##########\n\n";
-    ts << pteRawRegs->toPlainText() << "\n\n";
+    ts << mRawRegsText << "\n\n";      // texte complet, meme si un filtre est actif
 
     ts << "########## REGISTERS - DECODED ##########\n\n";
-    ts << pteDecodedRegs->toPlainText() << "\n\n";
+    ts << mDecRegsText << "\n\n";
 
     ts << "########## VERTICAL CELL SCROLL (par ligne de champ) ##########\n\n";
     ts << QString::fromStdString(buildVCellScrollDump()) << "\n\n";

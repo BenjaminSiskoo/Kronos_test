@@ -1393,35 +1393,21 @@ void VIDCSVdp1NormalSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs
 void VIDCSVdp1ScaledSpriteDrawUpscale(vdp1cmd_struct *cmd, u8 * ram, Vdp1 * regs)
 {
 
-  // Setup Zoom Point
-  switch ((cmd->CMDCTRL & 0xF00) >> 8)
-  {
-    case 0x0: // Only two coordinates
-      if ((s16)cmd->CMDXC > (s16)cmd->CMDXA){ cmd->CMDXB += 1; cmd->CMDXC += 1;} else { cmd->CMDXA += 1; cmd->CMDXD += 1;}
-      /* VDP1 Manual §4.4 p.53: A=top-left, B=top-right, C=bottom-right,
-       * D=bottom-left. Symmetric to the X case above:
-       *   YC > YA (normal): bottom edge = {C,D} -> YC+=1, YD+=1
-       *   else (flipped V): top edge    = {A,B} -> YA+=1, YB+=1
-       * Previous code incremented YD in both branches (copy-paste
-       * from first branch), breaking vertically-flipped scaled sprites. */
-      if ((s16)cmd->CMDYC > (s16)cmd->CMDYA){ cmd->CMDYC += 1; cmd->CMDYD += 1;} else { cmd->CMDYA += 1; cmd->CMDYB += 1;}
-      break;
-    case 0x5: // Upper-left
-    case 0x6: // Upper-Center
-    case 0x7: // Upper-Right
-    case 0x9: // Center-left
-    case 0xA: // Center-center
-    case 0xB: // Center-right
-    case 0xD: // Lower-left
-    case 0xE: // Lower-center
-    case 0xF: // Lower-right
-      cmd->CMDXB += 1;
-      cmd->CMDXC += 1;
-      cmd->CMDYC += 1;
-      cmd->CMDYD += 1;
-      break;
-    default: break;
-  }
+  /* The vertices are kept as Vdp1ScaledSpriteDraw (vdp1.c) built them:
+   * A and C are both drawn (inclusive), as on the 1x path, which draws
+   * the sprite as lines from A to B with the vertices unchanged
+   * (VIDCSVdp1ScaledSpriteDraw). The upscale shader (isOnAQuad,
+   * vdp1_prog_compute_upscale.h) turns the inclusive vertices into pixel
+   * edges itself, for every orientation.
+   *
+   * The +1 that used to be added here, on top of the shader's own far
+   * edge, counted that edge twice: one extra column/row on sprites drawn
+   * left to right, and on sprites given with XC < XA (or YC < YA,
+   * mirrored by their coordinates) both edges moved by one Saturn pixel,
+   * so the column of C was not drawn. Two such sprites side by side left
+   * a one pixel gap between them (Astal at 2x: a vertical line through
+   * the hero and his shadow). */
+
   /* VDP2 Manual §9.2: For RGB sprite data, priority register 0 is always
    * selected (bits 2~0 of CCRSA = PRISA bits 2~0).
    * Do NOT modify CCRSA globally — just set a flag on the command so the

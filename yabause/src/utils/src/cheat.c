@@ -41,6 +41,7 @@ int cheatsize;
 
 int CheatInit(void)
 {
+   numcheats = 0;
    cheatsize = 10;
    if ((cheatlist = (cheatlist_struct *)calloc(cheatsize, sizeof(cheatlist_struct))) == NULL)
       return -1;
@@ -53,9 +54,26 @@ int CheatInit(void)
 
 void CheatDeInit(void)
 {
+   int i;
+
    if (cheatlist)
+   {
+      // Free the descriptions too, they were leaked before.
+      for (i = 0; i < numcheats; i++)
+      {
+         if (cheatlist[i].desc)
+            free(cheatlist[i].desc);
+      }
       free(cheatlist);
+   }
    cheatlist = NULL;
+
+   // YabauseDeInit() followed by YabauseInit() (stopping a game and starting
+   // another one) calls CheatInit() again with a 10-entry list: a stale
+   // numcheats made the next CheatAddCode() or CheatClearCodes() access the
+   // list past its end.
+   numcheats = 0;
+   cheatsize = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -65,19 +83,28 @@ int CheatAddCode(int type, u32 addr, u32 val)
    if (cheatlist == NULL)
       return -1;
 
+   // The list must hold the new entry plus the CHEATTYPE_NONE terminator.
+   // Grow it before writing anything, so that a failed realloc leaves the
+   // list exactly as it was (the old pointer stays valid on failure).
+   if (numcheats + 1 >= cheatsize)
+   {
+      int newsize = cheatsize * 2;
+      cheatlist_struct *newlist = (cheatlist_struct *)realloc(cheatlist, sizeof(cheatlist_struct) * newsize);
+
+      if (newlist == NULL)
+         return -1;
+
+      memset(&newlist[cheatsize], 0, sizeof(cheatlist_struct) * (newsize - cheatsize));
+      cheatlist = newlist;
+      cheatsize = newsize;
+   }
+
    cheatlist[numcheats].type = type;
    cheatlist[numcheats].addr = addr;
    cheatlist[numcheats].val = val;
    cheatlist[numcheats].desc = NULL;
    cheatlist[numcheats].enable = 1;
    numcheats++;
-
-   // Make sure we still have room
-   if (numcheats >= cheatsize)
-   {
-      cheatlist = (cheatlist_struct *)realloc(cheatlist, sizeof(cheatlist_struct) * (cheatsize * 2));
-      cheatsize *= 2;
-   }
 
    cheatlist[numcheats].type = CHEATTYPE_NONE;
 
@@ -241,11 +268,22 @@ void CheatDoPatches(SH2_struct *sh)
          case CHEATTYPE_NONE:
             return;
          case CHEATTYPE_ENABLE:
+            // Conditional code (Action Replay "D" code): the word at addr is
+            // compared with val and only the NEXT code depends on it. When the
+            // test fails, skip that one code and keep going; the codes after
+            // it are independent and must still be applied. The old "return"
+            // aborted every remaining code of the list.
             if (cheatlist[i].enable == 0)
                continue;
             LOG("CheatDoPatches %08X", cheatlist[i].addr);
-            if (SH2MappedMemoryReadWord(sh, cheatlist[i].addr) != cheatlist[i].val)
-               return;
+            if (SH2MappedMemoryReadWord(sh, cheatlist[i].addr) != (u16)cheatlist[i].val)
+            {
+               // A conditional code at the end of the list has nothing to
+               // skip: stop here rather than stepping over the terminator.
+               if (cheatlist[i + 1].type == CHEATTYPE_NONE)
+                  return;
+               i++;
+            }
             break;
          case CHEATTYPE_BYTEWRITE:
             if (cheatlist[i].enable == 0)
@@ -291,6 +329,7 @@ int CheatSave(const char *filename)
    int i;
    int num;
    IOCheck_struct check = { 0, 0 };
+   const char zero = '\0';
 
    if (!filename)
       return -1;
@@ -308,6 +347,10 @@ int CheatSave(const char *filename)
    for(i = 0; i < numcheats; i++)
    {
       u8 descsize;
+      size_t desclen;
+      // Codes added with CheatAddARCode() or CheatAddCode() have no
+      // description until one is set: save them with an empty one.
+      const char *desc = cheatlist[i].desc ? cheatlist[i].desc : "";
       cheatlist_struct cheat;
 
       memcpy(&cheat, &cheatlist[i], sizeof(cheatlist_struct));
@@ -320,74 +363,136 @@ int CheatSave(const char *filename)
       ywrite(&check, (void *)&cheat.type, sizeof(int), 1, fp);
       ywrite(&check, (void *)&cheat.addr, sizeof(u32), 1, fp);
       ywrite(&check, (void *)&cheat.val, sizeof(u32), 1, fp);
-      descsize = (u8)strlen(cheatlist[i].desc)+1;
+
+      // The size is stored on one byte and includes the final '\0': a
+      // description is cut to 254 characters and always terminated, so
+      // CheatLoad() reads back a valid string.
+      desclen = strlen(desc);
+      if (desclen > 254)
+         desclen = 254;
+      descsize = (u8)(desclen + 1);
       ywrite(&check, (void *)&descsize, sizeof(u8), 1, fp);
-      ywrite(&check, (void *)cheatlist[i].desc, sizeof(char), descsize, fp);
+      if (desclen > 0)
+         ywrite(&check, (void *)desc, sizeof(char), desclen, fp);
+      ywrite(&check, (void *)&zero, sizeof(char), 1, fp);
+
       ywrite(&check, (void *)&cheat.enable, sizeof(int), 1, fp);
    }
 
-   fclose (fp);
+   if (fclose(fp) != 0 || check.done != check.size)
+      return -1;
 
    return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
+// Upper bound on the code count read from a file, so that a corrupted
+// header cannot ask for a huge allocation.
+#define CHEAT_LOAD_MAX 65536
+
+static void FreeCheatArray(cheatlist_struct *list, int count)
+{
+   int i;
+
+   for (i = 0; i < count; i++)
+   {
+      if (list[i].desc)
+         free(list[i].desc);
+   }
+   free(list);
+}
+
 int CheatLoad(const char *filename)
 {
    FILE *fp;
    int i;
+   int num = 0;
+   int newsize;
    char id[4];
    char desc[256];
+   cheatlist_struct *newlist;
    IOCheck_struct check = { 0, 0 };
 
-   if (!filename)
+   if (!filename || cheatlist == NULL)
       return -1;
 
    if ((fp = fopen(filename, "rb")) == NULL)
       return -1;
 
    yread(&check, (void *)id, 1, 4, fp);
-   if (strncmp(id, "YCHT", 4) != 0)
+   if (check.done != check.size || strncmp(id, "YCHT", 4) != 0)
    {
       fclose(fp);
       return -2;
    }
 
-   CheatClearCodes();
-
-   yread(&check, (void *)&numcheats, sizeof(int), 1, fp);
+   yread(&check, (void *)&num, sizeof(int), 1, fp);
 #ifndef WORDS_BIGENDIAN
-   DoubleWordSwap(numcheats);
+   DoubleWordSwap(num);
 #endif
-
-   if (numcheats >= cheatsize)
+   if (check.done != check.size || num < 0 || num > CHEAT_LOAD_MAX)
    {
-      cheatlist = (cheatlist_struct *)realloc(cheatlist, sizeof(cheatlist_struct) * (cheatsize * 2));
-      memset((void *)cheatlist, 0, sizeof(cheatlist_struct) * (cheatsize * 2));
-      cheatsize *= 2;
+      fclose(fp);
+      return -3;
    }
 
-   for(i = 0; i < numcheats; i++)
-   {
-      u8 descsize;
+   // The file is read into a separate list: if it turns out to be truncated
+   // or corrupted, the codes currently loaded are left untouched. The list
+   // is sized for every code plus the CHEATTYPE_NONE terminator, and calloc
+   // leaves the terminator (type 0) and every desc pointer (NULL) set.
+   newsize = cheatsize;
+   while (num + 1 > newsize)
+      newsize *= 2;
 
-      yread(&check, (void *)&cheatlist[i].type, sizeof(int), 1, fp);
-      yread(&check, (void *)&cheatlist[i].addr, sizeof(u32), 1, fp);
-      yread(&check, (void *)&cheatlist[i].val, sizeof(u32), 1, fp);
+   if ((newlist = (cheatlist_struct *)calloc(newsize, sizeof(cheatlist_struct))) == NULL)
+   {
+      fclose(fp);
+      return -1;
+   }
+
+   for(i = 0; i < num; i++)
+   {
+      u8 descsize = 0;
+
+      yread(&check, (void *)&newlist[i].type, sizeof(int), 1, fp);
+      yread(&check, (void *)&newlist[i].addr, sizeof(u32), 1, fp);
+      yread(&check, (void *)&newlist[i].val, sizeof(u32), 1, fp);
       yread(&check, (void *)&descsize, sizeof(u8), 1, fp);
-      yread(&check, (void *)desc, sizeof(char), descsize, fp);
-      CheatChangeDescriptionByIndex(i, desc);
-      yread(&check, (void *)&cheatlist[i].enable, sizeof(int), 1, fp);
+      if (descsize > 0)
+         yread(&check, (void *)desc, sizeof(char), descsize, fp);
+      // descsize is at most 255, so desc[descsize] is always inside the
+      // buffer; files written by older versions may lack the final '\0'.
+      desc[descsize] = '\0';
+      yread(&check, (void *)&newlist[i].enable, sizeof(int), 1, fp);
 #ifndef WORDS_BIGENDIAN
-      DoubleWordSwap(cheatlist[i].type);
-      DoubleWordSwap(cheatlist[i].addr);
-      DoubleWordSwap(cheatlist[i].val);
-      DoubleWordSwap(cheatlist[i].enable);
+      DoubleWordSwap(newlist[i].type);
+      DoubleWordSwap(newlist[i].addr);
+      DoubleWordSwap(newlist[i].val);
+      DoubleWordSwap(newlist[i].enable);
 #endif
+
+      if (check.done != check.size ||
+          newlist[i].type <= CHEATTYPE_NONE || newlist[i].type > CHEATTYPE_LONGWRITE)
+      {
+         // A CHEATTYPE_NONE entry would end the list early in
+         // CheatDoPatches(); an unknown type would never be applied.
+         FreeCheatArray(newlist, i + 1);
+         fclose(fp);
+         return -3;
+      }
+
+      newlist[i].desc = strdup(desc);
    }
 
-   fclose (fp);
+   fclose(fp);
+
+   CheatClearCodes();
+   free(cheatlist);
+   cheatlist = newlist;
+   cheatsize = newsize;
+   numcheats = num;
+   cheatlist[numcheats].type = CHEATTYPE_NONE;
 
    return 0;
 }

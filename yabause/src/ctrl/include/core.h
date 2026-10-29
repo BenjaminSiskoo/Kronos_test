@@ -191,19 +191,16 @@ extern "C" {
   //////////////////////////////////////////////////////////////////////////////
 
   // Terrible, but I'm not sure how to do the equivalent in inline
-#ifdef HAVE_C99_VARIADIC_MACROS
+/* Une seule definition, en __VA_ARGS__ : la variante "sans macros variadiques
+   C99" declarait deja "..." (donc exigeait C99) et utilisait un "r"
+   inexistant colle par "##" ; MSVC compile cette branche (HAVE_C99_VARIADIC_
+   MACROS n'y est pas toujours defini) et la forme GNU "r..." n'y est pas
+   acceptee. __VA_ARGS__ est compris par MSVC, GCC et Clang. */
 #define AddString(s, ...) \
      { \
       sprintf(s, __VA_ARGS__); \
       s += strlen(s); \
      }
-#else
-#define AddString(s, ...) \
-     { \
-      sprintf(s, ## r); \
-      s += strlen(s); \
-     }
-#endif
 
   //////////////////////////////////////////////////////////////////////////////
 

@@ -102,7 +102,8 @@ static const char * const SH2CacheDBList[] = {
    "T-26408G", // Fully Cowled Mini Yonku - Super Factory (Japan)
    "T-22303G", // Ginga Eiyuu Densetsu Plus (Japan)
    "T-7645G", // Ishin no Arashi (Japan)
-   "GS-9019", // Kisuishou Densetsu Astal (Japan)  
+   "GS-9019", // Kisuishou Densetsu Astal (Japan)
+   "T-1525G", // Photo Genic (Japan)
    "T-17703G", // Tennis Arena (Japan)
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
