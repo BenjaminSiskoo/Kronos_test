@@ -185,12 +185,36 @@ void UICheats::on_pbSaveFile_clicked()
 void UICheats::on_pbLoadFile_clicked()
 {
     const QString s = CommonDialogs::getOpenFileName( ".", QtYabause::translate( "Choose a cheat file to open" ), QtYabause::translate( "Kronos Cheat Files (*.yct);;All Files (*)" ) );
-    if ( !s.isEmpty() && CheatLoad( QFile::encodeName( s ).constData() ) == 0 )
+    if ( s.isEmpty() )
+        return;
+
+    // CheatLoad() returns -1 when the file cannot be opened (or memory runs
+    // out), -2 when it is not a cheat file and -3 when it is truncated or
+    // corrupted. On failure the codes already loaded are kept, so the list
+    // shown here is still right; only the error used to be silent.
+    const int ret = CheatLoad( QFile::encodeName( s ).constData() );
+    if ( ret != 0 )
     {
-        twCheats->clear();
-        int cheatsCount;
-        mCheats = CheatGetList( &cheatsCount );
-        for ( int i = 0; i < cheatsCount; i++ )
-            addCode( i );
+        QString msg;
+        switch ( ret )
+        {
+            case -2: msg = QtYabause::translate( "This is not a Kronos cheat file" ); break;
+            case -3: msg = QtYabause::translate( "The cheat file is truncated or corrupted" ); break;
+            default: msg = QtYabause::translate( "Unable to load file" ); break;
+        }
+        CommonDialogs::error( msg );
+        return;
     }
+
+    twCheats->clear();
+    int cheatsCount;
+    mCheats = CheatGetList( &cheatsCount );
+    for ( int i = 0; i < cheatsCount; i++ )
+        addCode( i );
+
+    // addCode() only ever enables these buttons: an empty file must turn
+    // them off, and the selection that enabled Delete is gone.
+    pbDelete->setEnabled( false );
+    pbClear->setEnabled( cheatsCount > 0 );
+    pbSaveFile->setEnabled( cheatsCount > 0 );
 }
