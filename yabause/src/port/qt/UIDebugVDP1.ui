@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>UIDebugVDP1</class>
+ <widget class="QDialog" name="UIDebugVDP1">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1180</width>
+    <height>640</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Debug VDP1</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_12">
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="1,2,3,1,2">
+     <item>
+      <widget class="QGroupBox" name="gbCommandRaw">
+       <property name="toolTip">
+        <string>Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).</string>
+       </property>
+       <property name="title">
+        <string>Jump list</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_10">
+        <item>
+         <widget class="QListWidget" name="lwCommandRaw"/>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="gbCommandList">
+       <property name="title">
+        <string>VDP1 Command List</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_10b">
+        <item>
+         <widget class="QListWidget" name="lwCommandList"/>
+        </item>
+        <item>
+         <widget class="QLabel" name="lCommandColorLegend">
+          <property name="text">
+           <string>&lt;span style=&quot; color:darkgreen;&quot;&gt;Sprite&lt;/span&gt; · &lt;span style=&quot; color:blue;&quot;&gt;Polygon&lt;/span&gt; · &lt;span style=&quot; color:darkcyan;&quot;&gt;Polyline&lt;/span&gt; · &lt;span style=&quot; color:#B45A00;&quot;&gt;Line&lt;/span&gt; · &lt;span style=&quot; color:gray;&quot;&gt;Clip/Local&lt;/span&gt; · &lt;span style=&quot; color:red;&quot;&gt;Invalid&lt;/span&gt;&lt;br&gt;Color calc: SH Shadow · HL Half-luminance · HT Half-transparency · G Gouraud · G+HL · G+HT · CC5! prohibited · &lt;b&gt;bold&lt;/b&gt; = MSB On · Mesh</string>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::RichText</enum>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="gbCommandInfo">
+       <property name="title">
+        <string>VDP1 Command Info</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_11">
+        <item>
+         <widget class="QPlainTextEdit" name="pteCommandInfo">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="font">
+           <font>
+            <family>Courier New</family>
+            <pointsize>9</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <layout class="QVBoxLayout" name="verticalLayout_9">
+       <item>
+        <widget class="QGroupBox" name="gbTexture">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="title">
+          <string>Texture</string>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_5" stretch="1,0,0,0">
+          <item>
+           <widget class="QGraphicsView" name="gvTexture">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="toolTip">
+             <string>Ctrl+wheel to zoom</string>
+            </property>
+            <property name="mouseTracking">
+             <bool>true</bool>
+            </property>
+            <property name="styleSheet">
+             <string notr="true">QGraphicsView { background-color: transparent; }</string>
+            </property>
+            <property name="backgroundBrush">
+             <brush brushstyle="NoBrush">
+              <color alpha="0">
+               <red>0</red>
+               <green>0</green>
+               <blue>0</blue>
+              </color>
+             </brush>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lTextureInfo">
+            <property name="text">
+             <string>No texture</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lTexturePixelInfo">
+            <property name="text">
+             <string>Move the mouse over the texture to inspect a pixel.</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_2">
+            <item>
+             <spacer name="horizontalSpacer">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QCheckBox" name="cbOpaque">
+              <property name="toolTip">
+               <string>Show transparent texels with their color instead of the checkerboard</string>
+              </property>
+              <property name="text">
+               <string>Opaque</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbResetZoom">
+              <property name="toolTip">
+               <string>Fit the texture back into the view (Ctrl+wheel to zoom)</string>
+              </property>
+              <property name="text">
+               <string>Reset Zoom</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbSaveBitmap">
+              <property name="text">
+               <string>Save Bitmap</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbSaveRawSprite">
+              <property name="text">
+               <string>Save RAW</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="horizontalSpacer_2">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="hlEdit">
+            <item>
+             <widget class="QPushButton" name="pbEditSprite">
+              <property name="toolTip">
+               <string>Open the graphics editor on the selected sprite: draw in it, change its palette, see the result in the game</string>
+              </property>
+              <property name="text">
+               <string>Edit in Graphics Editor...</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbSaveEdits">
+              <property name="toolTip">
+               <string>Save the edits: edit pack (.kmod), patched disc image, BPS or IPS patch</string>
+              </property>
+              <property name="text">
+               <string>Save / load edits...</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pbRevertEdits">
+              <property name="toolTip">
+               <string>Put back every original sprite, tile and color changed with the graphics editor</string>
+              </property>
+              <property name="text">
+               <string>Revert all edits</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="gbVdp1Regs">
+       <property name="title">
+        <string>VDP1 Registers</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_regs">
+        <item>
+         <widget class="QPlainTextEdit" name="pteVdp1Regs">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="font">
+           <font>
+            <family>Courier New</family>
+            <pointsize>9</pointsize>
+           </font>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_info">
+     <item>
+      <widget class="QLabel" name="lVDP1Info">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>3</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text">
+        <string>TextLabel</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+       <property name="textInteractionFlags">
+        <set>Qt::TextSelectableByMouse</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_7">
+     <item>
+      <widget class="QPushButton" name="pbNextButton">
+        <property name="text">
+         <string>Next Frame</string>
+        </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pbExportDebugInfo">
+       <property name="toolTip">
+        <string>Save the VDP1 registers, command list and selected command info to a text file</string>
+       </property>
+       <property name="text">
+        <string>Export Debug Info (.txt)...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pbFramePreview">
+       <property name="toolTip">
+        <string>Show every command of the list assembled at its screen position; click a sprite to select its command</string>
+       </property>
+       <property name="text">
+        <string>Frame Preview...</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="dbbButtons">
+       <property name="standardButtons">
+        <set>QDialogButtonBox::Close</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>dbbButtons</sender>
+   <signal>rejected()</signal>
+   <receiver>UIDebugVDP1</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>347</x>
+     <y>321</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>335</x>
+     <y>376</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
