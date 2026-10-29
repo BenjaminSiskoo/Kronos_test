@@ -820,14 +820,32 @@ void UICheatSearch::on_pbAddCheat_clicked()
     d.rbWord->setChecked(rb16Bit->isChecked());
     d.rbLong->setChecked(rb32Bit->isChecked());
 
-    if (d.exec()) {
-        bool ok;
-        u32 addr = d.leAddress->text().toUInt(&ok, 16);
-        u32 val = d.leValue->text().toUInt(&ok, 16);
-        if (CheatAddCode(d.type(), addr, val) == 0) {
-            int count;
-            CheatGetList(&count);
-            CheatChangeDescriptionByIndex(count - 1, d.teDescription->toPlainText().toLatin1().data());
-        }
+    if (!d.exec())
+        return;
+
+    // No type selected: nothing sensible can be added.
+    if (d.type() == -1) {
+        CommonDialogs::error(tr_("Select a code type (Enable, Byte, Word or Long)."));
+        return;
     }
+
+    // The hex validators accept an empty field, and toUInt() then returns 0:
+    // without these checks a cheat was silently written to 0x00000000 (BIOS).
+    bool addrOk = false;
+    bool valOk = false;
+    const u32 addr = d.leAddress->text().trimmed().toUInt(&addrOk, 16);
+    const u32 val = d.leValue->text().trimmed().toUInt(&valOk, 16);
+    if (!addrOk || !valOk) {
+        CommonDialogs::error(tr_("Invalid Address or Value"));
+        return;
+    }
+
+    if (CheatAddCode(d.type(), addr, val) != 0) {
+        CommonDialogs::error(tr_("Unable to add code"));
+        return;
+    }
+
+    int count;
+    CheatGetList(&count);
+    CheatChangeDescriptionByIndex(count - 1, d.teDescription->toPlainText().toLatin1().data());
 }
