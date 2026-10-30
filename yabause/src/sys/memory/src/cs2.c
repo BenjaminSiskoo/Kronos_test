@@ -978,6 +978,7 @@ void Cs2Reset(void) {
   // wrong for every PAL Video CD.
   Cs2Area->mpegpicturewidth = 352;
   Cs2Area->mpegpictureheight = 240;
+  Cs2Area->mpegdispbank = 0;
   Cs2Area->isvideocd = 0;
 
   Cs2Area->reg.CR1 = ( 0 <<8) | 'C';
@@ -3781,6 +3782,7 @@ void Cs2MpegInit(void) {
   Cs2MpegIntPending = 0;
   Cs2Area->mpegpicturewidth = 0;
   Cs2Area->mpegpictureheight = 0;
+  Cs2Area->mpegdispbank = 0;
   MpegCardReset();
   Cs2MpegApplyDecodingMethod(0, 0, 0, 1);   // manual: mute 00H, paused, frozen
   Cs2MpegUpdateStatus();
@@ -3893,27 +3895,48 @@ void Cs2MpegOutDecodingSync(void) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// MPEG Get Timecode (command 0x98): reports Cs2Area->mpegtimecode, the
-// running decode position VideoCdPlayerAdvance() maintains (see
-// mpegcard.c) across CR3:CR4, mirroring how doCDReport() spreads the FAD
-// across the same two words.
+// MPEG Get Timecode (command 0x98), CDC_MpGetTc (CD Communication I/F, MPEG
+// part, 20.10): frame bank, picture type, temporal reference and time code
+// of the picture currently displayed.
+//
+// Response layout taken from Sega's own library, CDC_MpGetTc in LIBCD.A
+// (SGL 3.02j, CDC_MDC.O), which sends 9800h and unpacks the response as:
+//   CR1 low byte & 7Fh -> bnk     (frame bank 0-3)
+//   CR2 high / low     -> pictyp  (1 I, 2 P, 3 B, 4 D) / tr (low 8 bits)
+//   CR3 high / low     -> hour / minute
+//   CR4 high / low     -> second / picture
+// CdcMpTc (SEGA_CDC.H) holds hour, min, sec, pic as plain bytes (0-23,
+// 0-59, 0-59, 0-63). The same library decodes the MPEG report with the
+// layout doMPEGReport() uses, which confirms the CR1-CR4 byte order.
+//
+// The bank is the one named by MPEG Display (0xA0); the decoder does not
+// model frame banks, so in moving-picture playback it stays at that value.
 void Cs2MpegGetTimecode(void) {
-   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->actionstatus;
-   Cs2Area->reg.CR2 = Cs2Area->vcounter;
-   Cs2Area->reg.CR3 = (u16)(Cs2Area->mpegtimecode >> 16);
-   Cs2Area->reg.CR4 = (u16)(Cs2Area->mpegtimecode);
+   u8 hour, min, sec, pic, pictype, tempref;
+
+   MpegCardGetTimecode(&hour, &min, &sec, &pic, &pictype, &tempref);
+   Cs2Area->reg.CR1 = (Cs2Area->status << 8) | (Cs2Area->mpegdispbank & 0x7F);
+   Cs2Area->reg.CR2 = ((u16)pictype << 8) | tempref;
+   Cs2Area->reg.CR3 = ((u16)hour << 8) | min;
+   Cs2Area->reg.CR4 = ((u16)sec << 8) | pic;
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
 //////////////////////////////////////////////////////////////////////////////
-// MPEG Get Pts (command 0x99): reports Cs2Area->mpegpts, the last decoded
-// picture's presentation timestamp in 90kHz units (ISO/IEC 11172-1
-// §2.4.4.3), across CR3:CR4 the same way.
+// MPEG Get Pts (command 0x99), CDC_MpGetPts (20.11): the MPEG/Audio
+// presentation time stamp -- low 32 bits of the 33-bit 90 kHz PTS, latest
+// value just before the data enters decoding, previous value kept while
+// MPEG/Audio is not operating. Not the video PTS.
+//
+// CDC_MpGetPts in LIBCD.A (SGL 3.02j) sends 9900h and reads the 32-bit
+// value from CR3:CR4 (CR3 = high word); it ignores CR1 low byte and CR2.
 void Cs2MpegGetPts(void) {
+   u32 pts = MpegCardGetAudioPts();
+
    Cs2Area->reg.CR1 = (Cs2Area->status << 8) | Cs2Area->actionstatus;
    Cs2Area->reg.CR2 = Cs2Area->vcounter;
-   Cs2Area->reg.CR3 = (u16)(Cs2Area->mpegpts >> 16);
-   Cs2Area->reg.CR4 = (u16)(Cs2Area->mpegpts);
+   Cs2Area->reg.CR3 = (u16)(pts >> 16);
+   Cs2Area->reg.CR4 = (u16)pts;
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
 }
 
@@ -4224,20 +4247,24 @@ void Cs2MpegGetPictureSize(void) {
 
 void Cs2MpegDisplay(void) {
    CS2_MPEG_CMD_TRACE("MPEG Display (0xA0)");
-   // "MPEG Display"(0xA0): toggles the "display enable" bit of the LSI
-   // status register (see the mpeglsi_struct comment in cs2.h) on/off.
-   // CR1 low byte: 0=hide the decoded picture, 1=show it, 0xFF=leave as-is
-   // (0xFF-means-"unchanged" is the same convention Cs2MpegSetMode()
-   // already uses for its own CR1-CR3 fields just above).
-   u8 dispctrl = Cs2Area->reg.CR1 & 0xFF;
+   // "MPEG Display"(0xA0), CDC_MpDisp(dspsw, fbn) (CD Communication I/F,
+   // MPEG part, 22.1): display switch (ON = shown on VDP2, OFF initially)
+   // and frame bank number (0-3, used in still-picture playback).
+   //
+   // Register layout from Sega's library, CDC_MpDisp in LIBCD.A (SGL 3.02j,
+   // CDC_MWN.O): CR1 = A000h (low byte always 0), CR2 high byte = dspsw,
+   // CR2 low byte = fbn. The display switch used to be read from CR1's low
+   // byte, so every call through the library turned the display bit off.
+   // The switch toggles the "display enable" bit of the LSI status register
+   // (see the mpeglsi_struct comment in cs2.h); the bank is reported back by
+   // MPEG Get Timecode (0x98).
+   u8 dspsw = (u8)(Cs2Area->reg.CR2 >> 8);
 
-   if (dispctrl != 0xFF)
-   {
-      if (dispctrl)
-         Cs2Area->mpeglsi.status |= 0x02;
-      else
-         Cs2Area->mpeglsi.status &= ~0x02;
-   }
+   if (dspsw)
+      Cs2Area->mpeglsi.status |= 0x02;
+   else
+      Cs2Area->mpeglsi.status &= ~0x02;
+   Cs2Area->mpegdispbank = (u8)(Cs2Area->reg.CR2 & 0x03);
 
    doMPEGReport(Cs2Area->status);
    Cs2SetIRQ(CDB_HIRQ_CMOK | CDB_HIRQ_MPCM);
