@@ -117,6 +117,20 @@ void MpegCardSetMute(int mutebits);
    PAL Video CD, 29.97 NTSC), or 0 if no sequence header was seen yet. */
 double MpegCardGetFrameRate(void);
 
+/* MPEG Get Timecode (CD Block command 0x98, CDC_MpGetTc in the CD
+   Communication I/F MPEG part, 20.10): time code of the picture currently
+   displayed -- GOP time code + temporal reference, not the GOP start --
+   in binary (hour 0-23, minute 0-59, second 0-59, picture 0-63), its
+   picture type (1 I, 2 P, 3 B, 4 D) and the low 8 bits of its temporal
+   reference. All 0 while no picture is displayed. */
+void MpegCardGetTimecode(u8 *hour, u8 *min, u8 *sec, u8 *pic, u8 *pictype, u8 *tempref);
+
+/* MPEG Get PTS (CD Block command 0x99, CDC_MpGetPts, 20.11): audio
+   presentation time stamp, low 32 bits of the 33-bit 90 kHz value, of the
+   last audio data handed to the decoder. Kept across decoder resets and
+   while no audio is played, as documented. 0 at power-on. */
+u32 MpegCardGetAudioPts(void);
+
 /* ------------------------------------------------------------------------
    Video CD Card boot ROM (the "system application" the BIOS CD player
    loads through CD Block command 0xE2 "Get MPEG ROM").
