@@ -70,9 +70,22 @@ typedef struct
    int mute;            // bit 0 right, bit 1 left
    u32 pushedsectors;   // diagnostics only
    u32 decodedframes;   // diagnostics only
+
+   // MPEG Get Timecode (0x98): the displayed picture's time code, picture
+   // type and temporal reference (see MpegCardGetTimecode()). All 0 until a
+   // picture is shown, the initial value CDC_MpGetTc documents for the
+   // picture type.
+   u8 tchour, tcmin, tcsec, tcpic;
+   u8 pictype;
+   u8 tempref;
 } mpegcard_state;
 
 static mpegcard_state g_mpegcard;
+
+// MPEG Get PTS (0x99): kept outside g_mpegcard because CDC_MpGetPts documents
+// that "when MPEG/Audio is not operating, the previous value is retained",
+// and MpegCardReset() (MPEG Init, disc change) wipes g_mpegcard.
+static u32 g_mpegaudiopts = 0;
 
 // The audio FIFO is filled on the emulation thread (plm_decode() ->
 // MpegCardAudioCallback(), from MpegCardAdvance() in Vdp2VBlankIN) and
@@ -96,6 +109,57 @@ static void MpegCardAudioUnlock(void)
 }
 
 //////////////////////////////////////////////////////////////////////////////
+
+// Time code of a picture = time code of its GOP header + its temporal
+// reference (display rank inside the GOP), ISO/IEC 11172-2 2.4.3.4/2.4.3.5.
+// CDC_MpGetTc (CD Communication I/F, MPEG part, 20.10) returns "the time
+// code of the currently displayed picture. It is not the time code at the
+// start of the GOP layer". Counted with the stream's nominal picture rate
+// (25 for PAL, 30 for 29.97 Hz...) and, when drop_frame_flag is set (29.97 /
+// 59.94 Hz), the SMPTE drop-frame rule: picture numbers 0-1 (0-3 at 60) are
+// skipped at the start of every minute except minutes 0, 10, 20...
+static void MpegCardFrameTimecode(const plm_frame_t *frame, double framerate)
+{
+   int fps = (int)(framerate + 0.5);
+   long long f;
+
+   if (!frame->gop_valid || fps <= 0 || fps > 60)
+   {
+      g_mpegcard.tchour = g_mpegcard.tcmin = g_mpegcard.tcsec = g_mpegcard.tcpic = 0;
+      return;
+   }
+
+   if (frame->gop_drop_frame && (fps == 30 || fps == 60))
+   {
+      int drop = fps / 15;                       // 2 at 30, 4 at 60
+      long long per10 = (long long)fps * 600 - drop * 9;
+      long long permin = (long long)fps * 60 - drop;
+      long long mins = (long long)frame->gop_hours * 60 + frame->gop_minutes;
+      long long d, m;
+
+      // drop-frame time code -> picture count
+      f = ((mins * 60 + frame->gop_seconds) * fps + frame->gop_pictures)
+          - drop * (mins - mins / 10) + frame->temporal_reference;
+      f %= per10 * 6 * 24;                       // wraps at 24 h
+      // picture count -> drop-frame time code
+      d = f / per10;
+      m = f % per10;
+      f += (long long)drop * 9 * d + (m > drop ? (long long)drop * ((m - drop) / permin) : 0);
+   }
+   else
+   {
+      f = (((long long)frame->gop_hours * 60 + frame->gop_minutes) * 60 + frame->gop_seconds) * fps
+          + frame->gop_pictures + frame->temporal_reference;
+      f %= (long long)fps * 86400;               // wraps at 24 h
+   }
+
+   g_mpegcard.tcpic = (u8)(f % fps);
+   f /= fps;
+   g_mpegcard.tcsec = (u8)(f % 60);
+   f /= 60;
+   g_mpegcard.tcmin = (u8)(f % 60);
+   g_mpegcard.tchour = (u8)((f / 60) % 24);
+}
 
 static void MpegCardVideoCallback(plm_t *plm, plm_frame_t *frame, void *user)
 {
@@ -125,6 +189,12 @@ static void MpegCardVideoCallback(plm_t *plm, plm_frame_t *frame, void *user)
       plm_frame_to_rgba(frame, g_mpegcard.rgba, frame->width * 4);
       g_mpegcard.haspicture = 1;
       g_mpegcard.frameserial++;
+
+      // This is now the displayed picture (frozen/strobe-skipped pictures
+      // returned above, like the picture they did not replace on screen).
+      g_mpegcard.pictype = (u8)frame->picture_type;
+      g_mpegcard.tempref = (u8)(frame->temporal_reference & 0xFF);
+      MpegCardFrameTimecode(frame, plm_get_framerate(plm));
    }
 }
 
@@ -329,8 +399,26 @@ static void MpegCardForceStreams(void)
 {
    plm_t *plm = g_mpegcard.plm;
 
-   if (plm == NULL || plm->has_decoders)
+   if (plm == NULL)
       return;
+
+   // Problem 1 again, when playback starts at the very beginning of a track:
+   // the first pack does carry a system header -- the VIDEO one -- so
+   // PL_MPEG creates its decoders from it before the wait below is over,
+   // with no audio decoder at all. Every audio packet was then dropped (no
+   // sound, no audio PTS for MPEG Get PTS) until the next MPEG Init. Add the
+   // audio stream the Video CD specification mandates; plm_init_decoders()
+   // keeps the existing video decoder and only creates the missing one.
+   if (plm->has_decoders)
+   {
+      if (plm->audio_decoder == NULL && plm->audio_enabled)
+      {
+         plm->demux->num_audio_streams = 1;
+         plm->has_decoders = FALSE;
+         plm_init_decoders(plm);
+      }
+      return;
+   }
 
    // Wait for a few sectors so the demuxer has something to sync on, then
    // stop waiting for a system header that may never come.
@@ -368,6 +456,9 @@ void MpegCardAdvance(double elapsedSeconds)
    MpegCardForceStreams();
 
    plm_decode(g_mpegcard.plm, elapsedSeconds);
+
+   if (g_mpegcard.plm->has_audio_pts)
+      g_mpegaudiopts = g_mpegcard.plm->audio_pts;
 
    // PL_MPEG's playback clock (plm->time) keeps running even while the
    // decoder is starved (no sector yet, CD seeking, buffer drained...). On
@@ -446,6 +537,25 @@ u32 MpegCardPullAudioSamples(float *out, u32 maxSamples, int *outSampleRate)
 int MpegCardIsActive(void)
 {
    return g_mpegcard.initialized && g_mpegcard.haspicture;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+void MpegCardGetTimecode(u8 *hour, u8 *min, u8 *sec, u8 *pic, u8 *pictype, u8 *tempref)
+{
+   int shown = g_mpegcard.initialized && g_mpegcard.haspicture;
+
+   if (hour != NULL) *hour = shown ? g_mpegcard.tchour : 0;
+   if (min != NULL) *min = shown ? g_mpegcard.tcmin : 0;
+   if (sec != NULL) *sec = shown ? g_mpegcard.tcsec : 0;
+   if (pic != NULL) *pic = shown ? g_mpegcard.tcpic : 0;
+   if (pictype != NULL) *pictype = shown ? g_mpegcard.pictype : 0;
+   if (tempref != NULL) *tempref = shown ? g_mpegcard.tempref : 0;
+}
+
+u32 MpegCardGetAudioPts(void)
+{
+   return g_mpegaudiopts;
 }
 
 //////////////////////////////////////////////////////////////////////////////
