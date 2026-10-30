@@ -204,6 +204,18 @@ typedef struct {
 	plm_plane_t y;
 	plm_plane_t cr;
 	plm_plane_t cb;
+	// Kronos (Video CD Card, MPEG Get Timecode 0x98): picture header and the
+	// time code of the GOP the picture belongs to (ISO/IEC 11172-2 2.4.2.4
+	// group_of_pictures_header, 2.4.2.5 picture_header). gop_valid is 0 until
+	// a GOP header has been seen.
+	int picture_type;
+	int temporal_reference;
+	int gop_valid;
+	int gop_drop_frame;
+	int gop_hours;
+	int gop_minutes;
+	int gop_seconds;
+	int gop_pictures;
 } plm_frame_t;
 
 
@@ -874,6 +886,12 @@ struct plm_t {
 
 	plm_audio_decode_callback audio_decode_callback;
 	void *audio_decode_callback_user_data;
+
+	// Kronos (Video CD Card, MPEG Get PTS 0x99): PTS of the last audio packet
+	// handed to the audio decoder, low 32 bits of the 33-bit 90 kHz value.
+	// Kept when no audio arrives (CD Communication I/F MPEG part, CDC_MpGetPts).
+	int has_audio_pts;
+	uint32_t audio_pts;
 };
 
 int plm_init_decoders(plm_t *self);
@@ -1255,6 +1273,11 @@ void plm_read_packets(plm_t *self, int requested_type) {
 		}
 		else if (packet->type == self->audio_packet_type) {
 			plm_buffer_write(self->audio_buffer, packet->data, packet->length);
+			if (packet->pts != PLM_PACKET_INVALID_TS) {
+				// Kronos: back to 90 kHz ticks (exact: pts = ticks / 90000)
+				self->audio_pts = (uint32_t)(uint64_t)(packet->pts * 90000.0 + 0.5);
+				self->has_audio_pts = TRUE;
+			}
 		}
 
 		if (packet->type == requested_type) {
@@ -2213,7 +2236,9 @@ plm_packet_t *plm_demux_decode(plm_demux_t *self) {
 }
 
 double plm_demux_decode_time(plm_demux_t *self) {
-	int64_t clock = plm_buffer_read(self->buffer, 3) << 30;
+	// Kronos: was "plm_buffer_read(...) << 30" on an int, which overflows
+	// (undefined behavior) as soon as the top bits are 2 or more.
+	int64_t clock = (int64_t)plm_buffer_read(self->buffer, 3) << 30;
 	plm_buffer_skip(self->buffer, 1);
 	clock |= plm_buffer_read(self->buffer, 15) << 15;
 	plm_buffer_skip(self->buffer, 1);
@@ -2295,6 +2320,7 @@ static const int PLM_START_SLICE_LAST = 0xAF;
 static const int PLM_START_PICTURE = 0x00;
 static const int PLM_START_EXTENSION = 0xB5;
 static const int PLM_START_USER_DATA = 0xB2;
+static const int PLM_START_GOP = 0xB8; // Kronos
 
 #define PLM_START_IS_SLICE(c) \
 	(c >= PLM_START_SLICE_FIRST && c <= PLM_START_SLICE_LAST)
@@ -2750,6 +2776,14 @@ struct plm_video_t {
 
 	int has_reference_frame;
 	int assume_no_b_frames;
+
+	// Kronos: last group_of_pictures_header seen
+	int gop_valid;
+	int gop_drop_frame;
+	int gop_hours;
+	int gop_minutes;
+	int gop_seconds;
+	int gop_pictures;
 };
 
 static inline uint8_t plm_clamp(int n) {
@@ -2765,6 +2799,8 @@ static inline uint8_t plm_clamp(int n) {
 int plm_video_decode_sequence_header(plm_video_t *self);
 void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base);
 void plm_video_decode_picture(plm_video_t *self);
+int plm_video_find_picture(plm_video_t *self);
+void plm_video_decode_gop(plm_video_t *self);
 void plm_video_decode_slice(plm_video_t *self, int slice);
 void plm_video_decode_macroblock(plm_video_t *self);
 void plm_video_decode_motion_vectors(plm_video_t *self);
@@ -2846,6 +2882,7 @@ void plm_video_rewind(plm_video_t *self) {
 	self->frames_decoded = 0;
 	self->has_reference_frame = FALSE;
 	self->start_code = -1;
+	self->gop_valid = FALSE;
 }
 
 int plm_video_has_ended(plm_video_t *self) {
@@ -2860,7 +2897,13 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	plm_frame_t *frame = NULL;
 	do {
 		if (self->start_code != PLM_START_PICTURE) {
-			self->start_code = plm_buffer_find_start_code(self->buffer, PLM_START_PICTURE);
+			self->start_code = plm_video_find_picture(self);
+
+			// Kronos: GOP header found but not complete yet in a buffer fed
+			// sector by sector; it is parsed on the next call.
+			if (self->start_code == PLM_START_GOP) {
+				return NULL;
+			}
 
 			if (self->start_code == -1) {
 				// If we reached the end of the file and the previously decoded
@@ -2916,6 +2959,43 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	self->time = (double)self->frames_decoded / self->framerate;
 
 	return frame;
+}
+
+// Kronos: same as plm_buffer_find_start_code(buffer, PLM_START_PICTURE), but
+// walks every start code so that GOP headers (time code) are decoded instead
+// of skipped. Returns PLM_START_PICTURE, -1 (no more data), or PLM_START_GOP
+// when a GOP header is not complete in the buffer yet (the read position then
+// stays right after its start code).
+int plm_video_find_picture(plm_video_t *self) {
+	int code = self->start_code;
+	while (code != PLM_START_PICTURE) {
+		if (code == PLM_START_GOP) {
+			if (!plm_buffer_has(self->buffer, 27)) {
+				return PLM_START_GOP;
+			}
+			plm_video_decode_gop(self);
+		}
+		code = plm_buffer_next_start_code(self->buffer);
+		if (code == -1) {
+			return -1;
+		}
+	}
+	return code;
+}
+
+// Kronos: group_of_pictures_header (ISO/IEC 11172-2 2.4.2.4): drop_frame_flag
+// (1), time_code_hours (5), time_code_minutes (6), marker_bit (1),
+// time_code_seconds (6), time_code_pictures (6), then closed_gop and
+// broken_link, which are not needed here.
+void plm_video_decode_gop(plm_video_t *self) {
+	self->gop_drop_frame = plm_buffer_read(self->buffer, 1);
+	self->gop_hours = plm_buffer_read(self->buffer, 5);
+	self->gop_minutes = plm_buffer_read(self->buffer, 6);
+	plm_buffer_skip(self->buffer, 1);
+	self->gop_seconds = plm_buffer_read(self->buffer, 6);
+	self->gop_pictures = plm_buffer_read(self->buffer, 6);
+	plm_buffer_skip(self->buffer, 2);
+	self->gop_valid = TRUE;
 }
 
 int plm_video_has_header(plm_video_t *self) {
@@ -3038,9 +3118,21 @@ void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base) 
 }
 
 void plm_video_decode_picture(plm_video_t *self) {
-	plm_buffer_skip(self->buffer, 10); // skip temporalReference
+	// Kronos: temporal_reference was skipped; kept for MPEG Get Timecode
+	int temporal_reference = plm_buffer_read(self->buffer, 10);
 	self->picture_type = plm_buffer_read(self->buffer, 3);
 	plm_buffer_skip(self->buffer, 16); // skip vbv_delay
+
+	// Kronos: frame_current is the picture decoded now (it is rotated into
+	// frame_backward below for I/P pictures, with these fields).
+	self->frame_current.picture_type = self->picture_type;
+	self->frame_current.temporal_reference = temporal_reference;
+	self->frame_current.gop_valid = self->gop_valid;
+	self->frame_current.gop_drop_frame = self->gop_drop_frame;
+	self->frame_current.gop_hours = self->gop_hours;
+	self->frame_current.gop_minutes = self->gop_minutes;
+	self->frame_current.gop_seconds = self->gop_seconds;
+	self->frame_current.gop_pictures = self->gop_pictures;
 
 	// D frames or unknown coding type
 	if (self->picture_type <= 0 || self->picture_type > PLM_VIDEO_PICTURE_TYPE_B) {
