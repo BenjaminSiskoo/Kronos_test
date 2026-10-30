@@ -270,11 +270,10 @@ typedef struct {
   // either fell through to the "not implemented" default case (0x97-0x99,
   // 0x9C, 0x9F, 0xA5-0xAA, 0xAE) or were stubbed without persisting the
   // values the game sent (0xA1-0xA4).
-  u32 mpegtimecode;         // running decode timecode, see Cs2MpegGetTimecode (0x98)
-  u32 mpegpts;              // last decoded picture's presentation timestamp,
-                             // 90kHz units per the MPEG-1 System Stream PTS
-                             // format (ISO/IEC 11172-1 §2.4.4.3), see
-                             // Cs2MpegGetPts (0x99)
+  u8 mpegdispbank;          // frame bank named by MPEG Display (0xA0, CR2
+                             // low byte), reported by MPEG Get Timecode
+                             // (0x98). Time code and audio PTS come from the
+                             // decoder (MpegCardGetTimecode/GetAudioPts).
   u16 mpegpicturewidth;     // Cs2MpegGetPictureSize (0x9F)
   u16 mpegpictureheight;
   mpegwindow_struct mpegwindow;    // current window rectangle (0xA1)
