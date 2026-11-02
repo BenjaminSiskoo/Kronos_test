@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "vdp1.h"
 #include "vdp2.h"
 #include "vdpedit.h"
@@ -118,23 +119,71 @@ static void vePatchVdp1Snapshot(u32 addr, const u8 *from, const u8 *to, u32 len)
 /* Edit list                                                                */
 /* ======================================================================== */
 
+#define VE_HISTORY 32   /* undo / redo steps kept per edit */
+
 typedef struct {
+   u32 id;
    int space;
    u32 addr, len;
    u8 *orig, *repl;
+   int enabled;
+   char *name, *meta, *pack;
+   u8 *undo[VE_HISTORY];   /* previous versions of repl, oldest first */
+   int nUndo;
+   u8 *redo[VE_HISTORY];
+   int nRedo;
 } VeEdit;
 
 static VeEdit *veList = NULL;
 static int veCount = 0, veCap = 0;
 static u32 veGen = 0;
+static u32 veNextId = 1;
+
+static char *veStrDup(const char *s)
+{
+   char *d;
+   size_t n;
+   if (!s || !*s) return NULL;
+   n = strlen(s) + 1;
+   d = (char *)malloc(n);
+   if (d) memcpy(d, s, n);
+   return d;
+}
+
+static void veSetStr(char **dst, const char *s)
+{
+   free(*dst);
+   *dst = veStrDup(s);
+}
+
+static void veFreeHistory(VeEdit *e)
+{
+   int k;
+   for (k = 0; k < e->nUndo; k++) free(e->undo[k]);
+   for (k = 0; k < e->nRedo; k++) free(e->redo[k]);
+   e->nUndo = e->nRedo = 0;
+}
+
+static void veFreeEdit(VeEdit *e)
+{
+   free(e->orig); free(e->repl);
+   free(e->name); free(e->meta); free(e->pack);
+   veFreeHistory(e);
+}
 
 static void veFreeAt(int i)
 {
-   free(veList[i].orig);
-   free(veList[i].repl);
+   veFreeEdit(&veList[i]);
    memmove(&veList[i], &veList[i + 1], sizeof(VeEdit) * (size_t)(veCount - i - 1));
    veCount--;
    veGen++;
+}
+
+static int veFind(u32 id)
+{
+   int i;
+   for (i = 0; i < veCount; i++) if (veList[i].id == id) return i;
+   return -1;
 }
 
 static int veValid(int space, u32 addr, u32 len)
@@ -163,6 +212,33 @@ static int veApplyOne(int space, u32 addr, u32 len, const u8 *from, const u8 *fr
    return 0;
 }
 
+/* Replaces e->repl by 'nr' (taken over), moving what the memory shows. */
+static int veSwapRepl(VeEdit *e, u8 *nr)
+{
+   u8 *old = e->repl;
+   int done = 0;
+   if (e->space == VDPEDIT_VDP1) {
+      vePatchVdp1Snapshot(e->addr, old, nr, e->len);
+      vePatchVdp1Snapshot(e->addr, e->orig, nr, e->len);
+   }
+   if (e->enabled && veSpaceReady(e->space))
+      done = veApplyOne(e->space, e->addr, e->len, old, e->orig, nr);
+   e->repl = nr;
+   free(old);
+   veGen++;
+   return done;
+}
+
+static void vePush(u8 **stack, int *n, u8 *p)
+{
+   if (*n == VE_HISTORY) {           /* full: drop the oldest */
+      free(stack[0]);
+      memmove(stack, stack + 1, sizeof(u8 *) * (VE_HISTORY - 1));
+      (*n)--;
+   }
+   stack[(*n)++] = p;
+}
+
 static void veInstallHooks(void)
 {
    VdpEditHookVdp1 = VdpEditApplyVdp1;
@@ -170,9 +246,11 @@ static void veInstallHooks(void)
    VdpEditHookDeInit = VdpEditClearAll;
 }
 
-static int veWriteInternal(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len)
+static int veWriteInternal(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len,
+                           const char *meta, const char *pack, u32 *idOut)
 {
    int i;
+   if (idOut) *idOut = 0;
    if (!orig || !repl || !veValid(space, addr, len)) return -1;
    veInstallHooks();
 
@@ -181,28 +259,33 @@ static int veWriteInternal(int space, u32 addr, const u8 *orig, const u8 *repl, 
       if (e->space != space || e->addr != addr || e->len != len) continue;
       if (memcmp(e->repl, orig, len) != 0 && memcmp(e->orig, orig, len) != 0) continue;
 
+      if (idOut) *idOut = e->id;
+      if (meta) veSetStr(&e->meta, meta);
+      if (memcmp(repl, e->repl, len) == 0 && e->enabled) return veApplyOne(space, addr, len, e->orig, NULL, e->repl);
+
       /* Editing again something already edited: keep the true original. */
       if (memcmp(repl, e->orig, len) == 0) {
-         /* back to the original: undo and forget */
+         /* back to the original from the editor (its own undo): forget the
+            edit. VdpEditUndo() is the path that keeps it for a redo. */
          if (veMatches(space, addr, e->repl, len)) {
             if (space == VDPEDIT_VDP1) vePatchVdp1Snapshot(addr, e->repl, e->orig, len);
             veWrite(space, addr, e->orig, len);
          }
+         if (idOut) *idOut = 0;
          veFreeAt(i);
          return 2;
       } else {
-         u8 *old = e->repl, *nr = veDup(repl, len);
-         int done;
-         if (!nr) return -1;
-         if (space == VDPEDIT_VDP1) {
-            vePatchVdp1Snapshot(addr, old, nr, len);
-            vePatchVdp1Snapshot(addr, e->orig, nr, len);
+         u8 *nr = veDup(repl, len), *keep = veDup(e->repl, len);
+         int k;
+         if (!nr || !keep) { free(nr); free(keep); return -1; }
+         vePush(e->undo, &e->nUndo, keep);   /* this version can be undone */
+         for (k = 0; k < e->nRedo; k++) free(e->redo[k]);
+         e->nRedo = 0;
+         if (!e->enabled) {
+            e->enabled = 1;                   /* editing it again turns it back on */
+            if (veSpaceReady(space)) veApplyOne(space, addr, len, e->orig, NULL, e->repl);
          }
-         done = veApplyOne(space, addr, len, old, e->orig, nr);
-         e->repl = nr;
-         free(old);
-         veGen++;
-         return done;
+         return veSwapRepl(e, nr);
       }
    }
 
@@ -216,10 +299,16 @@ static int veWriteInternal(int space, u32 addr, const u8 *orig, const u8 *repl, 
    }
    {
       VeEdit *e = &veList[veCount];
+      memset(e, 0, sizeof(*e));
       e->space = space; e->addr = addr; e->len = len;
       e->orig = veDup(orig, len);
       e->repl = veDup(repl, len);
+      e->enabled = 1;
       if (!e->orig || !e->repl) { free(e->orig); free(e->repl); return -1; }
+      e->meta = veStrDup(meta);
+      e->pack = veStrDup(pack);
+      e->id = veNextId++;
+      if (idOut) *idOut = e->id;
       veCount++;
       veGen++;
       /* the debugger snapshot may hold the data even if live VRAM moved on */
@@ -230,13 +319,28 @@ static int veWriteInternal(int space, u32 addr, const u8 *orig, const u8 *repl, 
 
 int VdpEditWrite(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len)
 {
-   return veWriteInternal(space, addr, orig, repl, len);
+   return veWriteInternal(space, addr, orig, repl, len, NULL, NULL, NULL);
+}
+
+int VdpEditWriteEx(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len,
+                   const char *meta, const char *pack, u32 *idOut)
+{
+   return veWriteInternal(space, addr, orig, repl, len, meta, pack, idOut);
 }
 
 int VdpEditRestore(const EditRecord *r)
 {
+   u32 id = 0;
+   int rc, i;
    if (!r) return -1;
-   return veWriteInternal(r->type, r->addr, r->orig, r->repl, r->len);
+   rc = veWriteInternal(r->type, r->addr, r->orig, r->repl, r->len, r->meta, r->pack, &id);
+   if (rc < 0 || id == 0) return rc;
+   i = veFind(id);
+   if (i >= 0) {
+      if (r->name && !veList[i].name) veSetStr(&veList[i].name, r->name);
+      if (!r->enabled) { VdpEditSetEnabled(id, 0); rc = 0; }
+   }
+   return rc;
 }
 
 int VdpEditRevertRange(int space, u32 addr, u32 len)
@@ -254,6 +358,32 @@ int VdpEditRevertRange(int space, u32 addr, u32 len)
    return n;
 }
 
+int VdpEditRemove(u32 id)
+{
+   const int i = veFind(id);
+   VeEdit *e;
+   if (i < 0) return -1;
+   e = &veList[i];
+   if (e->space == VDPEDIT_VDP1) vePatchVdp1Snapshot(e->addr, e->repl, e->orig, e->len);
+   if (veSpaceReady(e->space) && veMatches(e->space, e->addr, e->repl, e->len))
+      veWrite(e->space, e->addr, e->orig, e->len);
+   veFreeAt(i);
+   return 0;
+}
+
+int VdpEditRemovePack(const char *pack)
+{
+   int i, n = 0;
+   for (i = veCount - 1; i >= 0; i--) {
+      const char *p = veList[i].pack;
+      const int same = (!pack || !*pack) ? (p == NULL) : (p && strcmp(p, pack) == 0);
+      if (!same) continue;
+      VdpEditRemove(veList[i].id);
+      n++;
+   }
+   return n;
+}
+
 void VdpEditRevertAll(void)
 {
    int i;
@@ -264,7 +394,7 @@ void VdpEditRevertAll(void)
          if (veMatches(e->space, e->addr, e->repl, e->len))
             veWrite(e->space, e->addr, e->orig, e->len);
       }
-      free(e->orig); free(e->repl);
+      veFreeEdit(e);
    }
    veCount = 0;
    veGen++;
@@ -273,10 +403,96 @@ void VdpEditRevertAll(void)
 void VdpEditClearAll(void)
 {
    int i;
-   for (i = 0; i < veCount; i++) { free(veList[i].orig); free(veList[i].repl); }
+   for (i = 0; i < veCount; i++) veFreeEdit(&veList[i]);
    free(veList);
    veList = NULL; veCount = veCap = 0;
    veGen++;
+}
+
+int VdpEditSetEnabled(u32 id, int enabled)
+{
+   const int i = veFind(id);
+   VeEdit *e;
+   if (i < 0) return -1;
+   e = &veList[i];
+   enabled = enabled ? 1 : 0;
+   if (e->enabled == enabled) return 0;
+   e->enabled = enabled;
+   if (veSpaceReady(e->space)) {
+      if (enabled) {
+         if (e->space == VDPEDIT_VDP1) vePatchVdp1Snapshot(e->addr, e->orig, e->repl, e->len);
+         veApplyOne(e->space, e->addr, e->len, e->orig, NULL, e->repl);
+      } else {
+         if (e->space == VDPEDIT_VDP1) vePatchVdp1Snapshot(e->addr, e->repl, e->orig, e->len);
+         if (veMatches(e->space, e->addr, e->repl, e->len)) veWrite(e->space, e->addr, e->orig, e->len);
+      }
+   }
+   veGen++;
+   return 0;
+}
+
+int VdpEditSetName(u32 id, const char *name)
+{
+   const int i = veFind(id);
+   if (i < 0) return -1;
+   veSetStr(&veList[i].name, name);
+   veGen++;
+   return 0;
+}
+
+int VdpEditSetMeta(u32 id, const char *meta)
+{
+   const int i = veFind(id);
+   if (i < 0) return -1;
+   veSetStr(&veList[i].meta, meta);
+   veGen++;
+   return 0;
+}
+
+int VdpEditSetPack(u32 id, const char *pack)
+{
+   const int i = veFind(id);
+   if (i < 0) return -1;
+   veSetStr(&veList[i].pack, pack);
+   veGen++;
+   return 0;
+}
+
+/* Undo / redo of one edit. The first undo past the oldest version brings
+   the original back but keeps the edit, so that redo still works. */
+int VdpEditUndo(u32 id)
+{
+   const int i = veFind(id);
+   VeEdit *e;
+   u8 *prev, *cur;
+   if (i < 0) return -1;
+   e = &veList[i];
+   if (e->nUndo > 0) prev = e->undo[--e->nUndo];
+   else if (memcmp(e->repl, e->orig, e->len) != 0) prev = veDup(e->orig, e->len);
+   else return -1;
+   cur = veDup(e->repl, e->len);
+   if (!prev || !cur) { free(prev); free(cur); return -1; }
+   vePush(e->redo, &e->nRedo, cur);
+   veSwapRepl(e, prev);
+   return 0;
+}
+
+int VdpEditRedo(u32 id)
+{
+   const int i = veFind(id);
+   VeEdit *e;
+   u8 *next, *cur;
+   if (i < 0) return -1;
+   e = &veList[i];
+   if (e->nRedo == 0) return -1;
+   next = e->redo[--e->nRedo];
+   cur = veDup(e->repl, e->len);
+   if (!cur) { e->nRedo++; return -1; }
+   /* the version left was the original itself: nothing to undo back to */
+   if (memcmp(cur, e->orig, e->len) == 0 && e->nUndo == 0) free(cur);
+   else vePush(e->undo, &e->nUndo, cur);
+   veSwapRepl(e, next);
+   return 0;
 }
 
 static void veApplySpaces(int vdp1Only)
@@ -284,6 +500,7 @@ static void veApplySpaces(int vdp1Only)
    int i;
    for (i = 0; i < veCount; i++) {
       VeEdit *e = &veList[i];
+      if (!e->enabled) continue;
       if (vdp1Only && e->space != VDPEDIT_VDP1) continue;
       if (!veSpaceReady(e->space) || e->addr + e->len > veSpaceSize(e->space)) continue;
       if (veMatches(e->space, e->addr, e->repl, e->len)) continue;
@@ -309,9 +526,57 @@ int VdpEditIsEdited(int space, u32 addr, u32 len)
 {
    int i;
    for (i = 0; i < veCount; i++)
-      if (veList[i].space == space && veList[i].addr < addr + len && veList[i].addr + veList[i].len > addr)
+      if (veList[i].space == space && veList[i].enabled &&
+          veList[i].addr < addr + len && veList[i].addr + veList[i].len > addr)
          return 1;
    return 0;
+}
+
+int VdpEditGetInfo(int index, VdpEditInfo *out)
+{
+   const VeEdit *e;
+   if (!out || index < 0 || index >= veCount) return -1;
+   e = &veList[index];
+   out->id = e->id;
+   out->space = e->space;
+   out->addr = e->addr;
+   out->len = e->len;
+   out->enabled = e->enabled;
+   out->noop = memcmp(e->orig, e->repl, e->len) == 0;
+   out->active = veSpaceReady(e->space) && e->addr + e->len <= veSpaceSize(e->space)
+                 && veMatches(e->space, e->addr, e->repl, e->len);
+   out->canUndo = e->nUndo > 0 || !out->noop;
+   out->canRedo = e->nRedo > 0;
+   out->name = e->name;
+   out->meta = e->meta;
+   out->pack = e->pack;
+   out->orig = e->orig;
+   out->repl = e->repl;
+   return 0;
+}
+
+int VdpEditIndexOf(u32 id) { return veFind(id); }
+
+/* Two enabled edits conflict when they change the same original bytes in
+   different ways: same space, overlapping ranges, equal originals on the
+   overlap, different new bytes there. */
+int VdpEditConflicts(u32 *pairs, int maxPairs)
+{
+   int i, j, n = 0;
+   for (i = 0; i < veCount; i++)
+      for (j = i + 1; j < veCount; j++) {
+         const VeEdit *a = &veList[i], *b = &veList[j];
+         u32 lo, hi;
+         if (!a->enabled || !b->enabled || a->space != b->space) continue;
+         lo = a->addr > b->addr ? a->addr : b->addr;
+         hi = (a->addr + a->len) < (b->addr + b->len) ? (a->addr + a->len) : (b->addr + b->len);
+         if (lo >= hi) continue;
+         if (memcmp(a->orig + (lo - a->addr), b->orig + (lo - b->addr), hi - lo) != 0) continue;
+         if (memcmp(a->repl + (lo - a->addr), b->repl + (lo - b->addr), hi - lo) == 0) continue;
+         if (pairs && n < maxPairs) { pairs[2 * n] = a->id; pairs[2 * n + 1] = b->id; }
+         n++;
+      }
+   return n;
 }
 
 int VdpEditCollect(EditRecord *out, int max)
@@ -319,10 +584,16 @@ int VdpEditCollect(EditRecord *out, int max)
    int i, n = 0;
    for (i = 0; i < veCount && n < max; i++) {
       EditRecord *r = &out[n];
+      memset(r, 0, sizeof(*r));
       r->type = veList[i].space; r->addr = veList[i].addr; r->len = veList[i].len;
       r->orig = veDup(veList[i].orig, r->len);
       r->repl = veDup(veList[i].repl, r->len);
       if (!r->orig || !r->repl) { free(r->orig); free(r->repl); continue; }
+      r->id = veList[i].id;
+      r->enabled = veList[i].enabled;
+      r->name = veStrDup(veList[i].name);
+      r->meta = veStrDup(veList[i].meta);
+      r->pack = veStrDup(veList[i].pack);
       n++;
    }
    return n;
@@ -333,7 +604,9 @@ void EditsFree(EditRecord *list, int n)
    int i;
    for (i = 0; i < n; i++) {
       free(list[i].orig); free(list[i].repl);
+      free(list[i].name); free(list[i].meta); free(list[i].pack);
       list[i].orig = list[i].repl = NULL;
+      list[i].name = list[i].meta = list[i].pack = NULL;
    }
 }
 
@@ -385,7 +658,7 @@ int VdpEditSetCramColor(u32 idx, int r, int g, int b)
       const u16 v = (u16)((cur & 0x8000) | (((b >> 3) & 0x1F) << 10) | (((g >> 3) & 0x1F) << 5) | ((r >> 3) & 0x1F));
       repl[0] = (u8)(v >> 8); repl[1] = (u8)v;
    }
-   return VdpEditWrite(VDPEDIT_CRAM, a, orig, repl, (u32)n) < 0 ? -1 : 0;
+   return VdpEditWriteEx(VDPEDIT_CRAM, a, orig, repl, (u32)n, "cram", NULL, NULL) < 0 ? -1 : 0;
 }
 
 int VdpEditCramBlock(u32 firstIdx, int n, u8 *origBytes, u8 *replBytes)
@@ -978,9 +1251,12 @@ int VdpEditBgImport(const VdpEditBg *b, const u32 *argb, int w, int h, int *stat
                codes[x] = v2Nearest(b, b->bmPal, argb[(size_t)y * W + x], &st[3]);
          memcpy(nrow, orow, rowBytes);
          VdpEditBitmapEncode(b, codes, W, nrow);
-         if (memcmp(orow, nrow, rowBytes) != 0 &&
-             VdpEditWrite(VDPEDIT_VDP2, VdpEditBitmapAddr(b, 0, y), orow, nrow, rowBytes) >= 0)
-            st[0]++;
+         if (memcmp(orow, nrow, rowBytes) != 0) {
+            char meta[VDPEDIT_META_SIZE];
+            VdpEditBitmapMeta(b, W, meta);
+            if (VdpEditWriteEx(VDPEDIT_VDP2, VdpEditBitmapAddr(b, 0, y), orow, nrow, rowBytes, meta, NULL, NULL) >= 0)
+               st[0]++;
+         }
       }
       free(orow); free(nrow); free(codes);
    } else {
@@ -1011,9 +1287,12 @@ int VdpEditBgImport(const VdpEditBg *b, const u32 *argb, int w, int h, int *stat
                   }
                memcpy(nb, ob, c.charBytes);
                VdpEditCharEncode(b, codes, nb);
-               if (memcmp(ob, nb, c.charBytes) != 0 &&
-                   VdpEditWrite(VDPEDIT_VDP2, c.charAddr, ob, nb, c.charBytes) >= 0)
-                  st[0]++;
+               if (memcmp(ob, nb, c.charBytes) != 0) {
+                  char meta[VDPEDIT_META_SIZE];
+                  VdpEditCharMeta(b, c.palBase, meta);
+                  if (VdpEditWriteEx(VDPEDIT_VDP2, c.charAddr, ob, nb, c.charBytes, meta, NULL, NULL) >= 0)
+                     st[0]++;
+               }
             } else {
                /* character already rewritten from another place of the map:
                   a conflict only if, seen from here (flip, palette), it does
@@ -1039,5 +1318,70 @@ int VdpEditBgImport(const VdpEditBg *b, const u32 *argb, int w, int h, int *stat
       free(after);
    }
    if (stats) memcpy(stats, st, sizeof(st));
+   return 0;
+}
+
+/* ======================================================================== */
+/* Descriptors                                                              */
+/* ======================================================================== */
+
+void VdpEditSpriteMeta(const VdpEditSprite *s, char *out)
+{
+   snprintf(out, VDPEDIT_META_SIZE, "spr pmod=%04X colr=%04X srca=%04X size=%04X",
+            s->CMDPMOD, s->CMDCOLR, s->CMDSRCA, s->CMDSIZE);
+}
+
+void VdpEditLutMeta(const VdpEditSprite *s, char *out)
+{
+   snprintf(out, VDPEDIT_META_SIZE, "lut pmod=%04X colr=%04X", s->CMDPMOD, s->CMDCOLR);
+}
+
+int VdpEditSpriteFromMeta(const char *meta, VdpEditSprite *s)
+{
+   unsigned pmod = 0, colr = 0, srca = 0, size = 0;
+   if (!meta || !s) return -1;
+   memset(s, 0, sizeof(*s));
+   if (sscanf(meta, "spr pmod=%x colr=%x srca=%x size=%x", &pmod, &colr, &srca, &size) == 4) {
+      s->CMDPMOD = (u16)pmod; s->CMDCOLR = (u16)colr; s->CMDSRCA = (u16)srca; s->CMDSIZE = (u16)size;
+      return 0;
+   }
+   if (sscanf(meta, "lut pmod=%x colr=%x", &pmod, &colr) == 2) {
+      s->CMDPMOD = (u16)pmod; s->CMDCOLR = (u16)colr;
+      return 0;
+   }
+   return -1;
+}
+
+void VdpEditCharMeta(const VdpEditBg *b, u32 palBase, char *out)
+{
+   snprintf(out, VDPEDIT_META_SIZE, "chr layer=%d cn=%d pw=%d pal=%X coff=%X tpon=%d",
+            b->layer, b->cn, b->pw, (unsigned)palBase, (unsigned)b->coff, b->tpon);
+}
+
+void VdpEditBitmapMeta(const VdpEditBg *b, int w, char *out)
+{
+   snprintf(out, VDPEDIT_META_SIZE, "bmp layer=%d cn=%d w=%d pal=%X coff=%X tpon=%d",
+            b->layer, b->cn, w, (unsigned)b->bmPal, (unsigned)b->coff, b->tpon);
+}
+
+int VdpEditBgFromMeta(const char *meta, VdpEditBg *b, u32 *palBase, int *w)
+{
+   int layer = 0, cn = 0, pw = 1, width = 0, tpon = 0;
+   unsigned pal = 0, coff = 0;
+   if (!meta || !b) return 0;
+   memset(b, 0, sizeof(*b));
+   if (sscanf(meta, "chr layer=%d cn=%d pw=%d pal=%x coff=%x tpon=%d", &layer, &cn, &pw, &pal, &coff, &tpon) == 6) {
+      b->layer = layer; b->cn = (cn >= 0 && cn <= 4) ? cn : 0; b->pw = (pw == 2) ? 2 : 1;
+      b->csize = 8 * b->pw; b->coff = coff; b->tpon = tpon; b->enabled = 1;
+      if (palBase) *palBase = pal;
+      return 1;
+   }
+   if (sscanf(meta, "bmp layer=%d cn=%d w=%d pal=%x coff=%x tpon=%d", &layer, &cn, &width, &pal, &coff, &tpon) == 6) {
+      b->layer = layer; b->cn = (cn >= 0 && cn <= 4) ? cn : 0; b->bitmap = 1; b->bmPal = pal;
+      b->bmW = width; b->bmH = 1; b->coff = coff; b->tpon = tpon; b->enabled = 1; b->pw = 1; b->csize = 8;
+      if (palBase) *palBase = pal;
+      if (w) *w = width;
+      return 2;
+   }
    return 0;
 }
