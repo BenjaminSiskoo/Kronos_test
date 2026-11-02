@@ -725,6 +725,12 @@ void CacheWriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val);
 void CacheWriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val);
 #endif
 void CacheInvalidate(SH2_struct *context,u32 addr);
+/* Cache SH-2 (sh2core.c) : CCR.CE = 1 / 0 et CCR.CP (purge des etiquettes),
+   sans effet si yabsys.usecache vaut 0. Utilises aussi par yabause.c quand
+   la base de jeux change l'emulation du cache (changement de disque). */
+void enableCache(SH2_struct *context);
+void disableCache(SH2_struct *context);
+void InvalidateCache(SH2_struct *context);
 
 void DMAExec(SH2_struct *context);
 
