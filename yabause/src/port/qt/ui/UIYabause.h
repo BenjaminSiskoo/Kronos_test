@@ -98,6 +98,8 @@ protected:
 	//bool mForceRun;
 };
 
+#include <functional>
+
 class UIYabause : public QMainWindow, public Ui::UIYabause
 {
 	Q_OBJECT
@@ -107,6 +109,9 @@ public:
 	~UIYabause();
 
 	void swapBuffers();
+	// Graphics editor: the next left click in the game screen is given to
+	// "pick" in emulated screen dots (x = -1 when cancelled by a right click).
+	void setScreenPick( std::function<void(int, int, const QPoint&)> pick );
 	virtual bool eventFilter( QObject* o, QEvent* e );
 
 	YabauseThread* mYabauseThread;
@@ -138,6 +143,7 @@ protected:
 	int mouseXUp, mouseYUp;
 	int mouseSensitivity;
 	bool emulateMouse;
+	std::function<void(int, int, const QPoint&)> mScreenPick;
 	int showMenuBarHeight;
 	QTimer* hideMouseTimer;
 	QTimer* mouseCursorTimer;
