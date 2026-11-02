@@ -310,7 +310,11 @@ extern "C" {
 
 typedef u32 pixel_t;
 
-#ifdef _MSC_VER
+/* Visual Studio 2015 (_MSC_VER 1900) and later have the C99 snprintf.
+   sprintf_s is not a replacement: when the text does not fit it calls the
+   invalid parameter handler (the program aborts by default) instead of
+   truncating. Only map it for the older compilers that lack snprintf. */
+#if defined(_MSC_VER) && (_MSC_VER < 1900)
 #define snprintf sprintf_s
 #endif
 
