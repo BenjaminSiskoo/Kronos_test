@@ -1030,9 +1030,13 @@ void UIDebugVDP2::onNextFrame()
 // ------------------------------------------------------------
 void UIDebugVDP2::setLive(bool live)
 {
+    // emulationRunning() n'est que "!mPause" (YabauseThread.cpp) : il est faux
+    // pour le jeu que le debogueur vient de mettre en pause, et Live ne pouvait
+    // donc jamais demarrer. Un jeu est charge quand init() >= 0.
     YabauseThread *t = emuThread();
-    if (t == NULL || !t->emulationRunning()) live = false;
-    if (t != NULL && t->emulationRunning()) t->pauseEmulation(!live, false);
+    const bool loaded = (t != NULL) && (t->init() >= 0);
+    if (!loaded) live = false;
+    if (loaded && (t->emulationPaused() == live)) t->pauseEmulation(!live, false);
     mLive = live;
     if (live) liveTimer->start(); else liveTimer->stop();
     pbNextButton->setEnabled(!live && mLock != NULL);
