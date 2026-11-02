@@ -346,7 +346,26 @@ static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
 
    SH2MappedMemoryWriteByte(sh, 0xFFFFFE91, 0x80); // Transition to standby mode
    SH2MappedMemoryWriteWord(sh, 0xFFFFFE80, 0xA51D); // Set WDT counter
-   SH2MappedMemoryWriteWord(sh, 0xFFFFFEE0, 0x8000); // Set NMI edge select to high
+   /* ICR (FFFFFEE0H) : bit 15 NMIL est en lecture seule, bit 8 NMIE choisit
+      le front du NMI, bit 0 VECMD choisit le mode vecteur. Seuls les bits 8
+      et 0 s'ecrivent (voir OnchipWriteWord). L'ancienne ecriture 8000H
+      n'avait donc aucun effet sur le front, mais remettait VECMD a 0 :
+      le SH-2 repassait en auto-vecteur alors que sur Saturn c'est le SCU qui
+      fournit le numero de vecteur (le boot ROM met VECMD a 1, et
+      YabauseQuickLoadGame() fait de meme en BIOS emule).
+
+      En auto-vecteur, SH2EvaluateInterrupt() prend 40H + (niveau >> 1) :
+      le V-Blank IN (niveau 15) et le V-Blank OUT (niveau 14) partaient sur
+      le vecteur 47H (SMPC), et ScuAcceptInterrupt() n'etant appele que dans
+      la branche vecteur externe, le SCU ne relachait plus son interruption en
+      cours : plus aucune interruption apres les premieres.
+      Virtua Cop appelle SYS_CHGSYSCK juste apres avoir installe ses
+      gestionnaires (trace : vecteur 47H recu trois fois, puis plus rien,
+      maitre bloque en 60047C0H a attendre le V-Blank, ecran noir).
+
+      NMIE garde la valeur que donnait l'ancienne ecriture (0) ; VECMD reste
+      a 1. */
+   SH2MappedMemoryWriteWord(sh, 0xFFFFFEE0, 0x0001);
 
    if (sh->regs.R[4] == 0)
       SmpcCKCHG320();
@@ -1746,6 +1765,17 @@ static void FASTCALL BiosHandleScuInterruptReturn(SH2_struct * sh)
 int FASTCALL BiosHandleFunc(SH2_struct * sh)
 {
    int addr = (sh->regs.PC & 0xFFFFF);
+
+   /* Les points d'entree du BIOS emule (fonctions systeme, BUP, repartiteur
+      d'interruptions SCU) sont tous dans la ROM BIOS : 00000000H-000FFFFFH,
+      ou son miroir sans cache 20000000H-200FFFFFH (les 3 bits de poids fort
+      de l'adresse SH-2 ne choisissent que le mode de cache). Cette fonction
+      est appelee pour TOUTE instruction non decodee ; sans ce test, une
+      instruction invalide en WORK RAM dont les 20 bits faibles valent par
+      exemple 00300H (060A0300H...) etait prise pour SYS_SETSINT. */
+   if ((sh->regs.PC & 0x1FF00000) != 0)
+      return 0;
+
    SH2GetRegisters(sh, &sh->regs);
    // Let's see if it's a bios function
    switch((addr - 0x200) >> 2)
@@ -1799,6 +1829,11 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
          BiosBUPInit(sh);
          break;
       case 0x60: // 0x06000380
+         /* Entree 0 de la table BUP (voir BiosBUPInit) : aucune fonction
+            derriere. Un simple "break" laissait le PC sur 380H et le SH-2 la
+            reexecutait sans fin. On rend la main a l'appelant. */
+         sh->regs.PC = sh->regs.PR;
+         SH2SetRegisters(sh, &sh->regs);
          break;
       case 0x61: // 0x06000384
          BiosBUPSelectPartition(sh);
@@ -1831,6 +1866,9 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
          BiosBUPSetDate(sh);
          break;
       case 0x6B: // 0x060003AC
+         /* Derniere entree de la table BUP : meme correction que 380H. */
+         sh->regs.PC = sh->regs.PR;
+         SH2SetRegisters(sh, &sh->regs);
          break;
       case 0x80: // Interrupt Handler
       case 0x81:
