@@ -1094,6 +1094,19 @@ int Cs2ForceCloseTray( int coreid, const char * cdpath ){
    }
   Cs2Reset();
 
+  /* Video standard of the new disc. YabauseInit() sets it from the region
+     (Cs2GetRegionID() >= 0xA : PAL), but a disc opened while the emulator is
+     already running (Qt: File > Open ISO) comes through here and kept the
+     standard of the previous disc, or NTSC when the emulator was started
+     without a disc: the console region setting (Cs2SetPreferredRegion) and
+     the auto-detection were then ignored. Region 0 (not a Saturn disc: audio
+     CD, Video CD...) keeps the current standard. */
+  {
+    u8 region = Cs2GetRegionID();
+    if (region != 0 && ((region >= 0xA) != (yabsys.IsPal != 0)))
+      YabauseSetVideoFormat(region >= 0xA ? VIDEOFORMATTYPE_PAL : VIDEOFORMATTYPE_NTSC);
+  }
+
   if (yabsys.emulatebios)
   {
 	  if (YabauseQuickLoadGame() != 0)
@@ -5968,6 +5981,45 @@ char * Cs2GetCurrentGmaecode(){
 }
 
 //////////////////////////////////////////////////////////////////////////////
+/* Region of the emulated console (SMPC region code, REGION_xxx in smpc.h),
+   0 = none: the console takes the first area symbol of the disc.
+
+   The area symbols (SYSTEM ID offset 40H, ST-040-R4 4.3 "Compatible Area
+   Symbol") list every region the disc runs in, and a real console boots a
+   disc only when its own region is among them. The order of the symbols
+   carries no meaning. Taking always the first one runs a region-free disc
+   ("JTUBKAEL") as a Japanese console, i.e. NTSC, whatever console the user
+   owns. That is wrong for PAL software written for 256 lines: the
+   Destruction Derby 2 prototype (T-81, "JTUBKAEL") sets VRESO = 10b (256
+   lines, PAL only) and draws its loading screen in the lines below 224,
+   which an NTSC console does not display (Vdp2DisplayLineCount()).
+
+   When the preferred region is among the disc's symbols it is used. When
+   it is not, a real console would refuse the disc; Kronos stays lenient and
+   falls back to the first symbol. */
+static u8 cs2_preferred_region = 0;
+
+void Cs2SetPreferredRegion(u8 regionid)
+{
+   cs2_preferred_region = regionid;
+}
+
+static char Cs2RegionSymbol(u8 regionid)
+{
+   switch (regionid)
+   {
+      case 0x1: return 'J';
+      case 0x2: return 'T';
+      case 0x4: return 'U';
+      case 0x5: return 'B';
+      case 0x6: return 'K';
+      case 0xA: return 'A';
+      case 0xC: return 'E';
+      case 0xD: return 'L';
+      default:  return 0;
+   }
+}
+
 u8 Cs2GetIP(int autoregion) {
    partition_struct * gripartition;
    u8 ret = 0;
@@ -6092,6 +6144,10 @@ u8 Cs2GetIP(int autoregion) {
 
          if (autoregion)
          {
+            char pref = Cs2RegionSymbol(cs2_preferred_region);
+            if (pref != 0 && strchr(cdip->region, pref) != NULL)
+               ret = cs2_preferred_region;
+            else
             // Read first available region, that'll be what we'll use
             switch (cdip->region[0])
             {
