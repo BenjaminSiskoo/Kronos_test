@@ -35,6 +35,9 @@
 #include <QVector>
 #include <QByteArray>
 #include <QPointer>
+#include <QHash>
+#include <QDateTime>
+#include <QSet>
 #include <functional>
 #include <vector>
 
@@ -45,6 +48,7 @@ extern "C" {
 }
 
 class QAbstractButton;
+class QFileSystemWatcher;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
@@ -63,6 +67,7 @@ class QStackedWidget;
 class QTimer;
 class QToolButton;
 class QTreeWidget;
+class QTreeWidgetItem;
 class YabauseThread;
 
 // ---------------------------------------------------------------------------
@@ -157,6 +162,10 @@ public:
                     const QVector<QString> &tips, int columns);
     void setSelection(u32 primary, u32 secondary) { mPrimary = primary; mSecondary = secondary; update(); }
     int  entryCount() const { return mColors.size(); }
+    // Ctrl+click toggles an entry, Shift+click adds a range: the group the
+    // "Recolor" tool works on. Cleared when the entries change size.
+    QVector<int> marked() const;
+    void clearMarks() { mMarked.clear(); mLastMark = -1; update(); emit marksChanged(); }
     QSize sizeHint() const override;
     int heightForWidth(int w) const override;
     bool hasHeightForWidth() const override { return true; }
@@ -164,6 +173,7 @@ public:
 signals:
     void chosen(u32 code, bool primary);
     void editRequested(int entry);
+    void marksChanged();
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -179,6 +189,8 @@ private:
     QVector<QString> mTips;
     int mColumns = 16;
     u32 mPrimary = 1, mSecondary = 0;
+    QSet<int> mMarked;
+    int mLastMark = -1;
 };
 
 // ---------------------------------------------------------------------------
@@ -203,6 +215,25 @@ public:
     // for editing in another program.
     int exportSprites(const QString &dir);
     QString importSpriteFolder(const QString &dir);
+
+    // Selected sprites of the list as one sheet (<name>.atlas.png / .json /
+    // .raw) and back, by name. Returns the number of frames, -1 on error.
+    int exportAtlas(const QString &dir, const QString &name);
+    QString importAtlas(const QString &jsonFile);
+    // Unique characters of a VDP2 layer as one sheet (<layer>.tiles.png /
+    // .json / .raw) and back.
+    int exportTileSheet(const QString &dir, int vdpeditLayer);
+    QString importTileSheet(const QString &jsonFile);
+    // Everything of a folder that changed since the last import (sprites of
+    // index.csv, atlases, tile sheets). Used by the folder watch.
+    QString importChangedInFolder(const QString &dir);
+
+    // Picture of the bytes of an edit, from its descriptor (vdpedit.h), with
+    // the current palettes. Null image if the descriptor is unknown.
+    static QImage editPreview(int space, const char *meta, u32 addr, const u8 *bytes, u32 len);
+
+    // Selection in the game screen: emulated screen coordinates (VDP2 dots).
+    void pickAt(int x, int y, const QPoint &globalPos);
 
 public slots:
     void done(int r) override;
@@ -236,6 +267,16 @@ private slots:
     void onCustomColor();
     void onZoom(int delta);
     void onRegionChanged(int);
+    void onRecolor();
+    void onPickToggled(bool on);
+    void onWatchToggled(bool on);
+    void onWatchEvent();
+    void onExportAtlas();
+    void onImportAtlas();
+    void onSelectSamePalette();
+    void onSelect4bppCandidates();
+    void onExportTiles();
+    void onImportTiles();
 
 private:
     // ---- item being edited ----
@@ -247,6 +288,7 @@ private:
         std::vector<u32> codes;
         int kind = 0;         // 0 sprite, 1 character, 2 bitmap row
         int w = 0, h = 0;     // dots of the block (row: w x 1)
+        u32 palBase = 0;      // character: palette of its first place in the area
     };
     struct Item {
         enum Kind { None, Sprite, Cells, Bitmap } kind = None;
@@ -310,6 +352,8 @@ private:
 
     void refreshPalette();
     void refreshItemInfo();
+    void refreshColorInfo();
+    std::vector<u32> spriteCodes(const SpriteEntry &e) const;
     u32  transparentCode() const;
     bool itemIsRgb() const;
     u32  rgbToCode(QRgb c) const;
@@ -320,6 +364,12 @@ private:
     void setPrimary(u32 c);
     void setSecondary(u32 c);
     void updateSwatches();
+    QByteArray blockMeta(const Block &b) const;
+    QImage indexedImage(const std::vector<u32> &codes, int w, int h) const;
+    bool codesFromIndexed(const QImage &img, std::vector<u32> &codes, int *approx) const;
+    void watchFolder(const QString &dir);
+    void stampFolder(const QString &dir);
+    bool fileChangedSinceStamp(const QString &path);
 
     // ---- widgets ----
     QLabel *lTitle = nullptr, *lChipSource = nullptr, *lChipEmu = nullptr, *lChipEdits = nullptr;
@@ -329,6 +379,9 @@ private:
     QListWidget *lwSprites = nullptr;
     QCheckBox *cbLibrary = nullptr, *cbLive = nullptr;
     QPushButton *pbClearLibrary = nullptr;
+    QPushButton *pbSelect4bpp = nullptr;
+    QPushButton *pbSamePalette = nullptr, *pbExportAtlas = nullptr, *pbImportAtlas = nullptr;
+    QPushButton *pbExportTiles = nullptr, *pbImportTiles = nullptr;
     QGraphicsView *gvOverview = nullptr;
     QGraphicsScene *mOverviewScene = nullptr;
     QGraphicsRectItem *mOverviewSel = nullptr;
@@ -348,13 +401,17 @@ private:
     GfxPalette *mPalette = nullptr;
     QScrollArea *mPaletteArea = nullptr;
     QLabel *lPrimary = nullptr, *lSecondary = nullptr, *lPaletteInfo = nullptr;
-    QPushButton *pbCustomColor = nullptr;
+    QLabel *lColorUse = nullptr;
+    QPushButton *pbCustomColor = nullptr, *pbRecolor = nullptr;
     QTreeWidget *twInfo = nullptr;
+    QTreeWidgetItem *mColorGroup = nullptr;
     QPushButton *pbApply = nullptr, *pbRevertItem = nullptr, *pbImportPng = nullptr, *pbExportPng = nullptr;
     QCheckBox *cbAutoApply = nullptr;
     QLabel *lApplyStatus = nullptr;
 
     QPushButton *pbRun = nullptr, *pbStep = nullptr, *pbRefresh = nullptr, *pbEdits = nullptr, *pbRevertAll = nullptr, *pbExportAll = nullptr, *pbImportFolder = nullptr;
+    QPushButton *pbPick = nullptr;
+    QCheckBox *cbWatch = nullptr;
     QLabel *lFootNote = nullptr;
 
     QTimer *mTimer = nullptr;
@@ -376,6 +433,12 @@ private:
     int mRegionCells = 2, mRegionBitmap = 2;   // remembered "edit area" choices
     std::vector<u32> mFrameAddrs;
     std::vector<int> mFrameBoxes;
+
+    // folder watch (hot reload): folder, file -> last modification imported
+    QFileSystemWatcher *mWatcher = nullptr;
+    QString mWatchDir;
+    QHash<QString, QDateTime> mStamps;
+    QTimer *mWatchTimer = nullptr;
 
     bool mUiReady = false;               // buildUi() finished: event filters may run
     bool mResumedEmulation = false;      // we un-paused the game: pause again on close
