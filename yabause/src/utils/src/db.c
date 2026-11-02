@@ -105,6 +105,7 @@ static const char * const SH2CacheDBList[] = {
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-1525G", // Photo Genic (Japan)
    "T-17703G", // Tennis Arena (Japan)
+   "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
    "MK-81005",   // Virtua Fighter (USA)
