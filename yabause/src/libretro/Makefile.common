@@ -11,7 +11,7 @@ ifneq ($(GIT_VERSION)," unknown")
 	FLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
 endif
 
-FLAGS += -D__LIBRETRO__ -DHAVE_LIBGL -DVERSION=\"2.7.0\" -DHAVE_LROUND -D_7ZIP_ST -DFLAC__HAS_OGG=0 -DFLAC__NO_DLL \
+FLAGS += -D__LIBRETRO__ -DHAVE_LIBGL -DVERSION=\"2.8.0\" -DHAVE_LROUND -D_7ZIP_ST -DFLAC__HAS_OGG=0 -DFLAC__NO_DLL \
 	-DNO_CLI -DHAVE_BUILTIN_BSWAP16=1 -DHAVE_BUILTIN_BSWAP32=1 -DHAVE_C99_VARIADIC_MACROS=1 -DHAVE_FLOORF=1 \
 	-DHAVE_GETTIMEOFDAY=1 -DHAVE_STDINT_H=1 -DHAVE_SYS_TIME_H=1 -DIMPROVED_SAVESTATES -DHAVE_GLSYM_PRIVATE \
 	-DCELL_ASYNC=1 -DHAVE_THREADS=1 -DUSE_CACHE=1
@@ -97,6 +97,7 @@ SOURCES_C := \
 	$(SOURCE_DIR)/sys/memory/src/cs0.c \
 	$(SOURCE_DIR)/sys/memory/src/cs1.c \
 	$(SOURCE_DIR)/sys/memory/src/cs2.c \
+	$(SOURCE_DIR)/sys/memory/src/mpegcard.c \
 	$(SOURCE_DIR)/sys/memory/src/decrypt.c \
 	$(SOURCE_DIR)/sys/memory/src/eeprom.c \
 	$(SOURCE_DIR)/utils/src/error.c \
@@ -109,6 +110,8 @@ SOURCES_C := \
 	$(SOURCE_DIR)/core/peripheral/common/peripheral.c \
 	$(SOURCE_DIR)/sys/scsp/src/scspdsp.c \
 	$(SOURCE_DIR)/sys/scsp/src/scsp.c \
+	$(SOURCE_DIR)/sys/scsp/src/rax.c \
+	$(SOURCE_DIR)/sys/scsp/src/adsp2181.c \
 	$(SOURCE_DIR)/sys/scu/src/scu.c \
 	$(SOURCE_DIR)/sys/sh2/src/sh2core.c \
 	$(SOURCE_DIR)/sys/smpc/src/smpc.c \
