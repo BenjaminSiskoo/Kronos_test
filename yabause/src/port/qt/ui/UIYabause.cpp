@@ -55,6 +55,7 @@
 
 #include <QDebug>
 #include <QMimeData>
+#include <cmath>
 
 #define ACTION_OPENTRAY 1
 #define ACTION_LOADFILE 2
@@ -337,10 +338,15 @@ void UIYabause::mousePressEvent( QMouseEvent* e )
 		PerCritcrshHammer( 1 );
 		return;
 	}
-	if (emulateMouse && !mouseCaptured)
+	/* Gun (visible cursor, absolute position): nothing to capture, the
+	   click is the trigger right away. Only the Shuttle Mouse (hidden
+	   cursor, relative motion) grabs the host mouse on the first click,
+	   and that click is not sent to the game. Previously the gun also
+	   needed this first "capture" click, which was swallowed, and got no
+	   position at all before it (see mouseMoveEvent()). */
+	if (emulateMouse && !mouseCaptured && !cursorShown)
 	{
-		if (!cursorShown) this->setCursor(Qt::BlankCursor);
-		else this->setCursor(Qt::CrossCursor);
+		this->setCursor(Qt::BlankCursor);
 		mouseCaptured = true;
 	}
 	else
@@ -366,8 +372,9 @@ void UIYabause::mouseReleaseEvent( QMouseEvent* e )
 
 void UIYabause::hideMouse()
 {
-	if (!cursorShown) this->setCursor(Qt::BlankCursor);
-	else this->setCursor(Qt::CrossCursor);
+	/* Gun: the cursor is managed by mouseMoveEvent() (cross over the
+	   picture, arrow elsewhere). */
+	if (!(emulateMouse && cursorShown)) this->setCursor(Qt::BlankCursor);
 	hideMouseTimer->stop();
 }
 
@@ -522,25 +529,51 @@ void UIYabause::mouseMoveEvent( QMouseEvent* e )
 	}
 
 
-	if (mouseCaptured) {
+	/* Gun: absolute position in emulated screen pixels, sent without any
+	   capture. The position is taken from the global cursor position
+	   mapped into the GL window (as for the graphics editor pick):
+	   UIYabause gets move events both from the GL window (event filter)
+	   and for itself (menubar/toolbar), in two different coordinate
+	   frames, and e->x()/e->y() of the latter put the gun at the top of
+	   the game screen while the cursor was over the toolbar. */
+	bool gunOnPicture = false;
+	if (emulateMouse && cursorShown) {
 		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
-		if (!cursorShown) {
-			int x = (e->x()-midX);
-			int y = (midY-e->y());
-			//use mouseSensitivity and scale ratio
-			x *= (float)mouseSensitivity/100.0;
-			y *= (float)mouseSensitivity/100.0;
-			x /= mouseXRatio;
-			y /= mouseYRatio;
+		if ((mouseXRatio > 0.0f) && (mouseYRatio > 0.0f)) {
+			const QPoint p = mYabauseGL->mapFromGlobal( e->globalPos() );
+			int x = (int)floor((p.x()-mouseXUp)/mouseXRatio);
+			int y = (int)floor((p.y()-mouseYUp)/mouseYRatio);
 			PerAxisMove((1 << 30), x, y);
-		} else {
-			int x = (e->x()-mouseXUp)/mouseXRatio;
-			int y = (e->y()-mouseYUp)/mouseYRatio;
-			PerAxisMove((1 << 30), x, y);
+			/* The picture is centred in the GL window (getScale(): xUp/yUp
+			   are the side borders, 0 when stretched), so it spans
+			   [xUp, width - xUp[ x [yUp, height - yUp[. */
+			gunOnPicture = (p.x() >= mouseXUp) && (p.x() < mYabauseGL->width() - mouseXUp) &&
+			               (p.y() >= mouseYUp) && (p.y() < mYabauseGL->height() - mouseYUp);
 		}
+	}
+	else if (mouseCaptured) {
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		int x = (e->x()-midX);
+		int y = (midY-e->y());
+		//use mouseSensitivity and scale ratio
+		x *= (float)mouseSensitivity/100.0;
+		y *= (float)mouseSensitivity/100.0;
+		x /= mouseXRatio;
+		y /= mouseYRatio;
+		PerAxisMove((1 << 30), x, y);
 	}
 
 	VolatileSettings* vs = QtYabause::volatileSettings();
+
+	/* Gun: standard cross cursor over the game picture, normal arrow over
+	   the black borders, the menu bar and the tool bar (the gun is then
+	   off-screen). The mouse is never grabbed. */
+	if (emulateMouse && cursorShown)
+	{
+		hideMouseTimer->stop();
+		this->setCursor(gunOnPicture ? Qt::CrossCursor : Qt::ArrowCursor);
+		return;
+	}
 
 	if (!isFullScreen())
 	{
