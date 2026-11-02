@@ -85,6 +85,10 @@ int SmpcInit(u8 regionid, u32 basetime, const char *smpcpath, u8 languageid) {
 
    SmpcInternalVars->regionsetting = regionid;
    SmpcInternalVars->regionid = regionid;
+   /* The console region also chooses among the area symbols of a
+      multi-region disc (Cs2GetRegionID), so that the SMPC area code and the
+      video standard (YabauseSetVideoFormat) describe the same console. */
+   Cs2SetPreferredRegion(regionid);
    SmpcInternalVars->basetime = basetime ? basetime : time(NULL);
    SmpcInternalVars->languageid = languageid;
 
@@ -122,7 +126,18 @@ void SmpcRecheckRegion(void) {
          SmpcInternalVars->regionid = 1;
    }
    else
-      Cs2GetIP(0);
+   {
+      /* Console region chosen by the user. Cs2GetRegionID() returns it when
+         the disc lists it among its area symbols, otherwise the disc's first
+         symbol; the video standard is taken from the same value
+         (YabauseSetVideoFormat callers), so the SMPC must report it too.
+         Before, the SMPC kept the setting while the video standard followed
+         the disc: a Europe setting with a Japan-only disc gave a PAL area
+         code on an NTSC machine. */
+      SmpcInternalVars->regionid = Cs2GetRegionID();
+      if (SmpcInternalVars->regionid == 0)
+         SmpcInternalVars->regionid = SmpcInternalVars->regionsetting;
+   }
 }
 
 //////////////////////////////////////////////////////////////////////////////
