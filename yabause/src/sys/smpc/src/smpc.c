@@ -65,6 +65,9 @@ static u8 bustmp = 0;
 static u16 m_pmode;           /* defini plus bas (SmpcINTBACKPeripheral) */
 static u8 m_pdr2_readback;    /* definis plus bas (SmpcReadByte) */
 static u8 m_pdr1_readback;
+/* Derniere valeur ECRITE par le SH-2 dans PDR1/PDR2 (lignes en sortie).
+   SmpcRegsT[] garde, lui, la valeur calculee pour la relecture. */
+static u8 m_pdr_out[2] = { 0x7F, 0x7F };
 static const char *smpcfilename = NULL;
 
 // #define SMPCLOG printf
@@ -168,6 +171,7 @@ int SmpcGetLanguage(void) {
 void SmpcReset(void) {
    memset((void *)SmpcRegs, 0, sizeof(Smpc));
    memset((void *)SmpcInternalVars->SMEM, 0, 4);
+   m_pdr_out[0] = m_pdr_out[1] = 0x7F;
 
    SmpcRecheckRegion();
    SmpcLoadBiosSettings();
@@ -524,6 +528,26 @@ static void SmpcINTBACKPeripheral(void) {
      SmpcInternalVars->port1.offset = 0;
      SmpcInternalVars->port2.offset = 0;
      LagFrameFlag=0;
+
+     /* Mode d'acquisition des ports, IREG1 de l'INTBACK : P1MD (bits 5-4)
+        et P2MD (bits 7-6), 00 = 15 octets, 01 = 255 octets, 11 = 0 octet.
+        En mode 0 octet, le port n'est pas lu du tout : aucun octet, pas
+        meme le statut, n'est rendu pour lui dans les OREG. Le SMPC User's
+        Manual (ST-169-R1) n'est pas dans le workspace ; repris de Mednafen
+        (src/ss/smpc.cpp, INTBACK : "if(JRS.Mode[JRS.CurPort] & 0x2)
+        continue;", le mode 10 reserve etant traite comme 11).
+
+        Kronos rendait toujours les deux ports. Virtua Cop met le port du
+        pistolet en mode direct (IOSEL) et le demande en 0 octet
+        (IREG1 = 38H) ; il recevait quand meme le statut A0H du pistolet,
+        que sa bibliotheque de peripheriques convertissait en un
+        peripherique d'ID FAH dans la table du port 1 (060FFA70). Juste
+        apres, la conversion de la lecture directe (ID 25H) voyait l'ID
+        changer, remettait la table a zero (boutons relaches, HCNT/VCNT a 0,
+        0600AD5C -> 0600AAB4) et ignorait la lecture : ni la gachette ni
+        Start n'etaient jamais vus. */
+     if (m_pmode & 0x2) SmpcInternalVars->port1.size = 0;
+     if (m_pmode & 0x8) SmpcInternalVars->port2.size = 0;
   }
 
   // Port 1
@@ -598,7 +622,9 @@ static void SmpcINTBACK(void) {
       SMPCLOG("non peripheral require controlers %d\n", (SmpcRegs->IREG[1]&0x8)!=0);
       SmpcInternalVars->firstPeri = ((SmpcRegs->IREG[1] & 0x8) >> 3);
       for(int i=0;i<31;i++) SmpcRegs->OREG[i] = 0xff;
-      m_pmode = (SmpcRegs->IREG[0]>>4);
+      /* SR bits 3-0 = P2MD/P1MD (IREG1 bits 7-4), cf. SmpcINTBACKPeripheral.
+         L'ancien code y mettait IREG0 >> 4 (bits continuer/interrompre). */
+      m_pmode = (SmpcRegs->IREG[1] >> 4) & 0x0F;
       SmpcINTBACKStatus();
       SmpcRegs->SR = 0x40 | (SmpcInternalVars->firstPeri << 5); // the low nibble is undefined(or 0xF)
       SmpcRegs->SF = (SmpcRegs->IREG[1]&0x8)!=0;
@@ -607,6 +633,7 @@ static void SmpcINTBACK(void) {
   }
   if (SmpcRegs->IREG[1] & 0x8) {
       SMPCLOG("controlers only\n");
+      m_pmode = (SmpcRegs->IREG[1] >> 4) & 0x0F;
       SmpcInternalVars->firstPeri = ((SmpcRegs->IREG[1] & 0x8) >> 3);
       SmpcINTBACKPeripheral();
       ScuSendSystemManager();
@@ -928,6 +955,41 @@ u8 FASTCALL SmpcReadByte(SH2_struct *context, u8* mem, u32 addr) {
      SMPCLOG("Read SMPC[0x63] 0x%x %d\n", val, yabsys.LineCount);
      return val;
    }
+   /* Stunner / Virtua Gun en mode direct (STTECH41 section 3) : lecture
+    * de PDR avec l'etat COURANT des lignes, quel que soit DDR.
+    *
+    * Chaque ligne du port lit ce que le SH-2 y ecrit si elle est en sortie
+    * (bit de DDR a 1), sinon ce que le pistolet presente (bit de DDR a 0) :
+    *  - bit 6 : latch externe (lumiere) ; en sortie, c'est TH ;
+    *  - bit 5 : Start, bit 4 : Trigger (STTECH41 "Reading Buttons") ;
+    *  - bits 3-0 : identifiant. STTECH41 ("Reading the Stunner ID in SH2
+    *    Direct Mode", DDR = 40H) donne ID3 = BIT3|BIT2 avec TH=1,
+    *    ID2 = BIT1|BIT0 avec TH=1, ID1 = BIT3|BIT2 avec TH=0 ; l'ID AH
+    *    impose BIT3|BIT2 = 1 et BIT1|BIT0 = 0 pour les deux valeurs de TH :
+    *    le pistolet presente toujours 1100B (port->data[2] bits 3-0 = CH).
+    * Le bit 7 n'est pas une ligne du port : c'est celui qui a ete ecrit.
+    *
+    * Ancien code :
+    *  - DDR = 00H : rendait la valeur memorisee lors de la derniere
+    *    ECRITURE de 7FH dans PDR. Crime Patrol ecrit 7FH une fois puis ne
+    *    fait que lire : gachette jamais vue.
+    *  - DDR = 40H : rendait la valeur calculee par do_th_mode() lors de la
+    *    derniere ecriture de PDR, avec Trigger/Start figes et le bit 6 (TH,
+    *    en sortie) a 0 s'il venait d'une ecriture faite en mode 00H. Virtua
+    *    Cop ecrit PDR1 = 7FH une seule fois (0600A8C8), puis bascule chaque
+    *    trame DDR1 entre 40H et 00H (0600A876) et lit PDR1 dans les deux
+    *    modes (0600A8EC) : il ne voyait ni la gachette ni Start. */
+   if (addr == 0x75 || addr == 0x77) {
+     const int p = (addr == 0x77);
+     PortData_struct *port = p ? &PORTDATA2 : &PORTDATA1;
+     if ((port->data[0] == 0xA0) && (port->data[1] == PERGUN)) {
+       const u8 ddr = SmpcRegs->DDR[p] & 0x7F;
+       const u8 lines = (u8)((port->data[2] & 0x70) | 0x0C);
+       u8 val = (u8)((m_pdr_out[p] & 0x80) | (m_pdr_out[p] & ddr) | (lines & ~ddr & 0x7F));
+       SMPCLOG("Read SMPC[0x%x] gun = 0x%x (DDR %02x)\n", addr, val, ddr);
+       return val;
+     }
+   }
    if (addr == 0x77){
      //PDR2
     if((SmpcRegs->DDR[1] & 0x7F) == 0x18) {
@@ -1211,6 +1273,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
          SMPCLOG("Limit SF = 0%x (0%x)\n", SmpcRegs->SF, val);
          return;
       case 0x75: // PDR1
+         m_pdr_out[0] = val;
          // FIX ME (should support other peripherals)
          switch (SmpcRegs->DDR[0] & 0x7F) { // Which Control Method do we use?
             case 0x00:
@@ -1263,6 +1326,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
             SmpcRegs->PDR[0] = SmpcEmptyPortRead(val, SmpcRegs->DDR[0]);
 	break;
 	  case 0x77: // PDR2
+		  m_pdr_out[1] = val;
 		  // FIX ME (should support other peripherals)
 		  switch (SmpcRegs->DDR[1] & 0x7F) { // Which Control Method do we use?
 		  case 0x00:
