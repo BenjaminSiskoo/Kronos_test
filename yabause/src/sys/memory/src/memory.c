@@ -2101,7 +2101,20 @@ int MappedMemorySave(SH2_struct *sh, const char *filename, u32 addr, u32 size)
    return 0;
 }
 
+/* Les points d'accroche de la bibliotheque de sauvegarde sont des adresses de
+   la ROM BIOS : 00000000H-000FFFFFH, ou son miroir sans cache
+   20000000H-200FFFFFH (les 3 bits de poids fort de l'adresse SH-2 ne
+   choisissent que le mode de cache). Le test ne portait que sur les 20 bits
+   faibles : appelee depuis SH2undecoded() pour toute instruction invalide,
+   cette fonction prenait par exemple une instruction invalide en 0607D600H
+   pour BUP_Init, ou en 06000390H pour BUP_Write, meme avec le vrai BIOS. */
+static int BackupIsBiosArea(u32 addr) {
+   return (addr & 0x1FF00000) == 0;
+}
+
 int BackupHandled(SH2_struct * sh, u32 addr) {
+   if (!BackupIsBiosArea(addr))
+     return 0;
    if ((addr & 0xFFFFF) == 0x7d600) {
      if (sh == NULL) return 1;
      BiosBUPInit(sh);
@@ -2115,7 +2128,7 @@ int BackupHandled(SH2_struct * sh, u32 addr) {
 }
 
 int isBackupHandled(u32 addr) {
-   return( ((addr & 0xFFFFF) == 0x7d600) || (((addr & 0xFFFFF) >= 0x0384 && (addr & 0xFFFFF) <= 0x03A8) || ((addr & 0xFFFFF) == 0x358) ));
+   return BackupIsBiosArea(addr) && ( ((addr & 0xFFFFF) == 0x7d600) || (((addr & 0xFFFFF) >= 0x0384 && (addr & 0xFFFFF) <= 0x03A8) || ((addr & 0xFFFFF) == 0x358) ));
 }
 
 /* ---------------------------------------------------------------------------
