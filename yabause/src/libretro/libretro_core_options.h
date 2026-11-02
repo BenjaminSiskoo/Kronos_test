@@ -107,6 +107,18 @@ struct retro_core_option_definition option_defs_us[] = {
       "512K_backup_ram"
    },
    {
+      "kronos_mpeg_card",
+      "Video CD Card",
+      "Video CD Card (MPEG decoder). Auto: plugged when the disc is a Video CD. Enabled: always plugged. Its ROM must be in the system directory, as kronos/mpeg.bin, kronos/mpeg.zip, mpeg.bin or mpeg.zip (raw dump or zip archive), and Video CDs need the real BIOS. Requires a restart.",
+      {
+         { "auto", "Auto (Video CD discs)" },
+         { "enabled", NULL },
+         { "disabled", NULL },
+         { NULL, NULL},
+      },
+      "auto"
+   },
+   {
       "kronos_multitap_port1",
       "6Player Adaptor on Port 1",
       "Enable multitap in port 1",
@@ -176,12 +188,38 @@ struct retro_core_option_definition option_defs_us[] = {
    },
    {
       "kronos_video_filter_type",
-      "Deinterlace Filter",
-      "Apply deinterlace filter.",
+      "Video filter",
+      "Filter applied to the final picture, same list as the standalone version. The deinterlacing filters only act on interlaced (high resolution) pictures. Except for them, the picture is drawn at the largest integer multiple of its size that fits the output (limited by the internal resolution option chosen at start).",
       {
          { "0", "None" },
-         { "3", "Adaptative" },
-         { "5", "Bob" },
+         { "1", "Bilinear" },
+         { "2", "Bicubic" },
+         { "3", "Deinterlacing Adaptive" },
+         { "4", "Deinterlacing Debug Adaptive" },
+         { "5", "Deinterlacing Bob" },
+         { "6", "Scanline" },
+         { "7", "Lanczos3" },
+         { "8", "Sharp Bilinear" },
+         { "9", "FXAA" },
+         { "10", "CRT (Aperture Grille)" },
+         { "12", "Cell Shading (Toon)" },
+         { NULL, NULL},
+      },
+      "0"
+   },
+   {
+      "kronos_upscale_filter",
+      "Upscale filter",
+      "Upscaler applied before the video filter, same list as the standalone version. The picture is drawn at the largest integer multiple of its size that fits the output.",
+      {
+         { "0", "None" },
+         { "1", "HQ4x" },
+         { "2", "4xBRZ" },
+         { "3", "6xBRZ" },
+         { "4", "Sharpen (Adaptive)" },
+         { "5", "FSR 1.0 (EASU + RCAS)" },
+         { "6", "Scale3x" },
+         { "7", "Scale4x" },
          { NULL, NULL},
       },
       "0"
