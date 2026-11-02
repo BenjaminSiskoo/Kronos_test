@@ -765,6 +765,10 @@ bool writeIps(const std::vector<Change> &changes, const std::string &destPath, s
 //  Version 2 : pour le type 2 (Color RAM), addr est l'adresse OCTET dans la CRAM
 //  (une couleur = 2 octets, 4 en mode 24 bits). Version 1 : addr etait l'index
 //  de la couleur (modes 15 bits seulement) ; converti au chargement.
+//  Version 3 : chaque enregistrement porte en plus, apres len :
+//    flags u32 (bit 0 = active), nom (u32 len + octets UTF-8),
+//    descripteur (u32 len + octets, voir vdpedit.h), puis orig et repl.
+//  Le meta d'en-tete est une suite de lignes "cle=valeur" (PackInfo).
 // ======================================================================
 
 static void putU32(std::vector<uint8_t> &v, uint32_t x) { put32leVec(v, x); }
@@ -774,12 +778,17 @@ bool savePack(const std::string &path, const std::vector<Record> &recs, const st
 {
     std::vector<uint8_t> p;
     p.push_back('K'); p.push_back('M'); p.push_back('O'); p.push_back('D');
-    putU32(p, 2);
+    putU32(p, 3);
     putU32(p, (uint32_t)meta.size());
     p.insert(p.end(), meta.begin(), meta.end());
     putU32(p, (uint32_t)recs.size());
     for (size_t i = 0; i < recs.size(); i++) {
         putU32(p, (uint32_t)recs[i].type); putU32(p, recs[i].addr); putU32(p, (uint32_t)recs[i].orig.size());
+        putU32(p, recs[i].enabled ? 1u : 0u);
+        putU32(p, (uint32_t)recs[i].name.size());
+        p.insert(p.end(), recs[i].name.begin(), recs[i].name.end());
+        putU32(p, (uint32_t)recs[i].meta.size());
+        p.insert(p.end(), recs[i].meta.begin(), recs[i].meta.end());
         p.insert(p.end(), recs[i].orig.begin(), recs[i].orig.end());
         p.insert(p.end(), recs[i].repl.begin(), recs[i].repl.end());
     }
@@ -811,7 +820,7 @@ bool loadPack(const std::string &path, std::vector<Record> &recs, std::string &m
     if (d.size() < 8 || memcmp(&d[0], "KMOD", 4) != 0) { err = "Not a Kronos edit pack."; return false; }
     pos = 4;
     uint32_t ver = 0, ml = 0, cnt = 0;
-    if (!get32(ver) || (ver != 1 && ver != 2)) { err = "Unsupported edit pack version."; return false; }
+    if (!get32(ver) || ver < 1 || ver > 3) { err = "Unsupported edit pack version."; return false; }
     if (!get32(ml) || pos + ml > d.size()) { err = "Corrupted edit pack."; return false; }
     meta.assign((const char *)&d[pos], ml); pos += ml;
     if (!get32(cnt)) { err = "Corrupted edit pack."; return false; }
@@ -823,11 +832,47 @@ bool loadPack(const std::string &path, std::vector<Record> &recs, std::string &m
         }
         Record r; r.type = (int)type; r.addr = addr;
         if (ver == 1 && type == 2) r.addr = (addr * 2) & 0xFFF;   // index de couleur -> adresse octet
+        if (ver >= 3) {
+            uint32_t flags, nl, ml;
+            if (!get32(flags) || !get32(nl) || pos + nl > d.size()) { err = "Corrupted edit pack."; return false; }
+            r.enabled = (flags & 1) != 0;
+            r.name.assign((const char *)&d[0] + pos, nl); pos += nl;
+            if (!get32(ml) || pos + ml > d.size()) { err = "Corrupted edit pack."; return false; }
+            r.meta.assign((const char *)&d[0] + pos, ml); pos += ml;
+            if (pos + 2 * (size_t)len > d.size()) { err = "Corrupted edit pack."; return false; }
+        }
         r.orig.assign(d.begin() + pos, d.begin() + pos + len); pos += len;
         r.repl.assign(d.begin() + pos, d.begin() + pos + len); pos += len;
         recs.push_back(r);
     }
     return true;
+}
+
+std::string packInfoToString(const PackInfo &info)
+{
+    std::string out;
+    for (PackInfo::const_iterator it = info.begin(); it != info.end(); ++it) {
+        std::string v = it->second;
+        for (size_t k = 0; k < v.size(); k++) if (v[k] == '\n' || v[k] == '\r') v[k] = ' ';
+        out += it->first + "=" + v + "\n";
+    }
+    return out;
+}
+
+PackInfo packInfoFromString(const std::string &text)
+{
+    PackInfo info;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = text.substr(start, end - start);
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos) info[line.substr(0, eq)] = line.substr(eq + 1);
+        else if (!line.empty() && info.empty()) info["title"] = line;   // packs v1/v2 : nom de l'image
+        start = end + 1;
+    }
+    return info;
 }
 
 } // namespace EditsPatcher
