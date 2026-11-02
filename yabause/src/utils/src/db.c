@@ -254,11 +254,17 @@ int DBLookupLegacySH2FetchTiming(void)
    return DBLookupLegacySH2FetchTimingForCode(Cs2GetCurrentGmaecode());
 }
 
+/* Retourne 1 si 'game_code' figure dans SH2CacheDBList. */
+int DBLookupForceSH2CacheForCode(const char *game_code)
+{
+   return DBListHasCode(SH2CacheDBList, game_code);
+}
+
 /* Retourne 1 si le jeu en cours figure dans SH2CacheDBList. */
 int DBLookupForceSH2Cache(void)
 {
    Cs2GetIP(0);
-   return DBListHasCode(SH2CacheDBList, Cs2GetCurrentGmaecode());
+   return DBLookupForceSH2CacheForCode(Cs2GetCurrentGmaecode());
 }
 
 static int does_file_exist(const char *filename)
