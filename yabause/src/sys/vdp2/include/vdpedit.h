@@ -66,7 +66,27 @@ typedef struct EditRecord_s {
    int type;          /* VDPEDIT_VDP1 / VDPEDIT_VDP2 / VDPEDIT_CRAM */
    u32 addr, len;
    u8 *orig, *repl;
+   /* optional, malloc'ed strings (NULL = none) */
+   u32 id;            /* filled by VdpEditCollect                    */
+   int enabled;       /* VdpEditRestore: 0 = recorded but switched off */
+   char *name;        /* user name of the edit                       */
+   char *meta;        /* what the bytes are, see "Descriptors" below */
+   char *pack;        /* pack the edit came from, NULL = this session */
 } EditRecord;
+
+/* One edit as the list shows it. The pointers stay valid until the next
+   change of the list (see VdpEditGeneration). */
+typedef struct {
+   u32 id;
+   int space;
+   u32 addr, len;
+   int enabled;
+   int active;        /* the memory holds the new bytes right now      */
+   int noop;          /* undone back to the original                   */
+   int canUndo, canRedo;
+   const char *name, *meta, *pack;
+   const u8 *orig, *repl;
+} VdpEditInfo;
 
 /* Records an edit and writes it at once when the memory holds 'orig' (or the
    true original of an earlier edit made on top of it). 'orig' is what the
@@ -75,9 +95,34 @@ typedef struct EditRecord_s {
    original data again, 2 = edit undone (repl == true original), <0 = error. */
 int  VdpEditWrite(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len);
 
+/* Same, with a descriptor (meta) and a pack name for a new edit, and the
+   id of the edit created or updated (0 if none is left). */
+int  VdpEditWriteEx(int space, u32 addr, const u8 *orig, const u8 *repl, u32 len,
+                    const char *meta, const char *pack, u32 *idOut);
+
 /* Same, for a record read from a pack: written only if the memory holds the
-   original bytes right now. Same return values. */
+   original bytes right now. Name, meta, pack and enabled are taken over.
+   Same return values. */
 int  VdpEditRestore(const EditRecord *r);
+
+/* One edit, by id. */
+int  VdpEditRemove(u32 id);               /* original back, edit forgotten   */
+int  VdpEditSetEnabled(u32 id, int on);   /* off: original back, edit kept   */
+int  VdpEditSetName(u32 id, const char *name);
+int  VdpEditSetMeta(u32 id, const char *meta);
+int  VdpEditSetPack(u32 id, const char *pack);
+int  VdpEditUndo(u32 id);                 /* previous version of this edit   */
+int  VdpEditRedo(u32 id);
+/* Removes every edit of a pack (NULL or "" = the edits of this session). */
+int  VdpEditRemovePack(const char *pack);
+
+/* List access: index 0 .. VdpEditCount(-1) - 1. */
+int  VdpEditGetInfo(int index, VdpEditInfo *out);
+int  VdpEditIndexOf(u32 id);
+/* Enabled edits that change the same original bytes differently. Writes
+   id pairs into pairs[2 * k], pairs[2 * k + 1]; returns the number of
+   conflicting pairs (may exceed maxPairs). */
+int  VdpEditConflicts(u32 *pairs, int maxPairs);
 
 /* Puts the original bytes back and forgets the edits that intersect
    [addr, addr + len) of 'space'. Returns the number of edits removed. */
@@ -115,6 +160,18 @@ void EditsFree(EditRecord *list, int n);
    big-endian words, with the edited colors replaced by their original
    (origBytes) or new (replBytes) value. 0 = ok. */
 int  VdpEditCramBlock(u32 firstIdx, int n, u8 *origBytes, u8 *replBytes);
+
+/* ------------------------------------------------------------------------ */
+/* Descriptors (EditRecord.meta): one line of text telling what the bytes   */
+/* of an edit are, so a list or a pack can draw them without the game.     */
+/*   "spr pmod=XXXX colr=XXXX srca=XXXX size=XXXX"   VDP1 texture           */
+/*   "lut pmod=XXXX colr=XXXX"                        VDP1 lookup table      */
+/*   "chr layer=L cn=C pw=P pal=XX coff=XXX tpon=T"   VDP2 character         */
+/*   "bmp layer=L cn=C w=W pal=XX coff=XXX tpon=T"    VDP2 bitmap row        */
+/*   "cram"                                           color RAM              */
+/* ------------------------------------------------------------------------ */
+
+#define VDPEDIT_META_SIZE 96
 
 /* ------------------------------------------------------------------------ */
 /* Color RAM helpers                                                        */
@@ -176,6 +233,12 @@ int  VdpEditSpriteCodeKind(const VdpEditSprite *s, u32 code);
 /* Texture bytes (Saturn order) <-> w*h codes, stored layout. */
 void VdpEditSpriteDecode(int mode, const u8 *bytes, int w, int h, u32 *codes);
 void VdpEditSpriteEncode(int mode, const u32 *codes, int w, int h, u8 *bytes);
+
+/* Descriptors of a sprite texture / its lookup table (see above). */
+void VdpEditSpriteMeta(const VdpEditSprite *s, char *out);
+void VdpEditLutMeta(const VdpEditSprite *s, char *out);
+/* Reads "spr ..." / "lut ..." back. 0 = ok. */
+int  VdpEditSpriteFromMeta(const char *meta, VdpEditSprite *s);
 
 /* ------------------------------------------------------------------------ */
 /* VDP2 layers                                                              */
@@ -263,6 +326,14 @@ void VdpEditReadVdp1(u32 addr, u8 *out, u32 len);
    after import, [3] dots mapped to the nearest color.
    0 = ok, -1 invalid, -2 size differs, -3 layer off. */
 int  VdpEditBgImport(const VdpEditBg *b, const u32 *argb, int w, int h, int *stats);
+
+/* Descriptors of a character / bitmap row of a layer (see above), and the
+   layer settings they carry back (cn, pw/csize, coff, tpon, layer). */
+void VdpEditCharMeta(const VdpEditBg *b, u32 palBase, char *out);
+void VdpEditBitmapMeta(const VdpEditBg *b, int w, char *out);
+/* 1 = character, 2 = bitmap row, 0 = not a VDP2 descriptor. *palBase and
+   *w (bitmap row width) may be NULL. */
+int  VdpEditBgFromMeta(const char *meta, VdpEditBg *b, u32 *palBase, int *w);
 
 #ifdef __cplusplus
 }
