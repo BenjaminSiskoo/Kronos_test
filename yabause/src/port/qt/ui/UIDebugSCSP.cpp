@@ -591,8 +591,11 @@ void UIDebugSCSP::on_pbOpenChannelViewer_clicked()
 	// UIYabause), so the channel viewer used to show frozen envelopes, and no
 	// new sound could ever be listed or muted. Let the game run while the viewer
 	// is open, and pause it again when it is closed.
+	// emulationRunning() n'est que "!mPause" (YabauseThread.cpp) : combine a
+	// emulationPaused() le test etait toujours faux et le jeu ne repartait
+	// jamais. Un jeu est charge quand init() >= 0.
 	const bool resume = emulationReady && mYabauseThread
-		&& mYabauseThread->emulationRunning() && mYabauseThread->emulationPaused();
+		&& (mYabauseThread->init() >= 0) && mYabauseThread->emulationPaused();
 	if (resume)
 		mYabauseThread->pauseEmulation(false, false);
 
