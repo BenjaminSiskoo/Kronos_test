@@ -26,8 +26,18 @@ struct Record {
     std::vector<uint8_t> orig, repl;        // octets avant / apres (meme taille)
     std::vector<uint8_t> origAlt, replAlt;  // variante plus courte, cherchee si orig est introuvable
     std::string label;                      // texte du journal
-    Record() : type(0), addr(0) {}
+    // pack v3
+    bool enabled;                           // false : enregistre mais desactive
+    std::string name;                       // nom donne par l'utilisateur
+    std::string meta;                       // descripteur (voir vdpedit.h)
+    Record() : type(0), addr(0), enabled(true) {}
 };
+
+// En-tete d'un pack : lignes "cle=valeur". Cles utilisees : product (numero de
+// produit du disque, IP.BIN), version, title, saved (date), tool.
+typedef std::map<std::string, std::string> PackInfo;
+std::string packInfoToString(const PackInfo &info);
+PackInfo packInfoFromString(const std::string &text);
 
 // Piste de donnees d'une image : secteurs de sectorSize octets dont les 2048 octets
 // utiles commencent a dataOffset (mode 1 brut : 16, mode 2 brut : 24, ISO : 0).
