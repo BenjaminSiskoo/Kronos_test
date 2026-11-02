@@ -30,6 +30,7 @@
 #include "UIDebugVDP1.h"
 #include "UIDebugVDP2.h"
 #include "UIDebugGfxEditor.h"
+#include "UIEditsExport.h"
 #include <QPointer>
 #include "UIDebugM68K.h"
 #include "UIDebugSCUDSP.h"
@@ -307,6 +308,28 @@ void UIYabause::leaveEvent( QEvent* e )
 
 void UIYabause::mousePressEvent( QMouseEvent* e )
 {
+	/* Graphics editor "pick on screen": the click selects a sprite or a
+	   background dot instead of going to the game. */
+	if (mScreenPick)
+	{
+		std::function<void(int, int, const QPoint&)> pick = mScreenPick;
+		mScreenPick = nullptr;
+		unsetCursor();
+		if (e->button() != Qt::LeftButton)
+		{
+			pick( -1, -1, e->globalPos() );
+			return;
+		}
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		if ((mouseXRatio <= 0.0f) || (mouseYRatio <= 0.0f))
+		{
+			pick( -1, -1, e->globalPos() );
+			return;
+		}
+		const QPoint p = mYabauseGL->mapFromGlobal( e->globalPos() );
+		pick( (int)((p.x()-mouseXUp)/mouseXRatio), (int)((p.y()-mouseYUp)/mouseYRatio), e->globalPos() );
+		return;
+	}
 	/* Critter Crusher / Tatacot: the left button is the hammer hit (see
 	   PerCritcrshMove() in peripheral.c). */
 	if (PerCritcrshEnabled() && (e->button() == Qt::LeftButton))
@@ -322,6 +345,13 @@ void UIYabause::mousePressEvent( QMouseEvent* e )
 	}
 	else
 		PerKeyDown( (1 << 31) | e->button() );
+}
+
+void UIYabause::setScreenPick( std::function<void(int, int, const QPoint&)> pick )
+{
+	mScreenPick = pick;
+	if (mScreenPick) setCursor(Qt::CrossCursor);
+	else unsetCursor();
 }
 
 void UIYabause::mouseReleaseEvent( QMouseEvent* e )
@@ -1353,6 +1383,15 @@ void UIYabause::reset()
 {
 	refreshStatesActions();
 	mYabauseGL->updateView();
+	// Packs de l'editeur graphique faits pour ce disque (numero de produit de
+	// l'IP.BIN) : charges depuis le dossier mods a chaque reset. Les edits
+	// attendent que le jeu charge ses donnees d'origine (vdpedit.c).
+	{
+		QStringList packLog;
+		if (UIEditsExport::autoLoadPacks(&packLog) > 0)
+			for (int i = 0; i < packLog.size(); i++)
+				appendLog(packLog[i].toLocal8Bit().constData());
+	}
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	if (vs->value("autostart").toBool()){
 		mYabauseThread->pauseEmulation(false, true);
