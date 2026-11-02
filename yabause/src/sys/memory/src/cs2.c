@@ -6028,8 +6028,11 @@ u8 Cs2GetIP(int autoregion) {
             ordres d'octets : elles etaient dans la branche #else de
             WORDS_BIGENDIAN, donc ignorees sur un hote big-endian, ou un
             STACK-M/STACK-S a 0 restait a 0. */
-//Real bios is copying data at the firstprogaddr which correspond to the entry point (MSH2->PC) of the game.
-// ST-040-R4-051795.pdf is describing a bit the mechanism, look at 1st READ ADDRESS
+/* firstprogaddr (1st READ ADDRESS, F0H) est l'adresse ou le boot ROM
+   CHARGE le 1st read file, pas le point d'entree du jeu : "When the 1st Read
+   Address is set, the 1st Read File is read but not executed" (ST-040-R4,
+   4.7). Le programme demarre par le groupe des codes de zone puis l'AIP,
+   voir Cs2GetMasterExecutionAdress(). */
          if (cdip->msh2stack == 0 )
          {
             /* STACK-M defaut (ST-040-R4-051795 / TECH#11) : "Default (0
@@ -6408,11 +6411,17 @@ int Cs2LoadState(const void * stream, int version, int size) {
 /* Un cdip alloue mais pas encore rempli (cf. le commentaire en tete de
    YabauseQuickLoadGame()) vaut zero sans etre NULL. Tester le champ lui-meme,
    et pas seulement le pointeur, evite de renvoyer PC = 0 et SP = 0 au maitre.
-   Replis : entree de l'AIP (6002000H + 100H SYSTEM ID + D00H code de securite
-   = 6002E00H) et sommets des zones de pile documentees. */
+   Replis : sommets des zones de pile documentees.
+
+   Point d'entree du maitre : toujours le groupe des codes de zone, en
+   6002000H + 100H (SYSTEM ID) + D00H (code de securite) = 6002E00H
+   (ST-040-R4, table 4.1). Les codes de zone s'enchainent jusqu'a l'AIP,
+   "executed immediately after the area code is executed" (4.6) ; le 1st
+   read file est "read but not executed" (4.7). Renvoyer firstprogaddr
+   faisait sauter l'AIP (ecran noir de Virtua Cop en BIOS emule). */
 u32 Cs2GetMasterStackAdress(){ if (cdip && cdip->msh2stack) return cdip->msh2stack; else return 0x6002000; }
 u32 Cs2GetSlaveStackAdress(){ if (cdip && cdip->ssh2stack) return cdip->ssh2stack; else return 0x6001000; }
-u32 Cs2GetMasterExecutionAdress(){ if (cdip && cdip->firstprogaddr) return cdip->firstprogaddr; else return 0x06002E00; }
+u32 Cs2GetMasterExecutionAdress(){ return 0x06002E00; }
 u64 Cs2GetGameId(){ if (cdip) return cdip->gameid; else return 0x00; }
 
 //////////////////////////////////////////////////////////////////////////////
