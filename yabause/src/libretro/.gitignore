@@ -1,0 +1,3 @@
+# Visual Studio / CMake build folder (CMakePresets.json binaryDir)
+out/
+.vs/
