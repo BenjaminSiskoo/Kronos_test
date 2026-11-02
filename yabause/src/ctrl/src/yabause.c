@@ -1561,7 +1561,12 @@ void YabauseSpeedySetup(void)
    // Set VDP2 registers to sane states
    memset(Vdp2Regs, 0, sizeof(Vdp2));
    Vdp2Regs->TVMD = 0x8000;
-   Vdp2Regs->TVSTAT = 0x020A;
+   /* TVSTAT bit 0 (PAL) : le memset ci-dessus l'effacait. Le demarrage par
+      YabauseInit() le retablit ensuite avec YabauseSetVideoFormat(), mais pas
+      YabauseReset() ni Cs2ForceCloseTray() (image ouverte en cours
+      d'emulation) : un disque PAL demarrait alors sur une machine cadencee a
+      50 Hz qui se declarait NTSC. On garde le bit du standard courant. */
+   Vdp2Regs->TVSTAT = 0x020A | (yabsys.IsPal ? 0x0001 : 0x0000);
    Vdp2Regs->CYCA0L = 0x0F44;
    Vdp2Regs->CYCA0U = 0xFFFF;
    Vdp2Regs->CYCA1L = 0xFFFF;
@@ -1766,6 +1771,11 @@ int YabauseQuickLoadGame(void)
       lgpartition->blocknum[lgpartition->numblocks - 1] = 0xFF;
       lgpartition->numblocks = 0;
 
+      /* 1st READ ADDRESS a 0 : "Transfer is not performed when 0H"
+         (ST-040-R4, 4.3). On le chargeait quand meme, en 00000000H. */
+      if (addr == 0)
+         blocks = 0;
+
       // Copy over First Program to addr
       for (i = 0; i < blocks; i++)
       {
@@ -1794,7 +1804,8 @@ int YabauseQuickLoadGame(void)
          lgpartition->numblocks = 0;
       }
 
-      SH2WriteNotify(MSH2, addr, blocks<<11);
+      if (blocks != 0)
+         SH2WriteNotify(MSH2, addr, blocks<<11);
 
       // Now setup SH2 registers to start executing at ip code
       SH2GetRegisters(MSH2, &MSH2->regs);
@@ -1824,6 +1835,31 @@ int YabauseQuickLoadGame(void)
          sur un repartiteur commun qui relit l'etat du SCU, donc arriver par le
          mauvais vecteur ne se voyait pas. */
       MSH2->onchip.ICR |= 0x0001;
+      /* Point d'entree : le groupe des codes de zone, en 6002E00H, et NON
+         l'adresse du 1st read.
+
+         ST-040-R4 (Disc Format Standards Specification Sheet) :
+         - table 4.1 : l'IP est SYSTEM ID (100H), code de securite (D00H),
+           groupe des codes de zone (20H a 100H), puis l'AIP. Le groupe des
+           codes de zone commence donc en 6002000H + 100H + D00H = 6002E00H ;
+         - 4.6 : l'AIP "is executed immediately after the area code is
+           executed", les codes de zone se terminant chacun par un saut vers
+           le suivant puis vers l'AIP ;
+         - 4.7 : "When the 1st Read Address is set, the 1st Read File is read
+           but not executed." C'est l'AIP qui decide ou continuer.
+
+         Le BIOS emule sautait directement au 1st read et sautait l'AIP.
+         Virtua Cop (MK-81015) : son AIP saute en 6004000H, au milieu du 1st
+         read file charge en 6003C00H. Le debut de ce fichier (6003C00H) est
+         un chargeur qui n'est jamais execute sur console : il recopie par le
+         DMAC du SH-2 des donnees de la WORK RAM-L (00278000H, 002F4000H) en
+         6004000H et 60C0000H. En BIOS emule ces zones sont vides : le
+         programme etait ecrase par des zeros, puis le saut en 6004000H
+         tombait sur une instruction invalide et le maitre restait dans la
+         boucle d'exception en 600060AH (VDP1 a 0 image/s, ecran noir).
+
+         Le code de securite (100H-DFFH) n'est pas execute : c'est le boot
+         ROM qui l'utilise pour afficher le logo. */
       MSH2->regs.PC = Cs2GetMasterExecutionAdress();
       MSH2->regs.R[15] = Cs2GetMasterStackAdress();
       SH2SetRegisters(MSH2, &MSH2->regs);
