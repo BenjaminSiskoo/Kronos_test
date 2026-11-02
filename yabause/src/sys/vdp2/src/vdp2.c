@@ -1050,18 +1050,47 @@ void Vdp2VBlankIN(void) {
    * Pointeur NULL tant qu'aucun edit n'existe. */
   if (VdpEditHookVblank) VdpEditHookVblank();
 
-  if (Vdp2Regs->EXTEN & 0x200) // Should be revised for accuracy(should occur only occur on the line it happens at, etc.)
+  /* Stunner / Virtua Gun : latch externe du compteur HV.
+   *
+   * STTECH41 (Saturn Stunner / Virtua Gun User's Manual 1.00), section 3 :
+   * le jeu met EXLTEN (EXTEN bit 9) a 1, passe le port en mode direct
+   * (IOSEL, DDR = 00H, PDR = 7FH) et met EXLE1/EXLE2 (2010007FH bits 0/1)
+   * a 1, UNE FOIS, a l'initialisation. Ensuite, a chaque trame ou le
+   * pistolet voit le balayage, le bit 6 du port latche HCNT/VCNT et met
+   * EXLTFG (TVSTAT bit 9) a 1 ; le jeu lit TVSTAT pendant le V-Blank, ce
+   * qui efface le drapeau : "it can be read only once during a V-blank".
+   *
+   * L'ancien code marquait le latch "deja fait" dans le bit 3 de EXLE
+   * (bit non defini du registre) et ne le remettait jamais a 0 : seule une
+   * nouvelle ecriture de EXLE par le jeu le liberait. Le latch n'avait donc
+   * lieu qu'au premier V-Blank IN apres l'initialisation -- meme si la
+   * souris etait alors hors de l'ecran, puisque le bit etait pose sans
+   * condition -- et le pistolet ne donnait plus jamais de position.
+   * Vdp2VBlankIN() n'est appele qu'une fois par trame : le latch est
+   * maintenant fait a chaque trame.
+   *
+   * Les boutons du pistolet sont lus en mode direct (PDR, sans INTBACK) :
+   * les evenements du gestionnaire de peripheriques (manette SDL associee
+   * a Trigger/Start) ne sont alors plus jamais lus par l'INTBACK. Ils le
+   * sont ici, une fois par trame, quand un pistolet est branche.
+   *
+   * Should be revised for accuracy (should occur only on the line the gun
+   * points at, and only when the pointed pixel is bright). */
+  if ((PORTDATA1.data[1] == PERGUN && PORTDATA1.data[0] == 0xA0) ||
+      (PORTDATA2.data[1] == PERGUN && PORTDATA2.data[0] == 0xA0))
   {
-    if ((SmpcRegs->EXLE & 0x8) == 0){
-      // Use unused bit to detect latch already done
-      // Only Latch if EXLTEN is enabled
-      if (SmpcRegs->EXLE & 0x1){
-        Vdp2SendExternalLatch(((PORTDATA1.data[2] & 0x40) == 0), (PORTDATA1.data[3]<<8)|PORTDATA1.data[4], (PORTDATA1.data[5]<<8)|PORTDATA1.data[6]);
-      }
-      if (SmpcRegs->EXLE & 0x2){
-        Vdp2SendExternalLatch(((PORTDATA2.data[2] & 0x40) == 0), (PORTDATA2.data[3]<<8)|PORTDATA2.data[4], (PORTDATA2.data[5]<<8)|PORTDATA2.data[6]);
-      }
-      SmpcRegs->EXLE |= 0x8;
+    if (PERCore)
+      PERCore->HandleEvents();
+  }
+
+  if (Vdp2Regs->EXTEN & 0x200)
+  {
+    /* Only Latch if EXLTEN is enabled and the port is a gun */
+    if ((SmpcRegs->EXLE & 0x1) && (PORTDATA1.data[1] == PERGUN)) {
+      Vdp2SendExternalLatch(((PORTDATA1.data[2] & 0x40) == 0), (PORTDATA1.data[3]<<8)|PORTDATA1.data[4], (PORTDATA1.data[5]<<8)|PORTDATA1.data[6]);
+    }
+    if ((SmpcRegs->EXLE & 0x2) && (PORTDATA2.data[1] == PERGUN)) {
+      Vdp2SendExternalLatch(((PORTDATA2.data[2] & 0x40) == 0), (PORTDATA2.data[3]<<8)|PORTDATA2.data[4], (PORTDATA2.data[5]<<8)|PORTDATA2.data[6]);
     }
   }
 
@@ -1556,10 +1585,39 @@ static u16 Vdp2HwVCounter(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Latch externe (Stunner / Virtua Gun) : valeur de HCNT/VCNT.
+ *
+ * hcnt/vcnt : position visee, en pixels de l'image emulee (rwidth x
+ * rheight, cf. UIYabause::mouseMoveEvent / PerGunMove).
+ *
+ * HCNT : STTECH41 (section 3, "Reading Coordinates") indique que la
+ * position latchee est decalee par rapport au point vise et que le jeu doit
+ * compenser ; il renvoie au VDP2 User's Manual (ST-58-R2) p.23 pour le
+ * format de HCNT, manuel absent du workspace. Faute de documentation, le
+ * format et le decalage sont pris dans Mednafen (src/ss/vdp2.cpp LatchHV,
+ * AddHCounter ; src/ss/input/gun.cpp LineHook) :
+ *  - HCNT = compteur de points << 1, le compteur avancant au pas d'un point
+ *    320/352 ; en 640/704 un point du compteur vaut deux pixels ;
+ *  - le pistolet ne declenche le latch qu'apres un delai : en points,
+ *    (6832 - 80*div) / div apres le debut de la zone active, soit 1632/65
+ *    = 25 points en 320/640 (div 65) et 1952/61 = 32 points en 352/704
+ *    (div 61, horloge 28 MHz).
+ * L'ancien code renvoyait x << 1 sans ce delai (commentaire "pourquoi?") :
+ * les jeux, qui retranchent le delai du vrai materiel, placaient le tir a
+ * gauche du point vise (Crime Patrol, ~25 points), et en 640/704 le X etait
+ * double.
+ *
+ * VCNT : laisse tel quel (ligne visee), aucun decalage vertical observe. */
+#define VDP2_GUN_HDELAY_320 25
+#define VDP2_GUN_HDELAY_352 32
+
 void Vdp2SendExternalLatch(int trigger, int hcnt, int vcnt)
 {
   if (trigger) {
-    Vdp2Regs->HCNT = hcnt << 1; //pourquoi?
+    const int hreso = Vdp2Regs->TVMD & 0x7;
+    int dots = (hreso & 0x2) ? (hcnt >> 1) : hcnt;     /* 640/704 -> pas 320/352 */
+    dots += (hreso & 0x1) ? VDP2_GUN_HDELAY_352 : VDP2_GUN_HDELAY_320;
+    Vdp2Regs->HCNT = (u16)((dots << 1) & 0x3FF);
     Vdp2Regs->VCNT = vcnt;
     Vdp2Regs->TVSTAT |= 0x200;
   }
