@@ -74,6 +74,20 @@ const Items mRegions = Items()
 	<< Item( "J" , "Japan (NTSC)" )
 	<< Item( "T", "Asia (NTSC)" );
 
+/* Saturn console region: letters of the area symbols (Disc Format Standards
+   Specification Sheet ST-040-R4, table 4.3). "Auto" takes the first area
+   symbol of the disc. */
+const Items mConsoleRegions = Items()
+	<< Item( "Auto", "Auto (first region of the disc)" )
+	<< Item( "J", "Japan (NTSC)" )
+	<< Item( "T", "Asia (NTSC)" )
+	<< Item( "U", "North America (NTSC)" )
+	<< Item( "B", "Central/South America (NTSC)" )
+	<< Item( "K", "Korea (NTSC)" )
+	<< Item( "A", "Asia (PAL)" )
+	<< Item( "E", "Europe (PAL)" )
+	<< Item( "L", "Central/South America (PAL)" );
+
 const Items mCartridgeTypes = Items()
 	<< Item( "0", "None", false, false )
 	<< Item( "1", "Pro Action Replay", true, false)
@@ -608,6 +622,10 @@ void UISettings::loadCores()
 	foreach ( const Item& it, mRegions )
 		cbRegion->addItem( QtYabause::translate( it.Name ), it.id );
 
+	// Saturn console region
+	foreach ( const Item& it, mConsoleRegions )
+		cbConsoleRegion->addItem( QtYabause::translate( it.Name ), it.id );
+
 	// images filter that qt can write
 	QStringList filters;
 	foreach(QByteArray ba, QImageWriter::supportedImageFormats())
@@ -723,6 +741,10 @@ void UISettings::loadSettings()
 		cbScreenshotImageFormat->setCurrentIndex(cbScreenshotImageFormat->findData(s->value(QtYabause::SettingKeys::ScreenshotsFormat, cbScreenshotImageFormat->itemData(0))));
 	}
 	cbSysLanguageID->setCurrentIndex( cbSysLanguageID->findData( s->value( "General/SystemLanguageID", mSysLanguageID.at( 0 ).id ).toString() ) );
+	{
+		int idx = cbConsoleRegion->findData( s->value( "General/ConsoleRegion", mConsoleRegions.at( 0 ).id ).toString() );
+		cbConsoleRegion->setCurrentIndex( idx < 0 ? 0 : idx );
+	}
 #ifdef HAVE_LIBMINI18N
 	int i;
 	if ((i=cbTranslation->findData(s->value( "General/Translation" ).toString())) != -1)
@@ -832,6 +854,7 @@ void UISettings::saveSettings()
 	s->setValue(QtYabause::SettingKeys::ScreenshotsDirectory, leScreenshots->text());
 	s->setValue(QtYabause::SettingKeys::ScreenshotsFormat, cbScreenshotImageFormat->itemData(cbScreenshotImageFormat->currentIndex()).toString());
 	s->setValue( "General/SystemLanguageID", cbSysLanguageID->itemData( cbSysLanguageID->currentIndex() ).toString() );
+	s->setValue( "General/ConsoleRegion", cbConsoleRegion->itemData( cbConsoleRegion->currentIndex() ).toString() );
 #ifdef HAVE_LIBMINI18N
 	s->setValue( "General/Translation", cbTranslation->itemData(cbTranslation->currentIndex()).toString() );
 #endif
