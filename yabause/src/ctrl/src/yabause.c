@@ -549,78 +549,40 @@ static void YabauseApplyTimingDBForCode(const char *game_code)
       YuiMsg("SMPC legacy INTBACK end timing for this game (game database)\n");
 }
 
-/* Reglage "cache SH-2" de l'utilisateur (yabauseinit_struct.usecache), garde
-   pour le changement de disque : YabauseApplyDiscTimingDB() n'a pas la
-   structure d'initialisation. */
-static int userUseCache = 0;
-
-/* Emulation du cache SH-2 pour le jeu 'game_code' : reglage de l'utilisateur,
-   force a 1 pour les jeux de SH2CacheDBList.
-   Chaque CPU suit ensuite son CCR.CE (cacheOn n'est change que par une
-   ecriture de CCR, enableCache()/disableCache()) : apres un changement de
-   disque, le BIOS a deja ecrit CCR avec l'ancien reglage, et le nouveau jeu
-   ne le reecrit pas forcement. Les etiquettes sont invalidees au passage
-   a 1 (CCR.CP, 8.4.6) : le cache repart vide, sans effet sur les donnees
-   puisqu'il est en ecriture immediate. Les structures du cache sont
-   initialisees par SH2Init() quel que soit le reglage. */
-static void YabauseApplySH2CacheForCode(const char *game_code)
-{
-   const int previous = yabsys.usecache;
-   SH2_struct *cpu[2];
-   int i;
-
-   yabsys.usecache = userUseCache;
-   if ((yabsys.usecache == 0) && DBLookupForceSH2CacheForCode(game_code)) {
-      yabsys.usecache = 1;
-      YuiMsg("SH2 cache emulation enabled for this game (game database)\n");
-   }
-
-   cpu[0] = MSH2;
-   cpu[1] = SSH2;
-   for (i = 0; i < 2; i++) {
-      if (cpu[i] == NULL)
-         continue;
-      if ((yabsys.usecache != 0) && (cpu[i]->onchip.CCR & 0x01)) {
-         if ((previous == 0) || (cpu[i]->cacheOn == 0))
-            InvalidateCache(cpu[i]);
-         enableCache(cpu[i]);
-      } else {
-         /* Passage d'un jeu de la liste a un autre sans emulation du cache :
-            les CPU ne doivent pas garder le cache actif du jeu precedent (un
-            reset ne remet pas cacheOn a 0). */
-         cpu[i]->cacheOn = 0;
-      }
-   }
-}
-
 /* Appele par Cs2ForceCloseTray() (cs2.c) apres un changement de disque :
    le jeu suivant demarre par le BIOS sans YabauseInit(), donc sans
    YabauseApplySH2CacheDB(). Avant, les reglages du jeu precedent restaient
    actifs : apres Space Jam, Batman Forever (Saturn) tournait avec
    l'ancienne fin de l'INTBACK et affichait "NO PAD IN PORT 1".
-   C'est aussi le chemin de Qt quand un jeu est ouvert alors que
-   l'emulation tourne (Fichier > Ouvrir ISO apres un demarrage sur le BIOS,
-   ou un autre jeu) : l'emulation du cache de SH2CacheDBList n'y etait pas
-   appliquee et le jeu tournait sans elle.
    Le code est lu par Cs2ReadDiscGameCode(), qui ne touche pas a l'etat du
    CD block (Cs2GetIP(), utilise au demarrage, change la connexion du
-   CD et prend un bloc du tampon). */
+   CD et prend un bloc du tampon). L'emulation du cache (SH2CacheDBList)
+   n'est pas changee ici : elle depend de structures preparees a
+   l'initialisation. */
 void YabauseApplyDiscTimingDB(void)
 {
    char code[16];
-   const char *game_code = Cs2ReadDiscGameCode(code, sizeof(code)) ? code : NULL;
-   YabauseApplyTimingDBForCode(game_code);
-   YabauseApplySH2CacheForCode(game_code);
+   YabauseApplyTimingDBForCode(Cs2ReadDiscGameCode(code, sizeof(code)) ? code : NULL);
 }
 
 static void YabauseApplySH2CacheDB(yabauseinit_struct *init)
 {
-   userUseCache = init->usecache;
-   Cs2GetIP(0);
-   YabauseApplySH2CacheForCode(Cs2GetCurrentGmaecode());
+   yabsys.usecache = init->usecache;
+   if ((yabsys.usecache == 0) && DBLookupForceSH2Cache()) {
+      yabsys.usecache = 1;
+      YuiMsg("SH2 cache emulation enabled for this game (game database)\n");
+   }
+   /* Passage d'un jeu de la liste a un autre sans emulation du cache : les
+      CPU ne doivent pas garder le cache actif du jeu precedent (un reset ne
+      remet pas cacheOn a 0). */
+   if (yabsys.usecache == 0) {
+      if (MSH2 != NULL) MSH2->cacheOn = 0;
+      if (SSH2 != NULL) SSH2->cacheOn = 0;
+   }
    /* Reglages de temps du jeu (SH2LegacyFetchDBList, SmpcLegacyIntbackDBList,
       utils/src/db.c), voir YabauseApplyTimingDBForCode(). Apres un simple
       changement de disque, c'est YabauseApplyDiscTimingDB() qui s'en charge. */
+   Cs2GetIP(0);
    YabauseApplyTimingDBForCode(Cs2GetCurrentGmaecode());
 }
 
