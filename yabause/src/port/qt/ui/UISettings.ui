@@ -242,6 +242,30 @@
          </property>
         </widget>
        </item>
+       <item row="4" column="0" colspan="2">
+        <layout class="QHBoxLayout" name="hlConsoleRegion">
+         <item>
+          <widget class="QLabel" name="lConsoleRegion">
+           <property name="text">
+            <string>Console region</string>
+           </property>
+           <property name="toolTip">
+            <string>Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="cbConsoleRegion">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
        <item row="28" column="0" colspan="2">
         <widget class="QComboBox" name="cbTranslation"/>
        </item>
