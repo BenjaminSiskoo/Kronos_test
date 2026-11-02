@@ -31,6 +31,12 @@
 #include "perfetto_trace.h"
 #include "mpegcard.h"
 
+#ifdef __LIBRETRO__
+/* libretro.c: size of the final output, given the composed frame size in
+   *w x *h. Left unchanged when no filter or upscaler is selected. */
+extern void YuiGetOutputSize(int *w, int *h);
+#endif
+
 //////////////////////////////////////////////////////////////////////////////
 // Video CD Card (EXPERIMENTAL, see mpegcard.h).
 //
@@ -807,6 +813,23 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
      int border_clip = (modeScreen == INTEGER_RATIO
                      || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
      glScissor(x, y, w - border_clip, h - border_clip);
+   }
+#else
+   /* Libretro: the frontend scales the picture, the output is the composed
+    * frame itself. When the port asks for a larger output (a filter or an
+    * upscaler is selected: a CRT mask or HQ4x drawn at the size of the
+    * source would show nothing), the final blit draws at that size, from
+    * (0,0) of the frontend framebuffer. */
+   {
+     int outw = _Ygl->width;
+     int outh = _Ygl->height;
+     YuiGetOutputSize(&outw, &outh);
+     if ((outw != _Ygl->width) || (outh != _Ygl->height)) {
+       w = outw;
+       h = outh;
+       glViewport(0, 0, outw, outh);
+       glScissor(0, 0, outw, outh);
+     }
    }
 #endif
    YglBlitFramebuffer(srcTexture, _Ygl->width, _Ygl->height, w, h);
