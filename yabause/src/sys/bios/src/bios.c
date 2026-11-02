@@ -353,8 +353,6 @@ static void FASTCALL BiosClearSemaphore(SH2_struct * sh)
 
 static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
 {
-   int i, j;
-   u32 mask;
    SH2GetRegisters(sh, &sh->regs);
 
 //   LOG("BiosChangeSystemClock\n");
@@ -388,10 +386,55 @@ static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
       a 1. */
    SH2MappedMemoryWriteWord(sh, 0xFFFFFEE0, 0x0001);
 
-   if (sh->regs.R[4] == 0)
-      SmpcCKCHG320();
-   else
-      SmpcCKCHG352();
+   /* Le changement d'horloge passe par la commande SMPC, comme sur le vrai
+      BIOS, et la fonction ne rend la main qu'une fois la commande terminee
+      (BiosChangeSystemClockWait, en 4A0H).
+
+      Avant, le BIOS emule appelait SmpcCKCHG320/352() directement : remise
+      a zero de VDP1, VDP2 et du SCU, NMI, puis retour immediat. Avec la
+      commande SMPC, Kronos remet ces circuits a zero au debut de la commande
+      et n'envoie le NMI que deux trames plus tard (SmpcCKCHGStart et
+      SmpcSetTiming dans smpc.c, ordre de Mednafen) ; entre les deux, le SCU
+      vient d'etre remis a zero (IMS = BFFFH, tout masque) et IST memorise
+      les V-Blank IN/OUT et H-Blank IN qui surviennent. Le programme retrouve
+      ces bits a 1 quand SYS_CHGSYSCK revient.
+
+      Discworld (T-20502G) en depend : juste apres SYS_CHGSYSCK(320) il
+      masque le V-Blank OUT (SYS_CHGSCUIM) et lit deux fois IST (06013F20,
+      06013F28) en attendant le bit 1 ; la boucle qui suit (06013F2C) ne
+      relit pas IST. Avec le retour immediat, IST venait d'etre remis a 0 :
+      maitre bloque en 06013F2C, ecran noir, VDP1 a 0 image/s. C'est le meme
+      comportement que smpc.c corrige deja pour le vrai BIOS. */
+   SH2MappedMemoryWriteByte(sh, 0x2010001F, (sh->regs.R[4] == 0) ? 0x0F : 0x0E);
+
+   sh->regs.PC = 0x000004A0;
+   SH2SetRegisters(sh, &sh->regs);
+}
+
+/* Attente de la fin de la commande CKCHG lancee par BiosChangeSystemClock().
+   Le PC reste en 4A0H (l'instruction non decodee est reexecutee) tant que le
+   SMPC n'a pas remis SF a 0 ; le NMI envoye a la fin de la commande passe par
+   le vecteur 11 de BiosInit() (rte) et revient ici. Ensuite, la fin de
+   l'ancienne fonction : registres du SCU et masque d'interruption. */
+static void FASTCALL BiosChangeSystemClockWait(SH2_struct * sh)
+{
+   int i, j;
+   u32 mask;
+   SH2GetRegisters(sh, &sh->regs);
+
+   if (SmpcRegs->SF & 0x1)
+   {
+      /* Le SH-2 attend : on lui fait consommer le reste de sa tranche, comme
+         SLEEP. L'instruction non decodee en 4A0H ne coute rien (ROM BIOS
+         emulee, aucun cout d'acces) : sans cela la boucle de l'interpreteur
+         (while cycles < target_cycles) ne finissait jamais, la trame non
+         plus, et le SMPC qui doit terminer la commande ne s'executait plus. */
+      if (sh->target_cycles > sh->cycles)
+         sh->cycles = sh->target_cycles;
+      else
+         sh->cycles += 4;
+      return;
+   }
 
    // Clear SCU DMA Regs
    for (j = 0; j < 3; j++)
@@ -1925,6 +1968,9 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
          break;
       case 0xA0: // Interrupt Handler Return
          BiosHandleScuInterruptReturn(sh);
+         break;
+      case 0xA8: // 0x000004A0 : fin de SYS_CHGSYSCK (attente de la commande SMPC)
+         BiosChangeSystemClockWait(sh);
          break;
       default:
          return 0;
