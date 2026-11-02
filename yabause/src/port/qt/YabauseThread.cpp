@@ -467,8 +467,30 @@ void YabauseThread::reloadSettings()
 	mYabauseConf.carttype = vs->value( "Cartridge/Type", mYabauseConf.carttype ).toInt();
 	if (mYabauseConf.carttype == CART_ROMSTV) mYabauseConf.cdcoretype = CDCORE_DUMMY;
 	mYabauseConf.stvgame = confString( prev.stvgame, vs->value( "Cartridge/STVGame" ).toString().toLatin1() );
+	/* Saturn console region (Settings > General > Console region). "Auto"
+	   or empty: the first area symbol of the disc, as before. Otherwise the
+	   letter of the area symbol (ST-040-R4 table 4.3), turned into the SMPC
+	   region code. */
 	mYabauseConf.regionid = 0;
-	const QString r = vs->value( "STV/Region", mYabauseConf.regionid ).toString();
+	{
+		const QString cr = vs->value( "General/ConsoleRegion", "Auto" ).toString();
+		if ( !cr.isEmpty() && cr != "Auto" )
+		{
+			switch ( cr[0].toLatin1() )
+			{
+				case 'J': mYabauseConf.regionid = REGION_JAPAN; break;
+				case 'T': mYabauseConf.regionid = REGION_ASIANTSC; break;
+				case 'U': mYabauseConf.regionid = REGION_NORTHAMERICA; break;
+				case 'B': mYabauseConf.regionid = REGION_CENTRALSOUTHAMERICANTSC; break;
+				case 'K': mYabauseConf.regionid = REGION_KOREA; break;
+				case 'A': mYabauseConf.regionid = REGION_ASIAPAL; break;
+				case 'E': mYabauseConf.regionid = REGION_EUROPE; break;
+				case 'L': mYabauseConf.regionid = REGION_CENTRALSOUTHAMERICAPAL; break;
+				default : mYabauseConf.regionid = 0; break;
+			}
+		}
+	}
+	const QString r = vs->value( "STV/Region", "Auto" ).toString();
 	if ( r.isEmpty() || r == "Auto" )
 		mYabauseConf.stv_favorite_region = 1;
 	else
@@ -593,7 +615,14 @@ void YabauseThread::resetYabauseConf()
 	// free structure
 	memset( &mYabauseConf, 0, sizeof( yabauseinit_struct ) );
 	// fill default structure
-	mYabauseConf.m68kcoretype = M68KCORE_C68K;
+	/* Same default as the settings dialog (UISettings: default68kCore()).
+	   M68KCORE_C68K is not in M68KCoreList[] of the Qt port (Dummy and
+	   Musashi only), and M68KInit() silently falls back to the Dummy core
+	   for an unknown id: without a saved "Advanced/68kCore" the sound CPU
+	   never ran, and games that wait for their sound driver hung (Destruction
+	   Derby 2 prototype: the master waits at 06004F0C for the driver's first
+	   sound request). */
+	mYabauseConf.m68kcoretype = QtYabause::default68kCore().id;
 	mYabauseConf.percoretype = QtYabause::defaultPERCore().id;
 	mYabauseConf.sh2coretype = SH2CORE_DEFAULT;
 	mYabauseConf.vidcoretype = QtYabause::defaultVIDCore().id;
