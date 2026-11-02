@@ -129,6 +129,27 @@ void BiosInit(SH2_struct *context)
       ecrase cette valeur des qu'il fournit sa vraie fonction d'entree. */
    SH2MappedMemoryWriteLong(context, 0x06000250, 0x06000614);
 
+   /* 6000260H : adresse d'une zone libre de la RAM du BIOS.
+
+      Rien ne l'initialisait : la case valait 0. 3D Lemmings (T-11304H, Europe
+      et Japon) a un AIP (IP, 6002E20H) qui s'en sert pour installer son
+      propre CDINIT1 :
+          r7 = *(6000260H)            zone libre
+          *(6002E9CH) = *(60002DCH)   sauvegarde du vrai CDINIT1
+          copie 16H mots (6002E48H-6002E9FH, code + litteraux) vers r7
+          *(60002DCH) = r7            CDINIT1 pointe sur la copie
+      Avec 0 la copie partait en 00000000H (ROM, ecritures perdues) et
+      CDINIT1 pointait sur 0 : premier appel CD du jeu (0604A0CCH, appel
+      M 00000) -> instruction invalide -> boucle d'exception en 600060AH,
+      ecran noir, VDP1 a 0 image/s.
+
+      La valeur du vrai BIOS n'est pas documentee dans les manuels du
+      workspace. On prend une zone que le BIOS emule n'utilise pas :
+      600061CH-60008FFH est libre (code en 6000600H-6000617H, gestionnaires
+      SCU en 6000900H-6000A7FH, table 6000A00H-6000AFFH, semaphores en
+      6000B00H). 6000700H laisse 200H octets. */
+   SH2MappedMemoryWriteLong(context, 0x06000260, 0x06000700);
+
    // Setup Bios Functions
    SH2MappedMemoryWriteLong(context, 0x06000210, 0x00000210);
    SH2MappedMemoryWriteLong(context, 0x0600026C, 0x0000026C);
