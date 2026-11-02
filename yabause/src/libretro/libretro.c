@@ -6,10 +6,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
-#ifdef _MSC_VER
-#define snprintf _snprintf
-#endif
-
 #include <sys/stat.h>
 
 #include <libretro.h>
@@ -33,7 +29,20 @@
 #include "vidcs.h"
 #include "ygl.h"
 #include "sh2int_kronos.h"
+#include "threads.h"
 #include "libretro_core_options.h"
+
+/* MSVC has no PATH_MAX (MinGW defines it as 260 in limits.h). */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+/* core.h maps snprintf to sprintf_s with MSVC: sprintf_s calls the invalid
+   parameter handler (abort by default) when the text does not fit, instead
+   of truncating it. Visual Studio 2015 and later have the C99 snprintf. */
+#if defined(_MSC_VER) && (_MSC_VER >= 1900)
+#undef snprintf
+#endif
 
 yabauseinit_struct yinit;
 
@@ -47,6 +56,7 @@ static char stv_bios_path[PATH_MAX];
 static char bup_path[PATH_MAX];
 static char eeprom_dir[PATH_MAX];
 static char addon_cart_path[PATH_MAX];
+static char mpeg_rom_path[PATH_MAX];
 
 static char game_basename[128];
 
@@ -58,10 +68,20 @@ static int window_width;
 static int window_height;
 
 static bool hle_bios_force = false;
+/* Video CD Card: 0 = never plugged, 1 = always plugged (when its ROM is
+   found), 2 = auto, plugged for Video CD discs only */
+#define MPEG_CARD_DISABLED 0
+#define MPEG_CARD_ENABLED  1
+#define MPEG_CARD_AUTO     2
+static int mpeg_card_mode = MPEG_CARD_AUTO;
 static int addon_cart_type = CART_NONE;
 static int mesh_mode = ORIGINAL_MESH;
 static int banding_mode = ORIGINAL_BANDING;
 static int video_filter_type = 0;
+static int upscale_filter_type = 0;
+/* size of the last final blit (see YuiGetOutputSize) */
+static int out_width = 0;
+static int out_height = 0;
 
 static int g_skipframe = 0;
 static int g_videoformattype = -1;
@@ -80,6 +100,9 @@ static bool all_devices_ready = false;
 static bool libretro_supports_bitmasks = false;
 static bool rendering_started = false;
 static int frame_expected = 0;
+static bool in_retro_run = false;
+static unsigned reported_region = (unsigned)-1;
+static bool av_info_geometry_only = false;
 static bool resolution_need_update = false;
 static int16_t libretro_input_bitmask[12] = {-1,};
 static int pad_type[12] = {RETRO_DEVICE_NONE,};
@@ -234,8 +257,8 @@ static KeyConfig_struct stv_key_config[] =
 };
 
 static KeyConfig_struct* current_key_config = NULL;
-static int current_key_config_nb = 0;
-static int system_key_config_nb = 0;
+static unsigned current_key_config_nb = 0;
+static unsigned system_key_config_nb = 0;
 
 static PerMouse_struct* mousebits = NULL;
 
@@ -344,7 +367,7 @@ static int input_state_cb_wrapper(unsigned port, unsigned device, unsigned index
 
 static int update_inputs(void)
 {
-   unsigned i, j;
+   unsigned i;
 
    input_poll_cb();
 
@@ -380,8 +403,6 @@ static int update_inputs(void)
          libretro_input_bitmask[i] = -1;
          int analog_left_x = 0;
          int analog_left_y = 0;
-         int analog_right_x = 0;
-         int analog_right_y = 0;
          uint16_t l_trigger, r_trigger;
 
          switch(pad_type[i])
@@ -525,93 +546,142 @@ PerInterface_struct PERLIBRETROJoy = {
     PERLIBRETROScan,
     0,
     PERLIBRETRONothing,
-    PERLIBRETROKeyName
+    PERLIBRETROKeyName,
+    NULL /* onKeyEvent: keyboard events come from update_inputs() */
 };
 
 // SNDLIBRETRO
 #define SNDCORE_LIBRETRO   11
 #define SAMPLERATE         44100
-#define NUMSOUNDBLOCKS  4
 
-static u32 audio_size;
-static u32 soundlen;
-static u32 soundbufsize;
-static s16 *sound_buf;
+/* The SCSP hands its samples over from the sound thread (ScspExecAsync() in
+   scsp.c runs in ScspAsynMainCpu), while the libretro audio callback may
+   only be used from retro_run(). The samples are stored here, under a
+   mutex, and retro_run() passes them to the frontend once YabauseExec() has
+   returned. The core produces exactly 44100 samples per emulated second
+   (882 per PAL frame, 735 or 736 per 59.94 Hz NTSC frame), the buffer holds
+   a little more than 8 frames. */
+#define SND_RING_FRAMES    8192
 
-static int SNDLIBRETROInit(void) {
-    int vertfreq = (retro_get_region() == RETRO_REGION_PAL ? 50 : 60);
-    soundlen = (SAMPLERATE / vertfreq) * sizeof(s16) * 2;
-    soundbufsize = soundlen * NUMSOUNDBLOCKS;
-    if ((sound_buf = (s16 *)malloc(soundbufsize)) == NULL)
-        return -1;
-    memset(sound_buf, 0, soundbufsize);
-    audio_size = soundbufsize;
-    return 0;
+static s16 snd_ring[SND_RING_FRAMES * 2];
+static u32 snd_ring_read;
+static u32 snd_ring_count;
+static YabMutex *snd_ring_mutex = NULL;
+static s16 snd_out[SND_RING_FRAMES * 2];
+
+static void snd_ring_clear(void)
+{
+   if (snd_ring_mutex) YabThreadLock(snd_ring_mutex);
+   snd_ring_read = 0;
+   snd_ring_count = 0;
+   if (snd_ring_mutex) YabThreadUnLock(snd_ring_mutex);
 }
 
-static void SNDLIBRETRODeInit(void) {
-   if (sound_buf)
-      free(sound_buf);
+static int SNDLIBRETROInit(void)
+{
+   if (snd_ring_mutex == NULL)
+      snd_ring_mutex = YabThreadCreateMutex();
+   if (snd_ring_mutex == NULL)
+      return -1;
+   snd_ring_clear();
+   return 0;
 }
 
-static int SNDLIBRETROReset(void) { return 0; }
+static void SNDLIBRETRODeInit(void)
+{
+   snd_ring_clear();
+}
+
+static int SNDLIBRETROReset(void)
+{
+   snd_ring_clear();
+   return 0;
+}
 
 static int SNDLIBRETROChangeVideoFormat(int vertfreq)
 {
-  soundlen = (SAMPLERATE / vertfreq) * sizeof(s16) * 2;
-  soundbufsize = soundlen * NUMSOUNDBLOCKS;
-    if (sound_buf)
-        free(sound_buf);
-    if ((sound_buf = (s16 *)malloc(soundbufsize)) == NULL)
-        return -1;
-    memset(sound_buf, 0, soundbufsize);
-    audio_size = soundbufsize;
-    return 0;
+   (void)vertfreq;
+   return 0;
 }
 
-static void sdlConvert32uto16s(int32_t *srcL, int32_t *srcR, int16_t *dst, size_t len)
+static INLINE s16 snd_clamp(s32 v)
+{
+   if (v > 0x7FFF) return 0x7FFF;
+   if (v < -0x8000) return -0x8000;
+   return (s16)v;
+}
+
+/* Sound thread */
+static void SNDLIBRETROUpdateAudio(u32 *leftchanbuffer, u32 *rightchanbuffer, u32 num_samples)
 {
    u32 i;
-
-   for (i = 0; i < len; i++)
+   if (snd_ring_mutex == NULL)
+      return;
+   YabThreadLock(snd_ring_mutex);
+   for (i = 0; i < num_samples; i++)
    {
-      // Left Channel
-      if (*srcL > 0x7FFF)
-         *dst = 0x7FFF;
-      else if (*srcL < -0x8000)
-         *dst = -0x8000;
-      else
-         *dst = *srcL;
-      srcL++;
-      dst++;
+      u32 pos;
+      if (snd_ring_count >= SND_RING_FRAMES)
+      {
+         /* frontend not draining (should not happen): drop the oldest */
+         snd_ring_read = (snd_ring_read + 1) % SND_RING_FRAMES;
+         snd_ring_count--;
+      }
+      pos = (snd_ring_read + snd_ring_count) % SND_RING_FRAMES;
+      snd_ring[pos * 2]     = snd_clamp((s32)leftchanbuffer[i]);
+      snd_ring[pos * 2 + 1] = snd_clamp((s32)rightchanbuffer[i]);
+      snd_ring_count++;
+   }
+   YabThreadUnLock(snd_ring_mutex);
+}
 
-      // Right Channel
-      if (*srcR > 0x7FFF)
-         *dst = 0x7FFF;
-      else if (*srcR < -0x8000)
-         *dst = -0x8000;
-      else
-         *dst = *srcR;
-      srcR++;
-      dst++;
+static u32 SNDLIBRETROGetAudioSpace(void)
+{
+   u32 space;
+   if (snd_ring_mutex == NULL)
+      return 0;
+   YabThreadLock(snd_ring_mutex);
+   space = SND_RING_FRAMES - snd_ring_count;
+   YabThreadUnLock(snd_ring_mutex);
+   /* never report a full buffer: the SCSP would keep the samples and send
+      them late, UpdateAudio() drops the oldest ones instead */
+   return space ? space : SND_RING_FRAMES;
+}
+
+/* retro_run() thread */
+static void snd_flush_to_frontend(void)
+{
+   u32 count, first, i;
+   if (snd_ring_mutex == NULL || audio_batch_cb == NULL)
+      return;
+   YabThreadLock(snd_ring_mutex);
+   count = snd_ring_count;
+   first = snd_ring_read;
+   for (i = 0; i < count; i++)
+   {
+      u32 pos = (first + i) % SND_RING_FRAMES;
+      snd_out[i * 2]     = snd_ring[pos * 2];
+      snd_out[i * 2 + 1] = snd_ring[pos * 2 + 1];
+   }
+   snd_ring_read = (snd_ring_read + count) % SND_RING_FRAMES;
+   snd_ring_count = 0;
+   YabThreadUnLock(snd_ring_mutex);
+
+   i = 0;
+   while (i < count)
+   {
+      size_t done = audio_batch_cb(&snd_out[i * 2], count - i);
+      if (done == 0)
+         break;
+      i += (u32)done;
    }
 }
 
-static void SNDLIBRETROUpdateAudio(u32 *leftchanbuffer, u32 *rightchanbuffer, u32 num_samples)
-{
-   sdlConvert32uto16s((int32_t*)leftchanbuffer, (int32_t*)rightchanbuffer, sound_buf, num_samples);
-   audio_batch_cb(sound_buf, num_samples);
+static void SNDLIBRETROMuteAudio(void) {}
 
-   audio_size += num_samples * sizeof(s16) * 2;
-}
+static void SNDLIBRETROUnMuteAudio(void) {}
 
-static u32 SNDLIBRETROGetAudioSpace(void) { return audio_size; }
-
-void SNDLIBRETROMuteAudio(void) {}
-
-void SNDLIBRETROUnMuteAudio(void) {}
-
-void SNDLIBRETROSetVolume(int volume) {}
+static void SNDLIBRETROSetVolume(int volume) { (void)volume; }
 
 SoundInterface_struct SNDLIBRETRO = {
     SNDCORE_LIBRETRO,
@@ -685,10 +755,13 @@ void YuiMsg(const char *format, ...)
 {
   char buf[512];
   va_list arglist;
+  if (!log_cb)
+    return;
   va_start( arglist, format );
-  int rc = vsnprintf(buf, 512, format, arglist);
+  vsnprintf(buf, sizeof(buf), format, arglist);
   va_end( arglist );
-  log_cb(RETRO_LOG_INFO, buf);
+  /* buf may contain '%' (paths, messages): never pass it as the format */
+  log_cb(RETRO_LOG_INFO, "%s", buf);
 }
 
 void YuiErrorMsg(const char *string)
@@ -699,43 +772,99 @@ void YuiErrorMsg(const char *string)
 
 static int first_ctx_reset = 1;
 
-int YuiUseOGLOnThisThread()
+int YuiUseOGLOnThisThread(void)
 {
   return glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
 }
 
-int YuiRevokeOGLOnThisThread()
+int YuiRevokeOGLOnThisThread(void)
 {
   return glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
 }
 
 int YuiGetFB(void)
 {
-  return hw_render.get_current_framebuffer();
+  return (int)hw_render.get_current_framebuffer();
 }
 
 void retro_reinit_av_info(void)
 {
     struct retro_system_av_info av_info;
+    /* SET_GEOMETRY does not pass the timing: keep reported_region as the
+       region of the timing the frontend really has */
+    av_info_geometry_only = true;
     retro_get_system_av_info(&av_info);
+    av_info_geometry_only = false;
     environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &av_info);
 }
 
 void YuiSwapBuffers(void)
 {
-   int prev_game_width = game_width;
+   int prev_game_width;
+   /* Video callbacks are only allowed inside retro_run(). Loading a state
+      (YabLoadStateBuffer(), called from retro_unserialize()) swaps twice:
+      those calls used to reach the frontend outside retro_run() and left
+      frame_expected at -2, so the next frames were presented two at a time
+      or not at all. */
+   if (!in_retro_run)
+      return;
+   prev_game_width = game_width;
    int prev_game_height = game_height;
-   game_width = _Ygl->width;
-   game_height = _Ygl->height;
+   /* size of what the last blit drew (larger than the composed frame when
+      a filter is selected, see YuiGetOutputSize) */
+   game_width = (out_width > 0) ? out_width : _Ygl->width;
+   game_height = (out_height > 0) ? out_height : _Ygl->height;
    if (resolution_need_update || (prev_game_width != game_width) || (prev_game_height != game_height)) {
      retro_reinit_av_info();
    }
    frame_expected--;
+   /* a second swap in the same run must not borrow from the next run */
+   if (frame_expected < 0)
+      frame_expected = 0;
    video_cb(RETRO_HW_FRAME_BUFFER_VALID, game_width, game_height, 0);
+}
+
+/* Called by VIDCSRender() (yglcs.c) before the final blit, with the size of
+   the composed frame. The filters that draw a pattern on the output (CRT
+   mask, scanlines, FXAA, Lanczos...) and the upscalers (HQ4x, xBRZ, FSR...)
+   need an output larger than the composed frame: it is then multiplied by
+   the largest integer factor that fits in the frontend framebuffer
+   (max_width x max_height of the AV info). No filter, or one of the
+   deinterlacing filters alone (they work at the frame size, as before):
+   the output keeps the frame size. */
+void YuiGetOutputSize(int *w, int *h)
+{
+   int k = 1;
+   int filter_scales = (video_filter_type != AA_NONE) &&
+                       (video_filter_type != AA_ADAPTATIVE_FILTER) &&
+                       (video_filter_type != AA_ADAPTATIVE_DEBUG_FILTER) &&
+                       (video_filter_type != AA_BOB_FILTER);
+
+   if ((filter_scales || (upscale_filter_type != UP_NONE)) && (*w > 0) && (*h > 0))
+   {
+      k = window_width / *w;
+      if (window_height / *h < k)
+         k = window_height / *h;
+      if (k < 1)
+         k = 1;
+   }
+   *w *= k;
+   *h *= k;
+   out_width = *w;
+   out_height = *h;
 }
 
 void YuiEndOfFrame(void)
 {
+   /* The frame composed at V-blank IN is presented once the GPU has finished
+      it: YglCheckFBSwitch() polls the fence during the V-blank lines and
+      swaps when it is signalled. When it was not signalled yet at the end of
+      the emulated frame, the swap happened in the next retro_run(), in
+      VIDCSVdp2Draw(), followed by that run's own swap: two video callbacks
+      in one run and none in the previous one (frame pacing judder). Wait for
+      the fence here, so each retro_run() presents its own frame. */
+   if (frame_expected > 0 && _Ygl != NULL && _Ygl->sync != 0)
+      YglCheckFBSwitch(1);
    if (frame_expected > 0) {
       video_cb(NULL, game_width, game_height, 0);
       frame_expected--;
@@ -814,7 +943,7 @@ static bool try_init_context(u32 context_type)
    return false;
 }
 
-static bool init_hw_context()
+static bool init_hw_context(void)
 {
    u32 preferred_context;
    bool found_context = false;
@@ -945,6 +1074,18 @@ void check_variables(void)
          addon_cart_type = CART_BACKUPRAM32MBIT;
    }
 
+   var.key = "kronos_mpeg_card";
+   var.value = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (strcmp(var.value, "enabled") == 0)
+         mpeg_card_mode = MPEG_CARD_ENABLED;
+      else if (strcmp(var.value, "disabled") == 0)
+         mpeg_card_mode = MPEG_CARD_DISABLED;
+      else
+         mpeg_card_mode = MPEG_CARD_AUTO;
+   }
+
    var.key = "kronos_multitap_port1";
    var.value = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1014,6 +1155,13 @@ void check_variables(void)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       video_filter_type = atoi(var.value);
+   }
+
+   var.key = "kronos_upscale_filter";
+   var.value = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      upscale_filter_type = atoi(var.value);
    }
 
    var.key = "kronos_wireframe_mode";
@@ -1151,24 +1299,31 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    int base_width = (force_downsampling && rendering_started ? _Ygl->rwidth : game_width);
    int base_height = (force_downsampling && rendering_started ? _Ygl->rheight : game_height);
 
-   info->timing.fps            = (retro_get_region() == RETRO_REGION_NTSC ? 60.0f : 50.0f);
+   /* Same rate as the core (yabause.c frameRateNum/frameRateDen): NTSC
+      60000/1001 Hz, PAL 50 Hz. The SCSP gives 44100 samples per emulated
+      second at that rate. */
+   if (!av_info_geometry_only)
+      reported_region          = retro_get_region();
+   info->timing.fps            = (retro_get_region() == RETRO_REGION_NTSC ? (60000.0 / 1001.0) : 50.0);
    info->timing.sample_rate    = SAMPLERATE;
    info->geometry.base_width   = base_width;
    info->geometry.base_height  = base_height;
    info->geometry.max_width    = window_width; //OpenGL surface
    info->geometry.max_height   = window_height;
-   info->geometry.aspect_ratio = 4.0 / 3.0;
+   info->geometry.aspect_ratio = 4.0f / 3.0f;
    if(yabsys.isRotated == 1)
    {
       environ_cb(RETRO_ENVIRONMENT_SET_ROTATION, &yabsys.isRotated);
-      info->geometry.aspect_ratio = 1.0 / info->geometry.aspect_ratio;
+      info->geometry.aspect_ratio = 1.0f / info->geometry.aspect_ratio;
    }
    resolution_need_update = false;
 }
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
-   if(pad_type[port] != device)
+   if (port >= sizeof(pad_type) / sizeof(pad_type[0]))
+      return;
+   if((unsigned)pad_type[port] != device)
    {
       pad_type[port] = device;
       if(PERCore)
@@ -1186,7 +1341,7 @@ static struct frame_savestate_t
    int error;
 } frame_savestate = { NULL, 0, 0};
 
-static void frame_savestate_reset() {
+static void frame_savestate_reset(void) {
    if (frame_savestate.buffer != NULL) {
       free(frame_savestate.buffer);
       frame_savestate.buffer = NULL;
@@ -1195,18 +1350,18 @@ static void frame_savestate_reset() {
    frame_savestate.error = 0;
 }
 
-static int frame_savestate_store() {
+static int frame_savestate_store(void) {
    if (frame_savestate.size == 0 && frame_savestate.buffer == NULL) {
       frame_savestate.error = YabSaveStateBuffer (&frame_savestate.buffer, &frame_savestate.size);
    }
    return frame_savestate.error;
 }
 
-static int frame_savestate_get_size() {
+static size_t frame_savestate_get_size(void) {
    return frame_savestate.size;
 }
 
-static void * frame_savestate_get_buffer() {
+static void * frame_savestate_get_buffer(void) {
    return frame_savestate.buffer;
 }
 
@@ -1296,7 +1451,7 @@ static void extract_directory(char *buf, const char *path, size_t size)
    }
 }
 
-void configure_saturn_addon_cart()
+void configure_saturn_addon_cart(void)
 {
    if (use_beetle_saves == 1)
    {
@@ -1330,7 +1485,7 @@ static bool disk_set_eject_state(bool ejected)
    }
 }
 
-static bool disk_get_eject_state()
+static bool disk_get_eject_state(void)
 {
    return disk_tray_open;
 }
@@ -1348,7 +1503,7 @@ static bool disk_set_image_index(unsigned index)
    return false;
 }
 
-static unsigned disk_get_image_index()
+static unsigned disk_get_image_index(void)
 {
    return disk_index;
 }
@@ -1410,7 +1565,7 @@ static bool disk_get_image_path(unsigned index, char *path, size_t len)
    if (index >= disk_total)
       return false;
 
-   if (disk_paths[index] == NULL || disk_paths[index][0] == '\0')
+   if (disk_paths[index][0] == '\0')
       return false;
 
    strncpy(path, disk_paths[index], len - 1);
@@ -1427,7 +1582,7 @@ static bool disk_get_image_label(unsigned index, char *label, size_t len)
    if (index >= disk_total)
       return false;
 
-   if (disk_labels[index] == NULL || disk_labels[index][0] == '\0')
+   if (disk_labels[index][0] == '\0')
       return false;
 
    strncpy(label, disk_labels[index], len - 1);
@@ -1470,7 +1625,6 @@ static void init_disk_control_interface(void)
 static bool read_m3u(const char *file)
 {
    char line[PATH_MAX];
-   char name[PATH_MAX];
    FILE *f = fopen(file, "r");
 
    disk_total = 0;
@@ -1481,7 +1635,9 @@ static bool read_m3u(const char *file)
       return false;
    }
 
-   while (fgets(line, sizeof(line), f) && disk_total <= M3U_MAX_FILE)
+   /* "<": disk_paths has M3U_MAX_FILE entries ("<=" wrote one past the end
+      with a 6th line) */
+   while (disk_total < M3U_MAX_FILE && fgets(line, sizeof(line), f))
    {
       if (line[0] == '#')
          continue;
@@ -1497,7 +1653,8 @@ static bool read_m3u(const char *file)
       if (line[0] == '"')
          memmove(line, line + 1, strlen(line));
 
-      if (line[strlen(line) - 1] == '"')
+      /* an empty line ("" or a lone quote) has no last character */
+      if (line[0] != '\0' && line[strlen(line) - 1] == '"')
          line[strlen(line) - 1]  = '\0';
 
       if (line[0] != '\0')
@@ -1558,7 +1715,7 @@ void retro_init(void)
    init_disk_control_interface();
 }
 
-bool retro_load_game_common()
+bool retro_load_game_common(void)
 {
    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
    if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt))
@@ -1570,12 +1727,12 @@ bool retro_load_game_common()
 
    yinit.vidcoretype             = VIDCORE_CS;
    yinit.percoretype             = PERCORE_LIBRETRO;
-   yinit.sh2coretype             = 8;
+   yinit.sh2coretype             = SH2CORE_KRONOS_INTERPRETER;
    yinit.sndcoretype             = SNDCORE_LIBRETRO;
    yinit.m68kcoretype            = M68KCORE_MUSASHI;
    yinit.regionid                = REGION_AUTODETECT;
    yinit.languageid              = language_id;
-   yinit.mpegpath                = NULL;
+   yinit.mpegpath                = (mpeg_rom_path[0] != '\0') ? mpeg_rom_path : NULL;
    yinit.vsyncon                 = 0;
    yinit.clocksync               = 0;
    yinit.basetime                = 0;
@@ -1593,9 +1750,55 @@ bool retro_load_game_common()
    yinit.stv_favorite_region     = stv_favorite_region;
    yinit.resolution_mode         = resolution_mode;
    yinit.video_filter_type       = video_filter_type;
+   yinit.video_upscale_type      = upscale_filter_type;
    yinit.auto_cart               = 1;
 
    return true;
+}
+
+/* Video CD Card ROM in the system directory: raw dump or .zip */
+static void find_mpeg_rom(void)
+{
+   static const char *mpeg_names[] = {
+      "kronos%cmpeg.bin", "kronos%cmpeg.zip", "mpeg.bin", "mpeg.zip"
+   };
+   char name[64];
+   unsigned k;
+   for (k = 0; k < sizeof(mpeg_names) / sizeof(mpeg_names[0]); k++)
+   {
+      snprintf(name, sizeof(name), mpeg_names[k], slash);
+      snprintf(mpeg_rom_path, sizeof(mpeg_rom_path), "%s%c%s", g_system_dir, slash, name);
+      if (does_file_exist(mpeg_rom_path) == 1)
+         return;
+   }
+   mpeg_rom_path[0] = '\0';
+}
+
+/* Video CD (White Book): the file INFO.VCD, at LBA 150 (FAD 300), starts with
+   "VIDEO_CD" (VCD 1.1 / 2.0), "SUPERVCD" or "HQ-VCD  " (SVCD). It is a mode 2
+   form 1 sector: user data at offset 24 of the raw sector (sync 12, header 4,
+   subheader 8); offset 16 also tried for images converted to mode 1. The
+   disc is opened with the core's own CD interface, so every image format of
+   the core is supported, then closed before YabauseInit(). */
+static bool disc_is_video_cd(const char *path)
+{
+   u8 sector[2448];
+   bool vcd = false;
+
+   if (path == NULL || path[0] == '\0')
+      return false;
+   if (ISOCD.Init(path) != 0)
+      return false;
+   memset(sector, 0, sizeof(sector));
+   if (ISOCD.ReadSectorFAD(150 + 150, sector) == 1)
+   {
+      static const char *ids[] = { "VIDEO_CD", "SUPERVCD", "HQ-VCD  " };
+      unsigned k;
+      for (k = 0; k < sizeof(ids) / sizeof(ids[0]) && !vcd; k++)
+         vcd = (memcmp(sector + 24, ids[k], 8) == 0) || (memcmp(sector + 16, ids[k], 8) == 0);
+   }
+   ISOCD.DeInit();
+   return vcd;
 }
 
 bool retro_load_game(const struct retro_game_info *info)
@@ -1673,6 +1876,25 @@ bool retro_load_game(const struct retro_game_info *info)
       disk_total++;
    }
 
+   // Video CD Card ROM (raw dump or .zip, see MpegCardLoadRom())
+   mpeg_rom_path[0] = '\0';
+   if (!stv_mode && (mpeg_card_mode != MPEG_CARD_DISABLED))
+   {
+      bool is_vcd = disc_is_video_cd(disk_paths[disk_index]);
+      if (is_vcd)
+         log_cb(RETRO_LOG_INFO, "Video CD disc detected\n");
+      if ((mpeg_card_mode == MPEG_CARD_ENABLED) || is_vcd)
+      {
+         find_mpeg_rom();
+         if (mpeg_rom_path[0] == '\0')
+            log_cb(is_vcd ? RETRO_LOG_ERROR : RETRO_LOG_WARN,
+                  "Video CD Card ROM not found in %s (kronos%cmpeg.bin, kronos%cmpeg.zip, mpeg.bin or mpeg.zip): the card is not plugged%s\n",
+                  g_system_dir, slash, slash, is_vcd ? ", this Video CD cannot be played" : "");
+         else if (is_vcd && hle_bios_force)
+            log_cb(RETRO_LOG_WARN, "Video CD: the HLE BIOS has no Video CD player, disable \"Force HLE BIOS\"\n");
+      }
+   }
+
    if(stv_mode)
    {
       if (does_file_exist(stv_bios_path) != 1)
@@ -1733,7 +1955,9 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 void retro_unload_game(void)
 {
+   YabFlushBackups();
    YabauseDeInit();
+   snd_ring_clear();
 }
 
 unsigned retro_get_region(void)
@@ -1772,7 +1996,6 @@ void retro_reset(void)
 
 void retro_run(void)
 {
-   unsigned i;
    bool updated  = false;
    if (!all_devices_ready)
    {
@@ -1807,6 +2030,7 @@ void retro_run(void)
       if (VIDCore) VIDCore->SetSettingValue(VDP_SETTING_BANDING_MODE, banding_mode);
       if (VIDCore) VIDCore->SetSettingValue(VDP_SETTING_WIREFRAME, wireframe_mode);
       if (VIDCore) VIDCore->SetSettingValue(VDP_SETTING_FILTERMODE, video_filter_type);
+      if (VIDCore) VIDCore->SetSettingValue(VDP_SETTING_UPSCALMODE, upscale_filter_type);
       // changing video format on the fly is causing issues
       //if (g_videoformattype != -1)
       //   YabauseSetVideoFormat(g_videoformattype);
@@ -1815,9 +2039,24 @@ void retro_run(void)
    // It appears polling can happen outside of HandleEvents
    update_inputs();
    frame_expected++;
+   /* The region is only known once YabauseInit() has read the disc, in
+      context_reset(), after the frontend asked for the timing: a PAL game
+      was announced at 59.94 Hz and its 882 samples per frame played at the
+      NTSC rate. Send the real timing (same maximum geometry, so the
+      frontend keeps the GL context). Also covers a disc change to another
+      region. */
+   if (rendering_started && retro_get_region() != reported_region)
+   {
+      struct retro_system_av_info av_info;
+      retro_get_system_av_info(&av_info);
+      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
+   }
+
    if (rendering_started) {
-     audio_size -= soundlen;
+     in_retro_run = true;
      YabauseExec();
+     in_retro_run = false;
+     snd_flush_to_frontend();
    }
 }
 
