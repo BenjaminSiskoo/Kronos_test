@@ -66,15 +66,26 @@
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QDialogButtonBox>
+#include <QFileSystemWatcher>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMenu>
+#include <QRegularExpression>
+#include <QSlider>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 
 extern "C" {
 #include "vdp1.h"
 #include "vdp2.h"
+#include "vdp2debug.h"
 }
 
 namespace {
@@ -206,6 +217,241 @@ QImage renderSprite(const VdpEditSprite &spr, const QByteArray &lut, int w, int 
         }
     }
     return img;
+}
+
+// ---- palettes and pictures shared by the item, the folder, atlas and
+//      tile-sheet code ----
+
+// Color table of a palette sprite for an indexed PNG: index = texel code.
+// Transparent code: alpha 0; end code: opaque magenta (painting with it ends
+// the line, it must stand out).
+QVector<QRgb> spriteColorTable(const VdpEditSprite &s, const QByteArray &lut)
+{
+    QVector<QRgb> t;
+    const int n = VdpEditSpritePaletteSize(&s);
+    const u8 *l = lut.size() >= 32 ? (const u8 *)lut.constData() : NULL;
+    for (int k = 0; k < n; k++) {
+        const int kind = VdpEditSpriteCodeKind(&s, (u32)k);
+        QRgb c = VdpEditSpriteDataArgb(VdpEditSpriteCodeData(&s, l, (u32)k));
+        if (kind == 1) c &= 0x00FFFFFFu;
+        else if (kind == 2) c = qRgb(255, 0, 255);
+        t << c;
+    }
+    return t;
+}
+
+// Same for a VDP2 palette (16 or 256 colors; 2048 does not fit a PNG).
+QVector<QRgb> bgColorTable(const VdpEditBg &b, u32 palBase)
+{
+    QVector<QRgb> t;
+    const int n = VdpEditBgPaletteSize(b.cn);
+    if (n <= 0 || n > 256) return t;
+    for (int k = 0; k < n; k++) {
+        QRgb c = VdpEditCramArgb((u32)VdpEditBgCodeCramIndex(&b, palBase, (u32)k));
+        if (k == 0 && !b.tpon) c &= 0x00FFFFFFu;
+        t << c;
+    }
+    return t;
+}
+
+QImage codesToIndexed(const std::vector<u32> &codes, int w, int h, const QVector<QRgb> &table, int stride = -1,
+                      int ox = 0, int oy = 0, QImage *into = NULL)
+{
+    QImage img;
+    if (into) img = *into;
+    else { img = QImage(w, h, QImage::Format_Indexed8); img.setColorTable(table); img.fill(0); }
+    if (stride < 0) stride = w;
+    for (int y = 0; y < h; y++) {
+        uchar *line = img.scanLine(oy + y);
+        for (int x = 0; x < w; x++) {
+            const u32 c = codes[(size_t)y * stride + x];
+            line[ox + x] = (uchar)(c < (u32)table.size() ? c : 0);
+        }
+    }
+    if (into) *into = img;
+    return img;
+}
+
+int colorDist(QRgb a, QRgb b)
+{
+    const int dr = qRed(a) - qRed(b), dg = qGreen(a) - qGreen(b), db = qBlue(a) - qBlue(b);
+    return dr * dr + dg * dg + db * db;
+}
+
+// Nearest code of a sprite palette for a color (never the end code).
+u32 spriteNearest(const VdpEditSprite &s, const QByteArray &lut, QRgb c, int *approx)
+{
+    int mode = 0;
+    VdpEditSpriteGeometry(&s, NULL, NULL, &mode, NULL, NULL);
+    const bool hasTransparent = VdpEditSpriteCodeKind(&s, 0) == 1;
+    if (qAlpha(c) < 128 && hasTransparent) return 0;
+    if (mode == 5) return VdpEditArgbToRgb555((u32)c);
+    const int n = VdpEditSpritePaletteSize(&s);
+    const u8 *l = lut.size() >= 32 ? (const u8 *)lut.constData() : NULL;
+    int best = hasTransparent ? 1 : 0, bestD = 0x7FFFFFFF;
+    for (int k = hasTransparent ? 1 : 0; k < n; k++) {
+        if (VdpEditSpriteCodeKind(&s, (u32)k) == 2) continue;
+        const int d = colorDist(VdpEditSpriteDataArgb(VdpEditSpriteCodeData(&s, l, (u32)k)), c);
+        if (d < bestD) { bestD = d; best = k; if (d == 0) break; }
+    }
+    if (approx && bestD > 3 * 49) (*approx)++;   // more than the 5-bit rounding
+    return (u32)best;
+}
+
+u32 bgNearest(const VdpEditBg &b, u32 palBase, QRgb c, int *approx)
+{
+    if (qAlpha(c) < 128 && !b.tpon) return 0;
+    if (b.cn == 3) return VdpEditArgbToRgb555((u32)c);
+    if (b.cn == 4) return 0x80000000u | ((u32)qBlue(c) << 16) | ((u32)qGreen(c) << 8) | (u32)qRed(c);
+    const int n = VdpEditBgPaletteSize(b.cn);
+    int best = b.tpon ? 0 : 1, bestD = 0x7FFFFFFF;
+    for (int k = b.tpon ? 0 : 1; k < n; k++) {
+        const int d = colorDist(VdpEditCramArgb((u32)VdpEditBgCodeCramIndex(&b, palBase, (u32)k)), c);
+        if (d < bestD) { bestD = d; best = k; if (d == 0) break; }
+    }
+    if (approx && bestD > 3 * 49) (*approx)++;
+    return (u32)best;
+}
+
+// Texture codes of a sprite from an edited picture (w x h, at (ox, oy) of
+// 'pic'). Indexed picture: the index IS the code (an index the palette does
+// not have gets the nearest color). Other pictures: nearest palette color,
+// and a dot whose color did not change keeps its original code (end codes,
+// dots after the second end code of a line).
+std::vector<u32> spriteCodesFromPicture(const VdpEditSprite &s, const QByteArray &lut, const QByteArray &origTex,
+                                        const QImage &pic, int ox, int oy, int *approx, bool *indexed)
+{
+    int w = 0, h = 0, mode = 0;
+    VdpEditSpriteGeometry(&s, &w, &h, &mode, NULL, NULL);
+    const int need = (mode <= 1) ? w * h / 2 : (mode <= 4) ? w * h : w * h * 2;
+    QByteArray full = origTex;
+    if (full.size() < need) full.append(QByteArray(need - full.size(), 0));
+    std::vector<u32> old((size_t)w * h), codes((size_t)w * h);
+    VdpEditSpriteDecode(mode, (const u8 *)full.constData(), w, h, old.data());
+    const int n = VdpEditSpritePaletteSize(&s);
+    if (pic.format() == QImage::Format_Indexed8 && n > 0) {
+        const QVector<QRgb> table = pic.colorTable();
+        for (int y = 0; y < h; y++) {
+            const uchar *line = pic.constScanLine(oy + y);
+            for (int x = 0; x < w; x++) {
+                const int idx = line[ox + x];
+                codes[(size_t)y * w + x] = (idx < n) ? (u32)idx
+                    : spriteNearest(s, lut, idx < table.size() ? table[idx] : 0, approx);
+            }
+        }
+        if (indexed) *indexed = true;
+        return codes;
+    }
+    if (indexed) *indexed = false;
+    const QImage img = pic.convertToFormat(QImage::Format_ARGB32);
+    const QImage before = renderSprite(s, lut, w, h, old, false);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            const QRgb p = img.pixel(ox + x, oy + y);
+            const size_t i = (size_t)y * w + x;
+            codes[i] = (before.pixel(x, y) == p) ? old[i] : spriteNearest(s, lut, p, approx);
+        }
+    return codes;
+}
+
+// ---- colors used by a picture ---------------------------------------------
+// Counted on the codes of the picture (opaque codes only: transparent code 0
+// with SPD = 0 / TPON = 0 and end codes with ECD = 0 are counted apart).
+//
+// 8 bpp sprite -> 4 bpp color bank (VDP1 color modes 2/3/4 -> 0): the VDP1
+// writes CMDCOLR | dot in the frame buffer, CMDCOLR bits 0-3 ignored in mode 0
+// and 0-5 / 0-6 / 0-7 in modes 2 / 3 / 4 (ST-013, CMDCOLR; Technical Bulletin
+// #25). When every opaque frame-buffer word of the sprite has the same bits
+// 15-4, a 4 bpp sprite with CMDCOLR = those bits and dot = bits 3-0 writes
+// exactly the same words, so the VDP2 shows the same thing (palette, priority,
+// color calculation, shadow). Two dots cannot be kept: the one that would
+// become 0 (transparent when SPD = 0) and the one that would become F (end
+// code when ECD = 0).
+struct ColorUse {
+    int used = 0;                 // distinct opaque codes / RGB colors
+    int palette = 0;              // codes of the palette (0 = RGB)
+    bool transparent = false, endCodes = false;
+    u32 minCode = 0, maxCode = 0;
+    std::vector<std::pair<u32, int> > blocks;   // first code of each 16-code block, codes used in it
+    int to4 = -1;                 // -1: not a 256/128/64 or 2048 color picture, 0: no, 1: yes
+    QString why;
+    u16 newColr = 0;              // sprite: CMDCOLR of the 4 bpp version
+    u32 first = 0;                // first code of the block
+};
+
+ColorUse spriteColorUse(const VdpEditSprite &s, const std::vector<u32> &codes)
+{
+    ColorUse u;
+    const int mode = (s.CMDPMOD >> 3) & 7;
+    u.palette = VdpEditSpritePaletteSize(&s);
+    const u32 mask = mode <= 1 ? 0xF : mode == 2 ? 0x3F : mode == 3 ? 0x7F : mode == 4 ? 0xFF : 0xFFFF;
+    std::set<u32> used;
+    for (size_t i = 0; i < codes.size(); i++) {
+        const int k = VdpEditSpriteCodeKind(&s, codes[i]);
+        if (k == 1) { u.transparent = true; continue; }
+        if (k == 2) { u.endCodes = true; continue; }
+        used.insert(codes[i] & mask);
+    }
+    u.used = (int)used.size();
+    if (!used.empty()) { u.minCode = *used.begin(); u.maxCode = *used.rbegin(); }
+    if (mode < 2 || mode > 4) return u;
+    const u32 bank = s.CMDCOLR & ~mask & 0xFFFF;
+    std::map<u32, int> blocks;                     // frame-buffer word & 0xFFF0 -> codes
+    for (std::set<u32>::const_iterator it = used.begin(); it != used.end(); ++it) blocks[(*it | bank) & 0xFFF0]++;
+    for (std::map<u32, int>::const_iterator it = blocks.begin(); it != blocks.end(); ++it)
+        u.blocks.push_back(std::make_pair(it->first & mask, it->second));
+    u.to4 = 0;
+    if (blocks.size() > 1) {
+        u.why = tr_("the colors are in %1 blocks of 16").arg(blocks.size());
+        return u;
+    }
+    const u32 bd = blocks.empty() ? (bank & 0xFFF0) : blocks.begin()->first;
+    const bool spd = (s.CMDPMOD & 0x40) != 0, ecd = !(s.CMDPMOD & 0x80);
+    for (std::set<u32>::const_iterator it = used.begin(); it != used.end(); ++it) {
+        const u32 low = (*it | bank) & 0xF;
+        if (low == 0 && !spd) { u.why = tr_("code %1 would become 0, the transparent code").arg(hex(*it, 2)); return u; }
+        if (low == 0xF && ecd) { u.why = tr_("code %1 would become F, the end code").arg(hex(*it, 2)); return u; }
+    }
+    u.to4 = 1;
+    u.newColr = (u16)bd;
+    u.first = bd & mask;
+    return u;
+}
+
+ColorUse bgColorUse(const VdpEditBg &b, const std::vector<u32> &codes)
+{
+    ColorUse u;
+    u.palette = VdpEditBgPaletteSize(b.cn);
+    std::set<u32> used;
+    for (size_t i = 0; i < codes.size(); i++) {
+        if (VdpEditBgCodeArgb(&b, 0, codes[i]) == 0) { u.transparent = true; continue; }
+        used.insert(codes[i]);
+    }
+    u.used = (int)used.size();
+    if (!used.empty()) { u.minCode = *used.begin(); u.maxCode = *used.rbegin(); }
+    if (u.palette < 64) return u;
+    std::map<u32, int> blocks;
+    for (std::set<u32>::const_iterator it = used.begin(); it != used.end(); ++it) blocks[*it & ~0xFu]++;
+    for (std::map<u32, int>::const_iterator it = blocks.begin(); it != blocks.end(); ++it)
+        u.blocks.push_back(std::make_pair(it->first, it->second));
+    u.to4 = 0;
+    if (blocks.size() > 1) { u.why = tr_("the colors are in %1 blocks of 16").arg(blocks.size()); return u; }
+    if (!blocks.empty() && used.count(blocks.begin()->first) && !b.tpon) {
+        u.why = tr_("code %1 would become 0, the transparent code").arg(hex(blocks.begin()->first, 3));
+        return u;
+    }
+    u.to4 = 1;
+    u.first = blocks.empty() ? 0 : blocks.begin()->first;
+    return u;
+}
+
+QString blocksText(const ColorUse &u, int digits)
+{
+    QStringList parts;
+    for (size_t i = 0; i < u.blocks.size() && i < 8; i++)
+        parts << QString("%1-%2 (%3)").arg(hex(u.blocks[i].first, digits)).arg(hex(u.blocks[i].first + 15, digits)).arg(u.blocks[i].second);
+    if (u.blocks.size() > 8) parts << QString("... +%1").arg(u.blocks.size() - 8);
+    return parts.join(", ");
 }
 
 } // namespace
@@ -532,6 +778,7 @@ GfxPalette::GfxPalette(QWidget *parent) : QWidget(parent)
 void GfxPalette::setEntries(const QVector<QRgb> &colors, const QVector<u32> &codes,
                             const QVector<QString> &tips, int columns)
 {
+    if (colors.size() != mColors.size()) { mMarked.clear(); mLastMark = -1; }
     mColors = colors;
     mCodes = codes;
     mTips = tips;
@@ -578,6 +825,17 @@ void GfxPalette::paintEvent(QPaintEvent *)
         p.setPen(QColor(0, 0, 0, 60));
         p.drawRect(r.adjusted(0, 0, -1, -1));
     }
+    for (QSet<int>::const_iterator it = mMarked.begin(); it != mMarked.end(); ++it) {
+        if (*it >= mColors.size()) continue;
+        const QRect r((*it % mColumns) * c, (*it / mColumns) * c, c, c);
+        QPen pen(palette().color(QPalette::Highlight));
+        pen.setWidth(2);
+        pen.setStyle(Qt::DotLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(r.adjusted(2, 2, -3, -3));
+        p.fillRect(QRect(r.right() - 5, r.top() + 1, 5, 5), palette().color(QPalette::Highlight));
+    }
     for (int i = 0; i < mColors.size(); i++) {
         const bool pri = mCodes[i] == mPrimary, sec = mCodes[i] == mSecondary;
         if (!pri && !sec) continue;
@@ -597,10 +855,32 @@ void GfxPalette::paintEvent(QPaintEvent *)
     }
 }
 
+QVector<int> GfxPalette::marked() const
+{
+    QVector<int> v;
+    for (QSet<int>::const_iterator it = mMarked.begin(); it != mMarked.end(); ++it)
+        if (*it < mColors.size()) v << *it;
+    std::sort(v.begin(), v.end());
+    return v;
+}
+
 void GfxPalette::mousePressEvent(QMouseEvent *e)
 {
     const int i = entryAt(e->pos());
     if (i < 0) return;
+    if (e->button() == Qt::LeftButton && (e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
+        if ((e->modifiers() & Qt::ShiftModifier) && mLastMark >= 0) {
+            for (int k = qMin(mLastMark, i); k <= qMax(mLastMark, i); k++) mMarked.insert(k);
+        } else if (mMarked.contains(i)) {
+            mMarked.remove(i);
+        } else {
+            mMarked.insert(i);
+        }
+        mLastMark = i;
+        update();
+        emit marksChanged();
+        return;
+    }
     if (e->button() == Qt::LeftButton) emit chosen(mCodes[i], true);
     else if (e->button() == Qt::RightButton) emit chosen(mCodes[i], false);
 }
@@ -747,6 +1027,8 @@ void UIDebugGfxEditor::buildUi()
     lwSprites->setIconSize(QSize(48, 48));
     lwSprites->setUniformItemSizes(true);
     lwSprites->setAlternatingRowColors(true);
+    lwSprites->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    lwSprites->setToolTip(tr_("Click a sprite to edit it. Ctrl/Shift+click selects several sprites for an atlas."));
     pl->addWidget(lwSprites, 1);
     cbLibrary = new QCheckBox(tr_("Keep sprites seen in earlier frames"), pgList);
     cbLibrary->setToolTip(tr_("Builds a library of every sprite drawn while the game runs (or while you step frames), "
@@ -754,6 +1036,23 @@ void UIDebugGfxEditor::buildUi()
     pl->addWidget(cbLibrary);
     pbClearLibrary = new QPushButton(tr_("Clear the library"), pgList);
     pl->addWidget(pbClearLibrary);
+    QGridLayout *ag = new QGridLayout();
+    ag->setSpacing(6);
+    pbSamePalette = new QPushButton(tr_("Same palette"), pgList);
+    pbSamePalette->setToolTip(tr_("Selects every sprite that uses the palette of the current one: usually the frames of one character"));
+    pbExportAtlas = new QPushButton(tr_("Export atlas..."), pgList);
+    pbExportAtlas->setToolTip(tr_("Writes the selected sprites as one named sheet (PNG, indexed when they share a palette) "
+                                  "with a JSON file describing each frame"));
+    pbImportAtlas = new QPushButton(tr_("Import atlas..."), pgList);
+    pbImportAtlas->setToolTip(tr_("Reads an edited atlas back by its name (.atlas.json)"));
+    pbSelect4bpp = new QPushButton(tr_("Fit 4 bpp"), pgList);
+    pbSelect4bpp->setToolTip(tr_("Selects the 64/128/256-color sprites whose colors all fit in one block of 16: "
+                                 "they could be stored as 4 bpp sprites (half the VRAM) with the same colors on screen"));
+    ag->addWidget(pbSamePalette, 0, 0);
+    ag->addWidget(pbSelect4bpp, 0, 1);
+    ag->addWidget(pbExportAtlas, 1, 0);
+    ag->addWidget(pbImportAtlas, 1, 1);
+    pl->addLayout(ag);
     stLeft->addWidget(pgList);
 
     // page 1: overview (VDP1 frame or VDP2 map)
@@ -791,6 +1090,14 @@ void UIDebugGfxEditor::buildUi()
     lOverviewInfo->setProperty("dim", true);
     lOverviewInfo->setMinimumHeight(34);
     pv->addWidget(lOverviewInfo);
+    QHBoxLayout *tr = new QHBoxLayout();
+    pbExportTiles = new QPushButton(tr_("Export tile sheet..."), pgView);
+    pbExportTiles->setToolTip(tr_("Writes every character used by the layer once, as it is stored (no flip), "
+                                  "in one sheet: a character used in many places is edited once"));
+    pbImportTiles = new QPushButton(tr_("Import tile sheet..."), pgView);
+    tr->addWidget(pbExportTiles);
+    tr->addWidget(pbImportTiles);
+    pv->addLayout(tr);
     stLeft->addWidget(pgView);
 
     cbLive = new QCheckBox(tr_("Follow the game while it runs"), left);
@@ -831,8 +1138,10 @@ void UIDebugGfxEditor::buildUi()
     tbUndo = new QToolButton(center); tbUndo->setText(tr_("Undo")); tbUndo->setToolTip(tr_("Undo (Ctrl+Z)"));
     tbRedo = new QToolButton(center); tbRedo->setText(tr_("Redo")); tbRedo->setToolTip(tr_("Redo (Ctrl+Y)"));
     tbUndo->setProperty("toolbtn", true); tbRedo->setProperty("toolbtn", true);
-    tb->addWidget(tbUndo);
-    tb->addWidget(tbRedo);
+    // tools keep their full width (no "Pe...il" when the window is narrow);
+    // Undo / Redo live on the second row
+    for (int id = GfxCanvas::Pencil; id <= GfxCanvas::Eraser; id++)
+        if (QAbstractButton *b = mTools->button(id)) b->setSizePolicy(QSizePolicy::Minimum, b->sizePolicy().verticalPolicy());
     vc->addLayout(tb);
 
     QHBoxLayout *zb = new QHBoxLayout();
@@ -856,6 +1165,8 @@ void UIDebugGfxEditor::buildUi()
     zb->addWidget(cbGrid);
     zb->addWidget(cbCellGrid);
     zb->addStretch(1);
+    zb->addWidget(tbUndo);
+    zb->addWidget(tbRedo);
     vc->addLayout(zb);
 
     mCanvas = new GfxCanvas();
@@ -897,6 +1208,10 @@ void UIDebugGfxEditor::buildUi()
     pbCustomColor = new QPushButton(tr_("Any color..."), right);
     pbCustomColor->setToolTip(tr_("RGB formats: choose any color as the primary color"));
     sw->addWidget(pbCustomColor, 1);
+    pbRecolor = new QPushButton(tr_("Recolor..."), right);
+    pbRecolor->setToolTip(tr_("Shifts the hue, saturation and lightness of the marked colors (Ctrl/Shift+click in the palette; "
+                              "none marked = the whole palette), with a live preview"));
+    sw->addWidget(pbRecolor);
     vr->addLayout(sw);
     mPalette = new GfxPalette();
     mPaletteArea = new QScrollArea(right);
@@ -909,6 +1224,10 @@ void UIDebugGfxEditor::buildUi()
     lPaletteInfo->setWordWrap(true);
     lPaletteInfo->setProperty("dim", true);
     vr->addWidget(lPaletteInfo);
+    lColorUse = new QLabel(right);
+    lColorUse->setWordWrap(true);
+    lColorUse->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    vr->addWidget(lColorUse);
 
     QFrame *sep = new QFrame(right);
     sep->setFrameShape(QFrame::HLine);
@@ -953,7 +1272,8 @@ void UIDebugGfxEditor::buildUi()
     ga->addWidget(pbImportPng, 1, 0);
     ga->addWidget(pbExportPng, 1, 1);
     vr->addLayout(ga);
-    for (QPushButton *b : { pbRevertItem, pbImportPng, pbExportPng, pbCustomColor, pbClearLibrary, pbFitOverview }) {
+    for (QPushButton *b : { pbRevertItem, pbImportPng, pbExportPng, pbCustomColor, pbClearLibrary, pbFitOverview,
+                            pbRecolor, pbSamePalette, pbSelect4bpp, pbExportAtlas, pbImportAtlas, pbExportTiles, pbImportTiles }) {
         b->setProperty("flat2", true);
         b->setCursor(Qt::PointingHandCursor);
     }
@@ -981,7 +1301,14 @@ void UIDebugGfxEditor::buildUi()
     pbExportAll->setToolTip(tr_("Writes every sprite of the list as PNG (+ index.csv) to edit them in another program"));
     pbImportFolder = new QPushButton(tr_("Import sprite folder..."), this);
     pbImportFolder->setToolTip(tr_("Re-imports the PNG files of an exported folder that were modified since the export"));
-    for (QPushButton *b : { pbStep, pbRefresh, pbEdits, pbRevertAll, pbExportAll, pbImportFolder }) {
+    pbPick = new QPushButton(tr_("Pick on screen"), this);
+    pbPick->setCheckable(true);
+    pbPick->setToolTip(tr_("Then click a sprite or a background in the game window: the editor opens what is drawn there "
+                           "(right click or Esc cancels)"));
+    cbWatch = new QCheckBox(tr_("Watch folder"), this);
+    cbWatch->setToolTip(tr_("Hot reload: every PNG saved in the last exported folder (sprites, atlas, tile sheet) "
+                            "is imported at once and shows in the game"));
+    for (QPushButton *b : { pbStep, pbRefresh, pbEdits, pbRevertAll, pbExportAll, pbImportFolder, pbPick }) {
         b->setProperty("flat2", true);
         b->setMinimumHeight(32);
         b->setCursor(Qt::PointingHandCursor);
@@ -989,9 +1316,11 @@ void UIDebugGfxEditor::buildUi()
     ft->addWidget(pbRun);
     ft->addWidget(pbStep);
     ft->addWidget(pbRefresh);
+    ft->addWidget(pbPick);
     ft->addSpacing(12);
     ft->addWidget(pbExportAll);
     ft->addWidget(pbImportFolder);
+    ft->addWidget(cbWatch);
     ft->addWidget(pbEdits);
     ft->addWidget(pbRevertAll);
     ft->addStretch(1);
@@ -1050,6 +1379,23 @@ void UIDebugGfxEditor::buildUi()
     connect(pbExportAll, SIGNAL(clicked()), this, SLOT(onExportAllSprites()));
     connect(pbImportFolder, SIGNAL(clicked()), this, SLOT(onImportSpriteFolder()));
     connect(pbClose, SIGNAL(clicked()), this, SLOT(reject()));
+    connect(pbRecolor, SIGNAL(clicked()), this, SLOT(onRecolor()));
+    connect(pbPick, SIGNAL(toggled(bool)), this, SLOT(onPickToggled(bool)));
+    connect(cbWatch, SIGNAL(toggled(bool)), this, SLOT(onWatchToggled(bool)));
+    connect(pbSamePalette, SIGNAL(clicked()), this, SLOT(onSelectSamePalette()));
+    connect(pbSelect4bpp, SIGNAL(clicked()), this, SLOT(onSelect4bppCandidates()));
+    connect(pbExportAtlas, SIGNAL(clicked()), this, SLOT(onExportAtlas()));
+    connect(pbImportAtlas, SIGNAL(clicked()), this, SLOT(onImportAtlas()));
+    connect(pbExportTiles, SIGNAL(clicked()), this, SLOT(onExportTiles()));
+    connect(pbImportTiles, SIGNAL(clicked()), this, SLOT(onImportTiles()));
+    connect(mPalette, &GfxPalette::marksChanged, this, [this]() {
+        const int n = mPalette->marked().size();
+        pbRecolor->setText(n ? tr_("Recolor %1...").arg(n) : tr_("Recolor..."));
+    });
+    mWatchTimer = new QTimer(this);
+    mWatchTimer->setSingleShot(true);
+    mWatchTimer->setInterval(400);   // editors write a file in several steps
+    connect(mWatchTimer, SIGNAL(timeout()), this, SLOT(onWatchEvent()));
 
     // ---- shortcuts ----
     struct { const char *key; int tool; } tk[] = {
@@ -1129,8 +1475,11 @@ YabauseThread *UIDebugGfxEditor::thread() const
 bool UIDebugGfxEditor::emuReady() const
 {
     // The VDP memories exist only while a game is loaded (Vdp1Init/Vdp2Init).
+    // YabauseThread::emulationRunning() is only "!mPause" (YabauseThread.cpp):
+    // it is false for a game that is merely paused. Whether a game is loaded
+    // is init() >= 0 (YabauseInit succeeded, YabauseDeInit not called yet).
     YabauseThread *t = thread();
-    if (t && !t->emulationRunning()) return false;
+    if (t && t->init() < 0) return false;
     return Vdp1Ram && Vdp2Ram && Vdp2Regs && Vdp2ColorRam && Vdp1Regs;
 }
 
@@ -1216,6 +1565,13 @@ void UIDebugGfxEditor::onTick()
         if (mItem.kind != Item::None || !mSprites.empty() || !mOverview.isNull()) {
             mDirty = false;
             closeItem();
+            {
+                // rows of the list index mSprites: drop them first, without
+                // letting the list call onSpriteSelected() on a stale row
+                QSignalBlocker blk(lwSprites);
+                lwSprites->clear();
+                mShown.clear();
+            }
             mSprites.clear();
             mOverview = QImage();
             refreshSource(false);
@@ -1246,7 +1602,7 @@ void UIDebugGfxEditor::done(int r)
     }
     // Opened from a debugger that paused the game: leave it paused as found.
     YabauseThread *t = thread();
-    if (isModal() && mResumedEmulation && t && t->emulationRunning() && !t->emulationPaused())
+    if (isModal() && mResumedEmulation && t && t->init() >= 0 && !t->emulationPaused())
         t->pauseEmulation(true, false);
     mTimer->stop();
     QDialog::done(r);
@@ -1279,7 +1635,11 @@ void UIDebugGfxEditor::refreshSource(bool keepSelection)
     const int src = cbSource->currentIndex();
     if (!emuReady()) {
         stLeft->setCurrentIndex(src == SrcSprites ? 0 : 1);
-        lwSprites->clear();
+        {
+            QSignalBlocker blk(lwSprites);
+            lwSprites->clear();
+            mShown.clear();
+        }
         mOverviewScene->clear();
         mOverviewSel = nullptr;
         lLayerInfo->setText(tr_("Start a game to edit its graphics."));
@@ -1413,11 +1773,23 @@ QImage UIDebugGfxEditor::spriteThumb(const SpriteEntry &e) const
     return renderSprite(e.spr, e.lut, e.w, e.h, codes, false);
 }
 
+std::vector<u32> UIDebugGfxEditor::spriteCodes(const SpriteEntry &e) const
+{
+    int mode = 0;
+    VdpEditSpriteGeometry(&e.spr, NULL, NULL, &mode, NULL, NULL);
+    std::vector<u32> codes((size_t)e.w * e.h, 0);
+    QByteArray tex = e.tex;
+    const int need = (mode <= 1) ? e.w * e.h / 2 : (mode <= 4) ? e.w * e.h : e.w * e.h * 2;
+    if (tex.size() < need) tex.append(QByteArray(need - tex.size(), 0));
+    if (!codes.empty()) VdpEditSpriteDecode(mode, (const u8 *)tex.constData(), e.w, e.h, codes.data());
+    return codes;
+}
+
 void UIDebugGfxEditor::rebuildSpriteList()
 {
     quint64 selKey = 0;
     const int row = lwSprites->currentRow();
-    if (row >= 0 && row < (int)mShown.size()) selKey = mSprites[mShown[row]].key;
+    if (row >= 0 && row < (int)mShown.size() && (size_t)mShown[row] < mSprites.size()) selKey = mSprites[mShown[row]].key;
 
     QSignalBlocker blk(lwSprites);
     lwSprites->clear();
@@ -1435,6 +1807,9 @@ void UIDebugGfxEditor::rebuildSpriteList()
             .arg(hex(addr, 5))
             .arg(e.cmdAddr != 0xFFFFFFFF ? QString("   cmd %1").arg(hex(e.cmdAddr, 5)) : tr_("   (not in this frame)"))
             .arg(edited ? tr_("   edited") : QString());
+        const ColorUse cu = spriteColorUse(e.spr, spriteCodes(e));
+        text += "\n" + (cu.palette ? tr_("%1/%2 colors").arg(cu.used).arg(cu.palette) : tr_("%1 colors").arg(cu.used))
+              + (cu.to4 == 1 ? tr_("   4 bpp ok") : QString());
         if (!f.isEmpty() && !text.contains(f, Qt::CaseInsensitive)) continue;
         QListWidgetItem *it = new QListWidgetItem(text);
         QImage t = spriteThumb(e);
@@ -1450,7 +1825,10 @@ void UIDebugGfxEditor::rebuildSpriteList()
         it->setIcon(QIcon(pm));
         it->setToolTip(tr_("CMDPMOD %1  CMDCOLR %2  CMDSRCA %3  CMDSIZE %4  - used %5 time(s)")
                            .arg(hex(e.spr.CMDPMOD, 4)).arg(hex(e.spr.CMDCOLR, 4))
-                           .arg(hex(e.spr.CMDSRCA, 4)).arg(hex(e.spr.CMDSIZE, 4)).arg(e.uses));
+                           .arg(hex(e.spr.CMDSRCA, 4)).arg(hex(e.spr.CMDSIZE, 4)).arg(e.uses)
+                       + "\n" + (cu.palette ? tr_("%1 of %2 colors used").arg(cu.used).arg(cu.palette) : tr_("%1 colors").arg(cu.used))
+                       + (cu.to4 == 1 ? "\n" + tr_("Can be a 4 bpp sprite: CMDCOLR %1, codes %2-%3").arg(hex(cu.newColr, 4)).arg(hex(cu.first, 2)).arg(hex(cu.first + 15, 2))
+                          : cu.to4 == 0 ? "\n" + tr_("Cannot be a 4 bpp sprite: %1").arg(cu.why) : QString()));
         if (edited) { QFont fo = it->font(); fo.setBold(true); it->setFont(fo); }
         lwSprites->addItem(it);
         if (e.key == selKey) newRow = (int)mShown.size();
@@ -1469,7 +1847,7 @@ void UIDebugGfxEditor::onFilterChanged(const QString &)
 void UIDebugGfxEditor::onSpriteSelected()
 {
     const int row = lwSprites->currentRow();
-    if (row < 0 || row >= (int)mShown.size()) return;
+    if (row < 0 || row >= (int)mShown.size() || (size_t)mShown[row] >= mSprites.size()) return;
     const SpriteEntry &e = mSprites[mShown[row]];
     openSprite(e.spr, &e.tex, &e.lut, QString());
 }
@@ -1796,6 +2174,7 @@ bool UIDebugGfxEditor::openCells(const VdpEditBg &bg, int x, int y)
                 b.addr = c.charAddr;
                 b.kind = 1;
                 b.w = b.h = cs;
+                b.palBase = c.palBase;
                 b.applied = QByteArray((int)c.charBytes, 0);
                 VdpEditReadVdp2(c.charAddr, (u8 *)b.applied.data(), c.charBytes);
                 b.orig = b.applied;
@@ -1963,8 +2342,10 @@ int UIDebugGfxEditor::applyItem()
         QByteArray bytes;
         encodeBlock(b, bytes);
         if (bytes == b.applied) continue;
-        const int rc = VdpEditWrite(b.space, b.addr, (const u8 *)b.applied.constData(),
-                                    (const u8 *)bytes.constData(), (u32)bytes.size());
+        const QByteArray meta = blockMeta(b);
+        const int rc = VdpEditWriteEx(b.space, b.addr, (const u8 *)b.applied.constData(),
+                                      (const u8 *)bytes.constData(), (u32)bytes.size(),
+                                      meta.isEmpty() ? NULL : meta.constData(), NULL, NULL);
         if (rc < 0) { failed++; continue; }
         if (rc == 0) later++; else now++;
         b.applied = bytes;
@@ -1994,6 +2375,7 @@ void UIDebugGfxEditor::onCanvasEdited()
     if (mItem.kind == Item::None) return;
     storeCanvasCodes();
     mDirty = true;
+    refreshColorInfo();
     if (cbAutoApply->isChecked() && emuReady()) applyItem();
     else lApplyStatus->setText(tr_("Not applied yet (Ctrl+Enter)."));
 }
@@ -2316,8 +2698,10 @@ void UIDebugGfxEditor::onPaletteEdit(int entry)
         const u16 v = VdpEditArgbToRgb555(c.rgb());
         nl[(int)code * 2] = (char)(v >> 8);
         nl[(int)code * 2 + 1] = (char)v;
-        const int rc = VdpEditWrite(VDPEDIT_VDP1, VdpEditSpriteLutAddr(&mItem.spr), (const u8 *)mItem.lutApplied.constData(),
-                                    (const u8 *)nl.constData(), 32);
+        char meta[VDPEDIT_META_SIZE];
+        VdpEditLutMeta(&mItem.spr, meta);
+        const int rc = VdpEditWriteEx(VDPEDIT_VDP1, VdpEditSpriteLutAddr(&mItem.spr), (const u8 *)mItem.lutApplied.constData(),
+                                      (const u8 *)nl.constData(), 32, meta, NULL, NULL);
         if (rc >= 0) { mItem.lut = mItem.lutApplied = nl; }
     } else if (cram >= 0) {
         if (VdpEditSetCramColor((u32)cram, c.red(), c.green(), c.blue()) != 0)
@@ -2454,7 +2838,10 @@ void UIDebugGfxEditor::onCanvasHover(int x, int y)
 void UIDebugGfxEditor::refreshItemInfo()
 {
     twInfo->clear();
-    if (mItem.kind == Item::None) return;
+    mColorGroup = nullptr;
+    if (mItem.kind == Item::None) { if (lColorUse) lColorUse->clear(); return; }
+    mColorGroup = makeGroup(twInfo, tr_("Colors"));
+    refreshColorInfo();
     QTreeWidgetItem *g = makeGroup(twInfo, tr_("Item"));
     int changed = 0, edited = 0;
     for (size_t i = 0; i < mItem.blocks.size(); i++) {
@@ -2494,6 +2881,54 @@ void UIDebugGfxEditor::refreshItemInfo()
     makeRow(e, tr_("Edits in total"), QString::number(VdpEditCount(-1)));
 }
 
+
+// Colors used by the picture being edited (follows every stroke).
+void UIDebugGfxEditor::refreshColorInfo()
+{
+    if (!mColorGroup || mItem.kind == Item::None) return;
+    qDeleteAll(mColorGroup->takeChildren());
+    const std::vector<u32> codes = mCanvas->codes();
+    QTreeWidgetItem *g = mColorGroup;
+    if (mItem.kind == Item::Sprite) {
+        const ColorUse u = spriteColorUse(mItem.spr, codes);
+        const int digits = u.palette > 16 ? 2 : 1;
+        makeRow(g, tr_("Colors used"), u.palette ? tr_("%1 of %2").arg(u.used).arg(u.palette) : QString::number(u.used));
+        if (u.palette && u.used)
+            makeRow(g, tr_("Codes used"), QString("%1 - %2").arg(hex(u.minCode, digits)).arg(hex(u.maxCode, digits)));
+        makeRow(g, tr_("Transparent dots"), u.transparent ? tr_("yes") : tr_("no"));
+        makeRow(g, tr_("End codes"), u.endCodes ? tr_("yes") : tr_("no"));
+        if (u.to4 >= 0) {
+            makeRow(g, tr_("Blocks of 16"), u.blocks.empty() ? tr_("none") : blocksText(u, 2));
+            if (u.to4 == 1)
+                makeRow(g, tr_("As 4 bpp"), tr_("possible: color mode 0, CMDCOLR %1, codes %2-%3 become 0-F (same frame-buffer data)")
+                                                .arg(hex(u.newColr, 4)).arg(hex(u.first, 2)).arg(hex(u.first + 15, 2)));
+            else
+                makeRow(g, tr_("As 4 bpp"), tr_("not possible: %1").arg(u.why));
+        }
+        QString sum = u.palette ? tr_("%1 of %2 colors used").arg(u.used).arg(u.palette) : tr_("%1 colors used").arg(u.used);
+        if (u.to4 == 1) sum += " - " + tr_("4 bpp: yes (CMDCOLR %1, codes %2-%3)").arg(hex(u.newColr, 4)).arg(hex(u.first, 2)).arg(hex(u.first + 15, 2));
+        else if (u.to4 == 0) sum += " - " + tr_("4 bpp: no, %1").arg(u.why);
+        lColorUse->setText(sum);
+    } else {
+        const ColorUse u = bgColorUse(mItem.bg, codes);
+        const int digits = u.palette > 256 ? 3 : u.palette > 16 ? 2 : 1;
+        makeRow(g, tr_("Colors used"), u.palette ? tr_("%1 of %2").arg(u.used).arg(u.palette) : QString::number(u.used));
+        if (u.palette && u.used)
+            makeRow(g, tr_("Codes used"), QString("%1 - %2").arg(hex(u.minCode, digits)).arg(hex(u.maxCode, digits)));
+        makeRow(g, tr_("Transparent dots"), u.transparent ? tr_("yes") : tr_("no"));
+        if (u.to4 >= 0) {
+            makeRow(g, tr_("Blocks of 16"), u.blocks.empty() ? tr_("none") : blocksText(u, digits));
+            makeRow(g, tr_("As 16 colors"), u.to4 == 1 ? tr_("possible: codes %1-%2 = one 16-color palette").arg(hex(u.first, digits)).arg(hex(u.first + 15, digits))
+                                                       : tr_("not possible: %1").arg(u.why));
+        }
+        QString sum = u.palette ? tr_("%1 of %2 colors used").arg(u.used).arg(u.palette) : tr_("%1 colors used").arg(u.used);
+        if (u.to4 == 1) sum += " - " + tr_("16 colors: yes (codes %1-%2)").arg(hex(u.first, digits)).arg(hex(u.first + 15, digits));
+        else if (u.to4 == 0) sum += " - " + tr_("16 colors: no, %1").arg(u.why);
+        lColorUse->setText(sum);
+    }
+    mColorGroup->setExpanded(true);
+}
+
 // ===========================================================================
 // Zoom
 // ===========================================================================
@@ -2520,10 +2955,57 @@ void UIDebugGfxEditor::onExportPng()
     const QString f = CommonDialogs::getSaveFileName(QString("edit_%1x%2.png").arg(mItem.w).arg(mItem.h),
                                                      tr_("Export PNG"), "PNG (*.png)");
     if (f.isEmpty()) return;
-    QImage img;
-    if (mItem.kind == Item::Sprite) img = renderSprite(mItem.spr, mItem.lut, mItem.w, mItem.h, mCanvas->codes(), false);
-    else img = mCanvas->image();
+    // Indexed (index = code, color table = the real palette) whenever one
+    // palette of 256 colors or less describes the whole picture.
+    QImage img = indexedImage(mCanvas->codes(), mItem.w, mItem.h);
+    if (img.isNull()) {
+        if (mItem.kind == Item::Sprite) img = renderSprite(mItem.spr, mItem.lut, mItem.w, mItem.h, mCanvas->codes(), false);
+        else img = mCanvas->image();
+    }
     if (!img.save(f)) CommonDialogs::error(tr_("An error occured while writing file."));
+}
+
+// Indexed picture of the item, or a null image when one palette cannot
+// describe it (RGB formats, 2048 colors, cells using several palettes).
+QImage UIDebugGfxEditor::indexedImage(const std::vector<u32> &codes, int w, int h) const
+{
+    QVector<QRgb> table;
+    if (mItem.kind == Item::Sprite) {
+        if (mItem.mode > 4) return QImage();
+        table = spriteColorTable(mItem.spr, mItem.lut);
+    } else if (mItem.kind == Item::Bitmap) {
+        table = bgColorTable(mItem.bg, mItem.bg.bmPal);
+    } else if (mItem.kind == Item::Cells) {
+        for (size_t i = 1; i < mItem.cellPal.size(); i++)
+            if (mItem.cellPal[i] != mItem.cellPal[0]) return QImage();
+        table = bgColorTable(mItem.bg, mItem.cellPal.empty() ? 0 : mItem.cellPal[0]);
+    }
+    if (table.isEmpty()) return QImage();
+    return codesToIndexed(codes, w, h, table);
+}
+
+// Codes from an indexed picture: index = code; an index past the palette
+// gets the nearest color. False if the picture is not indexed.
+bool UIDebugGfxEditor::codesFromIndexed(const QImage &img, std::vector<u32> &codes, int *approx) const
+{
+    if (img.format() != QImage::Format_Indexed8 || itemIsRgb()) return false;
+    const int n = paletteSize();
+    if (n <= 0 || n > 256) return false;
+    const QVector<QRgb> table = img.colorTable();
+    codes.assign((size_t)mItem.w * mItem.h, 0);
+    for (int y = 0; y < mItem.h; y++) {
+        const uchar *line = img.constScanLine(y);
+        for (int x = 0; x < mItem.w; x++) {
+            const int idx = line[x];
+            const int dot = y * mItem.w + x;
+            if (idx < n) codes[(size_t)dot] = (u32)idx;
+            else {
+                codes[(size_t)dot] = nearestCode(dot, idx < table.size() ? table[idx] : 0);
+                if (approx) (*approx)++;
+            }
+        }
+    }
+    return true;
 }
 
 void UIDebugGfxEditor::onImportPng()
@@ -2538,23 +3020,28 @@ void UIDebugGfxEditor::onImportPng()
                                  .arg(img.width()).arg(img.height()).arg(mItem.w).arg(mItem.h));
         return;
     }
-    img = img.convertToFormat(QImage::Format_ARGB32);
     std::vector<u32> codes(mCanvas->codes());
     int approx = 0;
-    for (int y = 0; y < mItem.h; y++) {
-        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
-        for (int x = 0; x < mItem.w; x++) {
-            const int dot = y * mItem.w + x;
-            const u32 c = nearestCode(dot, line[x]);
-            if (!itemIsRgb() && qAlpha(line[x]) >= 128) {
-                const QRgb got = paletteColor(c);
-                if ((got & 0xF8F8F8) != (line[x] & 0xF8F8F8)) approx++;
+    const bool indexed = codesFromIndexed(img, codes, &approx);
+    if (!indexed) {
+        img = img.convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < mItem.h; y++) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+            for (int x = 0; x < mItem.w; x++) {
+                const int dot = y * mItem.w + x;
+                const u32 c = nearestCode(dot, line[x]);
+                if (!itemIsRgb() && qAlpha(line[x]) >= 128) {
+                    const QRgb got = paletteColor(c);
+                    if ((got & 0xF8F8F8) != (line[x] & 0xF8F8F8)) approx++;
+                }
+                codes[(size_t)dot] = c;
             }
-            codes[(size_t)dot] = c;
         }
     }
     mCanvas->replaceCodes(codes, true);
     onCanvasEdited();
+    if (indexed)
+        lApplyStatus->setText(lApplyStatus->text() + " " + tr_("Indexed picture: read by palette index."));
     if (approx > 0)
         lApplyStatus->setText(lApplyStatus->text() + " " +
             tr_("%1 dot(s) used colors that are not in the palette and got the nearest one.").arg(approx));
@@ -2597,7 +3084,20 @@ int UIDebugGfxEditor::exportSprites(const QString &dir)
         VdpEditSpriteGeometry(&e.spr, NULL, NULL, &mode, &addr, &bytes);
         const QString base = QString("spr_%1_%2_%3x%4").arg(i, 4, 10, QChar('0')).arg(addr, 5, 16, QChar('0')).toUpper()
                                  .arg(e.w).arg(e.h);
-        if (!spriteThumb(e).save(QDir(dir).filePath(base + ".png"))) continue;
+        // palette sprites: indexed PNG whose indices are the texel codes, so
+        // the artist works with the real palette and cannot leave it
+        QImage pic;
+        if (mode <= 4) {
+            std::vector<u32> codes((size_t)e.w * e.h, 0);
+            QByteArray tex = e.tex;
+            const int need = (mode <= 1) ? e.w * e.h / 2 : e.w * e.h;
+            if (tex.size() < need) tex.append(QByteArray(need - tex.size(), 0));
+            VdpEditSpriteDecode(mode, (const u8 *)tex.constData(), e.w, e.h, codes.data());
+            pic = codesToIndexed(codes, e.w, e.h, spriteColorTable(e.spr, e.lut));
+        } else {
+            pic = spriteThumb(e);
+        }
+        if (!pic.save(QDir(dir).filePath(base + ".png"))) continue;
         // original bytes (texture + LUT): the import replaces them, they must
         // not depend on what the VRAM holds at import time
         QFile raw(QDir(dir).filePath(base + ".raw"));
@@ -2609,6 +3109,7 @@ int UIDebugGfxEditor::exportSprites(const QString &dir)
     }
     ts.flush();
     csv.close();
+    stampFolder(dir);
     return written;
 }
 
@@ -2637,13 +3138,17 @@ QString UIDebugGfxEditor::importSpriteFolder(const QString &dir)
         return tr_("This index.csv was not written by this editor (no raw_file column).");
     int imported = 0, unchanged = 0, failed = 0, approx = 0, pending = 0;
     QStringList errors;
-    const Item saved = mItem;
-    const std::vector<u32> savedDerived = mDerived;
     while (!in.atEnd()) {
         const QStringList c = in.readLine().split(',');
         if (c.size() < 10) continue;
         const QFileInfo png(QDir(dir).filePath(c[0]));
-        if (!png.exists() || png.lastModified() <= csvTime) { unchanged++; continue; }
+        // watched folder: changed since the last import; otherwise since the export
+        const bool stamped = mStamps.contains(png.absoluteFilePath());
+        if (!png.exists() || (stamped ? !fileChangedSinceStamp(png.absoluteFilePath()) : png.lastModified() <= csvTime)) {
+            unchanged++;
+            continue;
+        }
+        if (!stamped) mStamps[png.absoluteFilePath()] = png.lastModified();
         VdpEditSprite s;
         bool ok = true, o2;
         s.CMDCTRL = 0;
@@ -2661,46 +3166,23 @@ QString UIDebugGfxEditor::importSpriteFolder(const QString &dir)
         if (img.width() != w || img.height() != h || rb.size() < (int)bytes) {
             failed++; errors << tr_("%1 (size differs)").arg(c[0]); continue;
         }
-        // reuse the item machinery for the color matching
-        mItem = Item();
-        mItem.kind = Item::Sprite;
-        mItem.spr = s;
-        mItem.mode = mode;
-        mItem.w = w; mItem.h = h;
-        if (mode == 1 && rb.size() >= (int)bytes + 32) mItem.lut = rb.mid((int)bytes, 32);
-        img = img.convertToFormat(QImage::Format_ARGB32);
-        std::vector<u32> codes((size_t)w * h);
-        for (int y = 0; y < h; y++) {
-            const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
-            for (int x = 0; x < w; x++) {
-                codes[(size_t)y * w + x] = nearestCode(y * w + x, line[x]);
-                if (!itemIsRgb() && qAlpha(line[x]) >= 128 &&
-                    (paletteColor(codes[(size_t)y * w + x]) & 0xF8F8F8) != (line[x] & 0xF8F8F8)) approx++;
-            }
-        }
+        const QByteArray lut = (mode == 1 && rb.size() >= (int)bytes + 32) ? rb.mid((int)bytes, 32) : QByteArray();
+        const QByteArray origTex = rb.left((int)bytes);
+        std::vector<u32> codes = spriteCodesFromPicture(s, lut, origTex, img, 0, 0, &approx, NULL);
         const QByteArray orig = rb.left((int)bytes);
         const int need = (mode <= 1) ? w * h / 2 : (mode <= 4) ? w * h : w * h * 2;
         QByteArray full = orig;
         if (full.size() < need) full.append(QByteArray(need - full.size(), 0));
-        // keep the dots the picture does not change (end codes, dots after
-        // the second end code): only the visible dots come from the PNG
-        std::vector<u32> old((size_t)w * h);
-        VdpEditSpriteDecode(mode, (const u8 *)full.constData(), w, h, old.data());
-        const QImage before = renderSprite(s, mItem.lut, w, h, old, false);
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) {
-                const size_t i = (size_t)y * w + x;
-                if (before.pixel(x, y) == img.pixel(x, y)) codes[i] = old[i];
-            }
         VdpEditSpriteEncode(mode, codes.data(), w, h, (u8 *)full.data());
         const QByteArray repl = full.left((int)bytes);
         if (repl == orig) { unchanged++; continue; }
-        const int rc = VdpEditWrite(VDPEDIT_VDP1, addr, (const u8 *)orig.constData(), (const u8 *)repl.constData(), bytes);
+        char meta[VDPEDIT_META_SIZE];
+        VdpEditSpriteMeta(&s, meta);
+        const int rc = VdpEditWriteEx(VDPEDIT_VDP1, addr, (const u8 *)orig.constData(), (const u8 *)repl.constData(), bytes,
+                                      meta, NULL, NULL);
         if (rc < 0) { failed++; errors << c[0]; }
         else { imported++; if (rc == 0) pending++; }
     }
-    mItem = saved;
-    mDerived = savedDerived;
     QString msg = tr_("%1 sprite(s) imported (%2 waiting for the game to load them), %3 unchanged, %4 failed.")
                       .arg(imported).arg(pending).arg(unchanged).arg(failed);
     if (approx) msg += "\n" + tr_("%1 dot(s) got the nearest palette color.").arg(approx);
@@ -2734,7 +3216,7 @@ void UIDebugGfxEditor::openSpriteCommand(u32 cmdAddr)
     refreshSource(false);
     updateChips();
     for (size_t r = 0; r < mShown.size(); r++)
-        if (mSprites[mShown[r]].cmdAddr == cmdAddr) { lwSprites->setCurrentRow((int)r); return; }
+        if ((size_t)mShown[r] < mSprites.size() && mSprites[mShown[r]].cmdAddr == cmdAddr) { lwSprites->setCurrentRow((int)r); return; }
     VdpEditSprite s;
     if (VdpEditSpriteFromCmd(NULL, cmdAddr, &s) == 0)
         openSprite(s, NULL, NULL, tr_("Sprite of the command at %1").arg(hex(cmdAddr, 5)));
@@ -2751,4 +3233,833 @@ void UIDebugGfxEditor::openLayer(int layer)
     }
     refreshSource(false);
     updateChips();
+}
+
+// ===========================================================================
+// Descriptors and previews of edits
+// ===========================================================================
+
+QByteArray UIDebugGfxEditor::blockMeta(const Block &b) const
+{
+    char meta[VDPEDIT_META_SIZE];
+    meta[0] = 0;
+    switch (b.kind) {
+    case 0: VdpEditSpriteMeta(&mItem.spr, meta); break;
+    case 1: VdpEditCharMeta(&mItem.bg, b.palBase, meta); break;
+    default: VdpEditBitmapMeta(&mItem.bg, b.w, meta); break;
+    }
+    return QByteArray(meta);
+}
+
+QImage UIDebugGfxEditor::editPreview(int space, const char *meta, u32 addr, const u8 *bytes, u32 len)
+{
+    if (!bytes || len == 0 || !Vdp2Regs || !Vdp2ColorRam) return QImage();
+    if (space == VDPEDIT_CRAM) {
+        const int bpc = VdpEditCramBytes(), n = (int)len / bpc;
+        if (n <= 0) return QImage();
+        const int cols = qMin(n, 8), rows = (n + cols - 1) / cols;
+        QImage img(cols, rows, QImage::Format_ARGB32);
+        img.fill(0);
+        for (int i = 0; i < n; i++) {
+            const u8 *p = bytes + i * bpc;
+            const QRgb c = (bpc == 2) ? (QRgb)VdpEditRgb555ToArgb((u16)((p[0] << 8) | p[1]))
+                                      : qRgb(p[3], p[2], p[1]);
+            img.setPixel(i % cols, i / cols, c);
+        }
+        return img;
+    }
+    if (!meta) return QImage();
+    VdpEditSprite s;
+    if (strncmp(meta, "spr", 3) == 0 && VdpEditSpriteFromMeta(meta, &s) == 0) {
+        int w = 0, h = 0, mode = 0;
+        VdpEditSpriteGeometry(&s, &w, &h, &mode, NULL, NULL);
+        const int need = (mode <= 1) ? w * h / 2 : (mode <= 4) ? w * h : w * h * 2;
+        QByteArray full((const char *)bytes, (int)len);
+        if (full.size() < need) full.append(QByteArray(need - full.size(), 0));
+        std::vector<u32> codes((size_t)w * h);
+        VdpEditSpriteDecode(mode, (const u8 *)full.constData(), w, h, codes.data());
+        QByteArray lut;
+        if (mode == 1) {
+            u8 *ram = Vdp1DebugGetRam();
+            const u32 la = VdpEditSpriteLutAddr(&s);
+            if (ram && la + 32 <= 0x80000) lut = QByteArray((const char *)ram + la, 32);
+        }
+        return renderSprite(s, lut, w, h, codes, false);
+    }
+    if (strncmp(meta, "lut", 3) == 0 && VdpEditSpriteFromMeta(meta, &s) == 0 && len >= 32) {
+        QImage img(4, 4, QImage::Format_ARGB32);
+        for (int k = 0; k < 16; k++)
+            img.setPixel(k % 4, k / 4, VdpEditSpriteDataArgb(((u32)bytes[2 * k] << 8) | bytes[2 * k + 1]));
+        return img;
+    }
+    VdpEditBg b;
+    u32 pal = 0;
+    int w = 0;
+    const int kind = VdpEditBgFromMeta(meta, &b, &pal, &w);
+    if (kind == 1) {
+        const int cs = b.csize;
+        if (len < (u32)(b.pw * b.pw) * ((b.cn == 0) ? 0x20u : (b.cn == 1) ? 0x40u : (b.cn == 4) ? 0x100u : 0x80u)) return QImage();
+        u32 codes[256];
+        VdpEditCharDecode(&b, bytes, codes);
+        QImage img(cs, cs, QImage::Format_ARGB32);
+        for (int y = 0; y < cs; y++)
+            for (int x = 0; x < cs; x++)
+                img.setPixel(x, y, VdpEditBgCodeArgb(&b, pal, codes[y * cs + x]));
+        return img;
+    }
+    if (kind == 2 && w > 0) {
+        std::vector<u32> codes((size_t)w);
+        if (VdpEditBitmapRowBytes(&b, w) > len) return QImage();
+        VdpEditBitmapDecode(&b, bytes, w, codes.data());
+        const int rows = qMax(1, w / 16);
+        QImage img(w, rows, QImage::Format_ARGB32);
+        for (int x = 0; x < w; x++) {
+            const QRgb c = VdpEditBgCodeArgb(&b, pal, codes[(size_t)x]);
+            for (int y = 0; y < rows; y++) img.setPixel(x, y, c);
+        }
+        return img;
+    }
+    Q_UNUSED(addr);
+    return QImage();
+}
+
+// ===========================================================================
+// Recolor: hue / saturation / lightness of a group of palette colors
+// ===========================================================================
+
+void UIDebugGfxEditor::onRecolor()
+{
+    if (mItem.kind == Item::None || !emuReady() || mPalCodes.isEmpty()) return;
+    QVector<int> entries = mPalette->marked();
+    if (entries.isEmpty()) for (int i = 0; i < mPalCodes.size(); i++) entries << i;
+
+    struct Target { int cram; int lut; QColor orig; u32 code; };
+    QVector<Target> targets;
+    const bool rgb = itemIsRgb();
+    for (int k = 0; k < entries.size(); k++) {
+        const u32 code = mPalCodes[entries[k]];
+        Target t;
+        t.cram = -1; t.lut = -1; t.code = code;
+        t.orig = QColor(paletteColor(code));
+        if (rgb) {
+            if (code == transparentCode()) continue;
+        } else {
+            if (mItem.kind == Item::Sprite && VdpEditSpriteCodeKind(&mItem.spr, code) == 2) continue;   // end code
+            bool lutRgb = false;
+            t.cram = paletteCram(code, &lutRgb);
+            if (t.cram < 0 && lutRgb) t.lut = (int)code;
+            if (t.cram < 0 && t.lut < 0) continue;
+        }
+        targets << t;
+    }
+    if (targets.isEmpty()) return;
+
+    const std::vector<u32> baseCodes = mCanvas->codes();
+    const QByteArray baseLut = mItem.lut;
+    // hue shift (degrees), saturation and lightness shifts (percent of full scale)
+    auto apply = [this, targets, rgb, baseCodes, baseLut](int dh, int ds, int dl, bool undoable) {
+        auto shift = [dh, ds, dl](const QColor &c0) {
+            const QColor c = c0.toHsl();
+            int h = c.hslHue();
+            if (h >= 0) h = ((h + dh) % 360 + 360) % 360;
+            else h = 0;
+            const int sat = qBound(0, c.hslSaturation() + ds * 255 / 100, 255);
+            const int l = qBound(0, c.lightness() + dl * 255 / 100, 255);
+            return QColor::fromHsl(h, sat, l).toRgb();
+        };
+        if (rgb) {
+            std::vector<u32> codes = baseCodes;
+            std::map<u32, u32> remap;
+            for (int i = 0; i < targets.size(); i++) remap[targets[i].code] = rgbToCode(shift(targets[i].orig).rgb());
+            for (size_t i = 0; i < codes.size(); i++) {
+                std::map<u32, u32>::const_iterator it = remap.find(codes[i]);
+                if (it != remap.end()) codes[i] = it->second;
+            }
+            mCanvas->replaceCodes(baseCodes, false);
+            mCanvas->replaceCodes(codes, undoable);
+            if (undoable) onCanvasEdited();
+            return;
+        }
+        QByteArray lut = baseLut;
+        bool lutChanged = false;
+        for (int i = 0; i < targets.size(); i++) {
+            const QColor c = shift(targets[i].orig);
+            if (targets[i].cram >= 0) {
+                VdpEditSetCramColor((u32)targets[i].cram, c.red(), c.green(), c.blue());
+            } else if (targets[i].lut >= 0 && lut.size() == 32) {
+                const u16 v = VdpEditArgbToRgb555(c.rgb());
+                lut[targets[i].lut * 2] = (char)(v >> 8);
+                lut[targets[i].lut * 2 + 1] = (char)v;
+                lutChanged = true;
+            }
+        }
+        if (lutChanged || mItem.lut != lut) {
+            char meta[VDPEDIT_META_SIZE];
+            VdpEditLutMeta(&mItem.spr, meta);
+            if (VdpEditWriteEx(VDPEDIT_VDP1, VdpEditSpriteLutAddr(&mItem.spr), (const u8 *)mItem.lutApplied.constData(),
+                               (const u8 *)lut.constData(), 32, meta, NULL, NULL) >= 0)
+                mItem.lut = mItem.lutApplied = lut;
+        }
+        refreshPalette();
+        mCanvas->rerender();
+    };
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr_("Recolor"));
+    QVBoxLayout *v = new QVBoxLayout(&dlg);
+    QLabel *info = new QLabel(tr_("%1 color(s). The game shows the result at once while it runs.").arg(targets.size()), &dlg);
+    info->setWordWrap(true);
+    v->addWidget(info);
+    QGridLayout *g = new QGridLayout();
+    QSlider *sh = new QSlider(Qt::Horizontal, &dlg), *ss = new QSlider(Qt::Horizontal, &dlg), *sl = new QSlider(Qt::Horizontal, &dlg);
+    sh->setRange(-180, 180); ss->setRange(-100, 100); sl->setRange(-100, 100);
+    QLabel *vh = new QLabel("0", &dlg), *vs = new QLabel("0", &dlg), *vl = new QLabel("0", &dlg);
+    g->addWidget(new QLabel(tr_("Hue"), &dlg), 0, 0);        g->addWidget(sh, 0, 1); g->addWidget(vh, 0, 2);
+    g->addWidget(new QLabel(tr_("Saturation"), &dlg), 1, 0); g->addWidget(ss, 1, 1); g->addWidget(vs, 1, 2);
+    g->addWidget(new QLabel(tr_("Lightness"), &dlg), 2, 0);  g->addWidget(sl, 2, 1); g->addWidget(vl, 2, 2);
+    v->addLayout(g);
+    QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    v->addWidget(bb);
+    connect(bb, SIGNAL(accepted()), &dlg, SLOT(accept()));
+    connect(bb, SIGNAL(rejected()), &dlg, SLOT(reject()));
+    auto preview = [&]() {
+        vh->setText(QString::number(sh->value()));
+        vs->setText(QString::number(ss->value()));
+        vl->setText(QString::number(sl->value()));
+        apply(sh->value(), ss->value(), sl->value(), false);
+    };
+    connect(sh, &QSlider::valueChanged, &dlg, preview);
+    connect(ss, &QSlider::valueChanged, &dlg, preview);
+    connect(sl, &QSlider::valueChanged, &dlg, preview);
+    dlg.resize(420, dlg.sizeHint().height());
+    if (dlg.exec() == QDialog::Accepted) {
+        apply(sh->value(), ss->value(), sl->value(), true);
+        lApplyStatus->setText(rgb ? tr_("Colors of the picture shifted.")
+                                  : tr_("%1 palette color(s) changed. They are shared by everything that uses them.").arg(targets.size()));
+    } else {
+        apply(0, 0, 0, false);   // back to the colors the dialog started from
+    }
+    refreshItemInfo();
+    updateChips();
+}
+
+// ===========================================================================
+// Selection in the game screen
+// ===========================================================================
+
+void UIDebugGfxEditor::onPickToggled(bool on)
+{
+    UIYabause *w = QtYabause::mainWindow(false);
+    if (!w) { if (on) pbPick->setChecked(false); return; }
+    if (on) {
+        QPointer<UIDebugGfxEditor> self(this);
+        w->setScreenPick([self](int x, int y, const QPoint &g) { if (self) self->pickAt(x, y, g); });
+        lApplyStatus->setText(tr_("Click a sprite or a background in the game window (right click: cancel)."));
+    } else {
+        w->setScreenPick(nullptr);
+    }
+}
+
+void UIDebugGfxEditor::pickAt(int x, int y, const QPoint &globalPos)
+{
+    {
+        QSignalBlocker b(pbPick);
+        pbPick->setChecked(false);
+    }
+    if (UIYabause *w = QtYabause::mainWindow(false)) w->setScreenPick(nullptr);
+    raise();
+    activateWindow();
+    if (x < 0 || !emuReady()) return;
+
+    struct Cand { QString text; int kind; int layer; u32 cmd; int sx, sy, prio; };
+    std::vector<Cand> cands;
+
+    // VDP1: commands whose drawn area holds the dot, last drawn first. The
+    // frame buffer is half as wide as a high resolution VDP2 screen unless
+    // the VDP1 itself is in high resolution (TVMR), and half as high in
+    // double density unless DIE is set (VDP1 manual ST-013, TVMR / FBCR).
+    {
+        int fx = x, fy = y;
+        if ((Vdp2Regs->TVMD & 0x2) && Vdp1Regs && (Vdp1Regs->TVMR & 0x7) != 1) fx /= 2;
+        if (((Vdp2Regs->TVMD >> 6) & 3) == 3 && Vdp1Regs && !(Vdp1Regs->FBCR & 0x8)) fy /= 2;
+        std::vector<u32> addrs(16384);
+        const int n = Vdp1DebugGetCommandList(addrs.data(), (int)addrs.size());
+        addrs.resize(n > 0 ? n : 0);
+        std::vector<int> boxes(addrs.size() * 4, 0);
+        int fw = 0, fh = 0;
+        u32 *fb = addrs.empty() ? NULL : Vdp1DebugRenderFrame(addrs.data(), (int)addrs.size(), &fw, &fh, boxes.data());
+        free(fb);
+        int found = 0;
+        for (int i = (int)addrs.size() - 1; i >= 0 && found < 4; i--) {
+            const int *b = &boxes[4 * i];
+            if (b[2] < b[0] || fx < b[0] || fx > b[2] || fy < b[1] || fy > b[3]) continue;
+            VdpEditSprite s;
+            if (VdpEditSpriteFromCmd(NULL, addrs[i], &s) != 0) continue;
+            int w = 0, h = 0, mode = 0;
+            u32 a = 0;
+            VdpEditSpriteGeometry(&s, &w, &h, &mode, &a, NULL);
+            Cand c;
+            c.text = tr_("Sprite %1 x %2 (command #%3 at %4, texture %5)").arg(w).arg(h).arg(i).arg(hex(addrs[i], 5)).arg(hex(a, 5));
+            c.kind = 0; c.layer = -1; c.cmd = addrs[i]; c.sx = c.sy = 0; c.prio = 8;
+            cands.push_back(c);
+            found++;
+        }
+    }
+    // VDP2 NBG0-3: decoded from the line registers by Vdp2DebugPixelSource
+    // (vdp2debug.c): scroll, line scroll and zoom are taken into account.
+    bool rbgOn = false;
+    for (int n = 0; n < 4; n++) {
+        VdpEditBg bg;
+        if (VdpEditBgGet(n, &bg) != 0) continue;
+        const u16 pri = (n < 2) ? Vdp2Regs->PRINA : Vdp2Regs->PRINB;
+        const int prio = (pri >> ((n & 1) * 8)) & 7;
+        if (prio == 0) continue;
+        vdp2debugpixel_struct d;
+        if (!Vdp2DebugPixelSource((u32)n, x, y, 0, &d) || !d.valid || d.transparent) continue;
+        Cand c;
+        static const char *names[4] = { "NBG0", "NBG1", "NBG2", "NBG3" };
+        if (d.isbitmap)
+            c.text = tr_("%1 bitmap dot (%2, %3), priority %4").arg(QString::fromLatin1(names[n])).arg(d.srcx).arg(d.srcy).arg(prio);
+        else
+            c.text = tr_("%1 cell (%2, %3), character %4, priority %5").arg(QString::fromLatin1(names[n]))
+                         .arg(d.srcx / bg.csize).arg(d.srcy / bg.csize).arg(hex((u32)d.charnum * 0x20, 5)).arg(prio);
+        c.kind = 1; c.layer = n; c.cmd = 0; c.sx = d.srcx; c.sy = d.srcy; c.prio = prio;
+        cands.push_back(c);
+    }
+    for (int n = VDPEDIT_RBG0; n < VDPEDIT_LAYERS; n++) {
+        VdpEditBg bg;
+        if (VdpEditBgGet(n, &bg) == 0) rbgOn = true;
+    }
+    std::stable_sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.prio > b.prio; });
+
+    if (cands.empty()) {
+        lApplyStatus->setText(tr_("Nothing editable at (%1, %2).").arg(x).arg(y) +
+                              (rbgOn ? " " + tr_("Rotating backgrounds (RBG0/RBG1) cannot be picked on screen: use their map.") : QString()));
+        return;
+    }
+    int chosen = 0;
+    if (cands.size() > 1) {
+        QMenu menu(this);
+        menu.addSection(tr_("At (%1, %2)").arg(x).arg(y));
+        for (size_t i = 0; i < cands.size(); i++) menu.addAction(cands[i].text)->setData((int)i);
+        if (rbgOn) menu.addAction(tr_("(RBG0/RBG1 cannot be picked on screen)"))->setEnabled(false);
+        QAction *a = menu.exec(globalPos);
+        if (!a) return;
+        chosen = a->data().toInt();
+    }
+    const Cand &c = cands[(size_t)chosen];
+    if (c.kind == 0) {
+        openSpriteCommand(c.cmd);
+    } else {
+        openLayer(c.layer);
+        if (mOverviewIsMap) {
+            if (mOverviewBg.bitmap) openBitmap(mOverviewBg, c.sx, c.sy);
+            else openCells(mOverviewBg, c.sx, c.sy);
+        }
+    }
+    lApplyStatus->setText(tr_("Picked: %1").arg(c.text));
+}
+
+// ===========================================================================
+// Folder watch (hot reload)
+// ===========================================================================
+
+void UIDebugGfxEditor::stampFolder(const QString &dir)
+{
+    mWatchDir = QDir(dir).absolutePath();
+    QDir d(mWatchDir);
+    const QFileInfoList files = d.entryInfoList(QStringList() << "*.png" << "*.json", QDir::Files);
+    for (int i = 0; i < files.size(); i++) mStamps[files[i].absoluteFilePath()] = files[i].lastModified();
+    if (cbWatch) {
+        cbWatch->setEnabled(true);
+        cbWatch->setToolTip(tr_("Hot reload of %1: every PNG saved there is imported at once").arg(QDir::toNativeSeparators(mWatchDir)));
+        if (cbWatch->isChecked()) watchFolder(mWatchDir);
+    }
+}
+
+bool UIDebugGfxEditor::fileChangedSinceStamp(const QString &path)
+{
+    const QFileInfo fi(path);
+    if (!fi.exists()) return false;
+    const QDateTime t = fi.lastModified();
+    if (mStamps.contains(path) && mStamps.value(path) == t) return false;
+    mStamps[path] = t;
+    return true;
+}
+
+void UIDebugGfxEditor::watchFolder(const QString &dir)
+{
+    if (!mWatcher) {
+        mWatcher = new QFileSystemWatcher(this);
+        connect(mWatcher, SIGNAL(directoryChanged(QString)), mWatchTimer, SLOT(start()));
+        connect(mWatcher, SIGNAL(fileChanged(QString)), mWatchTimer, SLOT(start()));
+    }
+    if (!mWatcher->files().isEmpty()) mWatcher->removePaths(mWatcher->files());
+    if (!mWatcher->directories().isEmpty()) mWatcher->removePaths(mWatcher->directories());
+    mWatcher->addPath(dir);
+    // image editors often save to a temporary file and rename it: the watch
+    // of the folder catches that, the watch of the files catches in-place saves
+    const QStringList pngs = QDir(dir).entryList(QStringList() << "*.png", QDir::Files);
+    QStringList paths;
+    for (int i = 0; i < pngs.size(); i++) paths << QDir(dir).filePath(pngs[i]);
+    if (!paths.isEmpty()) mWatcher->addPaths(paths);
+}
+
+void UIDebugGfxEditor::onWatchToggled(bool on)
+{
+    if (!on) {
+        delete mWatcher;
+        mWatcher = nullptr;
+        return;
+    }
+    if (mWatchDir.isEmpty()) {
+        const QString d = CommonDialogs::getExistingDirectory(QString(), tr_("Folder to watch (exported sprites, atlas or tile sheet)"));
+        if (d.isEmpty()) { QSignalBlocker b(cbWatch); cbWatch->setChecked(false); return; }
+        stampFolder(d);
+    }
+    watchFolder(mWatchDir);
+    lApplyStatus->setText(tr_("Watching %1: save a PNG there to see it in the game.").arg(QDir::toNativeSeparators(mWatchDir)));
+}
+
+void UIDebugGfxEditor::onWatchEvent()
+{
+    if (mWatchDir.isEmpty() || !emuReady()) return;
+    const QString msg = importChangedInFolder(mWatchDir);
+    if (mWatcher) watchFolder(mWatchDir);   // renamed files must be watched again
+    if (msg.isEmpty()) return;
+    lApplyStatus->setText(QDateTime::currentDateTime().toString("HH:mm:ss") + "  " + msg);
+    if (mItem.kind != Item::None && !mDirty) reloadItemFromMemory();
+}
+
+QString UIDebugGfxEditor::importChangedInFolder(const QString &dir)
+{
+    QStringList out;
+    QDir d(dir);
+    // sprites of index.csv: importSpriteFolder() compares each PNG with its stamp
+    if (d.exists("index.csv")) {
+        bool any = false;
+        const QStringList pngs = d.entryList(QStringList() << "spr_*.png", QDir::Files);
+        for (int i = 0; i < pngs.size() && !any; i++) {
+            const QString p = d.absoluteFilePath(pngs[i]);
+            const QFileInfo fi(p);
+            any = !mStamps.contains(p) || mStamps.value(p) != fi.lastModified();
+        }
+        if (any) out << importSpriteFolder(dir).section('\n', 0, 0);
+    }
+    const QStringList atlases = d.entryList(QStringList() << "*.atlas.json", QDir::Files);
+    for (int i = 0; i < atlases.size(); i++) {
+        const QString png = d.absoluteFilePath(QString(atlases[i]).replace(".atlas.json", ".atlas.png"));
+        if (fileChangedSinceStamp(png)) out << importAtlas(d.absoluteFilePath(atlases[i])).section('\n', 0, 0);
+    }
+    const QStringList sheets = d.entryList(QStringList() << "*.tiles.json", QDir::Files);
+    for (int i = 0; i < sheets.size(); i++) {
+        const QString png = d.absoluteFilePath(QString(sheets[i]).replace(".tiles.json", ".tiles.png"));
+        if (fileChangedSinceStamp(png)) out << importTileSheet(d.absoluteFilePath(sheets[i])).section('\n', 0, 0);
+    }
+    return out.join("  |  ");
+}
+
+// ===========================================================================
+// Animation atlas
+// ===========================================================================
+
+void UIDebugGfxEditor::onSelectSamePalette()
+{
+    const int row = lwSprites->currentRow();
+    if (row < 0 || row >= (int)mShown.size() || (size_t)mShown[row] >= mSprites.size()) return;
+    const SpriteEntry &ref = mSprites[mShown[row]];
+    const QVector<QRgb> refTable = spriteColorTable(ref.spr, ref.lut);
+    QSignalBlocker b(lwSprites);
+    int n = 0;
+    for (size_t r = 0; r < mShown.size() && r < (size_t)lwSprites->count(); r++) {
+        if ((size_t)mShown[r] >= mSprites.size()) continue;
+        const SpriteEntry &e = mSprites[mShown[r]];
+        const bool same = ((e.spr.CMDPMOD ^ ref.spr.CMDPMOD) & 0x38) == 0 && spriteColorTable(e.spr, e.lut) == refTable;
+        lwSprites->item((int)r)->setSelected(same);
+        if (same) n++;
+    }
+    lApplyStatus->setText(tr_("%1 sprite(s) use this palette.").arg(n));
+    updateActionState();
+}
+
+void UIDebugGfxEditor::onSelect4bppCandidates()
+{
+    QSignalBlocker b(lwSprites);
+    lwSprites->clearSelection();
+    int n = 0, wide = 0, saved = 0;
+    for (size_t r = 0; r < mShown.size() && r < (size_t)lwSprites->count(); r++) {
+        if ((size_t)mShown[r] >= mSprites.size()) continue;
+        const SpriteEntry &e = mSprites[mShown[r]];
+        const int mode = (e.spr.CMDPMOD >> 3) & 7;
+        if (mode < 2 || mode > 4) continue;
+        wide++;
+        if (spriteColorUse(e.spr, spriteCodes(e)).to4 != 1) continue;
+        lwSprites->item((int)r)->setSelected(true);
+        n++;
+        saved += e.w * e.h / 2;
+    }
+    lApplyStatus->setText(tr_("%1 of %2 sprite(s) in 64/128/256 colors could be 4 bpp sprites (%3 bytes of VDP1 VRAM less).")
+                              .arg(n).arg(wide).arg(saved));
+    updateActionState();
+}
+
+void UIDebugGfxEditor::onExportAtlas()
+{
+    const QList<QListWidgetItem *> sel = lwSprites->selectedItems();
+    if (sel.isEmpty()) return;
+    bool ok = false;
+    QString name = QInputDialog::getText(this, tr_("Export atlas"), tr_("Name of the atlas (for example the character):"),
+                                         QLineEdit::Normal, QString("character"), &ok).trimmed();
+    if (!ok || name.isEmpty()) return;
+    name.replace(QRegularExpression(QString::fromLatin1("[\\\\/:*?\"<>|. ]")), "_");
+    const QString dir = CommonDialogs::getExistingDirectory(mWatchDir, tr_("Folder of the atlas"));
+    if (dir.isEmpty()) return;
+    const int n = exportAtlas(dir, name);
+    if (n < 0) CommonDialogs::error(tr_("An error occured while writing file."));
+    else lApplyStatus->setText(tr_("Atlas %1: %2 frame(s) written to %3. Edit %1.atlas.png, then \"Import atlas...\" or watch the folder.")
+                                   .arg(name).arg(n).arg(QDir::toNativeSeparators(dir)));
+}
+
+int UIDebugGfxEditor::exportAtlas(const QString &dir, const QString &name)
+{
+    std::vector<int> frames;
+    for (int r = 0; r < lwSprites->count() && r < (int)mShown.size(); r++)
+        if (lwSprites->item(r)->isSelected() && (size_t)mShown[r] < mSprites.size()) frames.push_back(mShown[r]);
+    if (frames.empty()) return -1;
+
+    // one palette for every frame -> indexed sheet
+    bool indexed = true;
+    const QVector<QRgb> table = spriteColorTable(mSprites[frames[0]].spr, mSprites[frames[0]].lut);
+    for (size_t i = 0; i < frames.size() && indexed; i++) {
+        const SpriteEntry &e = mSprites[frames[i]];
+        if (((e.spr.CMDPMOD >> 3) & 7) > 4 || spriteColorTable(e.spr, e.lut) != table) indexed = false;
+    }
+
+    // rows of frames, 2-dot gaps, at most 1024 dots wide
+    const int gap = 2;
+    int maxW = 0;
+    for (size_t i = 0; i < frames.size(); i++) maxW = qMax(maxW, mSprites[frames[i]].w);
+    const int limit = qMax(1024, maxW);
+    std::vector<QPoint> pos(frames.size());
+    int x = 0, y = 0, rowH = 0, W = 0;
+    for (size_t i = 0; i < frames.size(); i++) {
+        const SpriteEntry &e = mSprites[frames[i]];
+        if (x > 0 && x + e.w > limit) { x = 0; y += rowH + gap; rowH = 0; }
+        pos[i] = QPoint(x, y);
+        x += e.w + gap;
+        rowH = qMax(rowH, e.h);
+        W = qMax(W, x - gap);
+    }
+    const int H = y + rowH;
+
+    QImage sheet;
+    if (indexed) {
+        sheet = QImage(W, H, QImage::Format_Indexed8);
+        sheet.setColorTable(table);
+        sheet.fill(0);
+    } else {
+        sheet = QImage(W, H, QImage::Format_ARGB32);
+        sheet.fill(0);
+    }
+    QByteArray raw;
+    QJsonArray jframes;
+    for (size_t i = 0; i < frames.size(); i++) {
+        const SpriteEntry &e = mSprites[frames[i]];
+        int mode = 0;
+        u32 addr = 0, bytes = 0;
+        VdpEditSpriteGeometry(&e.spr, NULL, NULL, &mode, &addr, &bytes);
+        if (indexed) {
+            std::vector<u32> codes((size_t)e.w * e.h, 0);
+            QByteArray tex = e.tex;
+            const int need = (mode <= 1) ? e.w * e.h / 2 : e.w * e.h;
+            if (tex.size() < need) tex.append(QByteArray(need - tex.size(), 0));
+            VdpEditSpriteDecode(mode, (const u8 *)tex.constData(), e.w, e.h, codes.data());
+            codesToIndexed(codes, e.w, e.h, table, -1, pos[i].x(), pos[i].y(), &sheet);
+        } else {
+            QPainter p(&sheet);
+            p.drawImage(pos[i], spriteThumb(e));
+        }
+        QJsonObject f;
+        f["name"] = QString("%1_%2").arg(name).arg(i, 3, 10, QChar('0'));
+        f["x"] = pos[i].x(); f["y"] = pos[i].y(); f["w"] = e.w; f["h"] = e.h;
+        f["cmdpmod"] = hex(e.spr.CMDPMOD, 4); f["cmdcolr"] = hex(e.spr.CMDCOLR, 4);
+        f["cmdsrca"] = hex(e.spr.CMDSRCA, 4); f["cmdsize"] = hex(e.spr.CMDSIZE, 4);
+        f["vram"] = hex(addr, 5);
+        f["raw"] = raw.size(); f["rawSize"] = e.tex.size();
+        raw.append(e.tex);
+        if (e.lut.size() == 32) { f["lut"] = raw.size(); raw.append(e.lut); }
+        else f["lut"] = -1;
+        jframes.append(f);
+    }
+    QJsonObject root;
+    root["type"] = "kronos-atlas";
+    root["version"] = 1;
+    root["name"] = name;
+    root["png"] = name + ".atlas.png";
+    root["raw"] = name + ".atlas.raw";
+    root["indexed"] = indexed;
+    root["product"] = UIEditsExport::currentProduct();
+    root["frames"] = jframes;
+    QDir().mkpath(dir);
+    QFile jf(QDir(dir).filePath(name + ".atlas.json")), rf(QDir(dir).filePath(name + ".atlas.raw"));
+    if (!sheet.save(QDir(dir).filePath(name + ".atlas.png"))) return -1;
+    if (!rf.open(QIODevice::WriteOnly) || rf.write(raw) != raw.size()) return -1;
+    rf.close();
+    if (!jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) return -1;
+    jf.write(QJsonDocument(root).toJson());
+    jf.close();
+    stampFolder(dir);
+    return (int)frames.size();
+}
+
+void UIDebugGfxEditor::onImportAtlas()
+{
+    const QString f = QFileDialog::getOpenFileName(this, tr_("Import atlas"), mWatchDir, "Kronos atlas (*.atlas.json)");
+    if (f.isEmpty()) return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QString msg = importAtlas(f);
+    QApplication::restoreOverrideCursor();
+    QMessageBox::information(this, windowTitle(), msg);
+    if (mItem.kind != Item::None && !mDirty) reloadItemFromMemory();
+}
+
+QString UIDebugGfxEditor::importAtlas(const QString &jsonFile)
+{
+    QFile jf(jsonFile);
+    if (!jf.open(QIODevice::ReadOnly)) return tr_("%1: cannot be read.").arg(jsonFile);
+    const QJsonObject root = QJsonDocument::fromJson(jf.readAll()).object();
+    if (root["type"].toString() != "kronos-atlas") return tr_("%1 is not an atlas of this editor.").arg(jsonFile);
+    const QDir d = QFileInfo(jsonFile).absoluteDir();
+    const QString name = root["name"].toString();
+    const QImage sheet(d.filePath(root["png"].toString()));
+    QFile rf(d.filePath(root["raw"].toString()));
+    if (sheet.isNull() || !rf.open(QIODevice::ReadOnly)) return tr_("Atlas %1: picture or .raw missing.").arg(name);
+    const QByteArray raw = rf.readAll();
+    mStamps[d.absoluteFilePath(root["png"].toString())] = QFileInfo(d.filePath(root["png"].toString())).lastModified();
+    const QImage pic = (sheet.format() == QImage::Format_Indexed8) ? sheet : sheet.convertToFormat(QImage::Format_ARGB32);
+    int imported = 0, unchanged = 0, failed = 0, pending = 0, approx = 0;
+    const QJsonArray frames = root["frames"].toArray();
+    for (int i = 0; i < frames.size(); i++) {
+        const QJsonObject f = frames[i].toObject();
+        VdpEditSprite s;
+        memset(&s, 0, sizeof(s));
+        bool o1, o2, o3, o4;
+        s.CMDPMOD = (u16)f["cmdpmod"].toString().toUInt(&o1, 16);
+        s.CMDCOLR = (u16)f["cmdcolr"].toString().toUInt(&o2, 16);
+        s.CMDSRCA = (u16)f["cmdsrca"].toString().toUInt(&o3, 16);
+        s.CMDSIZE = (u16)f["cmdsize"].toString().toUInt(&o4, 16);
+        int w = 0, h = 0, mode = 0;
+        u32 addr = 0, bytes = 0;
+        VdpEditSpriteGeometry(&s, &w, &h, &mode, &addr, &bytes);
+        const int x = f["x"].toInt(), y = f["y"].toInt(), off = f["raw"].toInt(), lutOff = f["lut"].toInt(-1);
+        if (!(o1 && o2 && o3 && o4) || x + w > pic.width() || y + h > pic.height() || off + (int)bytes > raw.size()) { failed++; continue; }
+        const QByteArray orig = raw.mid(off, (int)bytes);
+        const QByteArray lut = (lutOff >= 0 && lutOff + 32 <= raw.size()) ? raw.mid(lutOff, 32) : QByteArray();
+        std::vector<u32> codes = spriteCodesFromPicture(s, lut, orig, pic, x, y, &approx, NULL);
+        const int need = (mode <= 1) ? w * h / 2 : (mode <= 4) ? w * h : w * h * 2;
+        QByteArray full = orig;
+        if (full.size() < need) full.append(QByteArray(need - full.size(), 0));
+        VdpEditSpriteEncode(mode, codes.data(), w, h, (u8 *)full.data());
+        const QByteArray repl = full.left((int)bytes);
+        if (repl == orig) { unchanged++; continue; }
+        char meta[VDPEDIT_META_SIZE];
+        VdpEditSpriteMeta(&s, meta);
+        u32 id = 0;
+        const int rc = VdpEditWriteEx(VDPEDIT_VDP1, addr, (const u8 *)orig.constData(), (const u8 *)repl.constData(),
+                                      bytes, meta, NULL, &id);
+        if (rc < 0) { failed++; continue; }
+        if (id) VdpEditSetName(id, f["name"].toString().toUtf8().constData());
+        imported++;
+        if (rc == 0) pending++;
+    }
+    QString msg = tr_("Atlas %1: %2 frame(s) imported (%3 waiting for the game to load them), %4 unchanged, %5 failed.")
+                      .arg(name).arg(imported).arg(pending).arg(unchanged).arg(failed);
+    if (approx) msg += "\n" + tr_("%1 dot(s) got the nearest palette color.").arg(approx);
+    if (cbSource->currentIndex() <= SrcSpriteLayer) refreshSource(true);
+    updateChips();
+    updateActionState();
+    return msg;
+}
+
+// ===========================================================================
+// VDP2 tile sheet
+// ===========================================================================
+
+void UIDebugGfxEditor::onExportTiles()
+{
+    const int src = cbSource->currentIndex();
+    if (src < SrcNBG0) return;
+    const QString dir = CommonDialogs::getExistingDirectory(mWatchDir, tr_("Folder of the tile sheet"));
+    if (dir.isEmpty()) return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const int n = exportTileSheet(dir, kSourceLayer[src]);
+    QApplication::restoreOverrideCursor();
+    if (n < 0) CommonDialogs::error(tr_("The layer is off, in bitmap mode, or the files could not be written."));
+    else lApplyStatus->setText(tr_("%1 character(s) written to %2.").arg(n).arg(QDir::toNativeSeparators(dir)));
+}
+
+int UIDebugGfxEditor::exportTileSheet(const QString &dir, int layer)
+{
+    static const char *names[VDPEDIT_LAYERS] = { "NBG0", "NBG1", "NBG2", "NBG3", "RBG0", "RBG0B", "RBG1" };
+    VdpEditBg bg;
+    if (VdpEditBgGet(layer, &bg) != 0 || bg.bitmap) return -1;
+    struct Tile { u32 addr, pal; int uses; };
+    std::vector<Tile> tiles;
+    std::map<u32, int> byAddr;
+    for (int y = 0; y < bg.mapH; y += bg.csize)
+        for (int x = 0; x < bg.mapW; x += bg.csize) {
+            VdpEditCell c;
+            if (VdpEditBgCellAt(&bg, x, y, &c) != 0) continue;
+            std::map<u32, int>::iterator it = byAddr.find(c.charAddr);
+            if (it != byAddr.end()) { tiles[it->second].uses++; continue; }
+            if (tiles.size() >= 4096) continue;
+            byAddr[c.charAddr] = (int)tiles.size();
+            Tile t; t.addr = c.charAddr; t.pal = c.palBase; t.uses = 1;
+            tiles.push_back(t);
+        }
+    if (tiles.empty()) return -1;
+    std::sort(tiles.begin(), tiles.end(), [](const Tile &a, const Tile &b) { return a.addr < b.addr; });
+
+    bool indexed = bg.cn <= 1;
+    for (size_t i = 1; i < tiles.size() && indexed; i++) if (tiles[i].pal != tiles[0].pal) indexed = false;
+    const int cs = bg.csize, cols = 16, rows = ((int)tiles.size() + cols - 1) / cols;
+    const u32 charBytes = (u32)(bg.pw * bg.pw) * ((bg.cn == 0) ? 0x20u : (bg.cn == 1) ? 0x40u : (bg.cn == 4) ? 0x100u : 0x80u);
+    QImage sheet;
+    QVector<QRgb> table;
+    if (indexed) {
+        table = bgColorTable(bg, tiles[0].pal);
+        sheet = QImage(cols * cs, rows * cs, QImage::Format_Indexed8);
+        sheet.setColorTable(table);
+        sheet.fill(0);
+    } else {
+        sheet = QImage(cols * cs, rows * cs, QImage::Format_ARGB32);
+        sheet.fill(0);
+    }
+    QByteArray raw;
+    QJsonArray jt;
+    for (size_t i = 0; i < tiles.size(); i++) {
+        QByteArray b((int)charBytes, 0);
+        VdpEditReadVdp2(tiles[i].addr, (u8 *)b.data(), charBytes);
+        std::vector<u32> codes((size_t)cs * cs);
+        VdpEditCharDecode(&bg, (const u8 *)b.constData(), codes.data());
+        const int tx = ((int)i % cols) * cs, ty = ((int)i / cols) * cs;
+        if (indexed) {
+            codesToIndexed(codes, cs, cs, table, -1, tx, ty, &sheet);
+        } else {
+            for (int y = 0; y < cs; y++)
+                for (int x = 0; x < cs; x++)
+                    sheet.setPixel(tx + x, ty + y, VdpEditBgCodeArgb(&bg, tiles[i].pal, codes[(size_t)y * cs + x]));
+        }
+        QJsonObject t;
+        t["addr"] = hex(tiles[i].addr, 5);
+        t["pal"] = hex(tiles[i].pal, 2);
+        t["x"] = tx; t["y"] = ty;
+        t["raw"] = raw.size();
+        t["uses"] = tiles[i].uses;
+        raw.append(b);
+        jt.append(t);
+    }
+    const QString base = QString::fromLatin1(names[layer]);
+    QJsonObject root;
+    root["type"] = "kronos-tiles";
+    root["version"] = 1;
+    root["layer"] = layer;
+    root["name"] = base;
+    root["cn"] = bg.cn; root["pw"] = bg.pw; root["coff"] = hex(bg.coff, 3); root["tpon"] = bg.tpon;
+    root["charBytes"] = (int)charBytes;
+    root["indexed"] = indexed;
+    root["png"] = base + ".tiles.png";
+    root["raw"] = base + ".tiles.raw";
+    root["product"] = UIEditsExport::currentProduct();
+    root["tiles"] = jt;
+    QDir().mkpath(dir);
+    QFile jf(QDir(dir).filePath(base + ".tiles.json")), rf(QDir(dir).filePath(base + ".tiles.raw"));
+    if (!sheet.save(QDir(dir).filePath(base + ".tiles.png"))) return -1;
+    if (!rf.open(QIODevice::WriteOnly) || rf.write(raw) != raw.size()) return -1;
+    rf.close();
+    if (!jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) return -1;
+    jf.write(QJsonDocument(root).toJson());
+    jf.close();
+    stampFolder(dir);
+    return (int)tiles.size();
+}
+
+void UIDebugGfxEditor::onImportTiles()
+{
+    const QString f = QFileDialog::getOpenFileName(this, tr_("Import tile sheet"), mWatchDir, "Kronos tile sheet (*.tiles.json)");
+    if (f.isEmpty()) return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QString msg = importTileSheet(f);
+    QApplication::restoreOverrideCursor();
+    QMessageBox::information(this, windowTitle(), msg);
+    if (mItem.kind != Item::None && !mDirty) reloadItemFromMemory();
+    refreshOverview();
+}
+
+QString UIDebugGfxEditor::importTileSheet(const QString &jsonFile)
+{
+    QFile jf(jsonFile);
+    if (!jf.open(QIODevice::ReadOnly)) return tr_("%1: cannot be read.").arg(jsonFile);
+    const QJsonObject root = QJsonDocument::fromJson(jf.readAll()).object();
+    if (root["type"].toString() != "kronos-tiles") return tr_("%1 is not a tile sheet of this editor.").arg(jsonFile);
+    const QDir d = QFileInfo(jsonFile).absoluteDir();
+    const QString name = root["name"].toString();
+    const QImage sheet(d.filePath(root["png"].toString()));
+    QFile rf(d.filePath(root["raw"].toString()));
+    if (sheet.isNull() || !rf.open(QIODevice::ReadOnly)) return tr_("Tile sheet %1: picture or .raw missing.").arg(name);
+    const QByteArray raw = rf.readAll();
+    mStamps[d.absoluteFilePath(root["png"].toString())] = QFileInfo(d.filePath(root["png"].toString())).lastModified();
+
+    VdpEditBg bg;
+    memset(&bg, 0, sizeof(bg));
+    bg.layer = root["layer"].toInt();
+    bg.cn = qBound(0, root["cn"].toInt(), 4);
+    bg.pw = root["pw"].toInt() == 2 ? 2 : 1;
+    bg.csize = 8 * bg.pw;
+    bg.coff = root["coff"].toString().toUInt(NULL, 16);
+    bg.tpon = root["tpon"].toInt();
+    bg.enabled = 1;
+    const int cs = bg.csize, charBytes = root["charBytes"].toInt();
+    const int n = VdpEditBgPaletteSize(bg.cn);
+    const bool isIndexed = sheet.format() == QImage::Format_Indexed8 && n > 0 && n <= 256;
+    const QImage pic = isIndexed ? sheet : sheet.convertToFormat(QImage::Format_ARGB32);
+    const QVector<QRgb> table = pic.colorTable();
+    int imported = 0, unchanged = 0, failed = 0, pending = 0, approx = 0;
+    const QJsonArray tiles = root["tiles"].toArray();
+    for (int i = 0; i < tiles.size(); i++) {
+        const QJsonObject t = tiles[i].toObject();
+        const u32 addr = t["addr"].toString().toUInt(NULL, 16), pal = t["pal"].toString().toUInt(NULL, 16);
+        const int tx = t["x"].toInt(), ty = t["y"].toInt(), off = t["raw"].toInt();
+        if (tx + cs > pic.width() || ty + cs > pic.height() || off + charBytes > raw.size() || charBytes <= 0) { failed++; continue; }
+        const QByteArray orig = raw.mid(off, charBytes);
+        std::vector<u32> old((size_t)cs * cs), codes((size_t)cs * cs);
+        VdpEditCharDecode(&bg, (const u8 *)orig.constData(), old.data());
+        for (int y = 0; y < cs; y++)
+            for (int x = 0; x < cs; x++) {
+                const size_t k = (size_t)y * cs + x;
+                if (isIndexed) {
+                    const int idx = pic.constScanLine(ty + y)[tx + x];
+                    codes[k] = (idx < n) ? (u32)idx : bgNearest(bg, pal, idx < table.size() ? table[idx] : 0, &approx);
+                } else {
+                    const QRgb p = pic.pixel(tx + x, ty + y);
+                    codes[k] = ((QRgb)VdpEditBgCodeArgb(&bg, pal, old[k]) == p) ? old[k] : bgNearest(bg, pal, p, &approx);
+                }
+            }
+        QByteArray repl = orig;
+        VdpEditCharEncode(&bg, codes.data(), (u8 *)repl.data());
+        if (repl == orig) { unchanged++; continue; }
+        char meta[VDPEDIT_META_SIZE];
+        VdpEditCharMeta(&bg, pal, meta);
+        const int rc = VdpEditWriteEx(VDPEDIT_VDP2, addr, (const u8 *)orig.constData(), (const u8 *)repl.constData(),
+                                      (u32)charBytes, meta, NULL, NULL);
+        if (rc < 0) { failed++; continue; }
+        imported++;
+        if (rc == 0) pending++;
+    }
+    QString msg = tr_("Tile sheet %1: %2 character(s) imported (%3 waiting for the game to load them), %4 unchanged, %5 failed.")
+                      .arg(name).arg(imported).arg(pending).arg(unchanged).arg(failed);
+    if (approx) msg += "\n" + tr_("%1 dot(s) got the nearest palette color.").arg(approx);
+    updateChips();
+    updateActionState();
+    return msg;
 }
