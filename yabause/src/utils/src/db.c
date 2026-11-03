@@ -105,6 +105,7 @@ static const char * const SH2CacheDBList[] = {
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
    "T-1525G", // Photo Genic (Japan)
+   "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
    "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
    // Mednafen CPUCACHE_EMUMODE_FULL
