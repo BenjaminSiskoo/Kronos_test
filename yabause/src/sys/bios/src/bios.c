@@ -31,24 +31,34 @@
 #include "yabause.h"
 #include "error.h"
 #include "yui.h"
+#include <string.h>
 
-static u8 sh2masklist[0x20] = {
-0xF0, 0xE0, 0xD0, 0xC0, 0xB0, 0xA0, 0x90, 0x80,
-0x80, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70,
-0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70,
-0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70, 0x70
+/* Table de priorite des interruptions SCU (SYS_CHGSCUPRI, ST-162 5.1
+   "SCU Interrupt Routine Priority Change"), au format du boot ROM : un mot
+   long par facteur 40H-5FH, mot haut = SR pendant le gestionnaire, mot bas =
+   masque SCU ajoute (etendu sur 32 bits par son bit 15). Le boot ROM la tient
+   en Work RAM-H a 6000A80H (= 6000980H + vecteur x 4) et son repartiteur la
+   relit a chaque interruption ; valeurs initiales relevees dans un vidage de
+   la Work RAM-H avec le BIOS reel. */
+#define BIOS_SCU_PRI_TABLE   0x06000980   /* + vecteur x 4 (vecteurs 40H-5FH) */
+#define BIOS_SCU_CHGSCUPRI   0x06000620   /* SYS_CHGSCUPRI en SH-2, voir BiosInit() */
+static const u32 scupri_default[0x20] = {
+0x00F0FFFF, 0x00E0FFFE, 0x00D0FFFC, 0x00C0FFF8,
+0x00B0FFF0, 0x00A0FFE0, 0x0090FFC0, 0x0080FF80,
+0x0080FF80, 0x0070FE00, 0x0070FE00, 0x0070FE00,
+0x0070FE00, 0x0070FE00, 0x0070FE00, 0x0070FE00,
+0x0070FE00, 0x0070FE00, 0x0070FE00, 0x0070FE00,
+0x0070FE00, 0x0070FE00, 0x0070FE00, 0x0070FE00,
+0x0070FE00, 0x0070FE00, 0x0070FE00, 0x0070FE00,
+0x0070FE00, 0x0070FE00, 0x0070FE00, 0x0070FE00
 };
 
-static u32 scumasklist[0x20] = {
-0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFFFFC, 0xFFFFFFF8,
-0xFFFFFFF0, 0xFFFFFFE0, 0xFFFFFFC0, 0xFFFFFF80,
-0xFFFFFF80, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00,
-0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00,
-0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00,
-0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00,
-0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00,
-0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00
-};
+/* SYS_CHGSYSCK en cours sur le maitre : contexte de l'appelant (pile, retour,
+   SR et registres preserves R8-R14), rendu par BiosNmi() quand le NMI de fin
+   de commande arrive. */
+static int hle_ckchg_pending = 0;
+static u32 hle_ckchg_r15, hle_ckchg_pr, hle_ckchg_sr;
+static u32 hle_ckchg_r8_14[7];
 
 u32 interruptlist[2][0x80];
 
@@ -59,9 +69,49 @@ void FASTCALL BiosBUPRead(SH2_struct * sh);
 //////////////////////////////////////////////////////////////////////////////
 
 
+/* Table des vecteurs de la ROM du BIOS (00000000H-000000FFH) du BIOS emule.
+
+   Le BIOS emule n'a pas de ROM : BiosRom est rempli de 0, sauf le pointeur
+   de pile (4H). Les jeux n'executent rien dans la ROM, mais certains la
+   lisent sans le vouloir. Sol Divide (T-14423G) tourne avec GBR = 0 alors
+   que sa bibliotheque SGL suppose GBR = 060FFC00H : la fonction d'etat des
+   DMA (06020938) lit l'octet d'etat du niveau 0 en GBR + BBH, donc en
+   000000BBH dans la ROM, et ne regarde DSTA que si son bit 2 est a 0. Avec
+   la ROM vide, le maitre attendait sans fin apres le DMA du premier secteur
+   du film (commande CD 6100H), sans jamais envoyer 0600H / 6200H ; avec le
+   vrai BIOS, l'octet vaut 26H et la fonction rend la main aussitot.
+
+   Valeurs : table des vecteurs du BIOS Saturn v1.01, vecteurs 4 a 63
+   (exceptions et interruptions ; NMI en 2CH). Les vecteurs 0 a 3 (reset)
+   ne sont pas touches : Kronos fixe lui-meme le PC et la pile du BIOS
+   emule. Ces adresses ne sont jamais executees par le BIOS emule (le VBR
+   est en 06000000H), elles ne servent qu'aux lectures. */
+void BiosInitRomVectors(u8 *rom)
+{
+   int i;
+   if (rom == NULL) return;
+   for (i = 4; i < 64; i++)
+   {
+      u32 v = 0x20000226;
+      if ((i == 4) || (i == 6) || (i == 9) || (i == 10)) v = 0x20000222;
+      else if (i == 11) v = 0x20000534;
+      T2WriteLong(rom, i << 2, v);
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 void BiosInit(SH2_struct *context)
 {
    int i;
+
+   /* Etat du BIOS emule laisse par le jeu precedent. Ces tables et l'appel
+      SYS_CHGSYSCK en cours sont des variables statiques : elles survivaient
+      au changement de jeu et au reset, si bien qu'un jeu demarrait avec la
+      table de priorites installee par SYS_CHGSCUPRI dans le jeu d'avant
+      (Ishin no Arashi et Yuukyuu Gensoukyoku Ensemble en installent une ou
+      le SR vaut toujours 0), ou avec un SYS_CHGSYSCK reste en suspens. */
+   hle_ckchg_pending = 0;
 
    // Setup vectors
    SH2MappedMemoryWriteLong(context, 0x06000600, 0x002B0009); // rte, nop
@@ -78,6 +128,11 @@ void BiosInit(SH2_struct *context)
       interruptlist[0][i >> 2] = 0x06000600;
       interruptlist[1][i >> 2] = 0x06000600;
    }
+
+   /* NMI (vecteur 11) du maitre : gestionnaire du BIOS emule en 4A8H, voir
+      BiosNmi(). Le NMI de fin de SYS_CHGSYSCK y termine l'appel. */
+   SH2MappedMemoryWriteLong(context, 0x0600002C, 0x000004A8);
+   interruptlist[0][11] = 0x000004A8;
 
    SH2MappedMemoryWriteLong(context, 0x06000010, 0x06000604);
    SH2MappedMemoryWriteLong(context, 0x06000018, 0x06000604);
@@ -110,8 +165,51 @@ void BiosInit(SH2_struct *context)
       interruptlist[0][0x50+(i >> 2)] = 0x00000440+i;
    }
 
-   for (i = 0; i < 0x100; i+=4)
+   /* Fonctions des facteurs SCU 40H-5FH (SYS_SETUINT) : 6000A00H-6000A7FH. */
+   for (i = 0; i < 0x80; i+=4)
       SH2MappedMemoryWriteLong(context, 0x06000A00+i, 0x06000610);
+
+   /* Table de priorite : 6000A80H-6000AFFH (voir scupri_default). */
+   for (i = 0; i < 0x20; i++)
+      SH2MappedMemoryWriteLong(context, BIOS_SCU_PRI_TABLE + ((0x40 + i) << 2), scupri_default[i]);
+
+   /* SYS_CHGSCUPRI (6000280H) en code SH-2 dans la Work RAM-H, comme le fait
+      le boot ROM, au lieu d'une fonction du BIOS emule.
+
+      Le BIOS emule executait les fonctions systeme en 0 cycle. Le boot ROM
+      execute cette copie de 32 mots longs (environ 135 instructions, 32
+      lectures et 32 ecritures) sur le CPU appelant. Yuukyuu Gensoukyoku
+      Ensemble (T-27808G) l'appelle entre l'envoi de la commande
+      d'initialisation 08H a l'esclave et l'ecriture des travaux de la trame
+      suivante dans la file maitre->esclave (0604992A) : mesure dans Kronos,
+      3035 cycles du maitre entre les deux avec le BIOS reel, 2055 avec le
+      BIOS emule. L'esclave, qui ecrit ses tables par-dessus la file
+      (060EF538-), arrivait alors en 060EF550 apres le maitre et ecrasait
+      la fin de trame (2CH) : ecran noir au premier lancement.
+
+         6000620H  0102  stc   sr,r1
+         6000622H  E3F0  mov   #-16,r3
+         6000624H  633C  extu.b r3,r3          ; r3 = F0H
+         6000626H  430E  ldc   r3,sr           ; interruptions masquees
+         6000628H  D004  mov.l @(600063CH),r0  ; r0 = 6000A80H
+         600062AH  E320  mov   #32,r3
+         600062CH  6246  mov.l @r4+,r2
+         600062EH  4310  dt    r3
+         6000630H  2022  mov.l r2,@r0
+         6000632H  8FFB  bf/s  600062CH
+         6000634H  7004  add   #4,r0
+         6000636H  000B  rts
+         6000638H  410E  ldc   r1,sr
+         600063AH  0009  nop
+         600063CH  06000A80                     */
+   SH2MappedMemoryWriteLong(context, 0x06000620, 0x0102E3F0);
+   SH2MappedMemoryWriteLong(context, 0x06000624, 0x633C430E);
+   SH2MappedMemoryWriteLong(context, 0x06000628, 0xD004E320);
+   SH2MappedMemoryWriteLong(context, 0x0600062C, 0x62464310);
+   SH2MappedMemoryWriteLong(context, 0x06000630, 0x20228FFB);
+   SH2MappedMemoryWriteLong(context, 0x06000634, 0x7004000B);
+   SH2MappedMemoryWriteLong(context, 0x06000638, 0x410E0009);
+   SH2MappedMemoryWriteLong(context, 0x0600063C, BIOS_SCU_PRI_TABLE + (0x40 << 2));
 
    /* Point d'entree de l'esclave.
 
@@ -154,7 +252,7 @@ void BiosInit(SH2_struct *context)
    SH2MappedMemoryWriteLong(context, 0x06000210, 0x00000210);
    SH2MappedMemoryWriteLong(context, 0x0600026C, 0x0000026C);
    SH2MappedMemoryWriteLong(context, 0x06000274, 0x00000274);
-   SH2MappedMemoryWriteLong(context, 0x06000280, 0x00000280);
+   SH2MappedMemoryWriteLong(context, 0x06000280, BIOS_SCU_CHGSCUPRI);
    SH2MappedMemoryWriteLong(context, 0x0600029C, 0x0000029C);
    SH2MappedMemoryWriteLong(context, 0x060002DC, 0x000002DC);
    SH2MappedMemoryWriteLong(context, 0x06000300, 0x00000300);
@@ -246,22 +344,57 @@ static void FASTCALL BiosGetSh2Interrupt(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* SYS_SETSCUIM (6000340H) et SYS_CHGSCUIM (6000344H), d'apres le code que le
+   boot ROM installe en Work RAM-H (060007B0 et 060007C0, releve dans un vidage
+   de la Work RAM-H avec le BIOS reel), qui precise ST-162 (Saturn System
+   Library User's Guide, 2.1 et 2.2) :
+
+   SYS_SETSCUIM(MaskPat)              SYS_CHGSCUIM(AndMask, OrMask)
+     SR = F0H                           SR = F0H
+     M = MaskPat                        M = (@6000348H & AndMask) | OrMask
+     @6000348H = M, IMS = M             @6000348H = M, IMS = M
+     v = MaskPat (16 bits, signe)       v = AndMask | OrMask (16 bits, signe)
+     IST = v                            IST = v
+     si bit 15 de v = 0 : AIACK = 1     si bit 15 de v = 0 : AIACK = 1
+     SR restaure                        SR restaure
+
+   Une ecriture de IST efface les bits ecrits a 0 : SYS_CHGSCUIM efface donc
+   les interruptions en attente dont le bit est a 0 dans AndMask | OrMask,
+   pas seulement le mot haut. Le code ne teste pas le CPU appelant.
+
+   Le BIOS emule n'ecrivait IST pour SYS_CHGSCUIM que si le nouveau masque
+   autorisait l'A-Bus, et alors seulement 0000FFFFH. Sol Divide (T-14423G) :
+   GFS_Init appelle SYS_CHGSCUIM(FFFFF7FFH, 0) pour demasquer la fin de DMA
+   niveau 0 alors qu'une fin de DMA0 du transfert de la liste VDP1 est encore
+   en attente (IST bit 11). Le BIOS reel l'efface (IST = FFFFF7FFH) ; le BIOS
+   emule la laissait, l'interruption partait aussitot vers le gestionnaire par
+   defaut, et la lecture du premier secteur du film par DMA0 (commande CD
+   6100H) n'etait jamais terminee : pas de commandes 0600H / 6200H, jeu fige
+   sur l'ecran du film. */
+static void BiosWriteScuMask(SH2_struct * sh, u32 mask, u32 istval)
+{
+   const u32 v = (u32)(s32)(s16)(istval & 0xFFFF);
+
+   /* Le boot ROM ecrit IMS puis IST, SR a F0H : aucune interruption ne peut
+      etre prise entre les deux, et une demande effacee dans IST disparait.
+      Le SCU de Kronos, lui, presente au CPU une demande devenue demasquee des
+      l'ecriture suivante d'un de ses registres (ScuTestAllInterrupt() au
+      debut de l'ecriture de IST, avant l'effacement) et ne la retire plus :
+      dans cet ordre, la fin de DMA0 en attente de Sol Divide partait quand
+      meme. IST est donc ecrit avant IMS ; l'etat final est le meme que sur
+      la console. */
+   SH2MappedMemoryWriteLong(sh, 0x06000348, mask);
+   SH2MappedMemoryWriteLong(sh, 0x25FE00A4, v);    // Interrupt Status Register
+   SH2MappedMemoryWriteLong(sh, 0x25FE00A0, mask); // Interrupt Mask Register
+   if (!(v & 0x8000))
+      SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
+}
+
 static void FASTCALL BiosSetScuInterruptMask(SH2_struct * sh)
 {
    SH2GetRegisters(sh, &sh->regs);
 
-   // check me
-   //LOG("BiosSetScuInterruptMask\n");
-
-   if (!sh->isslave)
-   {
-      SH2MappedMemoryWriteLong(sh, 0x06000348, sh->regs.R[4]);
-      SH2MappedMemoryWriteLong(sh, 0x25FE00A0, sh->regs.R[4]); // Interrupt Mask Register
-	  SH2MappedMemoryWriteLong(sh, 0x25FE00A4, sh->regs.R[4]); // Interrupt Mask Register
-   }
-
-   if (!(sh->regs.R[4] & 0x8000)) // double check this
-      SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
+   BiosWriteScuMask(sh, sh->regs.R[4], sh->regs.R[4]);
 
    sh->regs.PC = sh->regs.PR;
    SH2SetRegisters(sh, &sh->regs);
@@ -275,25 +408,15 @@ static void FASTCALL BiosChangeScuInterruptMask(SH2_struct * sh)
 
    SH2GetRegisters(sh, &sh->regs);
 
-//   LOG("BiosChangeScuInterruptMask\n");
-
    // Read Stored Scu Interrupt Mask, AND it by R4, OR it by R5, then put it back
    newmask = (SH2MappedMemoryReadLong(sh, 0x06000348) & sh->regs.R[4]) | sh->regs.R[5];
-   if (!sh->isslave)
-   {
-      SH2MappedMemoryWriteLong(sh, 0x06000348, newmask);
-      SH2MappedMemoryWriteLong(sh, 0x25FE00A0, newmask); // Interrupt Mask Register
-      SH2MappedMemoryWriteLong(sh, 0x25FE00A4, (u32)(s16)sh->regs.R[4]); // Interrupt Status Register
-   }
-
-   if (!(sh->regs.R[4] & 0x8000)) // double check this
-      SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
+   BiosWriteScuMask(sh, newmask, sh->regs.R[4] | sh->regs.R[5]);
 
    sh->regs.PC = sh->regs.PR;
    SH2SetRegisters(sh, &sh->regs);
 }
 
-//////////////////////////////////////////////////////////////////////////////
+//////////
 
 static void FASTCALL BiosCDINIT2(SH2_struct * sh)
 {
@@ -351,9 +474,18 @@ static void FASTCALL BiosClearSemaphore(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
+
 static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
 {
+   int i;
    SH2GetRegisters(sh, &sh->regs);
+
+   hle_ckchg_pending = !sh->isslave;
+   hle_ckchg_r15 = sh->regs.R[15];
+   hle_ckchg_pr = sh->regs.PR;
+   hle_ckchg_sr = sh->regs.SR.all;
+   for (i = 0; i < 7; i++)
+      hle_ckchg_r8_14[i] = sh->regs.R[8 + i];
 
 //   LOG("BiosChangeSystemClock\n");
 
@@ -416,31 +548,23 @@ static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
    SMPC n'a pas remis SF a 0 ; le NMI envoye a la fin de la commande passe par
    le vecteur 11 de BiosInit() (rte) et revient ici. Ensuite, la fin de
    l'ancienne fonction : registres du SCU et masque d'interruption. */
-static void FASTCALL BiosChangeSystemClockWait(SH2_struct * sh)
+/* Fin de SYS_CHGSYSCK : registres du SCU et masque d'interruption.
+
+   Les trois niveaux de DMA du SCU sont espaces de 20H (D0R 25FE0000H,
+   D1R 25FE0020H, D2R 25FE0040H), six registres chacun (R, W, C, AD, EN,
+   MD). La boucle avancait de 0CH par niveau et ecrivait sept registres :
+   elle remettait a zero une partie des niveaux 0 et 1 deux fois et ne
+   touchait jamais le niveau 2. */
+static void BiosChangeSystemClockFinish(SH2_struct * sh)
 {
    int i, j;
    u32 mask;
-   SH2GetRegisters(sh, &sh->regs);
-
-   if (SmpcRegs->SF & 0x1)
-   {
-      /* Le SH-2 attend : on lui fait consommer le reste de sa tranche, comme
-         SLEEP. L'instruction non decodee en 4A0H ne coute rien (ROM BIOS
-         emulee, aucun cout d'acces) : sans cela la boucle de l'interpreteur
-         (while cycles < target_cycles) ne finissait jamais, la trame non
-         plus, et le SMPC qui doit terminer la commande ne s'executait plus. */
-      if (sh->target_cycles > sh->cycles)
-         sh->cycles = sh->target_cycles;
-      else
-         sh->cycles += 4;
-      return;
-   }
 
    // Clear SCU DMA Regs
    for (j = 0; j < 3; j++)
    {
-      for (i = 0; i < 7; i++)
-         SH2MappedMemoryWriteLong(sh, 0x25FE0000+(j*0xC)+(i*4), 0);
+      for (i = 0; i < 6; i++)
+         SH2MappedMemoryWriteLong(sh, 0x25FE0000+(j*0x20)+(i*4), 0);
    }
 
    SH2MappedMemoryWriteLong(sh, 0x25FE0060, 0); // Clear DMA force stop
@@ -458,8 +582,80 @@ static void FASTCALL BiosChangeSystemClockWait(SH2_struct * sh)
 
    if (!(mask & 0x8000))
       SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
+}
+
+static void FASTCALL BiosChangeSystemClockWait(SH2_struct * sh)
+{
+   SH2GetRegisters(sh, &sh->regs);
+
+   /* Le NMI de fin de commande est leve en meme temps que SF retombe
+      (SmpcCKCHG320/352). Tant qu'il n'a pas ete pris, on attend : c'est
+      lui qui termine l'appel (BiosNmi). On ne finit ici que si le jeu a
+      installe son propre gestionnaire NMI et que celui-ci est revenu par
+      rte sans passer par le BIOS. */
+   if ((SmpcRegs->SF & 0x1) || (sh->intc.nmi != 0))
+   {
+      /* Le SH-2 attend : on lui fait consommer le reste de sa tranche, comme
+         SLEEP. L'instruction non decodee en 4A0H ne coute rien (ROM BIOS
+         emulee, aucun cout d'acces) : sans cela la boucle de l'interpreteur
+         (while cycles < target_cycles) ne finissait jamais, la trame non
+         plus, et le SMPC qui doit terminer la commande ne s'executait plus. */
+      if (sh->target_cycles > sh->cycles)
+         sh->cycles = sh->target_cycles;
+      else
+         sh->cycles += 4;
+      return;
+   }
+
+   hle_ckchg_pending = 0;
+   BiosChangeSystemClockFinish(sh);
 
    sh->regs.PC = sh->regs.PR;
+   SH2SetRegisters(sh, &sh->regs);
+}
+
+/* 4A8H : gestionnaire NMI du maitre installe par BiosInit().
+
+   Pendant SYS_CHGSYSCK, le NMI envoye par le SMPC a la fin de CKCHG termine
+   l'appel : on rend a l'appelant sa pile, son SR et ses registres R8-R14
+   tels qu'ils etaient a l'appel, et on revient a son adresse de retour, quel
+   que soit l'etat de la pile au moment ou ce gestionnaire est atteint.
+
+   Sol Divide (T-14423G) en depend. Avant SYS_CHGSYSCK il installe son
+   propre gestionnaire NMI (060034A0) et garde l'ancien. Ce gestionnaire est
+   une fonction C ordinaire (empile R8 et PR, reinitialise l'affichage,
+   appelle l'ancien gestionnaire par jsr, puis rts) : il compte sur le BIOS
+   pour ne jamais revenir vers lui. L'ancien gestionnaire du BIOS emule etait
+   un simple rte (6000600H), qui depilait le PR et le R8 sauves par le jeu a
+   la place du PC et du SR : le jeu reprenait a l'adresse de retour de
+   SYS_CHGSYSCK avec 8 octets de trop sur la pile, et la fonction appelante
+   revenait plus tard en 4A0H (PC = PR = 4A0H, trame t250 du releve),
+   bloquant le maitre dans l'attente de SYS_CHGSYSCK, ecran noir.
+
+   Hors SYS_CHGSYSCK, ce gestionnaire se comporte comme l'ancien : rte. */
+static void FASTCALL BiosNmi(SH2_struct * sh)
+{
+   int i;
+   SH2GetRegisters(sh, &sh->regs);
+
+   if (hle_ckchg_pending && !sh->isslave)
+   {
+      hle_ckchg_pending = 0;
+      sh->regs.R[15] = hle_ckchg_r15;
+      for (i = 0; i < 7; i++)
+         sh->regs.R[8 + i] = hle_ckchg_r8_14[i];
+      sh->regs.PR = hle_ckchg_pr;
+      sh->regs.SR.all = hle_ckchg_sr;
+      BiosChangeSystemClockFinish(sh);
+      sh->regs.PC = hle_ckchg_pr;
+      SH2SetRegisters(sh, &sh->regs);
+      return;
+   }
+
+   /* rte */
+   sh->regs.PC = SH2MappedMemoryReadLong(sh, sh->regs.R[15]);
+   sh->regs.SR.all = SH2MappedMemoryReadLong(sh, sh->regs.R[15] + 4) & 0x000003F3;
+   sh->regs.R[15] += 8;
    SH2SetRegisters(sh, &sh->regs);
 }
 
@@ -469,20 +665,13 @@ static void FASTCALL BiosChangeScuInterruptPriority(SH2_struct * sh)
 {
    int i;
 
+   /* Appel direct de 280H (6000280H pointe sur la copie SH-2 en 6000620H,
+      voir BiosInit()) : meme effet, la table est en Work RAM-H. */
    SH2GetRegisters(sh, &sh->regs);
 
-   // check me
-//   LOG("BiosChangeScuInterruptPriority\n");
-
    for (i = 0; i < 0x20; i++)
-   {
-      scumasklist[i] = SH2MappedMemoryReadLong(sh, sh->regs.R[4]+(i << 2));
-      sh2masklist[i] = (scumasklist[i] >> 16);
-      if (scumasklist[i] & 0x8000)
-         scumasklist[i] |= 0xFFFF0000;
-      else
-         scumasklist[i] &= 0x0000FFFF;
-   }
+      SH2MappedMemoryWriteLong(sh, BIOS_SCU_PRI_TABLE + ((0x40 + i) << 2),
+                               SH2MappedMemoryReadLong(sh, sh->regs.R[4]+(i << 2)));
 
    sh->regs.PC = sh->regs.PR;
    SH2SetRegisters(sh, &sh->regs);
@@ -1763,12 +1952,18 @@ static void FASTCALL BiosHandleScuInterrupt(SH2_struct * sh, int vector)
    sh->regs.R[15] -= 4;
    SH2MappedMemoryWriteLong(sh, sh->regs.R[15], sh->regs.GBR);
 
-   // Set SR according to vector
-   sh->regs.SR.all = (u32)sh2masklist[vector - 0x40];
+   /* SR et masque SCU du facteur : table de priorite en Work RAM-H
+      (6000980H + vecteur x 4), mot haut = SR, mot bas = masque etendu par
+      son bit 15, comme le repartiteur du boot ROM. */
+   {
+      const u32 pri = SH2MappedMemoryReadLong(sh, BIOS_SCU_PRI_TABLE + (vector << 2));
+      const u32 addmask = (u32)(s32)(s16)(pri & 0xFFFF);
+      const u32 newmask = SH2MappedMemoryReadLong(sh, 0x06000348) | addmask;
 
-   // Write new Interrupt mask value
-   SH2MappedMemoryWriteLong(sh, 0x06000348, SH2MappedMemoryReadLong(sh, 0x06000348) | scumasklist[vector - 0x40]);
-   SH2MappedMemoryWriteLong(sh, 0x25FE00A0, SH2MappedMemoryReadLong(sh, 0x06000348) | scumasklist[vector - 0x40]);
+      sh->regs.SR.all = pri >> 16;
+      SH2MappedMemoryWriteLong(sh, 0x06000348, newmask);
+      SH2MappedMemoryWriteLong(sh, 0x25FE00A0, newmask);
+   }
 
    // Set PR to our Interrupt Return handler
    sh->regs.PR = 0x00000480;
@@ -1971,6 +2166,9 @@ int FASTCALL BiosHandleFunc(SH2_struct * sh)
          break;
       case 0xA8: // 0x000004A0 : fin de SYS_CHGSYSCK (attente de la commande SMPC)
          BiosChangeSystemClockWait(sh);
+         break;
+      case 0xAA: // 0x000004A8 : NMI du maitre
+         BiosNmi(sh);
          break;
       default:
          return 0;
