@@ -108,7 +108,10 @@ static const char * const SH2CacheDBList[] = {
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
    "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
+   "T-27807G", //Yuukyuu Gensoukyoku 2nd Album (Japan)
    "T-27808G", // Yuukyuu Gensoukyoku ensemble
+   "T-27809G", // Yuukyuu Gensoukyoku ensemble 2
+   "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
    "MK-81005",   // Virtua Fighter (USA)
@@ -167,7 +170,10 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-7645G", // Ishin no Arashi
    "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
    "T-9109G", // Moon Cradle
+   "T-27807G", //Yuukyuu Gensoukyoku 2nd Album (Japan)
    "T-27808G", // Yuukyuu Gensoukyoku ensemble
+   "T-27809G", // Yuukyuu Gensoukyoku ensemble 2
+   "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
    "T-31501G", // Vatlva
    "T-9103G", // Wangan Dead Heat + Real Arrange
    NULL
