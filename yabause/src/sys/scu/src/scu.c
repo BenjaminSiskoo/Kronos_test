@@ -108,6 +108,7 @@ scubp_struct * ScuBP;
 static int incFlg[4] = { 0 };
 static void ScuTestInterruptMask(u8 id);
 static void ScuTestAllInterrupt();
+static void ScuWithdrawInterrupt(void);
 
 static u8 accessCPUBus;
 static u8 accessVdp1Ram;
@@ -3076,11 +3077,9 @@ struct intCtrl ScuInterrupt[30] = {
 static void ScuWriteISTPartial(u32 val, u32 lanemask)
 {
    u32 keep = val | ~lanemask;
-   if (needEvaluate != 0) {
-     ScuTestAllInterrupt();
-   }
    ScuRegs->IST &= keep;
    ScuRegs->ITEdge &= keep;
+   ScuWithdrawInterrupt();
    needEvaluate = 1;
 }
 
@@ -3320,25 +3319,29 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
       case 0x98:
          ScuRegs->T1MD = val;
          break;
+      /* IMS / IST : la demande presentee au maitre est recalculee APRES
+         l'ecriture. Avant, ScuTestAllInterrupt() tournait d'abord, avec le
+         masque deja ecrit et l'etat pas encore efface : une source tout
+         juste demasquee etait presentee au CPU au moment meme ou son bit IST
+         etait efface, et la demande n'etait jamais retiree (la fin de DMA0
+         en attente de Sol Divide partait apres SYS_CHGSCUIM, BIOS reel comme
+         BIOS emule). Sur la console, la demande du SCU est (IST & ~IMS) : un
+         facteur masque ou dont le bit IST est efface n'est plus demande
+         (ScuWithdrawInterrupt()). */
       case 0xA0:
-         //remove Interrupt which were not maked but masked now
-         if (needEvaluate != 0) {
-           ScuTestAllInterrupt();
-         }
          ScuRegs->IMS = val;
+         ScuWithdrawInterrupt();
          needEvaluate = 1;
          break;
       case 0xA4:
-         //remove Interrupt which occured and for which status has been cleared
-         if (needEvaluate != 0) {
-           ScuTestAllInterrupt();
-         }
          ScuRegs->IST &= val;
          ScuRegs->ITEdge &= val;
+         ScuWithdrawInterrupt();
          needEvaluate = 1;
          break;
       case 0xA8:
          ScuRegs->AIACK = val;
+         ScuWithdrawInterrupt();
          needEvaluate = 1;
          break;
       case 0xB0:
@@ -3460,6 +3463,35 @@ static void ScuTestInterruptMask(u8 i)
        if ((currentInterrupt == HBLANK_IN) && (yabsys.IsSSH2Running)) SH2IntcSetIrl(SSH2, 2, 0x41);
      }
    }
+}
+
+/* La source verrouillee (presentee au maitre, pas encore prise) n'est plus
+ * demandee : son front a ete efface (ecriture de IST) ou elle est masquee
+ * (IMS, A-Bus : AIACK et IMS bit 15). Le verrou est libere et la ligne IRL
+ * du maitre retombe ; ScuTestAllInterrupt() presentera ensuite la source
+ * suivante. Une source deja prise par le CPU n'est plus verrouillee
+ * (ScuAcceptInterrupt()), elle n'est pas concernee.
+ *
+ * L'esclave n'est pas touche : ses V-Blank IN / H-Blank IN viennent du VDP2
+ * et non du SCU (STTECH28 2.3). */
+static void ScuWithdrawInterrupt(void)
+{
+  u32 mask, status;
+  int requested;
+  if (currentInterrupt >= (sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])))
+    return;
+  mask = ScuInterrupt[currentInterrupt].mask;
+  status = ScuInterrupt[currentInterrupt].status;
+  requested = (ScuRegs->ITEdge & status) != 0;
+  if (requested) {
+    if (mask == 0x8000)
+      requested = (ScuRegs->AIACK != 0) && !(ScuRegs->IMS & 0x8000);
+    else
+      requested = !(ScuRegs->IMS & mask);
+  }
+  if (requested) return;
+  currentInterrupt = 0xFF;
+  SH2IntcWithdrawIrl(MSH2);
 }
 
 static void ScuTestAllInterrupt()
