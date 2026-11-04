@@ -94,6 +94,24 @@ void SH2InterruptDeferred(SH2_struct *sh)
   if (sh == MSH2) SH2ScuAckPending[0] = 0;
 }
 
+/* Retrait de la demande IRL du SCU avant sa prise (voir
+   ScuWithdrawInterrupt() dans scu.c). Sur le maitre, les lignes IRL ne
+   viennent que du SCU : la ligne retombe, et une interruption SCU deja
+   reservee par SH2EvaluateInterrupt() mais pas encore prise
+   (SH2ScuAckPending) est annulee, comme si la demande n'avait jamais ete
+   echantillonnee. Une reservation d'une source interne (DIVU, DMAC, WDT,
+   FRT, SCI) n'est pas touchee. */
+void SH2IntcWithdrawIrl(SH2_struct *sh)
+{
+  sh->intc.irl = 0;
+  if ((sh == MSH2) && SH2ScuAckPending[0]) {
+    SH2ScuAckPending[0] = 0;
+    sh->intPriority = 0;
+    sh->intVector = 0xFF;
+    SH2EvaluateInterrupt(sh);   /* une source interne peut maintenant passer */
+  }
+}
+
 void SH2IntcSetNmi(SH2_struct *sh)
 {
   sh->intc.nmi = 0x1;
