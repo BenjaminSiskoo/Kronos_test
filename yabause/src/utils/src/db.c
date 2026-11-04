@@ -95,6 +95,7 @@ static GameDB GameDBList[NB_GAMES_DB] = {
    regresserait avec le cache emule doit en etre retire. */
 static const char * const SH2CacheDBList[] = {
    // verifie dans Kronos
+   "T-38001G", // Another Memories (Japan)
    "191x76", // Astal (Brazil)
    "MK-81019", // Astal (USA)
    "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
@@ -102,18 +103,19 @@ static const char * const SH2CacheDBList[] = {
    "T-26408G", // Fully Cowled Mini Yonku - Super Factory (Japan)
    "T-22303G", // Ginga Eiyuu Densetsu Plus (Japan)
    "T-7645G", // Ishin no Arashi (Japan)
-   "T-14101G", // Kamen Rider - Sakusen File 1
+   "T-14101G", // Kamen Rider - Sakusen File 1 (Japan)
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
    "T-1525G", // Photo Genic (Japan)
    "T-30812G", // Shutsudou! Miniskirt Police (Japan)
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
-   "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
+   "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo (Japan)
    "T-27807G", //Yuukyuu Gensoukyoku 2nd Album (Japan)
-   "T-27808G", // Yuukyuu Gensoukyoku ensemble
-   "T-27809G", // Yuukyuu Gensoukyoku ensemble 2
+   "T-27808G", // Yuukyuu Gensoukyoku ensemble (Japan)
+   "T-27809G", // Yuukyuu Gensoukyoku ensemble 2 (Japan)
    "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
+   "T-21401G", // Zero4 Champ DooZy-J Type-R (Japan)
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
    "MK-81005",   // Virtua Fighter (USA)
@@ -167,13 +169,16 @@ static const char * const SH2CacheDBList[] = {
    B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
    jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
 static const char * const SH2LegacyFetchDBList[] = {
+   "T-38001G", // Another Memories (Japan)
    "T-10310G", // DX Jinsei Game II
+   "T-27810G", // Device Reign (Japan)
    "T-22303G", // Ginga Eiyuu Densetsu Plus
    "T-7645G", // Ishin no Arashi
    "T-14101G", // Kamen Rider - Sakusen File 1
    "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
    "6106777", // Machi (Japan)
-   "T-9109G", // Moon Cradle
+   "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
+   "T-9109G", // Moon Cradle (Japan)
    "T-30002G", // Real Sound - Kaze no Regret (Japan)
    "T-30812G", // Shutsudou! Miniskirt Police (Japan)
    "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
@@ -184,6 +189,7 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
    "T-31501G", // Vatlva
    "T-9103G", // Wangan Dead Heat + Real Arrange
+   "T-21401G", // Zero4 Champ DooZy-J Type-R (Japan)
    NULL
 };
 
