@@ -102,9 +102,11 @@ static const char * const SH2CacheDBList[] = {
    "T-26408G", // Fully Cowled Mini Yonku - Super Factory (Japan)
    "T-22303G", // Ginga Eiyuu Densetsu Plus (Japan)
    "T-7645G", // Ishin no Arashi (Japan)
+   "T-14101G", // Kamen Rider - Sakusen File 1
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
    "T-1525G", // Photo Genic (Japan)
+   "T-30812G", // Shutsudou! Miniskirt Police (Japan)
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
    "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
@@ -168,8 +170,14 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-10310G", // DX Jinsei Game II
    "T-22303G", // Ginga Eiyuu Densetsu Plus
    "T-7645G", // Ishin no Arashi
+   "T-14101G", // Kamen Rider - Sakusen File 1
    "T-340", // Machi (Japan) (Demo) (1M)(2M)(4M)
+   "6106777", // Machi (Japan)
    "T-9109G", // Moon Cradle
+   "T-30002G", // Real Sound - Kaze no Regret (Japan)
+   "T-30812G", // Shutsudou! Miniskirt Police (Japan)
+   "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
+   "T-27804G", // Yuukyuu Gensoukyoku (Japan)
    "T-27807G", //Yuukyuu Gensoukyoku 2nd Album (Japan)
    "T-27808G", // Yuukyuu Gensoukyoku ensemble
    "T-27809G", // Yuukyuu Gensoukyoku ensemble 2
