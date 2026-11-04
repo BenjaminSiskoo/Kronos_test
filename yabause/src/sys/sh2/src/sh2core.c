@@ -1482,6 +1482,13 @@ void OnchipReset(SH2_struct *context) {
    context->onchip.RSTCSR = 0x1F;
    context->onchip.SBYCR = 0x60;
    context->onchip.CCR = 0x00;
+   /* CCR = 00H apres le reset (SH7604 Hardware Manual 8.2) : le cache est
+      inactif. cacheOn n'est mis a jour que par une ecriture de CCR
+      (enableCache()/disableCache()) ; il gardait sa valeur d'avant le reset
+      (SSHOFF, reset de l'esclave par CKCHG, changement de jeu) : avec
+      l'emulation du cache, le CPU continuait a lire par le cache alors que
+      CCR.CE = 0. */
+   disableCache(context);
    context->onchip.ICR = 0x0000;
    context->onchip.IPRA = 0x0000;
    context->onchip.VCRWDT = 0x0000;
