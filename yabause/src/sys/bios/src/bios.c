@@ -69,7 +69,8 @@ void FASTCALL BiosBUPRead(SH2_struct * sh);
 //////////////////////////////////////////////////////////////////////////////
 
 
-/* Table des vecteurs de la ROM du BIOS (00000000H-000000FFH) du BIOS emule.
+/* Table des vecteurs de la ROM du BIOS (00000000H-000000FFH) du BIOS emule,
+   et pointeurs de la ROM lus par certains jeux (voir la fin de la fonction).
 
    Le BIOS emule n'a pas de ROM : BiosRom est rempli de 0, sauf le pointeur
    de pile (4H). Les jeux n'executent rien dans la ROM, mais certains la
@@ -97,6 +98,25 @@ void BiosInitRomVectors(u8 *rom)
       else if (i == 11) v = 0x20000534;
       T2WriteLong(rom, i << 2, v);
    }
+
+   /* Pointeurs de la ROM en 5E4H, 5E8H et 5ECH : routines internes du boot
+      ROM qui affichent l'ecran de licence ("PRODUCED BY or UNDER LICENSE
+      FROM SEGA ENTERPRISES,LTD.") : 5E4H prepare la police et le VDP2, 5E8H
+      ecrit les deux lignes de texte en VRAM du VDP2 (lu dans la ROM du BIOS
+      v1.01 : 50EAH, 511CH et 5208H). Elles ne sont dans aucun document du
+      workspace et le BIOS emule n'a ni ces routines ni la police.
+
+      Flash Sega Saturn Vol. 1 (SG0000000) : son programme de lancement des
+      demos (06002000H) les appelle par ces pointeurs (mov.w #5E4H / mov.l
+      @r2 / jsr @r2, 06002144H) avant de sauter dans la demo en 00200000H.
+      Avec la ROM vide, le pointeur valait 0 : appel en 00000000H, exception
+      et boucle en 0600060AH, ecran noir. Ils pointent ici sur un retour
+      immediat (5F0H : rts / nop) : l'ecran de licence n'est pas dessine (le
+      BIOS emule ne l'affiche pas non plus au demarrage), la demo part. */
+   T2WriteLong(rom, 0x5F0, 0x000B0009);   /* rts ; nop */
+   T2WriteLong(rom, 0x5E4, 0x000005F0);
+   T2WriteLong(rom, 0x5E8, 0x000005F0);
+   T2WriteLong(rom, 0x5EC, 0x000005F0);
 }
 
 //////////////////////////////////////////////////////////////////////////////
