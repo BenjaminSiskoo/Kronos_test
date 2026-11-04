@@ -354,10 +354,28 @@ static void FASTCALL UnhandledMemoryWriteLong(SH2_struct *context, UNUSED u8* me
 /* Modele de temps des acces du SH-2 (voir SH2ExtBusCost() plus bas).
    KRONOS_NO_BUS_COST retablit l'ancien comportement sans recompiler. */
 static int sh2BusCostOn = -1;
+/* Jeux de SH2LegacyFetchDBList (utils/src/db.c) : ancien temps d'acces
+   complet, fetch ET acces au bus (SH2SetLegacyFetchTiming()). Ces jeux
+   avaient ete ramenes a l'ancien cout du fetch parce que leur course entre
+   maitre et esclave suppose que l'esclave n'est pas freine par rapport au
+   maitre ; le modele des acces (ecritures Work RAM-H a 2 cycles + 2 cycles
+   d'occupation, registres SCU, B-Bus), ajoute ensuite pour Photo Genic,
+   freinait a nouveau l'esclave et les recassait.
+
+   Ishin no Arashi (T-7645G) et Yuukyuu Gensoukyoku Ensemble (T-27808G) :
+   la commande d'initialisation 08H de l'esclave ecrit ses tables (3072
+   ecritures d'un octet, 060EF138-060EFD37) par-dessus la file de travaux
+   qui commence en 060EF538. Avec le cout des ecritures, l'esclave arrivait
+   en 060EF550 deux lignes apres que le maitre y a mis la fin de trame
+   (2CH) et l'ecrasait : la file etait relue comme une nouvelle commande
+   08H, la liste VDP1 n'etait plus construite, ecran noir (BIOS emule et
+   BIOS reel). Le jeu marchait avec Kronos 2.8.0 et marche avec
+   KRONOS_NO_BUS_COST=1. */
+static int SH2LegacyBusTiming = 0;
 static INLINE int SH2BusCostEnabled(void)
 {
    if (sh2BusCostOn < 0) sh2BusCostOn = (getenv("KRONOS_NO_BUS_COST") == NULL);
-   return sh2BusCostOn;
+   return sh2BusCostOn && !SH2LegacyBusTiming;
 }
 
 /* Ecriture du SH-2 en Work RAM-H (SDRAM, CS3, bus de 32 bits).
@@ -1456,10 +1474,12 @@ static void SH2FetchCachePurgeLine(SH2_struct *context, u32 addr)
          SH2FetchCacheTag[cpu][(addr >> 4) & 0x3F][w] = 0xFFFFFFFF;
 }
 
-/* Jeu de la liste SH2LegacyFetchDBList : ancien cout du fetch. */
+/* Jeu de la liste SH2LegacyFetchDBList : ancien cout du fetch et ancien
+   cout des acces au bus (voir SH2BusCostEnabled()). */
 void SH2SetLegacyFetchTiming(int on)
 {
    SH2LegacyFetchTiming = on;
+   SH2LegacyBusTiming = on;
 }
 
 /* Acces au modele : 1 = succes (LRU mis a jour), 0 = defaut. Sur un
