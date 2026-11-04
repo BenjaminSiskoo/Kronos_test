@@ -375,17 +375,11 @@ static void BiosWriteScuMask(SH2_struct * sh, u32 mask, u32 istval)
 {
    const u32 v = (u32)(s32)(s16)(istval & 0xFFFF);
 
-   /* Le boot ROM ecrit IMS puis IST, SR a F0H : aucune interruption ne peut
-      etre prise entre les deux, et une demande effacee dans IST disparait.
-      Le SCU de Kronos, lui, presente au CPU une demande devenue demasquee des
-      l'ecriture suivante d'un de ses registres (ScuTestAllInterrupt() au
-      debut de l'ecriture de IST, avant l'effacement) et ne la retire plus :
-      dans cet ordre, la fin de DMA0 en attente de Sol Divide partait quand
-      meme. IST est donc ecrit avant IMS ; l'etat final est le meme que sur
-      la console. */
+   /* Meme ordre que le boot ROM (IMS puis IST). Le SCU retire une demande
+      dont le bit IST est efface (ScuWithdrawInterrupt(), scu.c). */
    SH2MappedMemoryWriteLong(sh, 0x06000348, mask);
-   SH2MappedMemoryWriteLong(sh, 0x25FE00A4, v);    // Interrupt Status Register
    SH2MappedMemoryWriteLong(sh, 0x25FE00A0, mask); // Interrupt Mask Register
+   SH2MappedMemoryWriteLong(sh, 0x25FE00A4, v);    // Interrupt Status Register
    if (!(v & 0x8000))
       SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
 }
