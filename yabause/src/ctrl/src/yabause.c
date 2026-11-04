@@ -542,7 +542,7 @@ static void YabauseApplyTimingDBForCode(const char *game_code)
    legacy = DBLookupLegacySH2FetchTimingForCode(game_code);
    SH2SetLegacyFetchTiming(legacy);
    if (legacy)
-      YuiMsg("SH2 legacy instruction fetch timing for this game (game database)\n");
+      YuiMsg("SH2 legacy instruction fetch and bus access timing for this game (game database)\n");
    legacy = DBLookupLegacySmpcIntbackTimingForCode(game_code);
    SmpcSetLegacyIntbackTiming(legacy);
    if (legacy)
@@ -753,6 +753,7 @@ TRACE_EMULATOR("YabauseInit");
 	   else {
 		   yabsys.emulatebios = 1;
        T2WriteLong(BiosRom, 0x04, 0x06002000); // set base stack pointer
+       BiosInitRomVectors(BiosRom); // table des vecteurs de la ROM (lectures des jeux)
      }
    }
    else yabsys.emulatebios = 0;
@@ -843,6 +844,7 @@ static int YabauseRefreshInit(yabauseinit_struct *init) {
     else {
       yabsys.emulatebios = 1;
       T2WriteLong(BiosRom, 0x04, 0x06002000); // set base stack pointer
+      BiosInitRomVectors(BiosRom); // table des vecteurs de la ROM (lectures des jeux)
     }
   }
   else {
@@ -1331,7 +1333,7 @@ void YabauseStartSlave(void) {
 
       SH2MappedMemoryWriteWord(SSH2, 0xFFFFFEE0, 0x0000); // ICR
       SH2MappedMemoryWriteWord(SSH2, 0xFFFFFEE2, 0x0000); // IPRA
-      SH2MappedMemoryWriteWord(SSH2, 0xFFFFFE60, 0x0F00); // VCRWDT
+      SH2MappedMemoryWriteWord(SSH2, 0xFFFFFE60, 0x0F00); // IPRB : FRT niveau 15
       SH2MappedMemoryWriteWord(SSH2, 0xFFFFFE62, 0x6061); // VCRA
       SH2MappedMemoryWriteWord(SSH2, 0xFFFFFE64, 0x6263); // VCRB
       SH2MappedMemoryWriteWord(SSH2, 0xFFFFFE66, 0x6465); // VCRC
@@ -1340,7 +1342,37 @@ void YabauseStartSlave(void) {
       SH2MappedMemoryWriteLong(SSH2, 0xFFFFFFA8, 0x0000006C); // VCRDMA1
       SH2MappedMemoryWriteLong(SSH2, 0xFFFFFFA0, 0x0000006D); // VCRDMA0
       SH2MappedMemoryWriteLong(SSH2, 0xFFFFFF0C, 0x0000006E); // VCRDIV
-      SH2MappedMemoryWriteLong(SSH2, 0xFFFFFE10, 0x00000081); // TIER
+      /* TIER est un registre 8 bits (SH7604 Hardware Manual 11.2.4 et
+         annexe A) : ICIE = 1 (capture d'entree FRT, ST-202 4.4), bit 0
+         toujours a 1. Il etait ecrit en acces long en FFFFFE10, ce qui
+         touche aussi FTCSR, FRCH et FRCL sur la console. */
+      SH2MappedMemoryWriteByte(SSH2, 0xFFFFFE10, 0x81); // TIER
+
+      /* Cache de l'esclave purge puis active (CCR = 10H puis 01H, sequence
+         de ST-TECH-28 6.2 (1) et du SH7604 Hardware Manual, chapitre 8),
+         comme pour le maitre au lancement du jeu (YAB_ENABLE_MSH2_CACHE_AT_BOOT).
+         Apres le reset, CCR = 00H (SH7604 Hardware Manual 8.2) : sans cela l'esclave executait le code du
+         jeu cache inactif, chaque lecture d'instruction allant en Work RAM-H,
+         plusieurs fois plus lentement que sur la console.
+
+         Ishin no Arashi (T-7645G) et Yuukyuu Gensoukyoku Ensemble (T-27808G),
+         ecran noir au premier lancement : la commande 08H de l'esclave
+         (initialisation, 060583D2) construit trois tables de 400H octets a
+         partir de 060EF138 (0605833E) ; elles debordent sur la file
+         maitre->esclave qui commence en 060EF538. Le maitre y ecrit la trame
+         suivante (30H, 0, 4, puis 2CH en 260EF550) une ligne apres l'envoi de
+         la commande 08H. Cache inactif, l'esclave n'avait pas encore ecrit la
+         premiere ligne de ses tables : il ecrasait la file apres le maitre,
+         la commande 2CH devenait 08090A0BH, relue comme une nouvelle
+         commande 08H au premier retour au debut de la file ; la
+         reinitialisation ecrasait les commandes suivantes, la commande 4
+         (liste VDP1, pose 060FFCA8) n'etait plus jamais executee et le
+         maitre attendait l'image en 0604C394. Le jeu ne passait qu'en le
+         lancant apres un autre jeu du meme moteur, l'esclave ayant garde son
+         cache actif. ST-202 et ST-TECH-28 (4.4) ne donnent pas CCR pour
+         l'esclave ; la valeur se deduit du temps que le jeu suppose. */
+      OnchipWriteByte(SSH2, 0x092, 0x10); // CCR : CP = 1 (purge)
+      OnchipWriteByte(SSH2, 0x092, 0x01); // CCR : CE = 1 (cache actif, 4 voies)
 
       SH2GetRegisters(SSH2, &SSH2->regs);
       SSH2->regs.R[15] = Cs2GetSlaveStackAdress();
@@ -1809,8 +1841,29 @@ int YabauseQuickLoadGame(void)
 
       // Now setup SH2 registers to start executing at ip code
       SH2GetRegisters(MSH2, &MSH2->regs);
-      MSH2->onchip.VCRC = 0x64 << 8;
+      /* Numeros de vecteur des modules integres du SH-2 maitre, tels que
+         le boot ROM les laisse : Saturn System Library User's Guide
+         (ST-162-R1, "Master SH2 Vector Initial Settings") :
+            60H-63H SCI, 64H FRT capture d'entree, 65H FRT comparaison,
+            66H FRT debordement, 68H WDT, 69H BSC, 6CH DMAC voie 1,
+            6DH DMAC voie 0, 6EH DIVU.
+         Seuls VCRC (capture 64H, mais comparaison a 0) et VCRWDT etaient
+         poses : un jeu qui utilise la comparaison du FRT, la DMAC ou le DIVU
+         par interruption recevait le vecteur 0 (entree 6000000H de la table,
+         le rte par defaut de BiosInit) au lieu de son gestionnaire.
+         Double Switch (T-16207H) installe son gestionnaire en 65H
+         (SYS_SETSINT) ; il n'etait jamais appele, le compteur qu'il
+         incremente (06047D50) restait a 0 et le maitre l'attendait sans fin
+         en 06011792 (ecran noir). L'esclave recoit deja ces valeurs dans
+         YabauseStartSlave(). */
+      MSH2->onchip.VCRA = 0x6061;
+      MSH2->onchip.VCRB = 0x6263;
+      MSH2->onchip.VCRC = 0x6465;
+      MSH2->onchip.VCRD = 0x6600;
       MSH2->onchip.VCRWDT = 0x6869;
+      MSH2->onchip.VCRDMA0 = 0x6D;
+      MSH2->onchip.VCRDMA1 = 0x6C;
+      MSH2->onchip.VCRDIV = 0x6E;
       MSH2->onchip.IPRB = 0x0F00;
       /* ICR.VECMD (bit 0) : 0 = auto-vecteur, 1 = vecteur fourni par le
          peripherique externe. Sur Saturn c'est le SCU qui presente le numero
