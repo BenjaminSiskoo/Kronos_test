@@ -63,6 +63,7 @@ typedef struct
 } devicestatus_struct;
 
 void BiosInit(SH2_struct *context);
+void BiosInitRomVectors(u8 *rom);
 int FASTCALL BiosHandleFunc(SH2_struct * sh);
 
 deviceinfo_struct *BupGetDeviceList(int *numdevices);
