@@ -121,7 +121,11 @@ static const char * const SH2CacheDBList[] = {
 
 /* Jeux qui gardent l'ancien cout du fetch d'instruction sans emulation du
    cache (voir SH2FetchWord() dans memory.c) : chaque fetch en Work RAM paie
-   un changement de rangee DRAM, rangee partagee avec les donnees.
+   un changement de rangee DRAM, rangee partagee avec les donnees. Ils
+   gardent aussi l'ancien cout des acces au bus (SH2BusCostEnabled() dans
+   memory.c : ecritures Work RAM-H, registres SCU, B-Bus), ajoute apres
+   cette liste et qui recassait Ishin no Arashi et Yuukyuu Gensoukyoku
+   Ensemble (voir memory.c).
 
    Space Jam : l'ordonnanceur de taches du jeu (06020242) lit EXTEN puis
    VCNT au debut de chaque trame et en deduit le temps deja ecoule
