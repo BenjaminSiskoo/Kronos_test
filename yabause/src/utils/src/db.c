@@ -108,6 +108,7 @@ static const char * const SH2CacheDBList[] = {
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
    "T-32508G", // Tilk ~Aoi Umi kara Kita Shoujo
+   "T-27808G", // Yuukyuu Gensoukyoku ensemble
    // Mednafen CPUCACHE_EMUMODE_FULL
    "GS-9001",    // Virtua Fighter (Japan)
    "MK-81005",   // Virtua Fighter (USA)
