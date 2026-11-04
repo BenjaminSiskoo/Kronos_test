@@ -449,6 +449,9 @@ void SH2EvaluateInterrupt(SH2_struct *sh);
    (acquitte le SCU) ou remise en attente (SR.I releve entre-temps). */
 void SH2InterruptTaken(SH2_struct *sh);
 void SH2InterruptDeferred(SH2_struct *sh);
+/* Le SCU retire sa demande IRL au maitre avant qu'elle soit prise (bit IST
+   efface ou facteur masque). */
+void SH2IntcWithdrawIrl(SH2_struct *sh);
 
 typedef struct SH2_struct_s
 {
