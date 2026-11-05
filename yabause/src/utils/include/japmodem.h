@@ -20,6 +20,9 @@
 #ifndef JAPMODEM_H
 #define JAPMODEM_H
 
+#include "core.h"
+#include "sh2core.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
