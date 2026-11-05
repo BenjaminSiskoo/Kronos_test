@@ -2015,6 +2015,20 @@ static void FASTCALL BiosHandleScuInterruptReturn(SH2_struct * sh)
    oldmask = SH2MappedMemoryReadLong(sh, sh->regs.R[15]);
    SH2MappedMemoryWriteLong(sh, 0x06000348, oldmask);
    SH2MappedMemoryWriteLong(sh, 0x25FE00A0, oldmask);
+   /* Le SCU remet AIACK a 0 quand une interruption A-Bus est prise
+      (ST-097-R5, 3.6 ; ScuABusAcknowledgeCycle(), scu.c) et les
+      interruptions A-Bus restent sans effet jusqu'a ce qu'on y ecrive 1.
+      ST-162 (Saturn System Library User's Guide, routine d'interruption SCU
+      et 2.1/2.2) : apres avoir pose ou change le masque SCU, le boot ROM
+      reecrit si necessaire le registre d'acquittement A-Bus, c'est-a-dire
+      quand le masque autorise l'A-Bus (bit 15 a 0), comme SYS_SETSCUIM /
+      SYS_CHGSCUIM (BiosWriteScuMask()). Sans cela, avec le BIOS emule, la
+      premiere interruption du bloc CD (externe 0) ou du NetLink (externe 12)
+      servie par ce repartiteur bloquait toutes les suivantes. Le registre
+      n'est pas reecrit a l'entree : pas d'interruption A-Bus imbriquee
+      pendant le gestionnaire. */
+   if (!(oldmask & 0x8000))
+      SH2MappedMemoryWriteLong(sh, 0x25FE00A8, 1); // A-bus Interrupt Acknowledge
    sh->regs.R[15] += 4;
    sh->regs.R[3] = SH2MappedMemoryReadLong(sh, sh->regs.R[15]);
    sh->regs.R[15] += 4;
