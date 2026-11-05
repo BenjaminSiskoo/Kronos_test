@@ -1769,6 +1769,14 @@ int CartInit(const char * filename, int type)
          CartridgeArea->cartid = 0xFF;
          CartridgeArea->Cs2ReadByte = &NetlinkReadByte;
          CartridgeArea->Cs2WriteByte = &NetlinkWriteByte;
+
+         // The modem/UART state and the network thread live with the
+         // cartridge (the old hooks in cs2.c were disabled and keyed on
+         // Cs2Area->carttype, which is never set: NetlinkArea stayed NULL
+         // and the first access to the UART dereferenced it). The address
+         // and port come from NetlinkSetConfig() (yabause.c). A network
+         // failure is not fatal: the modem still answers AT commands.
+         NetlinkInit(NULL, NULL);
          break;
       }
       case CART_MPEGCARD: // Video CD Card / MPEG Card
@@ -1835,6 +1843,8 @@ int CartInit(const char * filename, int type)
 
          CartridgeArea->Cs2ReadByte = &JapModemCs2ReadByte;
          CartridgeArea->Cs2WriteByte = &JapModemCs2WriteByte;
+
+         JapModemInit(NULL, NULL);
          break;
       }
       case CART_USBDEV: // USB Dev Cartridge
@@ -1964,6 +1974,12 @@ void CartDeInit(void)
 {
    if (CartridgeArea)
    {
+      // Stops the network thread and closes the sockets
+      if (CartridgeArea->carttype == CART_NETLINK)
+         NetlinkDeInit();
+      else if (CartridgeArea->carttype == CART_JAPMODEM)
+         JapModemDeInit();
+
       if (CartridgeArea->carttype == CART_PAR)
       {
          if (CartridgeArea->rom)
