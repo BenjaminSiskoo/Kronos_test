@@ -53,6 +53,7 @@
 #include "osdcore.h"
 #include "stv.h"
 #include "db.h"
+#include "netlink.h"
 
 #ifdef HAVE_LIBSDL
 #if defined(__APPLE__) || defined(GEKKO)
@@ -454,6 +455,8 @@ int YabauseSh2Init(yabauseinit_struct *init)
 
    BackupInit(init->buppath, init->extend_backup);
 
+   // NetLink modem: address/port to dial and TCP port to listen on
+   NetlinkSetConfig(init->modemip, init->modemport);
    if (CartInit(init->cartpath, init->carttype) != 0)
    {
       YabSetError(YAB_ERR_CANNOTINIT, _("Cartridge"));
@@ -639,6 +642,8 @@ TRACE_EMULATOR("YabauseInit");
    // Some games need the SH2 cache emulation whatever the user setting is
    YabauseApplySH2CacheDB(init);
 
+   // NetLink modem: address/port to dial and TCP port to listen on
+   NetlinkSetConfig(init->modemip, init->modemport);
    if (CartInit(init->cartpath, init->carttype) != 0)
    {
       YabSetError(YAB_ERR_CANNOTINIT, _("Cartridge"));
@@ -815,6 +820,8 @@ static int YabauseRefreshInit(yabauseinit_struct *init) {
 
   YabauseApplySH2CacheDB(init);
 
+  // NetLink modem: address/port to dial and TCP port to listen on
+  NetlinkSetConfig(init->modemip, init->modemport);
   if (CartInit(init->cartpath, init->carttype) != 0)
   {
      YabSetError(YAB_ERR_CANNOTINIT, _("Cartridge"));
@@ -1235,6 +1242,9 @@ int YabauseEmulate(void) {
       PROFILE_START("CDB");
       Cs2Exec(sub_us);
       PROFILE_STOP("CDB");
+      /* NetLink modem (UART timings, call progress); returns at once
+         when no NetLink cartridge is plugged in */
+      NetlinkExec(sub_us);
     }
     // }
       // printf("Deciline %d line %d\n", yabsys.DecilineCount, yabsys.LineCount);
