@@ -2916,6 +2916,12 @@ u8 FASTCALL ScuReadByte(SH2_struct *sh, u8* mem, u32 addr) {
    switch(addr) {
       case 0xA7:
          return (ScuRegs->IST & 0xFF);
+      case 0xAB: // AIACK, bits 7-0 (le registre est en lecture/ecriture)
+         return (u8)(ScuRegs->AIACK & 0x1);
+      case 0xA8:
+      case 0xA9:
+      case 0xAA:
+         return 0;
       default:
          LOG("Unhandled SCU Register byte read %08X\n", addr);
          return 0;
@@ -2928,6 +2934,14 @@ u8 FASTCALL ScuReadByte(SH2_struct *sh, u8* mem, u32 addr) {
 
 u16 FASTCALL ScuReadWord(SH2_struct *sh, u8* mem, u32 addr) {
    addr &= 0xFF;
+   switch(addr) {
+      case 0xAA: // AIACK, bits 15-0
+         return (u16)(ScuRegs->AIACK & 0x1);
+      case 0xA8:
+         return 0;
+      default:
+         break;
+   }
    LOG("Unhandled SCU Register word read %08X\n", addr);
 
    return 0;
@@ -2973,7 +2987,7 @@ u32 FASTCALL ScuReadLong(SH2_struct *sh, u8* mem, u32 addr) {
       case 0xA4:
          return ScuRegs->IST;
       case 0xA8:
-         return ScuRegs->AIACK;
+         return ScuRegs->AIACK & 0x1;
       case 0xC4:
          return ScuRegs->RSEL;
       case 0xC8:
@@ -3083,9 +3097,26 @@ static void ScuWriteISTPartial(u32 val, u32 lanemask)
    needEvaluate = 1;
 }
 
+/* Ecriture de AIACK (25FE00A8H). Seul le bit 0 existe (ST-097-R5,
+ * figure 3.23) : 1 autorise de nouveau les interruptions A-Bus, 0 les rend
+ * sans effet et retire une demande A-Bus presentee mais pas encore prise. */
+static void ScuWriteAIACK(u32 val)
+{
+   ScuRegs->AIACK = val & 0x1;
+   ScuWithdrawInterrupt();
+   needEvaluate = 1;
+}
+
 void FASTCALL ScuWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
    addr &= 0xFF;
    switch(addr) {
+      case 0xAB: // AIACK, bits 7-0 (porte le bit 0)
+         ScuWriteAIACK(val);
+         return;
+      case 0xA8:
+      case 0xA9:
+      case 0xAA: // bits 31-8 de AIACK : inexistants
+         return;
       case 0xA4:
       case 0xA5:
       case 0xA6:
@@ -3113,6 +3144,11 @@ void FASTCALL ScuWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
          ScuWriteISTPartial((u32)val << shift, 0xFFFFu << shift);
          return;
       }
+      case 0xAA: // AIACK, bits 15-0 (porte le bit 0)
+         ScuWriteAIACK(val);
+         return;
+      case 0xA8: // bits 31-16 de AIACK : inexistants
+         return;
       default:
          LOG("Unhandled SCU Register word write %08X\n", addr);
          return;
@@ -3340,9 +3376,9 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          needEvaluate = 1;
          break;
       case 0xA8:
-         ScuRegs->AIACK = val;
-         ScuWithdrawInterrupt();
-         needEvaluate = 1;
+         /* Seul le bit 0 existe : le reste de la valeur ecrite etait stocke
+            tel quel et relu ensuite. Voir ScuWriteAIACK(). */
+         ScuWriteAIACK(val);
          break;
       case 0xB0:
          ScuRegs->ASR0 = val;
@@ -3360,6 +3396,28 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          LOG("Unhandled SCU Register long write %08X\n", addr);
          break;
    }
+}
+
+/* Cycle d'acquittement A-Bus (SCU User's Manual ST-097-R5, 3.6 et table
+ * 3.9, registre AIACK 25FE00A8H, valeur initiale 0) : quand le maitre prend
+ * une interruption externe (vecteurs 50H-5FH, table 2.1), le SCU va chercher
+ * le mot de classification sur l'A-Bus et le bit AIACK retombe a 0. Les
+ * interruptions A-Bus restent alors sans effet tant que le programme
+ * n'ecrit pas de nouveau 1 dans AIACK (le boot ROM le fait dans SYS_SETSCUIM
+ * et SYS_CHGSCUIM quand le masque autorise l'A-Bus, ST-162 2.1/2.2).
+ *
+ * Kronos ne remettait jamais AIACK a 0 : apres la premiere, toute nouvelle
+ * demande A-Bus (bloc CD sur l'externe 0, NetLink sur l'externe 12) etait
+ * presentee pendant que le gestionnaire de la precedente tournait encore.
+ *
+ * Le manuel decrit UN bit commun a toutes les interruptions A-Bus ; c'est
+ * ce qui est emule. Une demande qui arrive pendant que AIACK vaut 0 n'est
+ * pas perdue : son bit IST/ITEdge reste pose et elle est presentee des que
+ * le programme reecrit 1 (ScuWriteLong, needEvaluate). */
+static INLINE void ScuABusAcknowledgeCycle(SH2_struct *sh, u8 i)
+{
+  if ((sh == MSH2) && (ScuInterrupt[i].mask == 0x8000))
+    ScuRegs->AIACK = 0;
 }
 
 void ScuAcceptInterrupt(SH2_struct *sh) {
@@ -3399,6 +3457,8 @@ void ScuAcceptInterrupt(SH2_struct *sh) {
   if (sh == MSH2)
     ScuRegs->IST &= ~ScuInterrupt[currentInterrupt].status;
 
+  ScuABusAcknowledgeCycle(sh, currentInterrupt);
+
   ScuRegs->ITEdge &= ~ScuInterrupt[currentInterrupt].status;
   currentInterrupt = 0xFF;
   needEvaluate = 1;
@@ -3423,6 +3483,9 @@ void ScuAcceptInterruptVector(SH2_struct *sh, u8 vector) {
     if (ScuInterrupt[i].vector != vector) continue;
     if ((sh == MSH2) && (currentInterrupt == i))
       ScuRegs->IST &= ~ScuInterrupt[i].status;
+    /* Le vecteur d'une source A-Bus a ete lu sur le bus : cycle
+       d'acquittement, AIACK retombe (voir ScuABusAcknowledgeCycle()). */
+    ScuABusAcknowledgeCycle(sh, (u8)i);
     ScuRegs->ITEdge &= ~ScuInterrupt[i].status;
     if (currentInterrupt == i) currentInterrupt = 0xFF;
     needEvaluate = 1;
@@ -3973,6 +4036,10 @@ void ScuPostLoadState(void)
 
    currentInterrupt = 0xFF;
    needEvaluate = 1;
+
+   /* Etats sauves avant la correction de AIACK : la valeur ecrite y etait
+      stockee entiere. Seul le bit 0 existe (ST-097-R5, figure 3.23). */
+   ScuRegs->AIACK &= 0x1;
 
    accessCPUBus = 0;
    accessVdp1Ram = 0;
