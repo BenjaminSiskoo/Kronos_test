@@ -273,15 +273,75 @@ static opcode_func* cacheCode[2][9] = {
   }
 };
 
+/* Peripheriques de sauvegarde et bibliotheque BIOS reelle.
+ *
+ * Au retour de BUP_Init, BUPInstallHooks() remplace les 10 points d'entree
+ * de la table de la bibliotheque (BUP_SelPart ... BUP_SetDate, ST-162) par
+ * l'emulation HLE de bios.c. Cette emulation ne connait que les
+ * peripheriques 0 (memoire interne) et 1 (cartouche). Le peripherique 2
+ * (port serie : lecteur de disquette HSS-0128, voir commfdd.c) n'existe que
+ * dans la vraie bibliotheque, qui le detecte pendant BUP_Init par le SCI.
+ * Toutes les operations sur ce peripherique etaient donc traitees par la
+ * HLE, qui l'ignore : la copie vers "External Device 1" depuis le
+ * gestionnaire de memoire / FDD Operator echouait ("No room for item"),
+ * sans aucun echange sur le port serie apres BUP_Init.
+ *
+ * Les fonctions qui recoivent un numero de peripherique (R4, toutes sauf
+ * BUP_GetDate / BUP_SetDate) sont maintenant transmises a la vraie
+ * bibliotheque en Work RAM quand ce numero est >= 2 : l'instruction du point
+ * d'entree est executee normalement et le crochet reste en place. La
+ * bibliotheque s'appelle elle-meme par ces points d'entree (BUP_Stat depuis
+ * BUP_Format / BUP_Write / BUP_Read, BUP_Dir depuis BUP_Write) avec le
+ * numero de peripherique en R4 : ces appels internes restent dans la vraie
+ * bibliotheque. Avec le BIOS HLE (points d'entree dans la zone BIOS) il n'y
+ * a pas de bibliotheque reelle : rien n'est transmis. */
+static int BUPForwardToLibrary(SH2_struct *context)
+{
+  int id;
+  u16 opcode;
+
+  if (context->regs.R[4] < 2) return 0;
+  if ((context->regs.PC & 0x1FF00000) == 0) return 0;
+
+  LOG_BUP("BUP device %d @0x%08X -> bibliotheque BIOS (PR=0x%08X)\n",
+          context->regs.R[4], context->regs.PC, context->regs.PR);
+
+  id = (context->regs.PC >> 20) & 0xFFF;
+  opcode = krfetchlist[id](context, context->regs.PC);
+  context->instruction = opcode;
+  if (SH2Core->id == SH2CORE_KRONOS_DEBUG_INTERPRETER) {
+    SH2HandleBackTrace(context);
+    SH2HandleStepOverOut(context);
+    SH2HandleTrackInfLoop(context);
+  }
+  opcodeTable[opcode](context);
+  return 1;
+}
+
+#define BUP_DEVICE_HOOK(name, hle) \
+  static void name(SH2_struct *context) { \
+    if (BUPForwardToLibrary(context)) return; \
+    hle(context); \
+  }
+
+BUP_DEVICE_HOOK(BUPHookSelectPartition, BiosBUPSelectPartition)
+BUP_DEVICE_HOOK(BUPHookFormat, BiosBUPFormat)
+BUP_DEVICE_HOOK(BUPHookStatus, BiosBUPStatus)
+BUP_DEVICE_HOOK(BUPHookWrite, BiosBUPWrite)
+BUP_DEVICE_HOOK(BUPHookRead, BiosBUPRead)
+BUP_DEVICE_HOOK(BUPHookDelete, BiosBUPDelete)
+BUP_DEVICE_HOOK(BUPHookDirectory, BiosBUPDirectory)
+BUP_DEVICE_HOOK(BUPHookVerify, BiosBUPVerify)
+
 opcode_func BUPEntries[10] = {
-  BiosBUPSelectPartition,
-  BiosBUPFormat,
-  BiosBUPStatus,
-  BiosBUPWrite,
-  BiosBUPRead,
-  BiosBUPDelete,
-  BiosBUPDirectory,
-  BiosBUPVerify,
+  BUPHookSelectPartition,
+  BUPHookFormat,
+  BUPHookStatus,
+  BUPHookWrite,
+  BUPHookRead,
+  BUPHookDelete,
+  BUPHookDirectory,
+  BUPHookVerify,
   BiosBUPGetDate,
   BiosBUPSetDate
 };
