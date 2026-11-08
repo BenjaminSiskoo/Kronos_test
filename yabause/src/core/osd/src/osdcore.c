@@ -116,15 +116,27 @@ void OSDPushMessage(int msgtype, int ttl, const char * format, ...)
    char message[1024];
 
    if (ttl == 0) return;
+   if ((msgtype < 0) || (msgtype >= OSDMSG_COUNT)) return;
 
+   /* vsnprintf : un message de plus de 1023 caracteres debordait de la pile
+      avec vsprintf. */
    va_start(arglist, format);
-   vsprintf(message, format, arglist);
+   vsnprintf(message, sizeof(message), format, arglist);
    va_end(arglist);
+
+   /* Le message precedent du meme type n'etait jamais libere quand un
+      nouveau le remplacait avant la fin de son affichage (fuite a chaque
+      message, par exemple l'OSD des FPS pousse a chaque trame). */
+   if (osdmessages[msgtype].message != NULL) {
+      free(osdmessages[msgtype].message);
+      osdmessages[msgtype].message = NULL;
+   }
 
    osdmessages[msgtype].type = msgtype;
    osdmessages[msgtype].message = strdup(message);
    osdmessages[msgtype].timetolive = ttl;
-   osdmessages[msgtype].timeleft = ttl;
+   /* sans texte, rien a afficher (DisplayMessage lirait un pointeur nul) */
+   osdmessages[msgtype].timeleft = (osdmessages[msgtype].message != NULL) ? ttl : 0;
 }
 
 int OSDDisplayMessages(pixel_t * buffer, int w, int h)
