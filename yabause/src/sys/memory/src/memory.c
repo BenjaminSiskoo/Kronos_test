@@ -2110,11 +2110,325 @@ int MappedMemoryLoad(SH2_struct *sh, const char *filename, u32 addr)
    num_read = fread((void *)buffer, 1, filesize, fp);
    fclose(fp);
 
-   for (i = 0; i < filesize; i++)
+   /* Seuls les octets reellement lus sont ecrits : une lecture incomplete
+      ecrivait la fin du tampon malloc() non initialisee en memoire. */
+   if (num_read != (size_t)filesize)
+   {
+      YabSetError(YAB_ERR_FILEREAD, filename);
+      free(buffer);
+      return -1;
+   }
+
+   for (i = 0; i < (u32)num_read; i++)
       SH2MappedMemoryWriteByte(sh, addr+i, buffer[i]);
+   SH2WriteNotify(sh, addr, (u32)num_read);
 
    free(buffer);
 
+   return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Executables CPE (SN Systems / Cross Products, "PsyQ" pour SH-2)
+ *
+ * Aucune documentation Sega du workspace ne decrit ce format : c'est celui de
+ * l'editeur de liens SN (PSYLINK) et du debogueur SN pour les kits Saturn,
+ * le meme que sur PlayStation. Structure verifiee sur un fichier reel
+ * (TEST.CPE, 202062 octets, 1020 blocs de chargement) :
+ *
+ *   "CPE" 01                      signature + version
+ *   puis une suite de blocs, 1 octet de type :
+ *     00                          fin du fichier
+ *     01 addr(4) len(4) data(len) chargement de len octets a addr
+ *     02 addr(4)                  adresse d'execution (PsyQ)
+ *     03 reg(2) val(4)            initialisation d'un registre
+ *     04 reg(2) val(2)            idem, valeur sur 2 octets   (PsyQ)
+ *     05 reg(2) val(1)            idem, valeur sur 1 octet    (PsyQ)
+ *     06 reg(2) val(3)            idem, valeur sur 3 octets   (PsyQ)
+ *     07 val(4)                   espace de travail, ignore   (PsyQ)
+ *     08 unit(1)                  choix du processeur cible
+ *
+ * Les champs d'en-tete (adresses, tailles, registres, valeurs) sont en
+ * PETIT-boutiste (format de l'outil PC) ; les donnees chargees sont l'image
+ * memoire SH-2, donc grand-boutiste, et sont copiees telles quelles.
+ *
+ * Registre 0058H = PC : dans TEST.CPE, 03 0058 0600FF18 designe un bloc de
+ * code qui commence par mov.l @(2C,PC),R15 (R15 = 060FFC00), ldc R0,SR
+ * (SR = F0H) puis jmp @R3 vers main : c'est le point d'entree du crt0.
+ * Les autres numeros de registre SN ne sont pas documentes ici : ils sont
+ * signales dans le journal et ignores. Les types 02 et 04 a 07 viennent de
+ * la variante PlayStation du format et n'apparaissent pas dans TEST.CPE.
+ * ------------------------------------------------------------------------- */
+
+#define CPE_REG_SH2_PC 0x0058
+
+static u32 CpeLe(const u8 *p, int n)
+{
+   u32 v = 0;
+   int i;
+   for (i = n - 1; i >= 0; i--)
+      v = (v << 8) | p[i];
+   return v;
+}
+
+/* sh == NULL : verification seule, rien n'est ecrit en memoire.
+   Renvoie 0 si le fichier est complet et bien forme, -3 sinon. */
+static int CpeWalk(SH2_struct *sh, const u8 *buf, size_t size, u32 *pc, int *havepc)
+{
+   size_t p = 4;
+
+   if (size < 4 || memcmp(buf, "CPE\x01", 4) != 0)
+      return -3;
+
+   for (;;)
+   {
+      u8 type;
+
+      if (p >= size)
+         return -3; /* pas de bloc de fin : fichier tronque */
+      type = buf[p++];
+
+      switch (type)
+      {
+         case 0x00:
+            return 0;
+
+         case 0x01:
+         {
+            u32 addr, len, i;
+            if (size - p < 8)
+               return -3;
+            addr = CpeLe(buf + p, 4);
+            len = CpeLe(buf + p + 4, 4);
+            p += 8;
+            if ((size - p) < (size_t)len)
+               return -3;
+            if (sh != NULL && len != 0)
+            {
+               for (i = 0; i < len; i++)
+                  SH2MappedMemoryWriteByte(sh, addr + i, buf[p + i]);
+               SH2WriteNotify(sh, addr, len);
+            }
+            p += len;
+            break;
+         }
+
+         case 0x02:
+            if (size - p < 4)
+               return -3;
+            *pc = CpeLe(buf + p, 4);
+            *havepc = 1;
+            p += 4;
+            break;
+
+         case 0x03:
+         case 0x04:
+         case 0x05:
+         case 0x06:
+         {
+            const int n = (type == 0x03) ? 4 : (type == 0x04) ? 2 : (type == 0x05) ? 1 : 3;
+            u32 reg, val;
+            if (size - p < (size_t)(2 + n))
+               return -3;
+            reg = CpeLe(buf + p, 2);
+            val = CpeLe(buf + p + 2, n);
+            p += 2 + n;
+            if (reg == CPE_REG_SH2_PC)
+            {
+               *pc = val;
+               *havepc = 1;
+            }
+            else if (sh != NULL)
+               LOG("CPE: registre %04X = %08X ignore\n", reg, val);
+            break;
+         }
+
+         case 0x07:
+            if (size - p < 4)
+               return -3;
+            p += 4;
+            break;
+
+         case 0x08:
+            if (size - p < 1)
+               return -3;
+            if (sh != NULL && buf[p] != 0)
+               LOG("CPE: unite %d (charge sur le SH-2 maitre)\n", buf[p]);
+            p += 1;
+            break;
+
+         default:
+            LOG("CPE: bloc de type %02X inconnu a l'offset %X\n", type, (unsigned)(p - 1));
+            return -3;
+      }
+   }
+}
+
+static int CpeReadFile(const char *filename, u8 **out, size_t *outsize)
+{
+   FILE *fp;
+   long filesize;
+   u8 *buffer;
+
+   *out = NULL;
+   *outsize = 0;
+
+   if (!filename || (fp = fopen(filename, "rb")) == NULL)
+      return -1;
+
+   fseek(fp, 0, SEEK_END);
+   filesize = ftell(fp);
+   fseek(fp, 0, SEEK_SET);
+
+   if (filesize <= 0)
+   {
+      fclose(fp);
+      return -1;
+   }
+
+   if ((buffer = (u8 *)malloc(filesize)) == NULL)
+   {
+      fclose(fp);
+      return -2;
+   }
+
+   if (fread(buffer, 1, filesize, fp) != (size_t)filesize)
+   {
+      fclose(fp);
+      free(buffer);
+      return -1;
+   }
+   fclose(fp);
+
+   *out = buffer;
+   *outsize = (size_t)filesize;
+   return 0;
+}
+
+int MappedMemoryIsCpe(const char *filename)
+{
+   FILE *fp;
+   u8 magic[4];
+   int ret = 0;
+
+   if (!filename || (fp = fopen(filename, "rb")) == NULL)
+      return 0;
+   if (fread(magic, 1, 4, fp) == 4 && memcmp(magic, "CPE\x01", 4) == 0)
+      ret = 1;
+   fclose(fp);
+   return ret;
+}
+
+int MappedMemoryLoadCpe(SH2_struct *sh, const char *filename, u32 *pc, int *havepc)
+{
+   u8 *buffer;
+   size_t size;
+   u32 entry = 0;
+   int found = 0;
+   int ret;
+
+   if ((ret = CpeReadFile(filename, &buffer, &size)) != 0)
+      return ret;
+
+   /* Verification complete avant toute ecriture : un fichier tronque ou
+      inconnu ne laisse pas la memoire a moitie chargee. */
+   ret = CpeWalk(NULL, buffer, size, &entry, &found);
+   if (ret == 0)
+   {
+      entry = 0;
+      found = 0;
+      ret = CpeWalk(sh, buffer, size, &entry, &found);
+   }
+   free(buffer);
+
+   if (ret != 0)
+      return ret;
+   if (pc)
+      *pc = entry;
+   if (havepc)
+      *havepc = found;
+   return 0;
+}
+
+/* Chargement d'un programme, avec ou sans lancement.
+
+   run = 0 : simple copie en memoire (binaire brut a addr, ou blocs du CPE a
+             leurs adresses), la machine continue la ou elle en etait.
+   run = 1 : comme MappedMemoryLoadExec() de Yabause : reset sans disque
+             (YabauseResetNoLoad), mise en place de l'etat laisse par le BIOS
+             (YabauseSpeedySetup : table des vecteurs et fonctions systeme en
+             06000000H, SCU/SMPC/VDP dans leur etat de sortie du BIOS), copie
+             du programme puis PC du SH-2 maitre = point d'entree (celui du
+             CPE, sinon addr). Le SH-2 esclave reste arrete.
+
+   Le format est reconnu a sa signature, pas a l'extension.
+   Retour : 0, -1 lecture, -2 memoire, -3 CPE mal forme, -4 CPE sans point
+   d'entree (run = 1 seulement). En cas d'erreur la machine n'est pas
+   reinitialisee. */
+int MappedMemoryLoadExec(SH2_struct *sh, const char *filename, u32 addr, int run, u32 *entry)
+{
+   u32 pc = addr;
+   int ret;
+
+   if (sh == NULL)
+      return -1;
+
+   if (MappedMemoryIsCpe(filename))
+   {
+      u8 *buffer;
+      size_t size;
+      u32 cpepc = 0;
+      int havepc = 0;
+
+      if ((ret = CpeReadFile(filename, &buffer, &size)) != 0)
+         return ret;
+      ret = CpeWalk(NULL, buffer, size, &cpepc, &havepc);
+      if (ret == 0 && run && !havepc)
+         ret = -4;
+      if (ret != 0)
+      {
+         free(buffer);
+         return ret;
+      }
+
+      if (run)
+      {
+         YabauseResetNoLoad();
+         YabauseSpeedySetup();
+      }
+      cpepc = 0;
+      havepc = 0;
+      ret = CpeWalk(sh, buffer, size, &cpepc, &havepc);
+      free(buffer);
+      if (ret != 0)
+         return ret;
+      pc = cpepc;
+   }
+   else
+   {
+      FILE *fp;
+      if (!filename || (fp = fopen(filename, "rb")) == NULL)
+         return -1;
+      fclose(fp);
+
+      if (run)
+      {
+         YabauseResetNoLoad();
+         YabauseSpeedySetup();
+      }
+      if ((ret = MappedMemoryLoad(sh, filename, addr)) != 0)
+         return ret;
+   }
+
+   if (run)
+   {
+      SH2GetRegisters(sh, &sh->regs);
+      sh->regs.PC = pc;
+      SH2SetRegisters(sh, &sh->regs);
+   }
+
+   if (entry)
+      *entry = pc;
    return 0;
 }
 
