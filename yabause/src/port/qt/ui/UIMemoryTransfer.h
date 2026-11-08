@@ -32,6 +32,7 @@ public:
 protected:
    YabauseThread *mYabauseThread;
    bool areSettingsValid();
+   void updateFileType();
 
 protected slots:
     void on_leFile_textChanged( const QString & text );
