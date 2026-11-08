@@ -121,6 +121,41 @@ void BiosInitRomVectors(u8 *rom)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Table d'interface systeme du pilote son (RAM son 400H-47FH).
+ *
+ * Le boot ROM charge son propre pilote son (celui de l'ecran de demarrage
+ * et du lecteur de CD audio) ; sa table d'interface systeme reste en RAM son
+ * quand il passe la main au jeu. Valeurs de ST-166 (Sound Driver System
+ * Interface 3.03, System Interface Table 400H-43FH et System Information
+ * Table 440H-47FH), identiques a ST-241 5.1.1 / 5.1.2 et a ce que montre un
+ * vidage de la RAM son avec le BIOS reel :
+ *   400H systeme info 440H, 404H interface hote 700H, 408H CRNT 500H,
+ *   40CH outil 600H, 412H travail systeme 480H ;
+ *   440H programme 68K 1000H/6000H, carte des zones A000H/1000H,
+ *   travail 68K 7000H/3000H.
+ *
+ * Le BIOS emule laissait la RAM son a zero (yabause.c la vide au reset).
+ * Photo Genic (T-1524G) lit le pointeur d'interface hote en 25A00404
+ * (06020F7E) AVANT de charger son pilote : avec le vrai BIOS il trouve 700H,
+ * avec le BIOS emule 0. Ses tampons de flux audio pointaient alors sur
+ * 25A00000, le flux n'avancait jamais et le jeu ne relisait plus le CD
+ * (image figee au debut de l'introduction). */
+static void BiosInitSoundInterface(void)
+{
+   DMAMappedMemoryWriteLong(0x25A00400, 0x00000440);
+   DMAMappedMemoryWriteLong(0x25A00404, 0x00000700);
+   DMAMappedMemoryWriteLong(0x25A00408, 0x00000500);
+   DMAMappedMemoryWriteLong(0x25A0040C, 0x00000600);
+   DMAMappedMemoryWriteWord(0x25A00412, 0x0000);   /* 412H : pointeur sur 4 octets, */
+   DMAMappedMemoryWriteWord(0x25A00414, 0x0480);   /* non aligne sur un mot long */
+   DMAMappedMemoryWriteLong(0x25A00440, 0x00001000);
+   DMAMappedMemoryWriteLong(0x25A00444, 0x00006000);
+   DMAMappedMemoryWriteLong(0x25A00448, 0x0000A000);
+   DMAMappedMemoryWriteLong(0x25A0044C, 0x00001000);
+   DMAMappedMemoryWriteLong(0x25A00450, 0x00007000);
+   DMAMappedMemoryWriteLong(0x25A00454, 0x00003000);
+}
+
 void BiosInit(SH2_struct *context)
 {
    int i;
@@ -132,6 +167,8 @@ void BiosInit(SH2_struct *context)
       (Ishin no Arashi et Yuukyuu Gensoukyoku Ensemble en installent une ou
       le SR vaut toujours 0), ou avec un SYS_CHGSYSCK reste en suspens. */
    hle_ckchg_pending = 0;
+
+   BiosInitSoundInterface();
 
    // Setup vectors
    SH2MappedMemoryWriteLong(context, 0x06000600, 0x002B0009); // rte, nop
