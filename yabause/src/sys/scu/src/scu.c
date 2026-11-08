@@ -3093,7 +3093,7 @@ static void ScuWriteISTPartial(u32 val, u32 lanemask)
    u32 keep = val | ~lanemask;
    ScuRegs->IST &= keep;
    ScuRegs->ITEdge &= keep;
-   ScuWithdrawInterrupt();
+   /* une demande deja presentee n'est pas retiree (voir ScuWriteLong, IST) */
    needEvaluate = 1;
 }
 
@@ -3355,24 +3355,41 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
       case 0x98:
          ScuRegs->T1MD = val;
          break;
-      /* IMS / IST : la demande presentee au maitre est recalculee APRES
-         l'ecriture. Avant, ScuTestAllInterrupt() tournait d'abord, avec le
-         masque deja ecrit et l'etat pas encore efface : une source tout
-         juste demasquee etait presentee au CPU au moment meme ou son bit IST
-         etait efface, et la demande n'etait jamais retiree (la fin de DMA0
-         en attente de Sol Divide partait apres SYS_CHGSCUIM, BIOS reel comme
-         BIOS emule). Sur la console, la demande du SCU est (IST & ~IMS) : un
-         facteur masque ou dont le bit IST est efface n'est plus demande
-         (ScuWithdrawInterrupt()). */
+      /* IMS : une demande masquee est retiree (ScuWithdrawInterrupt()),
+         puis le SCU presente tout de suite la source la plus prioritaire
+         que le nouveau masque autorise.
+         IST : l'ecriture efface les bits a 0 (ST-097-R5, tableau 3.8) mais
+         ne retire pas une demande deja presentee au maitre ; elle reste
+         jusqu'a ce que le CPU la prenne.
+
+         ST-097 ne decrit pas la sortie d'interruption vers le SH-2. Modele
+         de Ymir (hw/scu/scu.cpp, UpdateMasterInterruptLevel) : appele a
+         l'ecriture de IMS, il leve la demande et efface aussitot son bit
+         IST ; la demande reste jusqu'a l'acquittement, une ecriture de IST
+         ne la retire pas.
+
+         Photo Genic (T-1524G) : le second programme masque le V-Blank OUT
+         (SYS_CHGSCUIM(FFFFFFFFH, 6)) pendant un chargement. Le gestionnaire
+         du V-Blank IN appelle a chaque trame SYS_CHGSCUIM(00000080H, 0)
+         (PR=06034388) : IMS = 80H demasque le V-Blank OUT en attente depuis
+         la ligne 0, puis IST = 00000080H l'efface. Seul le gestionnaire du
+         V-Blank OUT fait avancer slSynch (060FFC13) : avec le retrait de la
+         demande, l'attente en 0603386C ne finissait jamais (ecran noir).
+
+         26abc26 retirait aussi la demande a l'ecriture de IST pour Sol
+         Divide (fin de DMA0 en attente au moment de GFS_Init). Ymir, qui ne
+         la retire pas, ne fait demarrer Sol Divide qu'avec l'emulation bas
+         niveau du bloc CD (Ymir CHANGELOG 0.2.0, #470) : la fin de DMA0 en
+         attente y est une question de temps du bloc CD, pas du SCU. */
       case 0xA0:
          ScuRegs->IMS = val;
          ScuWithdrawInterrupt();
          needEvaluate = 1;
+         ScuTestAllInterrupt();
          break;
       case 0xA4:
          ScuRegs->IST &= val;
          ScuRegs->ITEdge &= val;
-         ScuWithdrawInterrupt();
          needEvaluate = 1;
          break;
       case 0xA8:
@@ -3528,30 +3545,29 @@ static void ScuTestInterruptMask(u8 i)
    }
 }
 
-/* La source verrouillee (presentee au maitre, pas encore prise) n'est plus
- * demandee : son front a ete efface (ecriture de IST) ou elle est masquee
- * (IMS, A-Bus : AIACK et IMS bit 15). Le verrou est libere et la ligne IRL
- * du maitre retombe ; ScuTestAllInterrupt() presentera ensuite la source
- * suivante. Une source deja prise par le CPU n'est plus verrouillee
+/* La source verrouillee (presentee au maitre, pas encore prise) est
+ * masquee (IMS, A-Bus : AIACK et IMS bit 15). Le verrou est libere et la
+ * ligne IRL du maitre retombe ; ScuTestAllInterrupt() presentera ensuite la
+ * source suivante. Une source deja prise par le CPU n'est plus verrouillee
  * (ScuAcceptInterrupt()), elle n'est pas concernee.
+ *
+ * Une ecriture de IST n'appelle plus cette fonction et l'etat IST/ITEdge
+ * n'est pas teste : une demande presentee reste meme si son bit IST a ete
+ * efface depuis (voir ScuWriteLong, IMS / IST).
  *
  * L'esclave n'est pas touche : ses V-Blank IN / H-Blank IN viennent du VDP2
  * et non du SCU (STTECH28 2.3). */
 static void ScuWithdrawInterrupt(void)
 {
-  u32 mask, status;
+  u32 mask;
   int requested;
   if (currentInterrupt >= (sizeof(ScuInterrupt) / sizeof(ScuInterrupt[0])))
     return;
   mask = ScuInterrupt[currentInterrupt].mask;
-  status = ScuInterrupt[currentInterrupt].status;
-  requested = (ScuRegs->ITEdge & status) != 0;
-  if (requested) {
-    if (mask == 0x8000)
-      requested = (ScuRegs->AIACK != 0) && !(ScuRegs->IMS & 0x8000);
-    else
-      requested = !(ScuRegs->IMS & mask);
-  }
+  if (mask == 0x8000)
+    requested = (ScuRegs->AIACK != 0) && !(ScuRegs->IMS & 0x8000);
+  else
+    requested = !(ScuRegs->IMS & mask);
   if (requested) return;
   currentInterrupt = 0xFF;
   SH2IntcWithdrawIrl(MSH2);
