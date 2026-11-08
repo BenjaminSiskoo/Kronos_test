@@ -213,6 +213,21 @@ int IOPortAdd(int key, ioPort port, u8 index);
  * */
 PerPad_struct * PerPadAdd(PortData_struct * port);
 
+/** @brief Plugs a 6Player multitap (Sega 6Player / Hudson SBom Multitap)
+ *  into an empty port.
+ *
+ * The port then reports the multitap status 16h (multitap ID 1h, 6
+ * connectors) even with a single peripheral, and its unused connectors
+ * report the "not connected" peripheral ID FFh. Without this call a port
+ * holding one peripheral is a direct connection (F1h) and a multitap is
+ * only assumed from the second peripheral on. Call it right after
+ * PerPortReset(), before adding the peripherals of the port.
+ *
+ * @return 0 on success, -1 if the port already holds something. */
+int PerMultitapAdd(PortData_struct * port);
+/** @brief Returns non-zero when the port reports a 6Player multitap (16h). */
+int PerMultitapConnected(PortData_struct * port);
+
 void PerPadUpPressed(PerPad_struct * pad);
 void PerPadUpReleased(PerPad_struct * pad);
 
@@ -423,6 +438,23 @@ typedef struct
  * */
 PerKeyboard_struct * PerKeyboardAdd(PortData_struct * port);
 
+/* Keyboard models. Both report the same peripheral ID 34h and the same key
+   codes (STTECH45 table, PS/2 scan code set 2 values); they differ by the
+   keys they physically have.
+   - PERKB_MODEL_SATURN_JP: Sega Saturn Keyboard (HSS-0129, Japan). Keys of
+     the STTECH45 table, no numeric keypad, no ISO "< >" key.
+   - PERKB_MODEL_NETLINK_US: NetLink Keyboard (US, bundle 80120) or any PS/2
+     keyboard through the NetLink Keyboard Adapter. The adapter keeps the
+     34h format (Mednafen, "Keyboard (US)"): numeric keypad present, no
+     Japanese "Ro" (51h) and "Yen" (6Ah) keys.
+   - PERKB_MODEL_ANY: every code, the behaviour of PerKeyboardAdd(). */
+#define PERKB_MODEL_ANY        0
+#define PERKB_MODEL_SATURN_JP  1
+#define PERKB_MODEL_NETLINK_US 2
+
+/** @brief Adds a keyboard of the given PERKB_MODEL_* model. */
+PerKeyboard_struct * PerKeyboardAddModel(PortData_struct * port, int model);
+
 /** @brief Host side: a key translated to Saturn key code @p code went down / up.
  *
  * Safe to call repeatedly with the same state (duplicates are ignored).
@@ -440,6 +472,58 @@ int PerKeyboardIsConnected(void);
  * for an INTBACK: emits the next Make/Break code (if any) into the
  * keyboard data. */
 void PerKeyboardUpdate(PortData_struct * port);
+
+/* Hudson SBom Joycard (HC-735)
+ *
+ * Electrically a standard Saturn pad (peripheral ID 02h, 2 data bytes),
+ * plus circuitry inside the pad:
+ *  - turbo switches: a button whose turbo is on is seen pressed / released
+ *    alternately while it is held. Here each button has a second binding,
+ *    "<button> (turbo)", which presses it with turbo while held. Rate:
+ *    PerJoycardSetTurboRate(), up to 26 presses per second on the real pad
+ *    (Sega Retro, HC-735);
+ *  - SLOW switch (NORMAL / SLOW / Hu): toggles Start automatically. The
+ *    Hu position presses Start 15 times per second, which Hudson games test
+ *    to unlock hidden content (Saturn Bomberman: Start 15/s for 6 s on the
+ *    Options screen; Saturn Bomberman Fight!!: on the Hudson logo; Yuna
+ *    Remix: Hu for 1 s then NORMAL on the Options screen). Two bindings,
+ *    "SLOW switch" and "Hu switch", hold the switch in that position while
+ *    held (NORMAL when released).
+ * No Sega or Hudson technical document of the pad is in the workspace: the
+ * 15/s Hu rate comes from the game descriptions above, the SLOW rate (7.5/s)
+ * is an assumption. The pad output is recomputed once per frame and at each
+ * INTBACK (PerKeyboardUpdate), from the emulated time, so it doesn't depend
+ * on how often the game reads the port. */
+#define PERJOYCARD_TURBO_A 100
+#define PERJOYCARD_TURBO_B 101
+#define PERJOYCARD_TURBO_C 102
+#define PERJOYCARD_TURBO_X 103
+#define PERJOYCARD_TURBO_Y 104
+#define PERJOYCARD_TURBO_Z 105
+#define PERJOYCARD_TURBO_L 106
+#define PERJOYCARD_TURBO_R 107
+#define PERJOYCARD_SLOW    108
+#define PERJOYCARD_HU      109
+
+typedef struct PerJoycard_s PerJoycard_struct;
+
+/** @brief Adds an SBom Joycard (a standard pad, ID 02h) to the port.
+ *
+ * Its bindings are the PERPAD_* ids (buttons held normally) and the
+ * PERJOYCARD_* ids above. */
+PerJoycard_struct * PerJoycardAdd(PortData_struct * port);
+/** @brief Turbo rate of every Joycard, in presses per second (1-30). */
+void PerJoycardSetTurboRate(int presses_per_second);
+
+/** @brief Once per frame, before DoMovie(): refreshes the outputs that
+ *  depend on time (Joycard turbo / SLOW switch). */
+void PerInputFrameUpdate(void);
+/** @brief Movie recording only, called by DoMovie() right after the host
+ *  inputs were read: brings every computed peripheral output (Joycard,
+ *  keyboard code stream) up to date at the point where the port data are
+ *  recorded. During a movie (recording or playback) PerKeyboardUpdate() no
+ *  longer changes the port data, so what was recorded is what is replayed. */
+void PerMovieRecordUpdate(void);
 
 
 #define PERJAMMA_COIN1 29
