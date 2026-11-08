@@ -848,6 +848,11 @@ void DoMovie(void)
       /* Seul point de la trame ou l'hote peut changer les entrees. */
       if (movie_real_percore != NULL && movie_real_percore->HandleEvents != NULL)
          movie_real_percore->HandleEvents();
+      /* Computed peripheral outputs (SBom Joycard, keyboard code stream):
+         produced here, once per frame, so that the recorded port data are
+         what the game reads. PerKeyboardUpdate() leaves the port data
+         alone during a movie (peripheral.c). */
+      PerMovieRecordUpdate();
 
       rec[0] = 0;
       MovieWritePort(rec + 1, &PORTDATA1);
