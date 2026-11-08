@@ -21,6 +21,9 @@
 
 #include "ui_UIPortManager.h"
 #include "../QtYabause.h"
+#include "../ControllerTypes.h"
+
+class QCheckBox;
 
 // UI-only sentinel for the "Hopper Cabinet" combo entry. Same underlying
 // peripheral (PerCab_struct / PERCABINET) as "ST-V Cabinet" - it only
@@ -58,8 +61,10 @@ public:
 protected:
 	uint mPort;
 	PerInterface_struct* mCore;
+	QCheckBox* mMultitap; // "6Player multitap" of this port (SETTINGS_PORT_MULTITAP)
 
 protected slots:
+	void cbMultitap_toggled( bool checked );
 	void cbTypeController_currentIndexChanged( int id );
 	void tbSetJoystick_clicked();
 	void tbClearJoystick_clicked();
