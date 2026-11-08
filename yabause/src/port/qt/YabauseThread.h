@@ -72,6 +72,7 @@ public slots:
 	bool pauseEmulation( bool pause, bool reset );
 	bool resetEmulation();
 	void reloadControllers();
+	void reloadCommPort();
 	void reloadClock();
 	void reloadSettings();
 
