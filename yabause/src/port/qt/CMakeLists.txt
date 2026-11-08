@@ -77,6 +77,7 @@ set( kronos_qt_HEADERS
 	CommonDialogs.h
 	PerQt.h
 	KeyboardQt.h
+	ControllerTypes.h
 	Arguments.h )
 
 # C headers needing moc
@@ -101,6 +102,7 @@ set( kronos_qt_MOC_HEADERS
     ui/UIDoubleMissionStickSetting.h
 	ui/UIGunSetting.h
 	ui/UIMouseSetting.h
+	ui/UIButtonListSetting.h
 	ui/UIShortcutManager.h
     ui/UIDebugCPU.h
     ui/UIDebugM68K.h
@@ -153,6 +155,7 @@ set( kronos_qt_SOURCES
     ui/UIDoubleMissionStickSetting.cpp
 	ui/UIGunSetting.cpp
 	ui/UIMouseSetting.cpp
+	ui/UIButtonListSetting.cpp
 	ui/UIShortcutManager.cpp
     ui/UIDebugCPU.cpp
     ui/UIDebugM68K.cpp
