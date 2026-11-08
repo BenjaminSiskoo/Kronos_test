@@ -152,6 +152,8 @@ set(kronos_SOURCES
 	sys/vdp2/src/vdp2.c
 	sys/vdp2/src/vdpedit.c
 	sys/sh2/src/sh2core.c
+	sys/sh2/src/sci.c
+	sys/sh2/src/commfdd.c
   sys/sh2/src/sh2iasm.c
   sys/sh2/src/sh2d.c
 	sys/scu/src/scu.c
