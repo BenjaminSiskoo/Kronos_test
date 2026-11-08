@@ -121,6 +121,10 @@ private:
 	void loadSlot(int a);
 	void saveSlotAs();
 	void loadSlotAs();
+	// Films d'entrees (movie.c)
+	void createMovieMenu();
+	void movieRecord();
+	void moviePlay();
 	int loadGameFromFile(QString const & fullFilePath);
 	int loadCDRom();
 	void openSettingsOnTabs(int index);
@@ -147,6 +151,14 @@ protected:
 	int showMenuBarHeight;
 	QTimer* hideMouseTimer;
 	QTimer* mouseCursorTimer;
+	// Films d'entrees
+	QMenu* mMovieMenu;
+	QAction* aMovieRecord;
+	QAction* aMoviePlay;
+	QAction* aMovieStop;
+	QAction* aMovieReadOnly;
+	QTimer* mMovieTimer;
+	QString mMovieTitleSuffix;
 	QList <translation_struct> translations;
 	virtual void showEvent( QShowEvent* event );
 	virtual void closeEvent( QCloseEvent* event );
@@ -177,6 +189,12 @@ public slots:
 	void breakpointHandlerSCSPDSP();
 	void runActions();
 	void runActionsAlreadyPaused();
+	// Films d'entrees
+	void movieRecordTriggered();
+	void moviePlayTriggered();
+	void movieStopTriggered();
+	void movieReadOnlyTriggered();
+	void movieTimerTick();
 protected slots:
 	void errorReceived( const QString& error, bool internal = true );
 	void sizeRequested( const QSize& size );
