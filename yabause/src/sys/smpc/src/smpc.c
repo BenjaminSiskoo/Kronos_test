@@ -356,20 +356,56 @@ void SmpcCKCHG320(void) {
    YabSemPost(g_cpu_ready);
 }
 
-struct movietime {
+/* Horloge d'un film d'entrees (movie.c) : fixe, et independante du fuseau
+   horaire de l'hote, pour que le testeur et le developpeur donnent la meme
+   heure au jeu. Elle part du jeudi 1er janvier 1998, 12:00:00 et avance au
+   rythme de l'emulation (trames depuis le debut du film, 50 Hz en PAL,
+   60000/1001 Hz en NTSC).
 
-	int tm_year;
-	int tm_wday;
-	int tm_mon;
-	int tm_mday;
-	int tm_hour;
-	int tm_min;
-	int tm_sec;
-};
+   L'ancienne version comptait framecounter / 60 secondes meme en PAL (une
+   seconde emulee y durait 1,2 s), ne passait jamais au jour suivant (heure
+   ramenee modulo 24, jour et jour de la semaine figes) et utilisait des
+   globales non statiques (totalseconds, noon). */
+#define SMPC_MOVIE_BASETIME 883656000ULL /* 1998-01-01 12:00:00 UTC */
 
-static struct movietime movietime;
-int totalseconds;
-int noon= 43200;
+static void SmpcMovieTime(struct tm *t)
+{
+   u64 secs, days;
+   u32 sod;
+   s64 z, era, doe, yoe, y, doy, mp, d, m;
+
+   if (yabsys.IsPal)
+      secs = (u64)(u32)framecounter / 50;
+   else
+      secs = (u64)(u32)framecounter * 1001 / 60000;
+   secs += SMPC_MOVIE_BASETIME;
+
+   days = secs / 86400;
+   sod = (u32)(secs % 86400);
+
+   /* jours depuis le 1er janvier 1970 -> date civile (calendrier
+      gregorien proleptique, algorithme "days_from_civil" inverse) */
+   z = (s64)days + 719468;
+   era = z / 146097;
+   doe = z - era * 146097;
+   yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+   y = yoe + era * 400;
+   doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+   mp = (5 * doy + 2) / 153;
+   d = doy - (153 * mp + 2) / 5 + 1;
+   m = mp < 10 ? mp + 3 : mp - 9;
+   if (m <= 2)
+      y++;
+
+   memset(t, 0, sizeof(*t));
+   t->tm_year = (int)(y - 1900);
+   t->tm_mon = (int)(m - 1);
+   t->tm_mday = (int)d;
+   t->tm_wday = (int)((days + 4) % 7);   /* 1er janvier 1970 = jeudi */
+   t->tm_hour = (int)(sod / 3600);
+   t->tm_min = (int)((sod / 60) % 60);
+   t->tm_sec = (int)(sod % 60);
+}
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -384,18 +420,22 @@ static void SmpcINTBACKStatus(void) {
    //SmpcRegs->OREG[0] = 0x0 | (SmpcInternalVars->resd << 6);  // goto setclock/setlanguage screen
 
    // write time data in OREG1-7
-   if (yabsys.IsPal)
+   if (Movie.Status == Recording || Movie.Status == Playback) {
+      SmpcMovieTime(&times);
+   } else {
+      if (yabsys.IsPal)
          tmp = SmpcInternalVars->basetime + ((u64)yabsys.frame_count * 1000 / 50000);
-   else
-    tmp = SmpcInternalVars->basetime + ((u64)yabsys.frame_count * 1001 / 60000);
+      else
+         tmp = SmpcInternalVars->basetime + ((u64)yabsys.frame_count * 1001 / 60000);
 
 #ifdef WIN32
-   memcpy(&times, localtime(&tmp), sizeof(times));
+      memcpy(&times, localtime(&tmp), sizeof(times));
 #elif defined(_arch_dreamcast) || defined(PSP)
-   internal_localtime_r(&tmp, &times);
+      internal_localtime_r(&tmp, &times);
 #else
-   localtime_r(&tmp, &times);
+      localtime_r(&tmp, &times);
 #endif
+   }
    year[0] = (1900 + times.tm_year) / 1000;
    year[1] = ((1900 + times.tm_year) % 1000) / 100;
    year[2] = (((1900 + times.tm_year) % 1000) % 100) / 10;
@@ -407,34 +447,6 @@ static void SmpcINTBACKStatus(void) {
    SmpcRegs->OREG[5] = ((times.tm_hour / 10) << 4) | (times.tm_hour % 10);
    SmpcRegs->OREG[6] = ((times.tm_min / 10) << 4) | (times.tm_min % 10);
    SmpcRegs->OREG[7] = ((times.tm_sec / 10) << 4) | (times.tm_sec % 10);
-
-   if(Movie.Status == Recording || Movie.Status == Playback) {
-	   movietime.tm_year=0x62;
-	   movietime.tm_wday=0x04;
-	   movietime.tm_mday=0x01;
-	   movietime.tm_mon=0;
-	   totalseconds = ((framecounter / 60) + noon);
-
-	   movietime.tm_sec=totalseconds % 60;
-	   movietime.tm_min=totalseconds/60;
-	   movietime.tm_hour=movietime.tm_min/60;
-
-	   //convert to sane numbers
-	   movietime.tm_min=movietime.tm_min % 60;
-	   movietime.tm_hour=movietime.tm_hour % 24;
-
-	   year[0] = (1900 + movietime.tm_year) / 1000;
-	   year[1] = ((1900 + movietime.tm_year) % 1000) / 100;
-	   year[2] = (((1900 + movietime.tm_year) % 1000) % 100) / 10;
-	   year[3] = (((1900 + movietime.tm_year) % 1000) % 100) % 10;
-	   SmpcRegs->OREG[1] = (year[0] << 4) | year[1];
-	   SmpcRegs->OREG[2] = (year[2] << 4) | year[3];
-	   SmpcRegs->OREG[3] = (movietime.tm_wday << 4) | (movietime.tm_mon + 1);
-	   SmpcRegs->OREG[4] = ((movietime.tm_mday / 10) << 4) | (movietime.tm_mday % 10);
-	   SmpcRegs->OREG[5] = ((movietime.tm_hour / 10) << 4) | (movietime.tm_hour % 10);
-	   SmpcRegs->OREG[6] = ((movietime.tm_min / 10) << 4) | (movietime.tm_min % 10);
-	   SmpcRegs->OREG[7] = ((movietime.tm_sec / 10) << 4) | (movietime.tm_sec % 10);
-   }
 
    // write cartidge data in OREG8
    SmpcRegs->OREG[8] = 0; // FIXME : random value
