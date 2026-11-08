@@ -103,6 +103,10 @@ int ScspChangeVideoFormat(int type);
 void ScspAddCycles(u64 cycles);
 void ScspSetFrameSamples(u32 samples);
 void ScspSyncToLine(void);
+/* Input movies (movie.c): wait for the sound thread at every line, with no
+   time limit, so that the 68000 never runs alongside the SH-2. */
+void ScspSetStrictSync(int strict);
+int ScspGetStrictSync(void);
 void ScspConvert32uto16s(s32 *srcL, s32 *srcR, s16 *dst, u32 len);
 void ScspReceiveCDDA(const u8 *sector);
 int SoundSaveState(void ** stream);
