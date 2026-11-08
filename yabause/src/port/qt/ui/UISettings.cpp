@@ -344,6 +344,13 @@ void UISettings::on_leBiosSettings_textChanged(const QString & text){
 	}
 }
 
+void UISettings::on_cbFloppyEnabled_toggled( bool checked )
+{
+	leFloppyFolder->setEnabled( checked );
+	tbFloppyFolder->setEnabled( checked );
+	cbFloppyWriteProtect->setEnabled( checked );
+}
+
 void UISettings::tbBrowse_clicked()
 {
 	// get toolbutton sender
@@ -408,6 +415,8 @@ void UISettings::tbBrowse_clicked()
 	}
 	else if ( tb == tbMemory )
 		requestNewFile( QtYabause::translate( "Choose a memory file" ), leMemory );
+	else if ( tb == tbFloppyFolder )
+		requestFolder( QtYabause::translate( "Choose the floppy disk folder" ), leFloppyFolder );
 	else if ( tb == tbMpegROM )
 		requestFile( QtYabause::translate( "Open a mpeg rom" ), leMpegROM, QtYabause::translate( "Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)" ) );
 	else if ( tb == tbAddr2Line )
@@ -794,6 +803,16 @@ void UISettings::loadSettings()
 	leMpegROM->setText( s->value( "MpegROM/Path" ).toString() );
 	/* Meme valeur par defaut que YabauseThread::reloadSettings() (true). */
 	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", true).toBool());
+	/* Lecteur de disquette (connecteur de communication, commfdd.c). Meme
+	   regle que YabauseThread::reloadCommPort() : sans cle FloppyEnabled
+	   (ancien .ini), le lecteur est branche des qu'un dossier est donne. */
+	{
+		const QString floppyFolder = s->value( "CommPort/FloppyFolder" ).toString();
+		cbFloppyEnabled->setChecked( s->value( "CommPort/FloppyEnabled", !floppyFolder.isEmpty() ).toBool() );
+		leFloppyFolder->setText( floppyFolder.isEmpty() ? getDataDirPath().append( "/floppy" ) : floppyFolder );
+		cbFloppyWriteProtect->setChecked( s->value( "CommPort/FloppyWriteProtect", false ).toBool() );
+		on_cbFloppyEnabled_toggled( cbFloppyEnabled->isChecked() );
+	}
   	//the path needs to go into the volatile settings since we keep only one cartridge path there to keep things simple.
 
 	// input
@@ -910,6 +929,9 @@ void UISettings::saveSettings()
 	s->setValue( "Memory/Path", leMemory->text() );
 	s->setValue( "MpegROM/Path", leMpegROM->text() );
   s->setValue("Memory/ExtendMemory", checkBox_extended_internal_backup->isChecked());
+	s->setValue( "CommPort/FloppyEnabled", cbFloppyEnabled->isChecked() );
+	s->setValue( "CommPort/FloppyFolder", leFloppyFolder->text() );
+	s->setValue( "CommPort/FloppyWriteProtect", cbFloppyWriteProtect->isChecked() );
 	s->setValue("Cartridge/Path", leCartridge->text());
 
 	// input
