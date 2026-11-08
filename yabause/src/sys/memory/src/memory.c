@@ -388,11 +388,31 @@ static INLINE int SH2BusCostEnabled(void)
  * lecture de VCNT compte 143 ecritures pour 1008 instructions).
  *
  * Les manuels disponibles ne donnent pas le nombre d'attentes de la SDRAM
- * du Saturn. Valeur de Mednafen (ss/sh7095.inc, BSC_BusWrite, CS3) : 2
- * cycles par ecriture, et la SDRAM reste occupee 2 cycles de plus ; une
- * ecriture qui suit attend cette fin, soit 4 cycles par ecriture en rafale.
- * Suivi par CPU, comme le BSC de chaque SH-2 dans Mednafen. */
-static u32 SH2HwramWriteFree[2];
+ * du Saturn. Modele de Mednafen (ss/sh7095.inc) :
+ *  - BSC_BusWrite, CS3 : l'ecriture occupe le bus 2 cycles a partir du
+ *    moment ou la SDRAM est libre, et la SDRAM reste occupee 2 cycles de
+ *    plus (sdram_finish_time) ;
+ *  - MemWrite (MA_until = write_finish_timestamp + 1) : le CPU ne s'arrete
+ *    pas pour sa propre ecriture ; il n'attend que si un nouvel acces
+ *    d'ecriture arrive avant la fin de la precedente.
+ * Ecritures en rafale (empilements) : environ 4 cycles chacune, comme
+ * avant ; ecriture isolee : aucun arret du CPU.
+ *
+ * Avant, les 2 cycles de chaque ecriture etaient factures au CPU, meme
+ * isolee. Photo Genic (T-1524G) : la commande 08H de l'esclave vide 2 Ko
+ * (06013A48 : 2 mov.l, dt, bf/s, add) avant d'ecrire ses tables par-dessus
+ * la file maitre->esclave (060EF440). Ses deux ecritures coutaient 7 cycles
+ * par tour (environ 11 par tour de boucle, 8 avec ce modele) : l'esclave
+ * arrivait en 060EF458 environ 500 cycles apres que le maitre y a mis la
+ * fin de trame (2CH), la file etait
+ * ecrasee et l'esclave attendait un signal qui ne venait plus (ecran noir
+ * apres le logo du BIOS, BIOS reel et BIOS emule). Avec KRONOS_NO_BUS_COST=1
+ * l'esclave gagnait de ~600 cycles.
+ *
+ * Suivi par CPU, comme le BSC de chaque SH-2 dans Mednafen. Les lectures
+ * ne sont pas retardees par une ecriture en cours (non modelise). */
+static u32 SH2HwramWriteDone[2];   /* fin de la derniere ecriture sur le bus */
+static u32 SH2HwramSdramFree[2];   /* fin d'occupation de la SDRAM */
 
 static INLINE void SH2HwramWriteCost(SH2_struct *context, u32 rowChanged)
 {
@@ -402,13 +422,20 @@ static INLINE void SH2HwramWriteCost(SH2_struct *context, u32 rowChanged)
    }
    {
       const int i = (context == SSH2) ? 1 : 0;
-      const s32 wait = (s32)(SH2HwramWriteFree[i] - context->cycles);
-      /* le compteur repart de 0 a chaque trame : une fin d'ecriture plus
-         lointaine que la plus longue attente vient de la trame precedente */
-      if ((wait > 0) && (wait <= 2))
-         context->cycles += (u32)wait;
-      context->cycles += 2;
-      SH2HwramWriteFree[i] = context->cycles + 2;
+      u32 start;
+      s32 wait;
+      /* le compteur repart de 0 a chaque trame : une echeance plus
+         lointaine que la plus longue attente possible vient de la trame
+         precedente et est ignoree */
+      wait = (s32)(SH2HwramWriteDone[i] + 1 - context->cycles);
+      if ((wait > 0) && (wait <= 4))
+         context->cycles += (u32)wait;            /* MA_until */
+      start = context->cycles;
+      wait = (s32)(SH2HwramSdramFree[i] - start);
+      if ((wait > 0) && (wait <= 4))
+         start += (u32)wait;                      /* SDRAM encore occupee */
+      SH2HwramWriteDone[i] = start + 2;
+      SH2HwramSdramFree[i] = start + 4;
    }
 }
 
