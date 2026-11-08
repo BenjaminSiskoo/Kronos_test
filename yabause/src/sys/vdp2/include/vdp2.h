@@ -559,6 +559,7 @@ extern Vdp2External_struct Vdp2External;
 int Vdp2Init(void);
 void Vdp2DeInit(void);
 void Vdp2Reset(void);
+void Vdp2ClearMemory(void);
 void Vdp2VBlankIN(void);
 void Vdp2VBlankIN_It(void);
 void Vdp2HBlankIN(void);
