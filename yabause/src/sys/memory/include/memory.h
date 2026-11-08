@@ -433,6 +433,14 @@ extern "C" {
   int MappedMemoryLoad(SH2_struct *context,const char *filename, u32 addr);
   int MappedMemorySave(SH2_struct *context,const char *filename, u32 addr, u32 size);
 
+  /* Executables CPE (SN Systems) et lancement d'un programme, voir memory.c.
+     MappedMemoryLoadExec : run = 0 copie seulement, run = 1 reset + etat de
+     sortie du BIOS + PC = point d'entree (*entry recoit l'adresse choisie).
+     Retour : 0, -1 lecture, -2 memoire, -3 CPE mal forme, -4 CPE sans PC. */
+  int MappedMemoryIsCpe(const char *filename);
+  int MappedMemoryLoadCpe(SH2_struct *context, const char *filename, u32 *pc, int *havepc);
+  int MappedMemoryLoadExec(SH2_struct *context, const char *filename, u32 addr, int run, u32 *entry);
+
   int LoadBios(const char *filename);
   int LoadBackupRam(const char *filename);
   void FormatBackupRam(u8 *mem, u32 size);
