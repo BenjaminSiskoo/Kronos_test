@@ -357,10 +357,40 @@ bool doAutoload(const QString& v, QString& err)
 	return true;
 }
 
-bool doBinary(const QString&, QString&)
+/* --binary FILE[:ADDRESS]: program loaded and run once the emulation is
+   initialized, then again after each reset (YabauseThread::
+   loadCommandLineBinary). An SN Systems CPE file is recognized by its
+   signature and carries its own load addresses and entry point: ADDRESS is
+   then ignored. A raw binary is loaded at ADDRESS (hex, default 06004000)
+   and PC is set there.
+   The address is split at the LAST ':' only when what follows is 1 to 8 hex
+   digits and the ':' is not the one of a drive letter ("C:\dir\prog.cpe"). */
+bool doBinary(const QString& v, QString& err)
 {
-	/* Historical behaviour: the file and the address were never used.
-	   Loading a raw binary is not implemented in the Qt port yet. */
+	QString file = v;
+	quint32 address = 0x06004000;
+
+	const int colon = v.lastIndexOf(':');
+	if (colon > 1)
+	{
+		const QString tail = v.mid(colon + 1);
+		bool ok = false;
+		const quint32 a = tail.toUInt(&ok, 16);
+		if (ok && tail.length() >= 1 && tail.length() <= 8)
+		{
+			file = v.left(colon);
+			address = a;
+		}
+	}
+
+	const QFileInfo fi(file);
+	if (!fi.exists() || !fi.isFile()) { err = QString("'%1' not found").arg(file); return false; }
+
+	vs()->setValue("autorun/binary", absPath(file));
+	vs()->setValue("autorun/binary/address", address);
+	/* "autorun" starts the emulation when the window is ready, "autostart"
+	   leaves it running after each reset (UIYabause::reset). */
+	vs()->setValue("autorun", true);
 	vs()->setValue("autostart", true);
 	return true;
 }
@@ -623,7 +653,7 @@ const std::vector<Option>& buildOptions()
 	o.push_back(flag("-a", "--autostart", "Start the emulation automatically.", PrioNormal, doAutostart));
 	o.push_back(value(NULL, "--autoload", "<SLOT>", "Start the emulation and load save state slot 0-9.", doAutoload));
 	o.push_back(flag("-f", "--fullscreen", "Start in full screen.", PrioNormal, setConst("Video/Fullscreen", true)));
-	o.push_back(value(NULL, "--binary", "<FILE>[:ADDRESS]", "Load a raw binary (not implemented yet in the Qt port).", doBinary));
+	o.push_back(value(NULL, "--binary", "<FILE>[:ADDRESS]", "Load and run a program: SN Systems CPE file (own addresses and entry point) or raw binary at ADDRESS (hex, default 06004000). Reloaded on each reset. Combine with --no-disc to start without a disc.", doBinary));
 	o.push_back(value(NULL, "--log-file", "<FILE>", "Also write the emulator log to a file (same as the KRONOS_LOG_FILE variable).", doLogFile));
 
 	o.push_back(heading("BIOS and disc"));
