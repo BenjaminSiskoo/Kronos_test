@@ -39,6 +39,7 @@ UIMemoryTransfer::UIMemoryTransfer( YabauseThread *mYabauseThread, QWidget* p )
 
    cbPC->setCheckState(Qt::Checked);
    rbUpload->setChecked(true);
+   updateFileType();
 
 	// retranslate widgets
 	QtYabause::retranslateWidget( this );
@@ -48,6 +49,8 @@ bool UIMemoryTransfer::areSettingsValid()
 {
    if (leFile->text().length() == 0)
       return false;
+   if (rbUpload->isChecked() && MappedMemoryIsCpe(QFile::encodeName(leFile->text()).constData()))
+      return true;
    if (leStartAddress->text().length() == 0)
       return false;
 
@@ -74,6 +77,7 @@ bool UIMemoryTransfer::areSettingsValid()
 
 void UIMemoryTransfer::on_leFile_textChanged( const QString & text )
 {
+   updateFileType();
    dbbButtons->button(QDialogButtonBox::Ok)->setEnabled(areSettingsValid());
 }
 
@@ -89,9 +93,7 @@ void UIMemoryTransfer::on_leEndAddress_textChanged( const QString & text )
 
 void UIMemoryTransfer::on_rbUpload_toggled(bool checked)
 {
-	leStartAddress->setEnabled(true);
-   leEndAddress->setEnabled(checked != true);
-   cbPC->setEnabled(checked == true);
+   updateFileType();
 
    dbbButtons->button(QDialogButtonBox::Ok)->setEnabled(areSettingsValid());
 }
@@ -106,25 +108,27 @@ void UIMemoryTransfer::on_tbBrowse_clicked()
    }
    else
    {
-      const QString s = CommonDialogs::getOpenFileName( leFile->text(), QtYabause::translate( "Choose a binary or program file" ), QtYabause::translate( "Binary Files (*.bin);;COFF Program Files (*.cof *.coff);;ELF Program Files (*.elf);;All Files (*)" ) );
+      /* Seuls les binaires bruts et les executables CPE (SN Systems) sont
+         geres : les filtres COFF/ELF proposes jusqu'ici etaient charges comme
+         des binaires bruts a l'adresse de depart, en-tetes compris. */
+      const QString s = CommonDialogs::getOpenFileName( leFile->text(), QtYabause::translate( "Choose a binary or program file" ), QtYabause::translate( "Program Files (*.bin *.cpe);;Binary Files (*.bin);;SN Systems CPE Files (*.cpe);;All Files (*)" ) );
       if ( !s.isNull() )
-		{
          leFile->setText( s );
-			if (s.endsWith(".cof", Qt::CaseInsensitive) ||
-				 s.endsWith(".coff", Qt::CaseInsensitive) ||
-				 s.endsWith(".elf", Qt::CaseInsensitive))
-			{
-				 cbPC->setCheckState(Qt::Checked);
-			    cbPC->setEnabled(false);
-				 leStartAddress->setEnabled(false);
-			}
-			else
-			{
-				cbPC->setEnabled(true);
-				leStartAddress->setEnabled(true);
-			}
-		}
    }
+}
+
+/* Un CPE porte ses adresses de chargement et son point d'entree : l'adresse
+   de depart ne sert pas. Reconnu a la signature "CPE" 01, pas a l'extension. */
+void UIMemoryTransfer::updateFileType()
+{
+   const bool upload = rbUpload->isChecked();
+   const bool cpe = upload && MappedMemoryIsCpe( QFile::encodeName( leFile->text() ).constData() );
+
+   leStartAddress->setEnabled( !cpe );
+   leEndAddress->setEnabled( !upload );
+   cbPC->setEnabled( upload );
+   cbPC->setText( cpe ? QtYabause::translate( "Run program (reset, PC = CPE entry point)" )
+                      : QtYabause::translate( "Run program (reset, PC = Start Address)" ) );
 }
 
 void UIMemoryTransfer::accept()
@@ -138,6 +142,14 @@ void UIMemoryTransfer::accept()
       return;
    }
 
+   /* MSH2 n'existe qu'apres YabauseInit() : sans emulation demarree, l'appel
+      dereferencait un pointeur nul. */
+   if (mYabauseThread->init() < 0 || MSH2 == NULL)
+   {
+      CommonDialogs::error(QtYabause::translate("Start the emulation first."), QtYabause::translate("Error"));
+      return;
+   }
+
 	if (mYabauseThread)
       mYabauseThread->pauseEmulation( false, false );
 
@@ -148,8 +160,27 @@ void UIMemoryTransfer::accept()
    }
    else
    {
-      // upload to ram and possibly execute
-       MappedMemoryLoad(MSH2, QFile::encodeName(leFile->text()).constData(), startAddress);
+      /* Envoi en memoire, et lancement si la case est cochee. La case
+         "Set PC to Start Address" n'etait jamais lue : le PC ne changeait
+         pas. */
+      const QByteArray file = QFile::encodeName(leFile->text());
+      const int run = (cbPC->isEnabled() && cbPC->isChecked()) ? 1 : 0;
+      u32 entry = 0;
+      const int ret = MappedMemoryLoadExec(MSH2, file.constData(), startAddress, run, &entry);
+
+      if (ret != 0)
+      {
+         QString msg;
+         switch (ret)
+         {
+            case -2: msg = QtYabause::translate("Not enough memory to load the file."); break;
+            case -3: msg = QtYabause::translate("Invalid or truncated CPE file."); break;
+            case -4: msg = QtYabause::translate("This CPE file has no entry point: uncheck the run option to only load it."); break;
+            default: msg = QtYabause::translate("Can't read the file."); break;
+         }
+         CommonDialogs::error(msg, QtYabause::translate("Error"));
+         return;
+      }
    }
 
 	QDialog::accept();
