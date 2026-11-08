@@ -667,7 +667,7 @@
        <item row="10" column="0" colspan="3">
         <widget class="QLineEdit" name="leMemory"/>
        </item>
-       <item row="14" column="1">
+       <item row="17" column="1">
         <spacer>
          <property name="orientation">
           <enum>Qt::Vertical</enum>
@@ -713,6 +713,49 @@
          </property>
         </widget>
        </item>
+       <item row="14" column="0" colspan="4">
+        <widget class="QLabel" name="lFloppy">
+         <property name="font">
+          <font>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+         <property name="text">
+          <string>Floppy Disk Drive (communication connector)</string>
+         </property>
+         <property name="textFormat">
+          <enum>Qt::PlainText</enum>
+         </property>
+        </widget>
+       </item>
+       <item row="15" column="0" colspan="2">
+        <widget class="QCheckBox" name="cbFloppyEnabled">
+         <property name="toolTip">
+          <string>Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).</string>
+         </property>
+         <property name="text">
+          <string>Connect the floppy disk drive</string>
+         </property>
+        </widget>
+       </item>
+       <item row="15" column="2" colspan="2">
+        <widget class="QCheckBox" name="cbFloppyWriteProtect">
+         <property name="text">
+          <string>Write protected</string>
+         </property>
+        </widget>
+       </item>
+       <item row="16" column="0" colspan="3">
+        <widget class="QLineEdit" name="leFloppyFolder"/>
+       </item>
+       <item row="16" column="3">
+        <widget class="QToolButton" name="tbFloppyFolder">
+         <property name="text">
+          <string>...</string>
+         </property>
+        </widget>
+       </item>
        <item row="8" column="0">
         <widget class="QComboBox" name="cbRegion"/>
        </item>
@@ -731,15 +774,15 @@
         </widget>
        </item>
        <item row="5" column="0">
-+        <widget class="QLabel" name="lCartridgeSTVPath">
-+         <property name="text">
-+          <string>Mame romset 0.269:</string>
-+         </property>
-+         <property name="visible">
-+          <bool>false</bool>
-+        </property>
-+        </widget>
-+       </item>
+        <widget class="QLabel" name="lCartridgeSTVPath">
+         <property name="text">
+          <string>Mame romset 0.269:</string>
+         </property>
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
      <widget class="QWidget" name="wInput">
