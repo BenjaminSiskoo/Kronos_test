@@ -34,6 +34,7 @@
 #include "rax.h"
 #include "peripheral.h"
 #include "eeprom.h"
+#include "movie.h"
 
 cartridge_struct *CartridgeArea;
 
@@ -1569,6 +1570,10 @@ static void CartBupLoad(u8 *bupram, u32 size, const char *filename)
 
 static void CartBupSave(u8 *bupram, u32 size, const char *filename)
 {
+   /* Lecture d'un film (movie.c) : la cartouche contient la sauvegarde du
+      testeur, le fichier de l'utilisateur ne doit pas etre remplace. */
+   if (MovieBackupLocked())
+      return;
    if (cartBupSaveDisabled) {
       YuiMsg("Backup cartridge: %s was not readable at start-up, not overwritten\n", filename ? filename : "");
       return;
