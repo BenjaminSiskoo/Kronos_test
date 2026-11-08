@@ -1989,9 +1989,25 @@ void Cs2InitializeCDSystem(void) {
 
   Cs2Area->nextStatus = 0xFF;
 
+  /* Initialize CD system : la reponse et les rapports qui suivent donnent
+     BUSY, puis PAUSE au rapport periodique suivant (setBusyStatus()).
+     ST-162 (System Library User's Guide, 4.1.1, figure 4.1) : la commande
+     d'initialisation mene le lecteur a <PAUSE>, et "the <BUSY> status
+     indicates that a status change is in progress". Mednafen (ss/cdb.c,
+     COMMAND_INIT) met CurPosInfo.status = STATUS_BUSY et repond avec cet
+     etat ; le lecteur ne redonne son etat reel qu'a sa mise a jour suivante.
+     Kronos passait directement a PAUSE.
+
+     Shichuu Suimei Pitagraph (T-19501G) : apres CKCHG, sa bibliotheque CD
+     enchaine Init, Get TOC et End Data Transfer, puis attend (0601CFB8) que
+     l'etat garde de la derniere reponse (0608212C) ne vaille plus PAUSE ;
+     cette copie n'est relue qu'a la commande suivante. Avec PAUSE tout de
+     suite, l'attente ne finissait jamais (ecran noir, BIOS reel comme BIOS
+     emule). Avant ea9c80f, Get TOC forcait BUSY -> PAUSE et le jeu passait
+     par hasard. */
   if ((Cs2Area->status & 0xF) != CDB_STAT_OPEN && (Cs2Area->status & 0xF) != CDB_STAT_NODISC)
   {
-     setStatus(CDB_STAT_PAUSE);
+     setBusyStatus(CDB_STAT_PAUSE);
      Cs2Area->FAD = 150;
   }
 
@@ -2403,8 +2419,25 @@ void Cs2SeekDisc(void) {
 	}
 	// Pause
 	else if ((Cs2Area->reg.CR1 & 0xFF) == 0xFF && Cs2Area->reg.CR2 == 0xFFFF){
+    u8 prev = Cs2Area->status & 0xF;
     Cs2Area->_seekToStop = 1; //The seek command is generating a stop.
 		setBusyStatus(CDB_STAT_PAUSE);
+    /* Seek Disc FFFFFFH (pause) : BUSY doit durer au moins une periode de
+       rapport. Mednafen (ss/cdb.c, COMMAND_SEEK cmd_sp == 0xFFFFFF) met
+       STATUS_BUSY ; le lecteur ne passe en DRIVEPHASE_PAUSE qu'au secteur
+       suivant, et STATUS_PAUSE n'est pose qu'au tick PeriodicIdleCounter
+       d'apres. Kronos gardait l'echeance du rapport periodique en cours :
+       PAUSE pouvait arriver quelques lignes apres la commande.
+
+       Shichuu Suimei Pitagraph (T-19501G, BIOS emule) : en lecture, sa
+       bibliotheque CD envoie Seek FFFFFFH puis Reset Selector (48H) deux
+       lignes plus tard, et attend (0601CF96-0601CFD8) que l'etat garde de
+       la derniere reponse (0608212C) ne vaille plus 01H ; rien ne le remet
+       a jour pendant cette attente. Reponse PAUSE (0180H) -> boucle sans
+       fin ; sur console la reponse est encore BUSY. Le rapport suivant
+       vient donc une periode complete apres la commande. */
+    Cs2Area->_periodiccycles = 0;
+    Cs2SetTiming(prev == CDB_STAT_PLAY || prev == CDB_STAT_SEEK);
 	}
   else if (Cs2Area->reg.CR1 & 0x80)
   {
