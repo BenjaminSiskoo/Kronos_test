@@ -56,6 +56,8 @@ protected:
 	int mInit;
 
 	void deInitEmulation();
+	void loadCommandLineBinary();
+	void dropCommandLineBinary();
 	void resetYabauseConf();
 
 	/* Chaines de mYabauseConf, voir YabauseThread.cpp. */
