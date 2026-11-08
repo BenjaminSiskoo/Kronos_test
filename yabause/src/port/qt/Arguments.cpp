@@ -12,6 +12,7 @@
 
 #include "VolatileSettings.h"
 #include "QtYabause.h"
+#include "ControllerTypes.h"
 #include "stv.h"
 
 #include <algorithm>
@@ -234,6 +235,9 @@ const Choice controllers[] = {
 	{ "twin", PERTWINSTICKS, false },
 	{ "gun", PERGUN, false },
 	{ "keyboard", PERKEYBOARD, false },
+	{ "netlink-keyboard", PERKEYBOARD_NETLINK, false },
+	{ "twinstick", PERPAD_TWINSTICK, false },
+	{ "joycard", PERPAD_JOYCARD, false },
 	{ "mouse", PERMOUSE, false },
 	{ "wheel", PERWHEEL, false },
 	{ "cabinet", PERCABINET, false },
@@ -242,6 +246,8 @@ const Choice controllers[] = {
 	{ "twinsticks", PERTWINSTICKS, true }, { "lightgun", PERGUN, true },
 	{ "racing", PERWHEEL, true }, { "stv", PERCABINET, true },
 	{ "hopper", PERCABINET, true }, { "mahjong", PERCABINET, true },
+	{ "keyboard-jp", PERKEYBOARD, true }, { "keyboard-us", PERKEYBOARD_NETLINK, true },
+	{ "virtualon", PERPAD_TWINSTICK, true }, { "sbom", PERPAD_JOYCARD, true },
 	{ NULL, 0, false } };
 
 const Choice perCores[] = {
@@ -367,6 +373,15 @@ bool doBios(const QString& v, QString& err)
 	return true;
 }
 
+/* --fdd: plugs the drive even when it is disabled in Settings. */
+bool doFdd(const QString& v, QString& err)
+{
+	if (!setPath("CommPort/FloppyFolder", false, true)(v, err))
+		return false;
+	vs()->setValue("CommPort/FloppyEnabled", true);
+	return true;
+}
+
 bool doIso(const QString& v, QString& err)
 {
 	const QFileInfo fi(v);
@@ -483,6 +498,29 @@ bool doPort(int port, const QString& v, QString& err)
 		types << QString::number(type);
 	}
 	vs()->setValue(QString("Input/Override/Port%1").arg(port), types.join(","));
+	return true;
+}
+
+/* --multitap : ports holding a 6Player multitap, "1", "2", "1,2" or
+   "none". Replaces the "6Player multitap connected" setting of both ports
+   for this run. */
+bool doMultitap(const QString& v, QString& err)
+{
+	bool on[3] = { false, false, false };
+	const QString value = v.trimmed().toLower();
+	if (value != "none" && value != "0")
+	{
+		const QStringList tokens = value.split(',');
+		for (int i = 0; i < tokens.size(); i++)
+		{
+			const QString t = tokens[i].trimmed();
+			if (t == "1") on[1] = true;
+			else if (t == "2") on[2] = true;
+			else { err = QString("unknown port '%1' (1, 2, 1,2 or none)").arg(t); return false; }
+		}
+	}
+	vs()->setValue(QString(SETTINGS_OVERRIDE_MULTITAP).arg(1), on[1]);
+	vs()->setValue(QString(SETTINGS_OVERRIDE_MULTITAP).arg(2), on[2]);
 	return true;
 }
 
@@ -632,6 +670,8 @@ const std::vector<Option>& buildOptions()
 		p2.description = QString("Controllers on port 2, same syntax as --port1.");
 		o.push_back(p2);
 	}
+	o.push_back(value(NULL, "--fdd", "<FOLDER>", "Plug the Floppy Disk Drive (HSS-0128) into the communication connector; the floppy is kept in this folder (fdd_part0.bin, fdd_part1.bin).", doFdd));
+	o.push_back(value(NULL, "--multitap", "<PORTS>", "6Player multitap plugged in: 1, 2, 1,2 or none (overrides Settings > Input).", doMultitap));
 	o.push_back(choice(NULL, "--per-core", "<CORE>", "Input backend.", "Input/PerCore", perCores));
 	{
 		Option& last = o.back();
