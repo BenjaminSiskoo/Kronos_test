@@ -64,6 +64,12 @@
 #define ACTION_SAVESLOT 5
 #define ACTION_LOADSLOT 6
 #define ACTION_LOADCDROM 7
+#define ACTION_MOVIE_RECORD 8
+#define ACTION_MOVIE_PLAY 9
+
+extern "C" {
+#include "movie.h"
+}
 
 extern "C" {
 extern VideoInterface_struct *VIDCoreList[];
@@ -182,6 +188,10 @@ UIYabause::UIYabause( QWidget* parent )
 	// list via STVGetRomList()) was never actually called at startup.
 	// Call it directly now that the connection genuinely exists.
 	threadInitialized();
+
+	// Films d'entrees (avant la lecture des raccourcis, pour qu'ils puissent
+	// en recevoir un)
+	createMovieMenu();
 
 	// Load shortcuts
 	VolatileSettings* vs = QtYabause::volatileSettings();
@@ -432,6 +442,12 @@ void UIYabause::runActionsAlreadyPaused() {
 				emit requestReset();
 			}
 		break;
+		case ACTION_MOVIE_RECORD:
+			movieRecord();
+		break;
+		case ACTION_MOVIE_PLAY:
+			moviePlay();
+		break;
 		default:
 		break;
 	}
@@ -497,6 +513,12 @@ void UIYabause::runActions() {
 			loadCDRom();
 			if (yabsys.isReloadingImage == 2)
 				emit requestReset();
+		break;
+		case ACTION_MOVIE_RECORD:
+			movieRecord();
+		break;
+		case ACTION_MOVIE_PLAY:
+			moviePlay();
 		break;
 		default:
 		break;
@@ -1007,6 +1029,181 @@ void UIYabause::loadSlotAs() {
 		CommonDialogs::error( QtYabause::translate( "Couldn't load state file" ) );
 	else
 		aEmulationRun->trigger();
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Films d'entrees (movie.c) : un testeur enregistre sa partie, la partie est
+// rejouee a l'identique a partir de son fichier .ymv.
+//////////////////////////////////////////////////////////////////////////////
+
+void UIYabause::createMovieMenu()
+{
+	mMovieMenu = new QMenu( QtYabause::translate( "Input &movie" ), this );
+	mMovieMenu->setObjectName( "mMovie" );
+
+	aMovieRecord = new QAction( QtYabause::translate( "&Record input movie..." ), this );
+	aMovieRecord->setObjectName( "aMovieRecord" );
+	aMovieRecord->setStatusTip( QtYabause::translate( "Reset the game and record every input, to replay the session exactly" ) );
+
+	aMoviePlay = new QAction( QtYabause::translate( "&Play input movie..." ), this );
+	aMoviePlay->setObjectName( "aMoviePlay" );
+	aMoviePlay->setStatusTip( QtYabause::translate( "Reset the game and replay a recorded session" ) );
+
+	aMovieStop = new QAction( QtYabause::translate( "&Stop input movie" ), this );
+	aMovieStop->setObjectName( "aMovieStop" );
+	aMovieStop->setEnabled( false );
+
+	aMovieReadOnly = new QAction( QtYabause::translate( "Read-&only playback" ), this );
+	aMovieReadOnly->setObjectName( "aMovieReadOnly" );
+	aMovieReadOnly->setCheckable( true );
+	aMovieReadOnly->setChecked( true );
+	aMovieReadOnly->setEnabled( false );
+	aMovieReadOnly->setStatusTip( QtYabause::translate( "When unchecked, loading a save state during playback resumes the recording from that frame" ) );
+
+	mMovieMenu->addAction( aMovieRecord );
+	mMovieMenu->addAction( aMoviePlay );
+	mMovieMenu->addAction( aMovieStop );
+	mMovieMenu->addSeparator();
+	mMovieMenu->addAction( aMovieReadOnly );
+
+	mTools->addSeparator();
+	mTools->addMenu( mMovieMenu );
+
+	connect( aMovieRecord, SIGNAL( triggered() ), this, SLOT( movieRecordTriggered() ) );
+	connect( aMoviePlay, SIGNAL( triggered() ), this, SLOT( moviePlayTriggered() ) );
+	connect( aMovieStop, SIGNAL( triggered() ), this, SLOT( movieStopTriggered() ) );
+	connect( aMovieReadOnly, SIGNAL( triggered() ), this, SLOT( movieReadOnlyTriggered() ) );
+
+	mMovieTimer = new QTimer( this );
+	connect( mMovieTimer, SIGNAL( timeout() ), this, SLOT( movieTimerTick() ) );
+	mMovieTimer->start( 250 );
+}
+
+void UIYabause::movieRecordTriggered()
+{
+	if ( mYabauseThread->init() < 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Start a game before recording an input movie." ) );
+		return;
+	}
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_MOVIE_RECORD );
+	mLocker->lock();
+}
+
+void UIYabause::moviePlayTriggered()
+{
+	if ( mYabauseThread->init() < 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Start the game of the movie before playing it." ) );
+		return;
+	}
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_MOVIE_PLAY );
+	mLocker->lock();
+}
+
+void UIYabause::movieStopTriggered()
+{
+	/* L'emulation tourne dans ce thread, entre deux trames : pas de verrou
+	   necessaire. */
+	StopMovie();
+	movieTimerTick();
+}
+
+void UIYabause::movieReadOnlyTriggered()
+{
+	if ( IsMovieLoaded() && Movie.Status == Playback
+		&& ( Movie.ReadOnly != 0 ) != aMovieReadOnly->isChecked() )
+		MovieToggleReadOnly();
+}
+
+void UIYabause::movieRecord()
+{
+	const QString dir = QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString();
+	QString fn = CommonDialogs::getSaveFileName( dir,
+		QtYabause::translate( "Record an input movie (the game will be reset)" ),
+		QtYabause::translate( "Kronos input movie (*.ymv)" ) );
+	if ( fn.isEmpty() )
+		return;
+	if ( QFileInfo( fn ).suffix().isEmpty() )
+		fn += ".ymv";
+
+	if ( SaveMovie( QFile::encodeName( fn ).constData() ) != 0 )
+	{
+		QString report = QString::fromUtf8( MovieGetReport() );
+		CommonDialogs::error( QtYabause::translate( "Couldn't record the input movie." ) + "\n" + report );
+		return;
+	}
+	appendLog( QString( "Input movie: recording to %1" ).arg( fn ).toUtf8().constData() );
+	aMovieReadOnly->setChecked( false );
+	movieTimerTick();
+	aEmulationRun->trigger();
+}
+
+void UIYabause::moviePlay()
+{
+	const QString dir = QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString();
+	const QString fn = CommonDialogs::getOpenFileName( dir,
+		QtYabause::translate( "Play an input movie (the game will be reset)" ),
+		QtYabause::translate( "Kronos input movie (*.ymv)" ) );
+	if ( fn.isEmpty() )
+		return;
+
+	const int ret = PlayMovie( QFile::encodeName( fn ).constData() );
+	const QString report = QString::fromUtf8( MovieGetReport() ).trimmed();
+	if ( ret != 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Couldn't play the input movie." )
+			+ ( report.isEmpty() ? QString() : "\n\n" + report ) );
+		return;
+	}
+	appendLog( QString( "Input movie: playing %1 (%2 frames)" ).arg( fn ).arg( MovieGetLength() ).toUtf8().constData() );
+	if ( !report.isEmpty() )
+	{
+		appendLog( report.toUtf8().constData() );
+		CommonDialogs::warning( QtYabause::translate( "The movie was not recorded in the same conditions, the replay may diverge:" )
+			+ "\n\n" + report );
+	}
+	aMovieReadOnly->setChecked( true );
+	movieTimerTick();
+	aEmulationRun->trigger();
+}
+
+void UIYabause::movieTimerTick()
+{
+	QString suffix;
+	const int desync = MovieGetDesyncFrame();
+
+	if ( MovieConsumeEndedFlag() )
+	{
+		// Fin de la lecture : la partie est la ou le testeur s'est arrete.
+		aEmulationPause->trigger();
+		appendLog( ( desync >= 0
+			? QString( "Input movie: end of playback (%1 frames), DESYNC at frame %2" ).arg( MovieGetLength() ).arg( desync )
+			: QString( "Input movie: end of playback (%1 frames), in sync" ).arg( MovieGetLength() ) ).toUtf8().constData() );
+	}
+
+	if ( IsMovieLoaded() && Movie.Status == Recording )
+		suffix = QString( "[REC %1]" ).arg( MovieGetFrame() );
+	else if ( IsMovieLoaded() && Movie.Status == Playback )
+		suffix = QString( "[PLAY %1/%2]" ).arg( MovieGetFrame() ).arg( MovieGetLength() );
+	else if ( MovieIsActive() )
+		suffix = QString( "[END %1]" ).arg( MovieGetLength() );
+	if ( !suffix.isEmpty() && desync >= 0 )
+		suffix += QString( " DESYNC @%1" ).arg( desync );
+
+	const bool active = MovieIsActive();
+	aMovieStop->setEnabled( active );
+	aMovieReadOnly->setEnabled( IsMovieLoaded() && Movie.Status == Playback );
+
+	// QtYabause::updateTitle() peut avoir remis le titre de base entre-temps.
+	QString title = windowTitle();
+	if ( !mMovieTitleSuffix.isEmpty() && title.endsWith( "  " + mMovieTitleSuffix ) )
+		title.chop( mMovieTitleSuffix.length() + 2 );
+	if ( !suffix.isEmpty() )
+		title += "  " + suffix;
+	if ( title != windowTitle() )
+		setWindowTitle( title );
+	mMovieTitleSuffix = suffix;
 }
 
 void UIYabause::on_mFileSaveState_triggered( QAction* a )
