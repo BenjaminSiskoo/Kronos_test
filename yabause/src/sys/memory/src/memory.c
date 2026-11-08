@@ -2431,6 +2431,10 @@ const char *BackupGetFileName(void) {
 }
 
 void BackupFlush() {
+  /* Lecture d'un film (movie.c) : la RAM de sauvegarde est celle du
+     testeur, elle ne doit pas remplacer le fichier de l'utilisateur. */
+  if (MovieBackupLocked())
+    return;
   if (BupRam)
   {
       BupRamWritten = 0;
@@ -3193,7 +3197,8 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
 
       if ((movieposition > 0) && (movieposition <= chunkend)) {
          MemStateSetOffset(movieposition);
-         MovieReadState(stream);
+         /* borne : un etat sans film n'a rien apres movieposition */
+         MovieReadState(stream, chunkend - movieposition);
       }
    }
 
