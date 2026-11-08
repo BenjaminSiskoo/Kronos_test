@@ -28,6 +28,8 @@
 #include "peripheral.h"
 #include "sci.h"
 #include "commfdd.h"
+#include "memory.h"
+#include "yui.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -76,7 +78,56 @@ void YabauseThread::initEmulation()
 			// the very first frame instead of only after the player opens
 			// Settings once and it gets rewired as a side effect.
 			reloadControllers();
+		if ( mInit >= 0 )
+			loadCommandLineBinary();
 	}
+}
+
+/* --binary FILE[:ADDRESS] (Arguments.cpp): the program replaces the boot of
+   the disc. MappedMemoryLoadExec() resets the machine without loading a
+   disc (YabauseResetNoLoad), puts it in the state left by the BIOS
+   (YabauseSpeedySetup), copies the program and sets the master SH-2 PC:
+   CPE entry point, or ADDRESS for a raw binary. Called after YabauseInit()
+   and after each YabauseReset(), so a reset restarts the program like it
+   would restart a disc. A failure drops the program (no error at each
+   reset) and the machine keeps the normal boot. */
+void YabauseThread::loadCommandLineBinary()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	const QString file = vs->value( "autorun/binary" ).toString();
+
+	if ( file.isEmpty() || mInit < 0 || MSH2 == NULL )
+		return;
+
+	const u32 address = vs->value( "autorun/binary/address", 0x06004000u ).toUInt();
+	u32 entry = 0;
+	const int ret = MappedMemoryLoadExec( MSH2, QFile::encodeName( file ).constData(), address, 1, &entry );
+
+	if ( ret != 0 )
+	{
+		QString reason;
+		switch ( ret )
+		{
+			case -2: reason = QtYabause::translate( "not enough memory" ); break;
+			case -3: reason = QtYabause::translate( "invalid or truncated CPE file" ); break;
+			case -4: reason = QtYabause::translate( "the CPE file has no entry point" ); break;
+			default: reason = QtYabause::translate( "can't read the file" ); break;
+		}
+		dropCommandLineBinary();
+		emit error( QtYabause::translate( "Can't load the program %1: %2." ).arg( file, reason ), false );
+		return;
+	}
+
+	YuiMsg( "Program %s loaded, PC = %08X\n", QFile::encodeName( file ).constData(), (unsigned)entry );
+}
+
+/* Another disc or file was opened: the program given with --binary no
+   longer replaces its boot. */
+void YabauseThread::dropCommandLineBinary()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	vs->removeValue( "autorun/binary" );
+	vs->removeValue( "autorun/binary/address" );
 }
 
 /* Communication connector (back of the console, SH-2 SCI, sci.c): the
@@ -153,7 +204,10 @@ bool YabauseThread::pauseEmulation( bool pause, bool reset )
 
 bool YabauseThread::resetEmulation()
 {
-	if (yabsys.isReloadingImage == 2) mInit = -1;
+	if (yabsys.isReloadingImage == 2) {
+		mInit = -1;
+		dropCommandLineBinary();
+	}
 	yabsys.isReloadingImage = 0;
 	if ( mInit < 0 ) {
 		initEmulation();
@@ -165,6 +219,7 @@ bool YabauseThread::resetEmulation()
 		return false;
 	}
 	YabauseReset();
+	loadCommandLineBinary();
 
 	emit reset();
 
