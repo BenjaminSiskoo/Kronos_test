@@ -106,7 +106,7 @@ static const char * const SH2CacheDBList[] = {
    "T-14101G", // Kamen Rider - Sakusen File 1 (Japan)
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
-   "T-1525G", // Photo Genic (Japan)
+   "T-1524G", // Photo Genic (Japan)
    "T-30812G", // Shutsudou! Miniskirt Police (Japan)
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
