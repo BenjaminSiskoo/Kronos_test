@@ -24,6 +24,7 @@
 
 #include "debug.h"
 #include "peripheral.h"
+#include "movie.h"
 #include "ygl.h"
 #include <string.h>
 
@@ -1736,7 +1737,15 @@ void * PerAddPeripheral(PortData_struct *port, int perid)
 
    if (pernum == 0xF)
      return NULL;
-   else if (perid == PERGUN && pernum == 1) // Gun doesn't work with multi-tap
+   /* The Virtua Gun / Stunner works in SMPC direct mode only: it can't go
+      on a multitap (implicit F1h -> 16h, or PerMultitapAdd()), and nothing
+      else can be plugged next to it (port status A0h has no connector
+      count, the peripheral added after it used to overwrite it). The old
+      test only refused pernum == 1, so a gun added to a port that already
+      had a multitap (pernum == 6) went into one of its connectors. */
+   else if (perid == PERGUN && pernum != 0)
+     return NULL;
+   else if (port->data[0] == 0xA0)
      return NULL;
 
    // if only one peripheral is connected use 0xF0(unless Gun), otherwise use 0x00 or 0x10
@@ -1894,6 +1903,45 @@ int PerGetId(void * peripheral)
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// 6Player multitap (Sega 6Player HSS-0103 / Hudson SBom Multitap HC-736)
+//
+// Port status byte of the INTBACK peripheral data: upper nibble = multitap
+// ID, lower nibble = number of connectors. F0h = nothing connected, F1h =
+// one peripheral connected directly, 16h = 6Player (ID 1h, 6 connectors).
+// Each connector then gives its peripheral ID (type / data size nibbles)
+// and data, FFh for an empty connector. References: SMPC sample program
+// manual ST-214-111594 (port status display: DIRECT (F1), MULTI-TERMINAL 6
+// (16), ID FF = nothing connected), STTECH41 (port status = multitap ID
+// upper nibble / connector count lower nibble), ST-162 4.3 (peripheral
+// library: multitap 6P connectors, unconnected connectors).
+//
+// The SBom Multitap is Hudson's version of the 6Player and works with the
+// same games (Sega Retro, HC-736): same status here.
+//////////////////////////////////////////////////////////////////////////////
+
+#define PER_MULTITAP_STATUS     0x16
+#define PER_MULTITAP_CONNECTORS 6
+
+int PerMultitapAdd(PortData_struct * port)
+{
+   int i;
+
+   if (port == NULL || port->data[0] != 0xF0)
+      return -1;
+
+   port->data[0] = PER_MULTITAP_STATUS;
+   for (i = 1; i <= PER_MULTITAP_CONNECTORS; i++)
+      port->data[i] = 0xFF;
+   port->size = 1 + PER_MULTITAP_CONNECTORS;
+   return 0;
+}
+
+int PerMultitapConnected(PortData_struct * port)
+{
+   return (port != NULL) && (port->data[0] == PER_MULTITAP_STATUS);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 // Keyboard
 //
 // Data format, key codes and pad-compatible buttons: Saturn Technical
@@ -1968,6 +2016,7 @@ typedef struct
    u16 buttons;              /* PERKB_BTN_* currently reported as pressed */
    u8 lock;                  /* PERKB_LOCK_* */
    u8 last_code;
+   u8 model;                 /* PERKB_MODEL_* */
 } PerKeyboardState;
 
 static volatile u8 perkb_host_down[PERKB_NUM_CODES];
@@ -2000,6 +2049,37 @@ void PerKeyboardHostReleaseAll(void)
 int PerKeyboardIsConnected(void)
 {
    return perkb_count > 0;
+}
+
+/* Keys a keyboard model physically has (see PERKB_MODEL_* in peripheral.h).
+   Saturn Keyboard (JP): the STTECH45 table has no numeric keypad and no
+   ISO "< >" key; its keypad codes come from Mednafen's US keyboard. NetLink
+   (US, PS/2 adapter): every code except the two Japanese keys "Ro" (51h)
+   and "Yen" (6Ah), which a US keyboard doesn't have. */
+static int PerKeyboardModelHasKey(int model, int code)
+{
+   switch (model)
+   {
+      case PERKB_MODEL_SATURN_JP:
+         switch (code)
+         {
+            case 0x19:                         /* keypad Enter */
+            case 0x61:                         /* ISO "< >" */
+            case 0x69: case 0x6B: case 0x6C:   /* keypad 1 4 7 */
+            case 0x70: case 0x71: case 0x72:   /* keypad 0 . 2 */
+            case 0x73: case 0x74: case 0x75:   /* keypad 5 6 8 */
+            case 0x79: case 0x7A: case 0x7B:   /* keypad + 3 - */
+            case 0x7C: case 0x7D:              /* keypad * 9 */
+            case 0x80:                         /* keypad / */
+               return 0;
+            default:
+               return 1;
+         }
+      case PERKB_MODEL_NETLINK_US:
+         return (code != 0x51) && (code != 0x6A);
+      default:
+         return 1;
+   }
 }
 
 static void PerKeyboardPush(PerKeyboardState * st, u16 ev)
@@ -2062,6 +2142,13 @@ static void PerKeyboardScan(PerKeyboardState * st)
       const u8 host_seq = perkb_host_seq[code];
       const int pressed = (host_seq != st->seq[code]); /* host press(es) not seen yet */
       int need;
+
+      /* A key this keyboard model doesn't have is never sent. */
+      if (!PerKeyboardModelHasKey(st->model, code))
+      {
+         st->seq[code] = host_seq;
+         continue;
+      }
 
       if (code == PERKB_CODE_PAUSE)
       {
@@ -2165,7 +2252,9 @@ static void PerKeyboardOutput(PerKeyboardState * st)
    st->kb->kbbits[3] = st->last_code;
 }
 
-void PerKeyboardUpdate(PortData_struct * port)
+static void PerJoycardRefresh(PortData_struct * port);
+
+static void PerKeyboardRefresh(PortData_struct * port)
 {
    int i;
 
@@ -2180,6 +2269,204 @@ void PerKeyboardUpdate(PortData_struct * port)
       PerKeyboardScan(st);
       PerKeyboardOutput(st);
    }
+}
+
+/* Called by the SMPC right before it copies the port data for an INTBACK.
+   During a movie the port data must stay what DoMovie() recorded / read
+   back: the keyboard codes and the Joycard outputs are then produced once
+   per frame by PerMovieRecordUpdate() (recording) or come from the movie
+   (playback). Before, the keyboard bytes read back from a movie were
+   overwritten here by the live keyboard state at every INTBACK, so a movie
+   recorded with the keyboard desynchronised on playback. */
+void PerKeyboardUpdate(PortData_struct * port)
+{
+   if (MovieIsDeterministic())
+      return;
+   PerKeyboardRefresh(port);
+   PerJoycardRefresh(port);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Hudson SBom Joycard (HC-735), see peripheral.h.
+//
+// The pad itself is a standard PERPAD in the port data. The bindings don't
+// write its bits directly: they set the "held" / "turbo" / switch state
+// below, and PerJoycardOutput() makes the pad bits from it and from the
+// emulated time (frames x frame length, like the keyboard repeat), so the
+// result is the same whatever the host timing and is reproducible in a
+// movie. Recomputed once per frame (PerInputFrameUpdate) and at each
+// INTBACK (PerKeyboardUpdate), the latter so that a key pressed during the
+// frame isn't delayed by a frame.
+//////////////////////////////////////////////////////////////////////////////
+
+#define PERJC_MAX            12      /* 2 ports x 6 multitap connectors */
+#define PERJC_SLOW_HELD      0x01
+#define PERJC_HU_HELD        0x02
+#define PERJC_HU_PERIOD_US   66667   /* Start 15 times per second */
+#define PERJC_SLOW_PERIOD_US 133333  /* 7.5 times per second (assumption) */
+
+struct PerJoycard_s
+{
+   PerPad_struct * pad;
+   volatile u16 held;   /* PERKB_BTN_* layout, buttons held normally */
+   volatile u16 turbo;  /* buttons held through their turbo binding */
+   volatile u8 slow;    /* PERJC_SLOW_HELD / PERJC_HU_HELD */
+};
+
+static PerJoycard_struct perjc[PERJC_MAX];
+static int perjc_count = 0;
+static u32 perjc_turbo_period_us = 1000000 / 15;
+
+void PerJoycardSetTurboRate(int presses_per_second)
+{
+   if (presses_per_second < 1) presses_per_second = 1;
+   if (presses_per_second > 30) presses_per_second = 30;
+   perjc_turbo_period_us = 1000000 / (u32)presses_per_second;
+}
+
+#define DEFINE_JOYCARD_INPUT(func, field, mask) \
+static void func##Pressed(PerJoycard_struct * jc) { jc->field |= (mask); } \
+static void func##Released(PerJoycard_struct * jc) { jc->field &= (u16)~(mask); }
+
+DEFINE_JOYCARD_INPUT(PerJoycardUp, held, PERKB_BTN_UP)
+DEFINE_JOYCARD_INPUT(PerJoycardRight, held, PERKB_BTN_RIGHT)
+DEFINE_JOYCARD_INPUT(PerJoycardDown, held, PERKB_BTN_DOWN)
+DEFINE_JOYCARD_INPUT(PerJoycardLeft, held, PERKB_BTN_LEFT)
+DEFINE_JOYCARD_INPUT(PerJoycardR, held, PERKB_BTN_R)
+DEFINE_JOYCARD_INPUT(PerJoycardL, held, PERKB_BTN_L)
+DEFINE_JOYCARD_INPUT(PerJoycardStart, held, PERKB_BTN_START)
+DEFINE_JOYCARD_INPUT(PerJoycardA, held, PERKB_BTN_A)
+DEFINE_JOYCARD_INPUT(PerJoycardB, held, PERKB_BTN_B)
+DEFINE_JOYCARD_INPUT(PerJoycardC, held, PERKB_BTN_C)
+DEFINE_JOYCARD_INPUT(PerJoycardX, held, PERKB_BTN_X)
+DEFINE_JOYCARD_INPUT(PerJoycardY, held, PERKB_BTN_Y)
+DEFINE_JOYCARD_INPUT(PerJoycardZ, held, PERKB_BTN_Z)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboA, turbo, PERKB_BTN_A)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboB, turbo, PERKB_BTN_B)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboC, turbo, PERKB_BTN_C)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboX, turbo, PERKB_BTN_X)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboY, turbo, PERKB_BTN_Y)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboZ, turbo, PERKB_BTN_Z)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboL, turbo, PERKB_BTN_L)
+DEFINE_JOYCARD_INPUT(PerJoycardTurboR, turbo, PERKB_BTN_R)
+
+static void PerJoycardSlowPressed(PerJoycard_struct * jc) { jc->slow |= PERJC_SLOW_HELD; }
+static void PerJoycardSlowReleased(PerJoycard_struct * jc) { jc->slow &= (u8)~PERJC_SLOW_HELD; }
+static void PerJoycardHuPressed(PerJoycard_struct * jc) { jc->slow |= PERJC_HU_HELD; }
+static void PerJoycardHuReleased(PerJoycard_struct * jc) { jc->slow &= (u8)~PERJC_HU_HELD; }
+
+#undef DEFINE_JOYCARD_INPUT
+
+static PerBaseConfig_struct perjoycardbaseconfig[] = {
+   { PERPAD_UP, PERCB(PerJoycardUpPressed), PERCB(PerJoycardUpReleased), NULL, NULL },
+   { PERPAD_RIGHT, PERCB(PerJoycardRightPressed), PERCB(PerJoycardRightReleased), NULL, NULL },
+   { PERPAD_DOWN, PERCB(PerJoycardDownPressed), PERCB(PerJoycardDownReleased), NULL, NULL },
+   { PERPAD_LEFT, PERCB(PerJoycardLeftPressed), PERCB(PerJoycardLeftReleased), NULL, NULL },
+   { PERPAD_RIGHT_TRIGGER, PERCB(PerJoycardRPressed), PERCB(PerJoycardRReleased), NULL, NULL },
+   { PERPAD_LEFT_TRIGGER, PERCB(PerJoycardLPressed), PERCB(PerJoycardLReleased), NULL, NULL },
+   { PERPAD_START, PERCB(PerJoycardStartPressed), PERCB(PerJoycardStartReleased), NULL, NULL },
+   { PERPAD_A, PERCB(PerJoycardAPressed), PERCB(PerJoycardAReleased), NULL, NULL },
+   { PERPAD_B, PERCB(PerJoycardBPressed), PERCB(PerJoycardBReleased), NULL, NULL },
+   { PERPAD_C, PERCB(PerJoycardCPressed), PERCB(PerJoycardCReleased), NULL, NULL },
+   { PERPAD_X, PERCB(PerJoycardXPressed), PERCB(PerJoycardXReleased), NULL, NULL },
+   { PERPAD_Y, PERCB(PerJoycardYPressed), PERCB(PerJoycardYReleased), NULL, NULL },
+   { PERPAD_Z, PERCB(PerJoycardZPressed), PERCB(PerJoycardZReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_A, PERCB(PerJoycardTurboAPressed), PERCB(PerJoycardTurboAReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_B, PERCB(PerJoycardTurboBPressed), PERCB(PerJoycardTurboBReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_C, PERCB(PerJoycardTurboCPressed), PERCB(PerJoycardTurboCReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_X, PERCB(PerJoycardTurboXPressed), PERCB(PerJoycardTurboXReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_Y, PERCB(PerJoycardTurboYPressed), PERCB(PerJoycardTurboYReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_Z, PERCB(PerJoycardTurboZPressed), PERCB(PerJoycardTurboZReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_L, PERCB(PerJoycardTurboLPressed), PERCB(PerJoycardTurboLReleased), NULL, NULL },
+   { PERJOYCARD_TURBO_R, PERCB(PerJoycardTurboRPressed), PERCB(PerJoycardTurboRReleased), NULL, NULL },
+   { PERJOYCARD_SLOW, PERCB(PerJoycardSlowPressed), PERCB(PerJoycardSlowReleased), NULL, NULL },
+   { PERJOYCARD_HU, PERCB(PerJoycardHuPressed), PERCB(PerJoycardHuReleased), NULL, NULL },
+};
+
+/* Emulated time at the start of the current frame, in microseconds. */
+static u64 PerEmulatedTimeUs(void)
+{
+   return (u64)yabsys.frame_count * (u64)(yabsys.IsPal ? 20000 : 16683);
+}
+
+/* Free running square wave: 1 during the first half of each period. */
+static int PerSquareWave(u64 t_us, u32 period_us)
+{
+   return (t_us % period_us) < (period_us / 2);
+}
+
+static void PerJoycardOutput(PerJoycard_struct * jc, u64 t_us)
+{
+   u16 pressed = jc->held;
+   const u16 turbo = jc->turbo;
+   const u8 slow = jc->slow;
+
+   if (turbo && PerSquareWave(t_us, perjc_turbo_period_us))
+      pressed |= turbo;
+
+   if (slow & PERJC_HU_HELD)
+   {
+      if (PerSquareWave(t_us, PERJC_HU_PERIOD_US))
+         pressed |= PERKB_BTN_START;
+   }
+   else if (slow & PERJC_SLOW_HELD)
+   {
+      if (PerSquareWave(t_us, PERJC_SLOW_PERIOD_US))
+         pressed |= PERKB_BTN_START;
+   }
+
+   /* Standard pad data, 0 = pressed; bits 2-0 of the 2nd byte stay 1. */
+   jc->pad->padbits[0] = (u8)(~(pressed >> 8) & 0xFF);
+   jc->pad->padbits[1] = (u8)((~pressed & 0xF8) | 0x07);
+}
+
+/* Refreshes the Joycards connected to @p port, or all of them (NULL). */
+static void PerJoycardRefresh(PortData_struct * port)
+{
+   const u64 t_us = PerEmulatedTimeUs();
+   int i;
+
+   for (i = 0; i < perjc_count; i++)
+   {
+      const u8 * p = (const u8 *)perjc[i].pad;
+      if (port != NULL && (p < port->data || p >= port->data + sizeof(port->data)))
+         continue;
+      PerJoycardOutput(&perjc[i], t_us);
+   }
+}
+
+void PerInputFrameUpdate(void)
+{
+   PerJoycardRefresh(NULL);
+}
+
+void PerMovieRecordUpdate(void)
+{
+   PerJoycardRefresh(NULL);
+   PerKeyboardRefresh(&PORTDATA1);
+   PerKeyboardRefresh(&PORTDATA2);
+}
+
+PerJoycard_struct * PerJoycardAdd(PortData_struct * port)
+{
+   PerJoycard_struct * jc;
+   PerPad_struct * pad;
+
+   if (perjc_count >= PERJC_MAX)
+      return NULL;
+
+   /* Plain pad in the port data. PerAddPeripheral() also registers the
+      PERPAD bindings on the pad itself; they are never given a key (the
+      port binds the Joycard ids to the Joycard below), so they stay idle. */
+   pad = (PerPad_struct *) PerAddPeripheral(port, PERPAD);
+   if (pad == NULL)
+      return NULL;
+
+   jc = &perjc[perjc_count++];
+   memset(jc, 0, sizeof(*jc));
+   jc->pad = pad;
+   PerUpdateConfig(perjoycardbaseconfig, sizeof(perjoycardbaseconfig) / sizeof(PerBaseConfig_struct), jc);
+   return jc;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2325,6 +2612,8 @@ void PerPortReset(void)
         /* Keyboards are plugged in again by the port (PerKeyboardAdd). The
            host key state is kept: keys still held are sent again as Make. */
         perkb_count = 0;
+        /* Joycards too (PerJoycardAdd). */
+        perjc_count = 0;
 
 	perkeyconfigsize = 0;
         if (perkeyconfig)
@@ -2412,6 +2701,11 @@ PerGun_struct * PerGunAdd(PortData_struct * port)
 
 PerKeyboard_struct * PerKeyboardAdd(PortData_struct * port)
 {
+   return PerKeyboardAddModel(port, PERKB_MODEL_ANY);
+}
+
+PerKeyboard_struct * PerKeyboardAddModel(PortData_struct * port, int model)
+{
    PerKeyboard_struct * kb;
    PerKeyboardState * st;
    int i;
@@ -2426,6 +2720,7 @@ PerKeyboard_struct * PerKeyboardAdd(PortData_struct * port)
    st = &perkb[perkb_count++];
    memset(st, 0, sizeof(*st));
    st->kb = kb;
+   st->model = (u8)model;
    st->rep_code = -1;
    st->last_frame = yabsys.frame_count;
    /* Keys already held when the keyboard is plugged in are sent as Make
