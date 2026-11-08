@@ -26,6 +26,8 @@
 #include "YabauseGL.h"
 
 #include "peripheral.h"
+#include "sci.h"
+#include "commfdd.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -62,6 +64,8 @@ void YabauseThread::initEmulation()
 		mInit = YabauseInit( &mYabauseConf );
 		SetOSDToggle(showFPS);
 		if ( mInit >= 0 )
+			reloadCommPort();
+		if ( mInit >= 0 )
 			// reloadSettings() (via reloadControllers()) already wired the
 			// saved bindings once, but that happened *before* YabauseInit()
 			// actually loaded/identified the cartridge - for ST-V, that
@@ -72,6 +76,33 @@ void YabauseThread::initEmulation()
 			// the very first frame instead of only after the player opens
 			// Settings once and it gets rewired as a side effect.
 			reloadControllers();
+	}
+}
+
+/* Communication connector (back of the console, SH-2 SCI, sci.c): the
+   Floppy Disk Drive when it is enabled in Settings > Cart/Memory
+   (CommPort/FloppyEnabled) or with --fdd. The floppy is fdd_part0.bin /
+   fdd_part1.bin in CommPort/FloppyFolder (default: <data folder>/floppy).
+   An old .ini without CommPort/FloppyEnabled keeps the previous rule: the
+   drive is plugged as soon as a folder is set. */
+void YabauseThread::reloadCommPort()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	QString folder = vs->value( "CommPort/FloppyFolder" ).toString();
+	const bool enabled = vs->value( "CommPort/FloppyEnabled", !folder.isEmpty() ).toBool();
+	if ( enabled && folder.isEmpty() )
+		folder = getDataDirPath() + "/floppy";
+	if ( enabled )
+	{
+		QDir().mkpath( folder );
+		FddSetFolder( QFile::encodeName( QDir( folder ).absolutePath() ).constData() );
+		FddSetWriteProtect( vs->value( "CommPort/FloppyWriteProtect", false ).toBool() );
+		SCISetCommPortDevice( FddGetDevice() );
+	}
+	else if ( SCIGetCommPortDevice() == FddGetDevice() )
+	{
+		FddSetFolder( NULL );
+		SCISetCommPortDevice( NULL );
 	}
 }
 
@@ -149,11 +180,26 @@ void YabauseThread::reloadControllers()
 
 	emit toggleEmulateMouse( false, false );
 
+	/* SBom Joycard turbo speed, common to every Joycard. */
+	PerJoycardSetTurboRate( settings->value( SETTINGS_JOYCARD_TURBO_RATE, JOYCARD_TURBO_RATE_DEFAULT ).toInt() );
+
 	for ( uint port = 1; port < 3; port++ )
 	{
 		settings->beginGroup( QString( "Input/Port/%1/Id" ).arg( port ) );
 		QStringList ids = settings->childGroups();
 		settings->endGroup();
+
+		/* 6Player multitap: --multitap (volatile) first, then the setting of
+		   the port. Plugged in before the controllers, which then go to its
+		   connectors (PerMultitapAdd()). */
+		{
+			const QVariant mtOverride = QtYabause::volatileSettings()->value( QString( SETTINGS_OVERRIDE_MULTITAP ).arg( port ) );
+			const bool multitap = mtOverride.isValid()
+				? mtOverride.toBool()
+				: settings->value( QString( SETTINGS_PORT_MULTITAP ).arg( port ), false ).toBool();
+			if ( multitap && PerMultitapAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 ) != 0 )
+				QtYabause::appendLog( "Can't plug in the multitap" );
+		}
 
 		/* --port1 / --port2 (Arguments.cpp): "Input/Override/PortN" holds one
 		   controller type per slot, e.g. "2,2,22". It replaces the controllers
@@ -214,6 +260,48 @@ void YabauseThread::reloadControllers()
 						const QString key = settings->value( QString( UIPortManager::mSettingsKey ).arg( port ).arg( id ).arg( type ).arg( padKey ) ).toString();
 
 						PerSetKey( key.toUInt(), padKey.toUInt(), padbits );
+					}
+					break;
+				}
+				case PERPAD_TWINSTICK:
+				{
+					// Twin Stick (STN-50): a standard pad, its own bindings.
+					PerPad_struct* padbits = PerPadAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 );
+					if ( !padbits )
+					{
+						QtYabause::appendLog( "Can't plug in the Twin Stick" );
+						break;
+					}
+
+					settings->beginGroup( QString( "Input/Port/%1/Id/%2/Controller/%3/Key" ).arg( port ).arg( id ).arg( type ) );
+					QStringList padKeys = settings->childKeys();
+					settings->endGroup();
+
+					foreach ( const QString& padKey, padKeys )
+					{
+						const QString key = settings->value( QString( UIPortManager::mSettingsKey ).arg( port ).arg( id ).arg( type ).arg( padKey ) ).toString();
+						PerSetKey( key.toUInt(), padKey.toUInt(), padbits );
+					}
+					break;
+				}
+				case PERPAD_JOYCARD:
+				{
+					// SBom Joycard: a standard pad driven by the Joycard state.
+					PerJoycard_struct* jc = PerJoycardAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 );
+					if ( !jc )
+					{
+						QtYabause::appendLog( "Can't plug in the SBom Joycard" );
+						break;
+					}
+
+					settings->beginGroup( QString( "Input/Port/%1/Id/%2/Controller/%3/Key" ).arg( port ).arg( id ).arg( type ) );
+					QStringList padKeys = settings->childKeys();
+					settings->endGroup();
+
+					foreach ( const QString& padKey, padKeys )
+					{
+						const QString key = settings->value( QString( UIPortManager::mSettingsKey ).arg( port ).arg( id ).arg( type ).arg( padKey ) ).toString();
+						PerSetKey( key.toUInt(), padKey.toUInt(), jc );
 					}
 					break;
 				}
@@ -288,6 +376,8 @@ void YabauseThread::reloadControllers()
 				case PERGUN:
 				{
 					PerGun_struct* gunbits = PerGunAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 );
+					if ( !gunbits )
+						QtYabause::appendLog( "Can't plug in the gun: it must be alone on its port, without multitap" );
 					settings->beginGroup( QString( "Input/Port/%1/Id/%2/Controller/%3/Key" ).arg( port ).arg( id ).arg( type ) );
 					QStringList gunKeys = settings->childKeys();
 					settings->endGroup();
@@ -303,10 +393,13 @@ void YabauseThread::reloadControllers()
 					break;
 				}
 				case PERKEYBOARD:
+				case PERKEYBOARD_NETLINK:
 				{
 					// No key bindings: the host keyboard is fed as a whole by
-					// KeyboardQt (UIYabause key events), by key position.
-					if ( !PerKeyboardAdd( port == 1 ? &PORTDATA1 : &PORTDATA2 ) )
+					// KeyboardQt (UIYabause key events), by key position. The
+					// model only decides which keys exist (PERKB_MODEL_*).
+					const int model = ( type == PERKEYBOARD_NETLINK ) ? PERKB_MODEL_NETLINK_US : PERKB_MODEL_SATURN_JP;
+					if ( !PerKeyboardAddModel( port == 1 ? &PORTDATA1 : &PORTDATA2, model ) )
 						QtYabause::appendLog( "Can't plug in the keyboard" );
 					break;
 				}
