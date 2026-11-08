@@ -923,6 +923,7 @@ void UIYabause::openSettingsOnTabs(int index) {
 		}
 
 		mYabauseThread->reloadControllers();
+		mYabauseThread->reloadCommPort();
 		refreshStatesActions();
 
 		if (yabsys.isReloadingImage == 2) emit requestReset();
