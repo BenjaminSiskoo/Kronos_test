@@ -951,6 +951,22 @@ void YabauseResetNoLoad(void) {
    memset(HighWram, 0, 0x100000);
    memset(LowWram, 0, 0x100000);
 
+   /* VRAM VDP1, VRAM/CRAM VDP2 et Sound RAM : remises a zero comme a la
+      mise sous tension (calloc dans les Init). Elles gardaient le contenu
+      du jeu precedent : un jeu lance apres un autre, ou apres un reset,
+      demarrait avec des donnees que le premier lancement n'avait pas
+      (et un film d'entrees pouvait diverger, movie.c). Fait avant les
+      Reset des puces : ScspReset() remet le 68000 a zero apres. */
+   if (Vdp1Ram != NULL) {
+      memset(Vdp1Ram, 0, 0x80000);
+      Vdp1External.updateVdp1Ram = 1;
+      vdp1Ram_update_start = 0x0;
+      vdp1Ram_update_end = 0x80000;
+   }
+   Vdp2ClearMemory();
+   if (SoundRam != NULL)
+      memset(SoundRam, 0, 0x80000);
+
    // Reset CS0 area here
    // Reset CS1 area here
    Cs2Reset();
@@ -961,6 +977,11 @@ void YabauseResetNoLoad(void) {
    SmpcReset();
 
    nextFrameTime = 0;
+   /* Phase du partage des echantillons SCSP entre les trames (735/736 en
+      NTSC). Elle n'etait jamais remise a zero : apres un reset, la
+      repartition des cycles du 68000 dependait de la duree de la session
+      precedente (et la relecture d'un film divergeait). */
+   scspSampleFrac = 0;
 
    SH2PowerOn(MSH2);
 }
@@ -970,6 +991,10 @@ void YabauseResetNoLoad(void) {
 void YabauseReset(void) {
 
    YabauseResetNoLoad();
+
+   /* Films d'entrees (movie.c) : memoire SMPC du film au demarrage d'une
+      lecture, arret du film sur un reset demande par l'utilisateur. */
+   MovieResetHook();
 
    if (yabsys.usequickload || yabsys.emulatebios)
    {
@@ -1259,8 +1284,10 @@ int YabauseEmulate(void) {
             ScspAddCycles(target - scsp_fed_cycles);
             scsp_fed_cycles = target;
           }
-          /* keep the 68000 within a few lines of the SH2 */
-          if ((yabsys.LineCount & 7) == 0 && yabsys.LineCount < yabsys.MaxLineCount)
+          /* keep the 68000 within a few lines of the SH2; at every line
+             during an input movie, so that the 68000 and the SH-2 never run
+             at the same time (deterministic replay, see movie.c) */
+          if ((((yabsys.LineCount & 7) == 0) || ScspGetStrictSync()) && yabsys.LineCount < yabsys.MaxLineCount)
             ScspSyncToLine();
         }
       }
