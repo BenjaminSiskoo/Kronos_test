@@ -142,6 +142,29 @@ s32 new_scsp_outbuf_r[900] = { 0 };
 int new_scsp_cycles = 0;
 int g_scsp_lock = 0;
 
+/* Generateur des tables de bruit des LFO. rand() n'etait jamais initialise
+   et son etat depend de tout ce que l'hote a tire avant : les tables (et
+   donc la modulation de hauteur/amplitude, visible par la position de
+   lecture des slots) changeaient d'une session a l'autre. Un generateur
+   fixe, remis a la meme graine a chaque remplissage, rend le bruit
+   identique a chaque demarrage (necessaire a la relecture des films,
+   movie.c). */
+static u32 scsp_noise_seed = 1;
+static void scsp_noise_reset(void) { scsp_noise_seed = 0x2545F491u; }
+static u32 scsp_noise_rand(void)
+{
+   scsp_noise_seed = scsp_noise_seed * 1103515245u + 12345u;
+   return (scsp_noise_seed >> 16) & 0x7FFF;
+}
+
+/* 1 pendant un film (movie.c) : ScspSyncToLine() attend toujours que le
+   thread son ait fini, sans limite, et est appele a chaque ligne. Le 68000
+   et les SH-2 ne tournent alors jamais en meme temps : l'entrelacement est
+   le meme a chaque execution. */
+static volatile int scsp_strict_sync = 0;
+void ScspSetStrictSync(int strict) { scsp_strict_sync = strict ? 1 : 0; }
+int ScspGetStrictSync(void) { return scsp_strict_sync; }
+
 static volatile int fps = 60;
 
 
@@ -448,9 +471,10 @@ void fill_plfo_tables()
    }
 
    //noise
+   scsp_noise_reset();
    for (i = 0; i < 256; i++)
    {
-      plfo.noise_table[i] = rand() & 0xff;
+      plfo.noise_table[i] = scsp_noise_rand() & 0xff;
    }
 }
 
@@ -483,9 +507,10 @@ void fill_alfo_tables()
    }
 
    //noise
+   scsp_noise_reset();
    for (i = 0; i < 256; i++)
    {
-      alfo.noise_table[i] = rand() & 0xff;
+      alfo.noise_table[i] = scsp_noise_rand() & 0xff;
    }
 }
 
@@ -4076,6 +4101,7 @@ scsp_init (u8 *scsp_ram, void (*sint_hand)(u32), void (*mint_hand)(void))
     }
 
   // Calculate LFO (modulation) values
+  scsp_noise_reset();
   for (i = 0; i < SCSP_LFO_LEN; i++)
     {
       // Envelope modulation
@@ -4091,7 +4117,7 @@ scsp_init (u8 *scsp_ram, void (*sint_hand)(u32), void (*mint_hand)(void))
       else
         scsp_lfo_tri_e[i] = (i - (SCSP_LFO_LEN / 2)) * 2;
 
-      scsp_lfo_noi_e[i] = rand() & SCSP_LFO_MASK;
+      scsp_lfo_noi_e[i] = scsp_noise_rand() & SCSP_LFO_MASK;
 
       // Frequency modulation
       scsp_lfo_sawt_f[(i + 512) & SCSP_LFO_MASK] = i - (SCSP_LFO_LEN / 2);
@@ -5183,8 +5209,10 @@ void ScspSyncToLine(void)
     YabThreadUnLock(g_scsp_set_cyc_mtx);
     if (pending < 256)
       break;
-    /* safety net: never hang the main thread on the sound thread */
-    if (++guard > 2000000)
+    /* safety net: never hang the main thread on the sound thread. In strict
+       mode (input movies) leaving early would let the 68000 run alongside
+       the SH-2 and break determinism: keep waiting. */
+    if (++guard > 2000000 && !scsp_strict_sync)
       break;
     /* the sound thread may have gone to sleep just before the last
        ScspAddCycles() signal: wake it again rather than wait forever */
