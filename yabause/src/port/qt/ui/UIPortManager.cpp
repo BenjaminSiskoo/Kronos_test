@@ -28,10 +28,12 @@
 #include "UIDoubleMissionStickSetting.h"
 #include "UIGunSetting.h"
 #include "UIMouseSetting.h"
+#include "UIButtonListSetting.h"
 #include "../CommonDialogs.h"
 #include "../Settings.h"
 #include "stv.h"
 
+#include <QCheckBox>
 #include <QDebug>
 
 /*
@@ -52,15 +54,27 @@ UIPortManager::UIPortManager( QWidget* parent )
 	mCore = 0;
 	setupUi( this );
 
+	/* 6Player multitap (Sega HSS-0103 / Hudson SBom Multitap): the port
+	   reports a multitap even with a single controller plugged in, which is
+	   what multiplayer games test (see PerMultitapAdd()). Without it, a
+	   multitap is still assumed as soon as 2 controllers are configured. */
+	mMultitap = new QCheckBox( QtYabause::translate( "6Player multitap connected" ), this );
+	mMultitap->setToolTip( QtYabause::translate( "Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun." ) );
+	verticalLayout->insertWidget( 0, mMultitap );
+	connect( mMultitap, SIGNAL( toggled( bool ) ), this, SLOT( cbMultitap_toggled( bool ) ) );
+
 	foreach ( QComboBox* cb, findChildren<QComboBox*>( QRegExp( "cbTypeController*", Qt::CaseInsensitive, QRegExp::Wildcard ) ) )
 	{
 		cb->addItem( QtYabause::translate( "None" ), 0 );
 		cb->addItem( QtYabause::translate( "Pad" ), PERPAD );
+		cb->addItem( QtYabause::translate( "Twin Stick (Virtual-On)" ), PERPAD_TWINSTICK ); // standard pad, STN-50 stick layout
+		cb->addItem( QtYabause::translate( "SBom Joycard (turbo)" ), PERPAD_JOYCARD ); // standard pad + turbo / SLOW / Hu switches
 		cb->addItem( QtYabause::translate( "3D Control Pad" ), PER3DPAD );
 		cb->addItem(QtYabause::translate("Mission Stick"), PERMISSIONSTICK);
 		cb->addItem(QtYabause::translate("Double Mission Stick"), PERTWINSTICKS);
 		cb->addItem( QtYabause::translate( "Gun" ), PERGUN );
-		cb->addItem( QtYabause::translate( "Keyboard" ), PERKEYBOARD ); // no bindings: the whole host keyboard, by key position
+		cb->addItem( QtYabause::translate( "Saturn Keyboard (JP)" ), PERKEYBOARD ); // no bindings: the whole host keyboard, by key position
+		cb->addItem( QtYabause::translate( "NetLink Keyboard (US)" ), PERKEYBOARD_NETLINK ); // same, US/PS/2 key set
 		cb->addItem( QtYabause::translate( "Mouse" ), PERMOUSE );
 		cb->addItem( QtYabause::translate( "ST-V Cabinet" ), PERCABINET );
 		cb->addItem( QtYabause::translate( "Hopper Cabinet" ), PERCABINET_HOPPER ); // same peripheral as ST-V Cabinet, opens patocar/skychal/supgoal/techbowl/micrombc's dedicated dialog directly
@@ -128,6 +142,12 @@ void UIPortManager::loadSettings()
 	// load settings
 	Settings* settings = QtYabause::settings();
 
+	{
+		bool blocked = mMultitap->blockSignals( true );
+		mMultitap->setChecked( settings->value( QString( SETTINGS_PORT_MULTITAP ).arg( mPort ), false ).toBool() );
+		mMultitap->blockSignals( blocked );
+	}
+
 	settings->beginGroup( QString( "Input/Port/%1/Id" ).arg( mPort ) );
 	QStringList ids = settings->childGroups();
 	settings->endGroup();
@@ -151,8 +171,14 @@ void UIPortManager::loadSettings()
 		else if ( type == PERCABINET && settings->value( QString( mSettingsMahjongUI ).arg( mPort ).arg( id ), false ).toBool() )
 			type = PERCABINET_MAHJONG;
 		QComboBox* cb = findChild<QComboBox*>( QString( "cbTypeController%1" ).arg( id ) );
-		cb->setCurrentIndex( cb->findData( type ) );
+		if ( cb )
+			cb->setCurrentIndex( cb->findData( type ) );
 	}
+}
+
+void UIPortManager::cbMultitap_toggled( bool checked )
+{
+	QtYabause::settings()->setValue( QString( SETTINGS_PORT_MULTITAP ).arg( mPort ), checked );
 }
 
 void UIPortManager::cbTypeController_currentIndexChanged( int id )
@@ -165,6 +191,8 @@ void UIPortManager::cbTypeController_currentIndexChanged( int id )
 	switch ( type )
 	{
 		case PERPAD:
+		case PERPAD_TWINSTICK:
+		case PERPAD_JOYCARD:
       case PERMISSIONSTICK:
       case PERTWINSTICKS:
 		case PERWHEEL:
@@ -183,6 +211,7 @@ void UIPortManager::cbTypeController_currentIndexChanged( int id )
 			buttons.at( 2 )->setEnabled( true );
 			break;
 		case PERKEYBOARD:
+		case PERKEYBOARD_NETLINK:
 			buttons.at( 0 )->setEnabled( false );
 			buttons.at( 1 )->setEnabled( false );
 			buttons.at( 2 )->setEnabled( true );
@@ -236,6 +265,21 @@ void UIPortManager::tbSetJoystick_clicked()
 
 			UIPadSetting ups( mCore, mPort, controllerId, type, this );
 			ups.exec();
+			break;
+		}
+		case PERPAD_TWINSTICK:
+		{
+			// Bindings only: the pad is plugged in by reloadControllers().
+			UIButtonListSetting dlg( mCore, mPort, controllerId, type,
+				QtYabause::translate( "Twin Stick (HSS-0151)" ), UIButtonListSetting::twinStickEntries(), this );
+			dlg.exec();
+			break;
+		}
+		case PERPAD_JOYCARD:
+		{
+			UIButtonListSetting dlg( mCore, mPort, controllerId, type,
+				QtYabause::translate( "SBom Joycard (HC-735)" ), UIButtonListSetting::joycardEntries(), this );
+			dlg.exec();
 			break;
 		}
 		case PERCABINET:
