@@ -1126,6 +1126,10 @@ int YabauseEmulate(void) {
 
    u32 scsp_frame_samples;
 
+   /* Outputs that depend on time (SBom Joycard turbo / SLOW switch), before
+      DoMovie() records the port data or replaces them with a movie's. */
+   PerInputFrameUpdate();
+
    DoMovie();
 
    /* Ecriture differee du fichier de RAM de sauvegarde apres une ecriture
@@ -1135,11 +1139,18 @@ int YabauseEmulate(void) {
    MSH2->cycles = 0;
    MSH2->divcycles = 0;
    MSH2->frtcycles = 0;
+   /* wdtcycles / WDTExec() is the same "last cycles" scheme as FRT: it
+      must go back to 0 with cycles. It was left at last frame's value,
+      so the first WDTExec() of each frame computed cycles - wdtcycles <
+      0, i.e. about 2^32 cycles as an unsigned: an enabled watchdog /
+      interval timer jumped and overflowed once per frame. */
+   MSH2->wdtcycles = 0;
    // MSH2->depth = 0;
    // SSH2->depth = 0;
    SSH2->cycles = 0;
    SSH2->divcycles = 0;
    SSH2->frtcycles = 0;
+   SSH2->wdtcycles = 0;
 //   SH2OnFrame(MSH2);
 //   SH2OnFrame(SSH2);
    u64 cpu_emutime = 0;
