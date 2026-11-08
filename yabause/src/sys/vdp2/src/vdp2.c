@@ -719,6 +719,22 @@ void Vdp2DeInit(void) {
 
 static unsigned long nextFrameTime = 0;
 
+/* Remise a zero de la VRAM et de la CRAM, comme a la mise sous tension
+   (Vdp2Init() les alloue avec calloc). Appele par YabauseResetNoLoad()
+   seulement : Vdp2Reset() sert aussi aux changements d'horloge du SMPC
+   (CKCHG), qui ne touchent pas a la memoire. Les drapeaux de mise a jour
+   previennent le moteur de rendu que tout a change. */
+void Vdp2ClearMemory(void) {
+   if (Vdp2Ram != NULL) {
+      memset(Vdp2Ram, 0, 0x100000);
+      Vdp2Ram_Updated = 1;
+   }
+   if (Vdp2ColorRam != NULL) {
+      memset(Vdp2ColorRam, 0, 0x1000);
+      nbAddrToUpdate = 1;
+   }
+}
+
 void Vdp2Reset(void) {
    Vdp2Regs->TVMD = 0x0000;
    Vdp2Regs->EXTEN = 0x0000;
