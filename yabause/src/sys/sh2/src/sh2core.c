@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include "sh2core.h"
+#include "sci.h"
 #include "debug.h"
 #include "memory.h"
 #include "yabause.h"
@@ -43,8 +44,6 @@ extern SH2Interface_struct *SH2CoreList[];
 void OnchipReset(SH2_struct *context);
 static void FRTExec(SH2_struct *context);
 static void WDTExec(SH2_struct *context);
-u8 SCIReceiveByte(void);
-void SCITransmitByte(u8);
 
 
 void enableCache(SH2_struct *ctx);
@@ -710,6 +709,7 @@ void FASTCALL SH2Exec(SH2_struct *context, u32 cycles)
    context->SH2InterruptibleExec(context, cycles);
    FRTExec(context);
    WDTExec(context);
+   SCIExec(context); /* serial transfers in progress (sci.c) */
    /* WDTExec() can now reset the CPU (watchdog-mode overflow with RSTE set),
     * and SH2Reset() zeroes context->cycles. Guard the elapsed-cycle
     * computation so DMAProc is never handed a negative count. */
@@ -1478,6 +1478,7 @@ void OnchipReset(SH2_struct *context) {
    context->onchip.TDR = 0xFF;
    context->onchip.SSR = 0x84;
    context->onchip.RDR = 0x00;
+   SCIReset(context);
    context->onchip.TIER = 0x01;
    context->onchip.FTCSR = 0x00;
    context->onchip.FTCSRM = 0x00;
@@ -1567,26 +1568,11 @@ u8 FASTCALL OnchipReadByte(SH2_struct *context, u32 addr) {
 //         LOG("Transmit Data Register read: %02X\n", context->onchip.TDR);
          return context->onchip.TDR;
       case 0x004:
-//         LOG("Serial Status Register read: %02X\n", context->onchip.SSR);
-
-/*
-         // if Receiver is enabled, clear SSR's TDRE bit, set SSR's RDRF and update RDR.
-
-         if (context->onchip.SCR & 0x10)
-         {
-            context->onchip.RDR = SCIReceiveByte();
-            context->onchip.SSR = (context->onchip.SSR & 0x7F) | 0x40;
-         }
-         // if Transmitter is enabled, clear SSR's RDRF bit, and set SSR's TDRE bit.
-         else if (context->onchip.SCR & 0x20)
-         {
-            context->onchip.SSR = (context->onchip.SSR & 0xBF) | 0x80;
-         }
-*/
-         return context->onchip.SSR;
+         /* SSR: catches up with the transfers in progress and remembers the
+            flags read as 1, the only ones software may clear (sci.c). */
+         return SCIReadSSR(context);
       case 0x005:
-//         LOG("Receive Data Register read: %02X PC = %08X\n", context->onchip.RDR, SH2Core->GetPC(context));
-         return context->onchip.RDR;
+         return SCIReadRDR(context);
       case 0x010:
          return context->onchip.TIER;
       case 0x011:{
@@ -1841,40 +1827,23 @@ void FASTCALL OnchipWriteByte(SH2_struct *context, u32 addr, u8 val) {
       break;
   }
    switch(addr) {
+      /* SCI, SH7604 Hardware Manual section 13: see sci.c. A write to SSR
+         used to be ignored (flags never cleared, TDRE never 0) and a
+         transfer was "done" at once by an empty SCITransmitByte(). */
       case 0x000:
-//         LOG("Serial Mode Register write: %02X\n", val);
-         context->onchip.SMR = val;
+         SCIWriteSMR(context, val);
          return;
       case 0x001:
-//         LOG("Bit Rate Register write: %02X\n", val);
-         context->onchip.BRR = val;
+         SCIWriteBRR(context, val);
          return;
       case 0x002:
-//         LOG("Serial Control Register write: %02X\n", val);
-
-         // If Transmitter is getting disabled, set TDRE
-         if (!(val & 0x20))
-            context->onchip.SSR |= 0x80;
-
-         context->onchip.SCR = val;
+         SCIWriteSCR(context, val);
          return;
       case 0x003:
-//         LOG("Transmit Data Register write: %02X. PC = %08X\n", val, SH2Core->GetPC(context));
-         context->onchip.TDR = val;
+         SCIWriteTDR(context, val);
          return;
       case 0x004:
-//         LOG("Serial Status Register write: %02X\n", val);
-
-         if (context->onchip.SCR & 0x20)
-         {
-            // Transmitter Mode
-
-            // If the TDRE bit cleared, let's do a transfer
-            if (!(val & 0x80))
-               SCITransmitByte(context->onchip.TDR);
-
-            // Generate an interrupt if need be here
-         }
+         SCIWriteSSR(context, val);
          return;
       case 0x010:
 
@@ -1960,9 +1929,11 @@ void FASTCALL OnchipWriteByte(SH2_struct *context, u32 addr, u8 val) {
          return;
       case 0x071:
          context->onchip.DRCR0 = val & 0x3;
+         if (val & 0x3) SCITraceDRCR(context, 0, val & 0x3); /* RXI / TXI: SCI-driven DMA (not emulated) */
          return;
       case 0x072:
          context->onchip.DRCR1 = val & 0x3;
+         if (val & 0x3) SCITraceDRCR(context, 1, val & 0x3);
          return;
       case 0x091:
          context->onchip.SBYCR = val & 0xDF;
@@ -3673,18 +3644,7 @@ void FASTCALL SSH2InputCaptureWriteLong(SH2_struct *context, UNUSED u8* memory, 
 
 //////////////////////////////////////////////////////////////////////////////
 
-//////////////////////////////////////////////////////////////////////////////
-// SCI Specific
-//////////////////////////////////////////////////////////////////////////////
-
-u8 SCIReceiveByte(void) {
-   return 0;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-void SCITransmitByte(UNUSED u8 val) {
-}
+// SCI: see sci.c
 
 //////////////////////////////////////////////////////////////////////////////
 
