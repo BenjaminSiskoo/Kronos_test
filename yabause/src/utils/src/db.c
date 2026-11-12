@@ -97,7 +97,7 @@ static const char * const SH2CacheDBList[] = {
    // verifie dans Kronos
    "T-38001G", // Another Memories (Japan)
    "191x76", // Astal (Brazil)
-   "MK-81019", // Astal (USA)
+   "81019", // Astal (USA)
    "GS-9172", // Chisato Moritaka Watarasebashi / Lala Sunshine
    "T-27810G", // Device Reign (Japan)
    "T-26408G", // Fully Cowled Mini Yonku - Super Factory (Japan)
