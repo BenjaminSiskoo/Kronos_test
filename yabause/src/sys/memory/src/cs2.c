@@ -208,8 +208,14 @@ static INLINE void setStatus(u8 status) {
   Cs2Area->status = status;
 }
 
+/* Tampon plein : la lecture est suspendue et le lecteur doit rapporter PAUSE
+ * (ST-162 section 4.2 ; ST-38 section 4.2(5) : PAUSE + BFUL, reprise
+ * automatique des que des blocs sont liberes). Kronos garde SEEK en interne
+ * pour reprendre la lecture, mais rapporte PAUSE au jeu. */
 static INLINE void doCDReport(u8 status)
 {
+   if (status == CDB_STAT_SEEK && Cs2Area->isbufferfull)
+      status = CDB_STAT_PAUSE;
    Cs2Area->reg.CR1 = (status << 8) | ((Cs2Area->options & 0xF) << 4) | (Cs2Area->repcnt & 0xF);
    Cs2Area->reg.CR2 = (Cs2Area->ctrladdr << 8) | Cs2Area->track;
    Cs2Area->reg.CR3 = (u16)((Cs2Area->index << 8) | ((Cs2Area->FAD >> 16) & 0xFF));
