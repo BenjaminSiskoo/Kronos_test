@@ -276,15 +276,18 @@ extern "C"
 
 void QtYabause::appendLog( const char* str )
 {
+	/* str is UTF-8. It used to go through mbstowcs() into a wchar_t[512]:
+	   past 511 characters it wrote beyond the buffer, and a non-ASCII
+	   character left it unterminated. */
 #ifdef _WIN32
-  wchar_t wtext[512];
-  mbstowcs(wtext, str, strlen(str) + 1);//Plus null
-  LPWSTR ptr = wtext;
-	::OutputDebugString(ptr);
+	const QString text = QString::fromUtf8( str );
+	::OutputDebugStringW( (LPCWSTR)text.utf16() );
 #else
   printf("%s\n", str);
 #endif
-	mUIYabause->appendLog(str);
+	kronosLogWrite( str );
+	kronosLogWrite( "\n" );
+	if (mUIYabause) mUIYabause->appendLog(str);
 }
 
 
