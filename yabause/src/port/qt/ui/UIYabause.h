@@ -27,7 +27,7 @@
 #include <QTimer>
 
 class YabauseGL;
-class QTextEdit;
+class QPlainTextEdit;
 class QDockWidget;
 
 enum ACTIONS_ENUM
@@ -133,8 +133,13 @@ protected:
 	YabauseLocker *mLocker;
 
 	QDockWidget* mLogDock;
-	QTextEdit* teLog;
+	QPlainTextEdit* teLog;
 	bool mCanLog;
+	// Log dock: size to give back to it the first time it is shown docked
+	// (-1 = none), see restoreLogDockState()
+	int mLogDockSize;
+	void restoreLogDockState();
+	void saveLogDockState();
 	bool mInit;
 	bool mNeedResize;
 	QList <cheatsearch_struct> search;
@@ -175,6 +180,9 @@ protected:
 
 public slots:
 	void appendLog( const char* msg );
+	void appendLogText( const QString& text );
+	void logContextMenu( const QPoint& pos );
+	void logDockVisibilityChanged( bool visible );
 	void pause( bool paused );
 	void reset();
 	void hideMouse();
