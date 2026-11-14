@@ -46,7 +46,9 @@
 #include "../KeyboardQt.h"
 
 #include <QKeyEvent>
-#include <QTextEdit>
+#include <QPlainTextEdit>
+#include <QMenu>
+#include <QThread>
 #include <QDockWidget>
 #include <QImageWriter>
 #include <QUrl>
@@ -96,6 +98,8 @@ UIYabause::UIYabause( QWidget* parent )
 	: QMainWindow( parent )
 {
 	mInit = false;
+	teLog = NULL; // compared in eventFilter(), which is installed before the log exists
+	mLogDock = NULL;
    search.clear();
 	searchType = 0;
 	mNeedResize = false;
@@ -146,16 +150,28 @@ UIYabause::UIYabause( QWidget* parent )
 	connect(this, SIGNAL( requestReset() ), this, SLOT( sendThreadReset() ) );
 	setCentralWidget( container );
 	// create log widget
-	teLog = new QTextEdit( this );
+	// Plain text: a log line is never HTML (QTextEdit::append() rendered as
+	// rich text any line that looked like it).
+	teLog = new QPlainTextEdit( this );
 	teLog->setReadOnly( true );
-	teLog->setWordWrapMode( QTextOption::NoWrap );
+	teLog->setUndoRedoEnabled( false );
+	teLog->setLineWrapMode( QPlainTextEdit::NoWrap );
 	teLog->setVerticalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
 	teLog->setHorizontalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
+	// Ctrl+C / Ctrl+A belong to the log while it has the keyboard focus, see
+	// eventFilter()
+	teLog->installEventFilter( this );
+	// right click: standard entries (Copy, Select All) + Reset
+	teLog->setContextMenuPolicy( Qt::CustomContextMenu );
+	connect( teLog, SIGNAL( customContextMenuRequested( const QPoint& ) ), this, SLOT( logContextMenu( const QPoint& ) ) );
 	mLogDock = new QDockWidget( this );
+	mLogDock->setObjectName( "LogDock" );
 	mLogDock->setWindowTitle( QtYabause::translate( "Log" ) );
 	mLogDock->setWidget( teLog );
 	addDockWidget( Qt::BottomDockWidgetArea, mLogDock );
 	mLogDock->setVisible( false );
+	mLogDockSize = -1;
+	connect( mLogDock, SIGNAL( visibilityChanged( bool ) ), this, SLOT( logDockVisibilityChanged( bool ) ) );
 	mCanLog = true;
 	oldMouseX = oldMouseY = 0;
 	mouseCaptured = false;
@@ -216,6 +232,7 @@ UIYabause::UIYabause( QWidget* parent )
 	}
 
 	restoreGeometry( vs->value("General/Geometry" ).toByteArray() );
+	restoreLogDockState();
 	container->setMouseTracking(true);
 	setMouseTracking(true);
 	mouseXRatio = mouseYRatio = 1.0;
@@ -262,6 +279,7 @@ void UIYabause::closeEvent( QCloseEvent* e )
 		fullscreenRequested( false );
 	Settings* vs = QtYabause::settings();
 	vs->setValue( "General/Geometry", saveGeometry() );
+	saveLogDockState();
 	vs->sync();
 
 	QMainWindow::closeEvent( e );
@@ -656,8 +674,36 @@ void UIYabause::appendLog( const char* s )
 		return;
 	}
 
-	teLog->moveCursor( QTextCursor::End );
-	teLog->append( s );
+	const QString text = QString::fromUtf8( s );
+	// YuiMsg() can be called from any thread of the core; widgets belong to
+	// the GUI thread
+	if ( QThread::currentThread() != thread() )
+	{
+		QMetaObject::invokeMethod( this, "appendLogText", Qt::QueuedConnection, Q_ARG( QString, text ) );
+		return;
+	}
+	appendLogText( text );
+}
+
+void UIYabause::appendLogText( const QString& text )
+{
+	if (! mCanLog)
+		return;
+
+	// Each message becomes one paragraph: drop its own end of line, which
+	// used to leave an empty line after every message.
+	QString line = text;
+	if ( line.endsWith( QLatin1Char( '\n' ) ) )
+		line.chop( 1 );
+	if ( line.endsWith( QLatin1Char( '\r' ) ) )
+		line.chop( 1 );
+
+	// Appended at the end of the document without touching the cursor of the
+	// widget: moving it to the end for each message (as before) dropped the
+	// user's selection, so nothing could be selected then copied while the
+	// log was being written. The view follows the log only while it shows
+	// its last line.
+	teLog->appendPlainText( line );
 
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	if (( !mLogDock->isVisible( )) && ( vs->value( "View/LogWindow" ).toInt() == 1 )) {
@@ -665,8 +711,120 @@ void UIYabause::appendLog( const char* s )
 	}
 }
 
+void UIYabause::logContextMenu( const QPoint& pos )
+{
+	QMenu* menu = teLog->createStandardContextMenu();
+	menu->addSeparator();
+	QAction* aReset = menu->addAction( QtYabause::translate( "Reset" ) );
+	aReset->setEnabled( !teLog->document()->isEmpty() );
+	if ( menu->exec( teLog->viewport()->mapToGlobal( pos ) ) == aReset )
+		teLog->clear();
+	delete menu;
+}
+
+/* Position of the log window, kept from one run to the next:
+   View/LogDockFloating  detached from the main window or not
+   View/LogDockGeometry  position and size of the detached window
+   View/LogDockArea      side of the main window it is docked to
+   View/LogDockSize      its height (top/bottom) or width (left/right) there
+   Whether the log is shown at startup is not changed: it still opens from
+   the View menu or with the "View/LogWindow" setting. */
+void UIYabause::restoreLogDockState()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	const int area = vs->value( "View/LogDockArea", (int)Qt::BottomDockWidgetArea ).toInt();
+	if ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea
+	  || area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea )
+	{
+		addDockWidget( (Qt::DockWidgetArea)area, mLogDock );
+		mLogDock->setVisible( false );
+	}
+	mLogDockSize = vs->value( "View/LogDockSize", -1 ).toInt();
+	if ( vs->value( "View/LogDockFloating", false ).toBool() )
+	{
+		const QByteArray geometry = vs->value( "View/LogDockGeometry" ).toByteArray();
+		mLogDock->setFloating( true );
+		// restoreGeometry() brings the window back on a screen if the one it
+		// was on is gone
+		if ( !geometry.isEmpty() )
+			mLogDock->restoreGeometry( geometry );
+	}
+}
+
+void UIYabause::saveLogDockState()
+{
+	Settings* s = QtYabause::settings();
+	const bool floating = mLogDock->isFloating();
+	s->setValue( "View/LogDockFloating", floating );
+	if ( floating )
+	{
+		s->setValue( "View/LogDockGeometry", mLogDock->saveGeometry() );
+		return;
+	}
+	const Qt::DockWidgetArea area = dockWidgetArea( mLogDock );
+	if ( area == Qt::NoDockWidgetArea )
+		return;
+	s->setValue( "View/LogDockArea", (int)area );
+	// the size of a hidden dock means nothing: keep the last known one
+	if ( mLogDock->isVisible() )
+	{
+		const bool sideways = ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea );
+		s->setValue( "View/LogDockSize", sideways ? mLogDock->width() : mLogDock->height() );
+	}
+	else if ( mLogDockSize > 0 )
+		s->setValue( "View/LogDockSize", mLogDockSize );
+}
+
+void UIYabause::logDockVisibilityChanged( bool visible )
+{
+	// A docked dock only takes a size once it is laid out: give the saved one
+	// back the first time it is shown.
+	if ( !visible || mLogDockSize <= 0 || mLogDock->isFloating() )
+		return;
+	const int size = mLogDockSize;
+	mLogDockSize = -1;
+	QTimer::singleShot( 0, this, [this, size]
+	{
+		if ( !mLogDock->isVisible() || mLogDock->isFloating() )
+			return;
+		const Qt::DockWidgetArea area = dockWidgetArea( mLogDock );
+		const bool sideways = ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea );
+		resizeDocks( QList<QDockWidget*>() << mLogDock, QList<int>() << size, sideways ? Qt::Horizontal : Qt::Vertical );
+	} );
+}
+
 bool UIYabause::eventFilter( QObject* o, QEvent* e )
 {
+	// Log: Ctrl+C and Ctrl+A are also the shortcuts of "Open CD Rom..." and
+	// "Select Cartridge..." (or of whatever the user bound them to). A
+	// read-only text widget does not claim them, so with the focus in the log
+	// they opened those dialogs instead of copying / selecting all. Claim
+	// them here (ShortcutOverride), then do the copy / the selection. The
+	// other keys of the log are left alone and are not sent to the emulated
+	// pads by the code below.
+	if ( o == teLog )
+	{
+		if ( e->type() == QEvent::ShortcutOverride || e->type() == QEvent::KeyPress )
+		{
+			QKeyEvent* keyEvt = (QKeyEvent*)e;
+			const bool copy = keyEvt->matches( QKeySequence::Copy );
+			const bool selectAll = keyEvt->matches( QKeySequence::SelectAll );
+			if ( copy || selectAll )
+			{
+				if ( e->type() == QEvent::KeyPress )
+				{
+					if ( copy )
+						teLog->copy();
+					else
+						teLog->selectAll();
+				}
+				e->accept();
+				return true;
+			}
+		}
+		return QMainWindow::eventFilter( o, e );
+	}
+
 	 if (QEvent::MouseButtonPress == e->type()) {
 		 QMouseEvent* mouseEvt = (QMouseEvent*)e;
 		 mousePressEvent(mouseEvt);
@@ -697,7 +855,7 @@ bool UIYabause::eventFilter( QObject* o, QEvent* e )
 void UIYabause::errorReceived( const QString& error, bool internal )
 {
 	if ( internal ) {
-		QtYabause::appendLog( error.toLocal8Bit().constData() );
+		QtYabause::appendLog( error.toUtf8().constData() );
 	}
 	else {
 		if (!CommonDialogs::error( error )) exit(-1);
@@ -1621,7 +1779,7 @@ void UIYabause::reset()
 		QStringList packLog;
 		if (UIEditsExport::autoLoadPacks(&packLog) > 0)
 			for (int i = 0; i < packLog.size(); i++)
-				appendLog(packLog[i].toLocal8Bit().constData());
+				appendLog(packLog[i].toUtf8().constData());
 	}
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	if (vs->value("autostart").toBool()){
