@@ -3408,14 +3408,23 @@ int VIDCSVdp1Reset(void)
   return 0;
 }
 
-// VDP2 Manual §13.1: Color offset range is -256 to +255 (9-bit two's complement).
-// We encode into 8-bit centered at 128 for the shader.
-// Clamp to [-128,+127] since RGB is 5-bit (0-31) and offsets beyond ±128
-// would saturate anyway. This preserves full precision within useful range.
+/* Colour offset, per-line texture encoding.
+ *
+ * COxR/COxG/COxB are 9-bit two's complement values, -256 to +255, added to
+ * the 8-bit colour data of the screen (ST-058-R2, colour offset function).
+ * Each one is stored in one byte of the per-line texture as (v / 2) + 128,
+ * and the compositor (common_glshader.c) decodes it with (x - 0.5) * 2.0:
+ * the halving here and the doubling there cancel out, and the whole 9-bit
+ * range fits in the byte (the lowest bit of the offset is dropped).
+ *
+ * The halving had been removed while the shader kept its * 2.0: every
+ * colour offset was applied twice (and clipped to +/-128 before doubling).
+ * Astal (USA) intro movie: greyscale 15-bit bitmap tinted by colour offset
+ * A = (+47, +1, -61) came out as (+94, +2, -122), far too saturated. */
 static inline int encodeColorOffset(int v) {
-    if (v < -128) v = -128;
-    if (v >  127) v =  127;
-    return (v + 128) & 0xFF; // neutral=128, shader decodes: (x/255.0-0.5)*2→[-1,+1]
+    if (v < -256) v = -256;
+    if (v >  255) v =  255;
+    return ((v >> 1) + 128) & 0xFF; /* neutral = 128 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -3473,15 +3482,10 @@ void VIDCSReadColorOffset(void) {
         Vdp2 * lVdp2Regs = &Vdp2Lines[li];
 
 
-	// VDP2 Manual §13.1: Color offset registers are 9-bit two's complement,
-	// range -256 to +255, added directly to RGB components.
-	// No division needed — map [-256,+255] to the 8-bit centered encoding
-	// used by encodeColorOffset(). encodeColorOffset clamps to [-128,+127]
-	// which covers the practical range since RGB components are 5-bit (0-31).
-	// Division by 2 was incorrectly halving the effective range.
+	/* Colour offset registers: 9-bit two's complement, -256 to +255.
+	 * Sign-extended here, halved by encodeColorOffset() (see above). */
 	int a_cor = lVdp2Regs->COAR & 0x1FF;
-	if (a_cor & 0x100) a_cor |= ~0x1FF; // sign-extend 9→32 bits
-	// No >>1: keep full [-256,+255] range, encodeColorOffset clamps to [-128,+127]
+	if (a_cor & 0x100) a_cor |= ~0x1FF; /* sign-extend 9 -> 32 bits */
 
 	int a_cog = lVdp2Regs->COAG & 0x1FF;
 	if (a_cog & 0x100) a_cog |= ~0x1FF;
@@ -3498,7 +3502,7 @@ void VIDCSReadColorOffset(void) {
 	int b_cob = lVdp2Regs->COBB & 0x1FF;
 	if (b_cob & 0x100) b_cob |= ~0x1FF;
 
-        // Encodage sur 8 bits centré 128 — suppression du /2
+        /* One byte per component: (v / 2) + 128, see encodeColorOffset(). */
         int colOffB =
              (encodeColorOffset(b_cob) << 16)
            | (encodeColorOffset(b_cog) << 8)
