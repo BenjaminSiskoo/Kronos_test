@@ -748,9 +748,14 @@ static const GLchar Yglprg_vdp2_common_draw[] =
 "    tmpColor.b += (int(col.a*255.0)&0x7)/255.0;\n"
 "    msb = 1;\n"
 "  } \n"
+/* Colour offset, one byte per component in the per-line texture: (v / 2) + 128
+ * (encodeColorOffset(), vidcs.c). The neutral byte 128 reads back as 128/255,
+ * not 0.5: subtracting 0.5 left +1/255 on every component of every pixel.
+ * (x - 128/255) * 2 gives exactly (byte - 128) * 2 / 255, 0 when neutral.
+ * Same decoding at the two other places that read s_perline below. */
 "  vec4 sp_perline = texelFetch( s_perline, ivec2(int(PosY * u_emu_height), is_perline[6]), 0 );\n"
 "  ret.offset_color = sp_perline.rgb;\n"
-"  ret.offset_color = (ret.offset_color - vec3(0.5))*2.0;\n"
+"  ret.offset_color = (ret.offset_color - vec3(128.0/255.0))*2.0;\n"
 /* VDP2 Manual §9.2: décoder spcccs/spccn/spccen depuis les bits 31-24
  * du mot s_perline slot SPRITE, encodés dans vidcs.c VIDCSReadColorOffset.
  * sp_perline.a contient les bits 31-24 (canal alpha = bits 31-24 du u32).
@@ -1388,7 +1393,7 @@ if ((fieldRow&0x1) == nbFrame) {\n \
   discard;\n \
 };\n \
 offset_color = texelFetch( s_perline, linepos,0 ).rgb;\n \
-offset_color.rgb = (offset_color.rgb - vec3(0.5))*2.0;\n \
+offset_color.rgb = (offset_color.rgb - vec3(128.0/255.0))*2.0;\n \
 addr = ivec2(gl_FragCoord.xy);\n \
 initLineWindow();\n \
 colortop = colorback;\n \
@@ -1418,7 +1423,7 @@ if (is_lncl_off["Stringify(ID)"] == 2) needColorOffRBG1 = true;\n \
 vdp2col"Stringify(ID)" = getPixel( s_texture"Stringify(ID)", v_texcoord.st, 0, 0 ); \n \
 linepos.y = is_perline["Stringify(ID)"];\n \
 offcol"Stringify(ID)" = texelFetch( s_perline, linepos,0 );\n \
-offcol"Stringify(ID)".rgb = (offcol"Stringify(ID)".rgb - vec3(0.5))*2.0;\n \
+offcol"Stringify(ID)".rgb = (offcol"Stringify(ID)".rgb - vec3(128.0/255.0))*2.0;\n \
 "
 
 #define COMMON_GET_PRIORITY_SCREEN_FB "\
