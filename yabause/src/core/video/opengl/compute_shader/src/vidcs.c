@@ -285,7 +285,6 @@ static u32 Vdp2ColorRamGetLineColor(u32 colorindex, int alpha);
 static int Vdp2PatternAddrPos(Vdp2Ctrl *ctrl, int planex, int x, int planey, int y);
 static INLINE u16 Vdp2CtrlRamReadWord(Vdp2Ctrl *ctrl, u32 addr);
 static void Vdp2DrawPatternPos(Vdp2Ctrl *ctrl, int x, int y, int cx, int cy, int lines);
-static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int mask);
 static INLINE u16 Vdp2ColorRamGetColorRaw(u32 colorindex);
 static void FASTCALL Vdp2DrawRotation(RBGDrawInfo * rbg);
 
@@ -6023,65 +6022,6 @@ static void Vdp2DrawMapTest(Vdp2Ctrl *ctrl, int delayed) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
-static u32 FASTCALL DoNothing(UNUSED void *info, u32 pixel)
-{
-  return pixel;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static u32 FASTCALL DoColorOffset(void *info, u32 pixel)
-{
-  return pixel;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-
-static INLINE void ReadVdp2ColorOffset(Vdp2 * regs, vdp2draw_struct *info, int mask)
-{
-  if (regs->CLOFEN & mask)
-  {
-    if (regs->CLOFSL & mask)
-    {
-      info->cor = regs->COBR & 0xFF;
-      if (regs->COBR & 0x100)
-        info->cor |= 0xFFFFFF00;
-
-      info->cog = regs->COBG & 0xFF;
-      if (regs->COBG & 0x100)
-        info->cog |= 0xFFFFFF00;
-
-      info->cob = regs->COBB & 0xFF;
-      if (regs->COBB & 0x100)
-        info->cob |= 0xFFFFFF00;
-    }
-    else
-    {
-      info->cor = regs->COAR & 0xFF;
-      if (regs->COAR & 0x100)
-        info->cor |= 0xFFFFFF00;
-
-      info->cog = regs->COAG & 0xFF;
-      if (regs->COAG & 0x100)
-        info->cog |= 0xFFFFFF00;
-
-      info->cob = regs->COAB & 0xFF;
-      if (regs->COAB & 0x100)
-        info->cob |= 0xFFFFFF00;
-    }
-    info->PostPixelFetchCalc = &DoColorOffset;
-  }
-  else {
-
-    info->PostPixelFetchCalc = &DoNothing;
-    info->cor = 0;
-    info->cob = 0;
-    info->cog = 0;
-
-  }
-}
-
 
 static void Vdp2DrawBackScreen(Vdp2 *varVdp2Regs)
 {
