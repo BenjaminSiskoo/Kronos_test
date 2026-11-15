@@ -16,7 +16,11 @@
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QGraphicsPixmapItem>
-#include <QListWidgetItem>
+#include <QTreeWidgetItem>
+#include <QHeaderView>
+#include <QStyle>
+#include <QPlainTextEdit>
+#include <QTextDocument>
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
@@ -54,6 +58,10 @@ extern "C" {
 }
 
 namespace {
+
+// Colonnes de twCommandList (UIDebugVDP1.ui).
+const int kColJump = 0;
+const int kColCmd  = 1;
 
 struct Vdp1CommandsCount
 {
@@ -673,16 +681,24 @@ void UIDebugVDP1::fillCommandList()
     // Ligne sélectionnée avant le rafraîchissement : "Image suivante"
     // ramenait systématiquement la sélection sur la commande 0, ce qui
     // obligeait à re-cliquer le sprite étudié à chaque trame.
-    const int previousRow = lwCommandList->currentRow();
+    const int previousRow = currentCommandRow();
 
     {
-        // Vider/remplir les listes émet itemSelectionChanged ; sans blocage,
+        // Vider/remplir la liste émet currentItemChanged ; sans blocage,
         // syncOnVdp1Entry était appelé avec des rangs qui ne correspondaient
         // plus à rien pendant la reconstruction.
-        QSignalBlocker blockList(lwCommandList);
-        QSignalBlocker blockRaw(lwCommandRaw);
-        lwCommandList->clear();
-        lwCommandRaw->clear();
+        QSignalBlocker blockList(twCommandList);
+        twCommandList->clear();
+
+        // Largeur du texte le plus long de chaque colonne, pour ajuster le
+        // panneau à son contenu (voir la fin de ce bloc). Valeurs plancher :
+        // une liste vide ou très courte garde un panneau lisible.
+        const QFontMetrics listFm(twCommandList->font());
+        QFont listBold(twCommandList->font());
+        listBold.setBold(true);
+        const QFontMetrics listBoldFm(listBold);
+        int maxJumpW = textWidth(listFm, QStringLiteral("NEXT 0x7ffe0"));
+        int maxCmdW  = textWidth(listFm, QStringLiteral("System Clipping Coordinates"));
         mCmdAddrs.clear();
 
         if (Vdp1DebugGetRam())
@@ -748,12 +764,15 @@ void UIDebugVDP1::fillCommandList()
                     }
                 }
 
-                QListWidgetItem *item = new QListWidgetItem(itemText);
-                if (itemCcb != 0) item->setBackground(ccbBackground(itemCcb));
+                QTreeWidgetItem *item = new QTreeWidgetItem();
+                if (itemCcb != 0) {
+                    item->setBackground(kColJump, ccbBackground(itemCcb));
+                    item->setBackground(kColCmd, ccbBackground(itemCcb));
+                }
                 if (itemMsb) {
-                    QFont f = item->font();
+                    QFont f = item->font(kColCmd);
                     f.setBold(true);
-                    item->setFont(f);
+                    item->setFont(kColCmd, f);
                 }
 
                 // Couleur par type réel (enum Vdp1CommandType, vdp1.h).
@@ -763,26 +782,26 @@ void UIDebugVDP1::fillCommandList()
                     case VDPCT_SCALED_SPRITE:
                     case VDPCT_DISTORTED_SPRITE:
                     case VDPCT_DISTORTED_SPRITEN:
-                        item->setForeground(Qt::darkGreen); // Sprites
+                        item->setForeground(kColCmd, Qt::darkGreen); // Sprites
                         break;
                     case VDPCT_POLYGON:
-                        item->setForeground(Qt::blue); // Polygon
+                        item->setForeground(kColCmd, Qt::blue); // Polygon
                         break;
                     case VDPCT_POLYLINE:
                     case VDPCT_POLYLINEN:
-                        item->setForeground(Qt::darkCyan); // Polyline
+                        item->setForeground(kColCmd, Qt::darkCyan); // Polyline
                         break;
                     case VDPCT_LINE:
-                        item->setForeground(QColor(180, 90, 0)); // Line (dark orange)
+                        item->setForeground(kColCmd, QColor(180, 90, 0)); // Line (dark orange)
                         break;
                     case VDPCT_USER_CLIPPING_COORDINATES:
                     case VDPCT_USER_CLIPPING_COORDINATESN:
                     case VDPCT_SYSTEM_CLIPPING_COORDINATES:
                     case VDPCT_LOCAL_COORDINATES:
-                        item->setForeground(Qt::gray); // Clipping / local coords
+                        item->setForeground(kColCmd, Qt::gray); // Clipping / local coords
                         break;
                     case VDPCT_INVALID:
-                        item->setForeground(Qt::red); // Invalid command word
+                        item->setForeground(kColCmd, Qt::red); // Invalid command word
                         break;
                     default:
                         break; // VDPCT_DRAW_END: leave at the default text color
@@ -790,14 +809,47 @@ void UIDebugVDP1::fillCommandList()
 
                 // Adresse VRAM en infobulle : permet de rapprocher une ligne
                 // de l'export brut ou d'un point d'arrêt mémoire.
-                item->setToolTip(QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper() + ccTooltip + costTooltip);
-                lwCommandList->addItem(item);
+                const QString tip = QString("0x%1").arg(addr, 5, 16, QChar('0')).toUpper() + ccTooltip + costTooltip;
+                item->setToolTip(kColJump, tip);
+                item->setToolTip(kColCmd, tip);
+                item->setText(kColCmd, itemText);
 
-                // Une ligne par commande dans les DEUX listes, toujours : les
-                // barres de défilement et les rangs sont synchronisés.
+                // Colonne « Jump » : destination donnée par CMDCTRL/CMDLINK.
+                // NEXT est le cas courant : grisé, pour que ASSIGN, CALL,
+                // RETURN et END ressortent. CMDCTRL bit 14 = commande sautée
+                // (non tracée), le saut restant suivi.
                 char *rawStr = Vdp1DebugGetCommandRaw(addr);
-                lwCommandRaw->addItem(rawStr ? QString::fromLatin1(rawStr) : QString());
+                QString jump = rawStr ? QString::fromLatin1(rawStr) : QString();
                 free(rawStr);
+                const u16 ctrl = T1ReadWord(Vdp1DebugGetRam(), addr & 0x7FFFF);
+                if (jump.startsWith(QLatin1String("NEXT")))
+                    item->setForeground(kColJump, Qt::gray);
+                if (!(ctrl & 0x8000) && (ctrl & 0x4000))
+                    jump += QStringLiteral(" (skip)");
+                item->setText(kColJump, jump);
+
+                maxJumpW = qMax(maxJumpW, textWidth(listFm, jump));
+                maxCmdW  = qMax(maxCmdW, textWidth(itemMsb ? listBoldFm : listFm, itemText));
+
+                twCommandList->addTopLevelItem(item);
+            }
+        }
+
+        // Panneau ajusté au contenu : les deux colonnes, la barre de
+        // défilement et le cadre. La marge par colonne est volontairement
+        // large : les marges internes des cellules dépendent du style (le
+        // style Windows 11 en met plus que PM_FocusFrameHMargin), et trop
+        // juste, le nom le plus long était abrégé. Plafonné, la
+        // colonne Command abrégeant alors son texte par « … ».
+        {
+            const int pad = 2 * (style()->pixelMetric(QStyle::PM_FocusFrameHMargin) + 1) + 20;
+            int w = maxJumpW + pad + maxCmdW + pad
+                  + style()->pixelMetric(QStyle::PM_ScrollBarExtent)
+                  + 2 * twCommandList->frameWidth();
+            w = qMin(w, 520);
+            if (w > mListWidth) {
+                mListWidth = w;
+                twCommandList->setFixedWidth(w);
             }
         }
     }
@@ -811,8 +863,7 @@ void UIDebugVDP1::fillCommandList()
             top << "  Heaviest commands in the captured draw (estimate):\n";
             for (size_t k = 0; k < costRank.size() && k < 8; k++) {
                 const int row = costRank[k].second;
-                const QString name = (row < lwCommandList->count() && lwCommandList->item(row))
-                    ? lwCommandList->item(row)->text().section(QStringLiteral("   "), 0, 0) : QString();
+                const QString name = commandName(row).section(QStringLiteral("   "), 0, 0);
                 top << "    #" << row << " @0x" << std::hex << std::uppercase << std::setw(5) << std::setfill('0')
                     << mCmdAddrs[row] << std::dec << std::setfill(' ') << "  " << costRank[k].first << " cyc";
                 if (frameBudget)
@@ -862,8 +913,8 @@ void UIDebugVDP1::fillCommandList()
     if (mFrameDlg && mFrameDlg->isVisible())
         refreshFramePreview();
 
-    if (lwCommandList->count() > 0)
-        syncOnVdp1Entry((previousRow >= 0 && previousRow < lwCommandList->count()) ? previousRow : 0);
+    if (commandCount() > 0)
+        syncOnVdp1Entry((previousRow >= 0 && previousRow < commandCount()) ? previousRow : 0);
     else
         clearVdp1Display();
 
@@ -940,10 +991,25 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
     mLoadGraph->setToolTip(QString());
     horizontalLayout_info->addWidget(mLoadGraph, 2);
 
-    connect(lwCommandList->verticalScrollBar(), &QScrollBar::valueChanged,
-            lwCommandRaw->verticalScrollBar(), &QScrollBar::setValue);
-    connect(lwCommandRaw->verticalScrollBar(), &QScrollBar::valueChanged,
-            lwCommandList->verticalScrollBar(), &QScrollBar::setValue);
+    // Liste des commandes : la colonne Jump, en premier, a la largeur de
+    // son contenu ; la colonne Command prend le reste, si bien que les deux
+    // sont alignées. Si le panneau est trop étroit, la fin de la commande
+    // (le coût) est abrégée par « … » -- l'infobulle le donne en entier.
+    {
+        QHeaderView *hdr = twCommandList->header();
+        hdr->setSectionsMovable(false);
+        hdr->setStretchLastSection(false);
+        hdr->setSectionResizeMode(kColJump, QHeaderView::ResizeToContents);
+        hdr->setSectionResizeMode(kColCmd, QHeaderView::Stretch);
+        twCommandList->setTextElideMode(Qt::ElideRight);
+        twCommandList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // La largeur du panneau est fixée par fillCommandList d'après le
+        // contenu. La légende, sous la liste, se replie à cette largeur au
+        // lieu d'élargir le panneau.
+        QSizePolicy sp = lCommandColorLegend->sizePolicy();
+        sp.setHorizontalPolicy(QSizePolicy::Ignored);
+        lCommandColorLegend->setSizePolicy(sp);
+    }
 
     // Filtre d'événements plutôt que surcharger mouseMoveEvent : la cible
     // réelle des mouvements de souris est gvTexture->viewport(), pas
@@ -967,6 +1033,25 @@ UIDebugVDP1::UIDebugVDP1(QWidget* p, YabauseLocker* lock) : QDialog(p), mLock(lo
         lTexturePixelInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         lTexturePixelInfo->setFixedHeight(4 * ls + 4);
         lTexturePixelInfo->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    }
+
+    // Largeurs des panneaux de texte, en caractères de leur police à chasse
+    // fixe : le détail de commande au plus juste (ses lignes courantes font
+    // 32 caractères), les registres en 38 caractères d'une police un peu
+    // plus petite (8 pt, .ui) pour que la plupart de leurs lignes ne soient
+    // plus repliées. Tout le reste de la fenêtre
+    // va au panneau Texture (horizontalLayout_main, stretch 0,0,1,0 dans
+    // le .ui).
+    {
+        auto fixTextWidth = [this](QPlainTextEdit *pte, int chars) {
+            const QFontMetrics fm(pte->font());
+            pte->setFixedWidth(chars * textWidth(fm, QStringLiteral("0"))
+                + 2 * (int)pte->document()->documentMargin()
+                + style()->pixelMetric(QStyle::PM_ScrollBarExtent)
+                + 2 * pte->frameWidth() + 4);
+        };
+        fixTextWidth(pteCommandInfo, 34);
+        fixTextWidth(pteVdp1Regs, 38);
     }
 
     fillCommandList();
@@ -998,7 +1083,7 @@ UIDebugVDP1::~UIDebugVDP1()
 
 void UIDebugVDP1::syncOnVdp1Entry(int cursel)
 {
-    if (cursel < 0 || cursel >= lwCommandList->count() ||
+    if (cursel < 0 || cursel >= commandCount() ||
         cursel >= (int)mCmdAddrs.size()) return;
 
     const u32 addr = mCmdAddrs[cursel];
@@ -1008,10 +1093,8 @@ void UIDebugVDP1::syncOnVdp1Entry(int cursel)
     // le buffer en entier ou ne le termine pas explicitement.
     memset(tempstr, 0, sizeof(tempstr));
     {
-        QSignalBlocker blockList(lwCommandList);
-        QSignalBlocker blockRaw(lwCommandRaw);
-        lwCommandRaw->setCurrentRow(cursel);
-        lwCommandList->setCurrentRow(cursel);
+        QSignalBlocker blockList(twCommandList);
+        twCommandList->setCurrentItem(twCommandList->topLevelItem(cursel));
     }
 
     // Variantes adressées : l'adresse relevée par fillCommandList, pas un
@@ -1257,11 +1340,11 @@ bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
                     syncOnVdp1Entry(idx);
             } else {
                 QString t = QString("(%1, %2)").arg(x).arg(y);
-                if (idx >= 0 && idx < lwCommandList->count())
+                if (idx >= 0 && idx < commandCount())
                     t += "   " + QtYabause::translate("Command #%1 at 0x%2: %3")
                             .arg(idx)
                             .arg(mCmdAddrs[idx], 5, 16, QChar('0'))
-                            .arg(lwCommandList->item(idx)->text());
+                            .arg(commandName(idx));
                 mFrameInfo->setText(t);
             }
             break;
@@ -1320,7 +1403,7 @@ bool UIDebugVDP1::eventFilter(QObject *watched, QEvent *event)
                         t += "  " + QtYabause::translate("(after the 2nd end code of the line)");
                     // Chemin complet jusqu'à la couleur : banque ou LUT,
                     // décalage CRAOFB, index et contenu de la Color RAM.
-                    const int row = lwCommandList->currentRow();
+                    const int row = currentCommandRow();
                     if (!transp && !(mCurEndCode && code == endCode) &&
                         row >= 0 && row < (int)mCmdAddrs.size()) {
                         char ctext[256];
@@ -1437,7 +1520,7 @@ void UIDebugVDP1::refreshFramePreview()
 void UIDebugVDP1::updateFrameSelection()
 {
     if (!mFrameDlg || !mFrameSel) return;
-    const int row = lwCommandList->currentRow();
+    const int row = currentCommandRow();
     if (row < 0 || (size_t)(4 * row + 3) >= mFrameBoxes.size() ||
         mFrameBoxes[4 * row + 2] < mFrameBoxes[4 * row])
     {
@@ -1480,14 +1563,36 @@ int UIDebugVDP1::commandAtFramePoint(int x, int y) const
     return -1;
 }
 
-void UIDebugVDP1::on_lwCommandRaw_itemSelectionChanged()
+int UIDebugVDP1::commandCount() const
 {
-    syncOnVdp1Entry(lwCommandRaw->currentRow());
+    return twCommandList->topLevelItemCount();
 }
 
-void UIDebugVDP1::on_lwCommandList_itemSelectionChanged()
+int UIDebugVDP1::currentCommandRow() const
 {
-    syncOnVdp1Entry(lwCommandList->currentRow());
+    QTreeWidgetItem *cur = twCommandList->currentItem();
+    return cur ? twCommandList->indexOfTopLevelItem(cur) : -1;
+}
+
+QString UIDebugVDP1::commandName(int row) const
+{
+    QTreeWidgetItem *it = (row >= 0) ? twCommandList->topLevelItem(row) : nullptr;
+    return it ? it->text(kColCmd) : QString();
+}
+
+QString UIDebugVDP1::commandJump(int row) const
+{
+    QTreeWidgetItem *it = (row >= 0) ? twCommandList->topLevelItem(row) : nullptr;
+    return it ? it->text(kColJump) : QString();
+}
+
+// currentItemChanged plutôt que itemSelectionChanged : l'élément courant est
+// passé en argument, il ne dépend pas de l'ordre dans lequel le modèle de
+// sélection met à jour la sélection puis l'élément courant.
+void UIDebugVDP1::on_twCommandList_currentItemChanged(QTreeWidgetItem *current, QTreeWidgetItem *)
+{
+    if (current)
+        syncOnVdp1Entry(twCommandList->indexOfTopLevelItem(current));
 }
 
 void UIDebugVDP1::on_pbSaveRawSprite_clicked()
@@ -1514,7 +1619,7 @@ void UIDebugVDP1::on_pbSaveRawSprite_clicked()
 // ============================================================
 void UIDebugVDP1::on_pbEditSprite_clicked()
 {
-    const int row = lwCommandList->currentRow();
+    const int row = currentCommandRow();
     {
         UIDebugGfxEditor ed(this);
         if (row >= 0 && row < (int)mCmdAddrs.size() && mCurIsSprite)
@@ -1529,7 +1634,7 @@ void UIDebugVDP1::on_pbSaveEdits_clicked()
 {
     UIEditsExport dlg(this);
     dlg.exec();
-    syncOnVdp1Entry(lwCommandList->currentRow());
+    syncOnVdp1Entry(currentCommandRow());
 }
 
 void UIDebugVDP1::on_pbRevertEdits_clicked()
@@ -1541,7 +1646,7 @@ void UIDebugVDP1::on_pbRevertEdits_clicked()
                 .arg(VdpEditCount(-1)), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
     VdpEditRevertAll();
-    syncOnVdp1Entry(lwCommandList->currentRow());
+    syncOnVdp1Entry(currentCommandRow());
 }
 
 void UIDebugVDP1::on_pbSaveBitmap_clicked()
@@ -1624,12 +1729,11 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
     ts << "########## SUMMARY ##########\n\n";
     ts << lVDP1Info->text() << "\n\n";
 
-    const int n = lwCommandList->count();
+    const int n = commandCount();
     ts << "########## COMMAND LIST (" << n << " entries) ##########\n\n";
     for (int i = 0; i < n; ++i) {
-        const QString name = lwCommandList->item(i) ? lwCommandList->item(i)->text() : QString();
-        const QString raw  = (i < lwCommandRaw->count() && lwCommandRaw->item(i))
-                                  ? lwCommandRaw->item(i)->text() : QString();
+        const QString name = commandName(i);
+        const QString raw  = commandJump(i);
         ts << "[" << i << "] " << name;
         if (!raw.isEmpty())
             ts << "  -  " << raw;
@@ -1696,7 +1800,7 @@ void UIDebugVDP1::on_pbExportDebugInfo_clicked()
         ts << "VDP1 RAM is NULL.\n\n";
     }
 
-    const int cur = lwCommandList->currentRow();
+    const int cur = currentCommandRow();
     ts << "########## SELECTED COMMAND DETAIL";
     if (cur >= 0)
         ts << " (#" << cur << ")";
