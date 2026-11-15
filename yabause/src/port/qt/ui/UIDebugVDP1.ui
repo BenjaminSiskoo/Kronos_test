@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1180</width>
+    <width>1280</width>
     <height>640</height>
    </rect>
   </property>
@@ -15,22 +15,7 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_12">
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="1,2,3,1,2">
-     <item>
-      <widget class="QGroupBox" name="gbCommandRaw">
-       <property name="toolTip">
-        <string>Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).</string>
-       </property>
-       <property name="title">
-        <string>Jump list</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_10">
-        <item>
-         <widget class="QListWidget" name="lwCommandRaw"/>
-        </item>
-       </layout>
-      </widget>
-     </item>
+    <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="0,0,1,0">
      <item>
       <widget class="QGroupBox" name="gbCommandList">
        <property name="title">
@@ -38,7 +23,39 @@
        </property>
        <layout class="QVBoxLayout" name="verticalLayout_10b">
         <item>
-         <widget class="QListWidget" name="lwCommandList"/>
+         <widget class="QTreeWidget" name="twCommandList">
+          <property name="editTriggers">
+           <set>QAbstractItemView::NoEditTriggers</set>
+          </property>
+          <property name="selectionBehavior">
+           <enum>QAbstractItemView::SelectRows</enum>
+          </property>
+          <property name="rootIsDecorated">
+           <bool>false</bool>
+          </property>
+          <property name="uniformRowHeights">
+           <bool>true</bool>
+          </property>
+          <property name="itemsExpandable">
+           <bool>false</bool>
+          </property>
+          <property name="allColumnsShowFocus">
+           <bool>true</bool>
+          </property>
+          <column>
+           <property name="text">
+            <string>Jump</string>
+           </property>
+           <property name="toolTip">
+            <string>Where CMDLINK sends the command interpreter next: NEXT (following table), ASSIGN/CALL (jump to a given address), RETURN, or END (stop the list here).</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Command</string>
+           </property>
+          </column>
+         </widget>
         </item>
         <item>
          <widget class="QLabel" name="lCommandColorLegend">
@@ -269,7 +286,7 @@
           <property name="font">
            <font>
             <family>Courier New</family>
-            <pointsize>9</pointsize>
+            <pointsize>8</pointsize>
            </font>
           </property>
          </widget>
