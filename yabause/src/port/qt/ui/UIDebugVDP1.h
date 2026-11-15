@@ -93,6 +93,18 @@ protected:
     QWidget *mLoadGraph = nullptr;
     std::string mTopCostText;
 
+    // Liste des commandes : un seul QTreeWidget à deux colonnes alignées,
+    // le saut CMDLINK (colonne 0) puis la commande (colonne 1), une ligne
+    // par entrée de mCmdAddrs.
+    int     commandCount() const;
+    int     currentCommandRow() const;
+    QString commandName(int row) const;   // commande, étiquette, coût
+    QString commandJump(int row) const;   // NEXT/ASSIGN/CALL/RETURN/END
+    // Largeur de la liste, ajustée à son contenu par fillCommandList. Elle
+    // ne fait que croître tant que la fenêtre est ouverte, pour que le
+    // panneau Texture ne change pas de taille à chaque « Image suivante ».
+    int     mListWidth = 0;
+
     void fillCommandList();
     void updateVdp1Registers();
     void syncOnVdp1Entry(int cursel);
@@ -116,8 +128,7 @@ protected slots:
     void on_pbNextButton_clicked();
     void on_pbResetZoom_clicked();
     void on_cbOpaque_toggled(bool checked);
-    void on_lwCommandRaw_itemSelectionChanged();
-    void on_lwCommandList_itemSelectionChanged();
+    void on_twCommandList_currentItemChanged(QTreeWidgetItem *current, QTreeWidgetItem *previous);
     void on_pbExportDebugInfo_clicked();
     void on_pbFramePreview_clicked();
 };
