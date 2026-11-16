@@ -13,6 +13,7 @@ int DBLookupForceSH2CacheForCode(const char *game_code);
 int DBLookupLegacySH2FetchTiming(void);
 int DBLookupLegacySmpcIntbackTiming(void);
 int DBLookupLegacySH2FetchTimingForCode(const char *game_code);
+int DBLookupLegacySH2BusTimingForCode(const char *game_code);
 int DBLookupLegacySmpcIntbackTimingForCode(const char *game_code);
 int DBLookupMpegCard(const char *game_code);
 
