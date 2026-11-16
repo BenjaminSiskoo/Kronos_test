@@ -1,104 +1,127 @@
-/*	Copyright 2012 Theo Berkau <cwx@cyberwarriorx.com>
+/*  Copyright 2026 Kronos fork contributors
 
-	This file is part of Yabause.
+    This file is part of Kronos.
 
-	Yabause is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
+    Kronos is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 
-	Yabause is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
+    Kronos is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
 
-	You should have received a copy of the GNU General Public License
-	along with Yabause; if not, write to the Free Software
-	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+    You should have received a copy of the GNU General Public License
+    along with Kronos; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 */
-#ifndef UIHEXINPUT_H
-#define UIHEXINPUT_H
 
-#include "ui_UIHexInput.h"
-#include "../QtYabause.h"
-#include <QValidator>
+/*  UIEditsExport -- the edits of the graphics editor, one by one.
 
-class HexValidator : public QValidator
+    - list with before/after thumbnails: switch each edit on or off, name it,
+      undo / redo it, delete it;
+    - packs (.kmod): several can be loaded at once; conflicts between them
+      (same original bytes changed two ways) are shown; a pack made for
+      another disc (product number of the IP.BIN) is refused or flagged;
+    - packs of the running game are loaded automatically at reset from the
+      mods folder (autoLoadPacks, called by UIYabause);
+    - writing the edits into a disc image (patched copy, BPS, IPS), see
+      EditsPatcher.h. */
+
+#ifndef UIEDITSEXPORT_H
+#define UIEDITSEXPORT_H
+
+#include <QDialog>
+#include <QString>
+#include <vector>
+#include "../EditsPatcher.h"
+
+class QCheckBox;
+class QLabel;
+class QLineEdit;
+class QListWidget;
+class QPlainTextEdit;
+class QPushButton;
+class QTimer;
+class QTreeWidget;
+class QTreeWidgetItem;
+
+class UIEditsExport : public QDialog
 {
-   Q_OBJECT
+    Q_OBJECT
+
+public:
+    explicit UIEditsExport(QWidget *parent = 0);
+
+    // Product number / version / title of the disc in the drive ("" if none).
+    static QString currentProduct();
+    static QString currentVersion();
+    static QString currentTitle();
+    // Folder the packs are loaded from automatically (setting GfxEditor/ModsDir).
+    static QString modsDir();
+    static bool autoLoadEnabled();
+    // Loads every pack of the mods folder made for the disc in the drive and
+    // not loaded yet. Returns the number of packs loaded; 'log' gets one line
+    // per pack. Called at every reset.
+    static int autoLoadPacks(QStringList *log);
+    // Loads one pack. 'ask' = the user can be asked (other disc, already
+    // loaded); otherwise a pack for another disc is refused. Returns the
+    // number of edits loaded, -1 on error / refusal (message in *msg).
+    static int loadPackFile(const QString &path, bool ask, QWidget *parent, QString *msg);
+
+private slots:
+    void refreshList();
+    void onItemChanged(QTreeWidgetItem *item, int column);
+    void onSelectionChanged();
+    void onUndo();
+    void onRedo();
+    void onDelete();
+    void onToggleSelected();
+    void onSavePack();
+    void onSaveSelected();
+    void onLoadPack();
+    void onUnloadPack();
+    void onOpenModsDir();
+    void onChooseImage();
+    void onAnalyze();
+    void onExportImage();
+    void onExportBps();
+    void onExportIps();
+    void onTick();
+
 private:
-   unsigned int t, b;
-public:
-   // The parent must reach QValidator: the line edit passed here then owns
-   // the validator and deletes it with itself. Without it every validator
-   // created with "new HexValidator(..., lineEdit)" was leaked.
-   // The one-argument constructor was declared but never defined; it now
-   // accepts the full 32-bit range.
-   explicit HexValidator(QObject *parent = 0)
-      : QValidator(parent), t(0x00000000), b(0xFFFFFFFF)
-   {
-   }
-   HexValidator(unsigned int top, unsigned int bottom, QObject *parent = 0)
-      : QValidator(parent), t(top), b(bottom)
-   {
-   }
-   virtual void fixup(QString &input) const {
-      input = input.toUpper();
-   }
-   virtual State validate ( QString & input, int & pos ) const
-   {
-      QRegExp rxHex("[0-9A-Fa-f]{1,8}");
+    // edits as pack records ('onlyIds' empty = all enabled, non-empty edits)
+    std::vector<EditsPatcher::Record> collectPack(const std::vector<unsigned int> &onlyIds) const;
+    // edits ready to be looked for on the disc (colors grouped in palettes)
+    std::vector<EditsPatcher::Record> collectForDisc() const;
+    bool prepare(EditsPatcher::Image &img, EditsPatcher::Build &build);
+    // Edits not found as such on the disc, looked for inside the PRS blocks of
+    // its files; the blocks holding them are packed again ('extra' writes).
+    int findInPacked(const EditsPatcher::Image &img, const std::vector<EditsPatcher::Record> &recs,
+                     const std::vector<size_t> &missing, std::vector<EditsPatcher::DiskEdit> &extra,
+                     std::vector<int> &foundIn, std::vector<QString> &notes, EditsPatcher::Progress prog);
+    bool savePackTo(const QString &file, const std::vector<unsigned int> &ids);
+    std::vector<unsigned int> selectedIds() const;
+    QString selectedPack() const;
+    void addLog(const QString &line);
+    QString imageBaseName() const;
+    void updateHeader();
 
-      fixup(input);
-
-      if (input.isEmpty())
-         return Acceptable;
-
-      if (!rxHex.exactMatch(input))
-         return Invalid;
-
-      // Make sure it's in range
-      // A local variable: the bool allocated here with new was never freed,
-      // which leaked one byte per keystroke in every hex field
-      bool ok = false;
-      unsigned int val = input.toUInt(&ok, 16);
-
-      if (ok && (val >= t) && (val <= b))
-         return Acceptable;
-      return Invalid;
-   }
-
-   void setBottom(unsigned int bottom)
-   {
-      b = bottom;
-   }
-   void setTop(unsigned int top)
-   {
-      t = top;
-   }
-   virtual void setRange(unsigned int top, unsigned int bottom)
-   {
-      setTop(top);
-      setBottom(bottom);
-   }
-
-   unsigned int bottom() const { return b; }
-   unsigned int top() const { return t; }
+    QLabel *lTitle, *lChipGame, *lChipEdits, *lChipConflicts;
+    QTreeWidget *twEdits;
+    QPushButton *pbUndo, *pbRedo, *pbDelete, *pbToggle;
+    QListWidget *lwPacks;
+    QPushButton *pbLoadPack, *pbUnloadPack, *pbSavePack, *pbSaveSelected, *pbOpenMods;
+    QCheckBox *cbAutoLoad;
+    QLabel *lModsDir;
+    QPlainTextEdit *mConflicts;
+    QLineEdit *mImage;
+    QCheckBox *cbPacked;   // also look inside PRS blocks
+    QPlainTextEdit *mLog;
+    QTimer *mTimer;
+    unsigned mLastGen;
+    bool mFilling;
 };
 
-class UIHexInput : public QDialog, public Ui::UIHexInput
-{
-	Q_OBJECT
-public:
-	UIHexInput( u32 value, int size, QWidget* parent = 0 );
-   u32 getValue();
-
-protected:
-   u32 value;
-   int size;
-
-protected slots:
-	 void accept();
-};
-
-#endif // UIHEXINPUT_H
+#endif
