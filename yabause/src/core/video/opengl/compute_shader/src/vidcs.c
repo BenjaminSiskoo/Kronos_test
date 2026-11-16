@@ -5227,6 +5227,15 @@ static void FASTCALL Vdp2DrawBitmapCoordinateInc(Vdp2Ctrl *ctrl)
      line = &(ctrl->info.lineinfo[i]);
      ctrl->info.draw_line = i;
     Vdp2SelectFieldBanks(ctrl, i);
+    /* L'alpha (ratio de calcul de couleur CCRNx de la ligne) doit etre fixe pour
+     * chaque ligne, comme le font Vdp2DrawBitmapLineScroll() et le chemin cellule
+     * (Vdp2DrawCell_in_sync). Les cas 16 bits palette / 16 bits RGB / 32 bits
+     * ci-dessous lisent ctrl->info.alpha via Vdp2GetPixel16bpp/16bppbmp/32bppbmp ;
+     * sans cette ligne ils utilisaient une valeur laissee par l'appelant (0), la
+     * couche etait entierement transparente des qu'une zone partielle
+     * (registres modifies en cours de trame) passait par ce chemin (Astal,
+     * film d'intro : une trame noire sur 8). getAlpha() borne l'indice. */
+    ctrl->info.alpha = getAlpha(&ctrl->info, 0);
  
     /* i is a display line. In double-density interlace line y of field f is
      * display line 2y + f, and the vertical coordinate advances by the
