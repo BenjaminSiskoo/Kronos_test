@@ -165,17 +165,10 @@ static const char * const SH2CacheDBList[] = {
    que Space Jam : le maitre ne paie presque rien pour ses acces aux
    registres et ses ecritures, l'esclave paie ses defauts de cache.
 
-   Retire de la liste le 20/10/2026 (9381b434e), le jeu se bloquait de
-   temps en temps en combat : l'esclave, reveille dans sa boucle d'attente
-   de FTCSR.ICF (0602C20C-0602C214), appelait une adresse nulle (PR =
-   0602C22A, R0 = 0), executait la Boot ROM a partir de 00000000 et
-   enchainait les exceptions d'instruction illegale en 00000002 jusqu'a
-   ecraser sa table de vecteurs (06000400) avec sa pile. Le jeu est donc
-   remis dans la liste.
+   Zero Divide est maintenant dans SH2LegacyFetchOnlyDBList (plus bas).
 
    A retirer quand le cout des acces aux registres (Mednafen : SCU 8 cycles,
-   B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
-   jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
+   B-Bus 5 a 10 cycles) sera modelise. */
 static const char * const SH2LegacyFetchDBList[] = {
    "T-38001G", // Another Memories (Japan)
    "T-10310G", // DX Jinsei Game II
@@ -197,8 +190,44 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
    "T-31501G", // Vatlva
    "T-9103G", // Wangan Dead Heat + Real Arrange
-   "T-31601G", // Zero Divide - The Final Conflict (Japan)
    "T-21401G", // Zero4 Champ DooZy-J Type-R (Japan)
+   NULL
+};
+
+/* Jeux qui gardent l'ancien cout du fetch d'instruction (comme
+   SH2LegacyFetchDBList) mais paient le cout actuel des acces au bus
+   (SH2BusCostEnabled() dans memory.c).
+
+   Zero Divide - The Final Conflict (mecanisme decrit plus haut), mesures du
+   16/11/2026 (chronologie maitre / esclave par tranche de 32 cycles, table
+   indirecte du DMA niveau 1 lue au V-Blank IN) : le maitre reveille
+   l'esclave (MINIT) vers la ligne 8 et les deux travaillent en parallele ;
+   la liste complete (350 a 480 entrees, sinon 5 a 13) part a la trame
+   suivante si et seulement si l'esclave revient dans son attente
+   (0602C20C) avant que le maitre entre dans la sienne (060050C0).
+   - Ancien fetch + ancien cout du bus : esclave 242 000 cycles ; maitre
+     260 000 a 281 000 en combat mais 237 000 a 241 000 pendant le travelling
+     de camera du debut de match, ou il a moins de travail. L'esclave y
+     arrivait 2 000 a 6 000 cycles trop tard (1 a 2,5 %) pendant environ
+     120 trames : les combattants restaient figes 6 a 8 trames puis
+     sautaient, alors que le sol (VDP2) suivait la camera.
+   - Ancien fetch + cout actuel du bus : esclave 232 000 a 243 000, maitre
+     256 000 pendant le travelling et 265 000 en combat. Liste complete a
+     chaque trame apres les 13 premieres du travelling (1640 trames sur
+     1642 ensuite).
+   - Cout actuel du fetch, cache emule ou non, et ecritures Work RAM-H
+     d'avant 511ad7d51 : esclave en retard ou plantage des deux CPU avant le
+     premier combat (esclave appele a une adresse nulle depuis 0602C22A,
+     sorti de sa boucle d'attente de FTCSR.ICF, puis exceptions
+     d'instruction illegale en 00000002 jusqu'a ecraser sa table de vecteurs
+     06000400 ; c'etait le blocage aleatoire apres le retrait du jeu de
+     SH2LegacyFetchDBList par 9381b434e).
+   L'emulation du cache ne corrige pas ce jeu. Mednafen ne le classe pas en
+   CPUCACHE_EMUMODE_FULL : son ChangeLog (1.26.0) le met dans la liste du
+   contournement du cache de donnees en lecture, pour les portraits des
+   personnages. */
+static const char * const SH2LegacyFetchOnlyDBList[] = {
+   "T-31601G", // Zero Divide - The Final Conflict (Japan)
    NULL
 };
 
@@ -278,13 +307,22 @@ int DBLookupLegacySmpcIntbackTiming(void)
    return DBLookupLegacySmpcIntbackTimingForCode(Cs2GetCurrentGmaecode());
 }
 
-/* Retourne 1 si 'game_code' figure dans SH2LegacyFetchDBList. */
+/* Retourne 1 si 'game_code' garde l'ancien cout du fetch SH-2 :
+   SH2LegacyFetchDBList ou SH2LegacyFetchOnlyDBList. */
 int DBLookupLegacySH2FetchTimingForCode(const char *game_code)
+{
+   return DBListHasCode(SH2LegacyFetchDBList, game_code)
+       || DBListHasCode(SH2LegacyFetchOnlyDBList, game_code);
+}
+
+/* Retourne 1 si 'game_code' garde aussi l'ancien cout des acces au bus :
+   SH2LegacyFetchDBList seulement. */
+int DBLookupLegacySH2BusTimingForCode(const char *game_code)
 {
    return DBListHasCode(SH2LegacyFetchDBList, game_code);
 }
 
-/* Retourne 1 si le jeu en cours figure dans SH2LegacyFetchDBList. */
+/* Retourne 1 si le jeu en cours garde l'ancien cout du fetch SH-2. */
 int DBLookupLegacySH2FetchTiming(void)
 {
    Cs2GetIP(0);
