@@ -392,8 +392,73 @@ static void diffRuns(const uint8_t *a, const uint8_t *b, size_t n, size_t gap, s
     }
 }
 
+// Octets utilisateur modifies (par piste) -> changements physiques du fichier
+// image, EDC/ECC regeneres pour les secteurs bruts.
+static bool overlayToChanges(const Image &img, const std::vector<std::map<uint64_t, uint8_t> > &overlay,
+                             Build &out, std::string &err)
+{
+    for (size_t t = 0; t < img.tracks.size(); t++) {
+        const Track &tr = img.tracks[t];
+        const std::map<uint64_t, uint8_t> &ov = overlay[t];
+        if (ov.empty()) continue;
+        std::vector<Change> &chg = out.changes[tr.file];
+
+        if (tr.mode == 0) {                                      // ISO : secteurs contigus
+            std::map<uint64_t, uint8_t>::const_iterator it = ov.begin();
+            while (it != ov.end()) {
+                Change c; c.offset = tr.fileOffset + it->first;
+                uint64_t expect = it->first;
+                while (it != ov.end() && it->first == expect) { c.bytes.push_back(it->second); expect++; ++it; }
+                chg.push_back(c);
+            }
+        } else {                                                 // brut : secteur par secteur
+            FILE *f = fopen(tr.file.c_str(), "rb");
+            if (!f) { err = "Cannot open " + tr.file; return false; }
+            std::map<uint64_t, uint8_t>::const_iterator it = ov.begin();
+            std::vector<uint8_t> orig(tr.sectorSize), mod(tr.sectorSize);
+            while (it != ov.end()) {
+                const uint64_t sector = it->first / 2048;
+                if (sector >= tr.sectors) { ++it; continue; }
+                const uint64_t sbase = tr.fileOffset + sector * tr.sectorSize;
+                if (!readAt(f, sbase, &orig[0], tr.sectorSize)) { fclose(f); err = "Read error in " + tr.file; return false; }
+                mod = orig;
+                while (it != ov.end() && it->first / 2048 == sector) {
+                    mod[tr.dataOffset + (size_t)(it->first % 2048)] = it->second;
+                    ++it;
+                }
+                regenerateSector(&mod[0], (int)tr.sectorSize, tr.mode);
+                std::vector<std::pair<size_t, size_t> > runs;
+                diffRuns(&orig[0], &mod[0], tr.sectorSize, 8, runs);
+                for (size_t r = 0; r < runs.size(); r++) {
+                    Change c; c.offset = sbase + runs[r].first;
+                    c.bytes.assign(mod.begin() + runs[r].first, mod.begin() + runs[r].second);
+                    chg.push_back(c);
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    // trie + fusion des changements adjacents, par fichier
+    for (std::map<std::string, std::vector<Change> >::iterator it = out.changes.begin(); it != out.changes.end(); ++it) {
+        std::vector<Change> &v = it->second;
+        std::sort(v.begin(), v.end(), [](const Change &a, const Change &b) { return a.offset < b.offset; });
+        std::vector<Change> merged;
+        for (size_t i = 0; i < v.size(); i++) {
+            if (!merged.empty() && merged.back().offset + merged.back().bytes.size() == v[i].offset)
+                merged.back().bytes.insert(merged.back().bytes.end(), v[i].bytes.begin(), v[i].bytes.end());
+            else
+                merged.push_back(v[i]);
+        }
+        v.swap(merged);
+        uint64_t sz = 0; fileSizeOf(it->first, sz);
+        out.fileSize[it->first] = sz;
+    }
+    return true;
+}
+
 bool buildPatches(const Image &img, const std::vector<Record> &recs, Build &out,
-                  std::string &err, Progress prog)
+                  std::string &err, Progress prog, const std::vector<DiskEdit> *extra)
 {
     out = Build();
     out.status.resize(recs.size());
@@ -538,64 +603,103 @@ bool buildPatches(const Image &img, const std::vector<Record> &recs, Build &out,
         out.log.push_back(label + ": " + st.note);
     }
 
-    // ---- 5. octets utilisateur -> changements physiques (EDC/ECC regeneres) ----
-    for (size_t t = 0; t < img.tracks.size(); t++) {
-        const Track &tr = img.tracks[t];
-        const std::map<uint64_t, uint8_t> &ov = overlay[t];
-        if (ov.empty()) continue;
-        std::vector<Change> &chg = out.changes[tr.file];
-
-        if (tr.mode == 0) {                                      // ISO : secteurs contigus
-            std::map<uint64_t, uint8_t>::const_iterator it = ov.begin();
-            while (it != ov.end()) {
-                Change c; c.offset = tr.fileOffset + it->first;
-                uint64_t expect = it->first;
-                while (it != ov.end() && it->first == expect) { c.bytes.push_back(it->second); expect++; ++it; }
-                chg.push_back(c);
+    // ---- 5. ecritures a des offsets connus (blocs compresses) ----
+    if (extra) {
+        for (size_t i = 0; i < extra->size(); i++) {
+            const DiskEdit &e = (*extra)[i];
+            if (e.track < 0 || e.track >= (int)img.tracks.size() || e.orig.size() != e.repl.size()) continue;
+            std::vector<uint8_t> cur;
+            std::string rerr;
+            if (!readUserData(img, e.track, e.offset, e.orig.size(), cur, rerr) || cur != e.orig) {
+                out.log.push_back(e.label + ": the disc holds other data at " + hexStr(e.offset) + ", skipped");
+                continue;
             }
-        } else {                                                 // brut : secteur par secteur
-            FILE *f = fopen(tr.file.c_str(), "rb");
-            if (!f) { err = "Cannot open " + tr.file; return false; }
-            std::map<uint64_t, uint8_t>::const_iterator it = ov.begin();
-            std::vector<uint8_t> orig(tr.sectorSize), mod(tr.sectorSize);
-            while (it != ov.end()) {
-                const uint64_t sector = it->first / 2048;
-                if (sector >= tr.sectors) { ++it; continue; }
-                const uint64_t sbase = tr.fileOffset + sector * tr.sectorSize;
-                if (!readAt(f, sbase, &orig[0], tr.sectorSize)) { fclose(f); err = "Read error in " + tr.file; return false; }
-                mod = orig;
-                while (it != ov.end() && it->first / 2048 == sector) {
-                    mod[tr.dataOffset + (size_t)(it->first % 2048)] = it->second;
-                    ++it;
-                }
-                regenerateSector(&mod[0], (int)tr.sectorSize, tr.mode);
-                std::vector<std::pair<size_t, size_t> > runs;
-                diffRuns(&orig[0], &mod[0], tr.sectorSize, 8, runs);
-                for (size_t r = 0; r < runs.size(); r++) {
-                    Change c; c.offset = sbase + runs[r].first;
-                    c.bytes.assign(mod.begin() + runs[r].first, mod.begin() + runs[r].second);
-                    chg.push_back(c);
-                }
+            std::map<uint64_t, uint8_t> &ov = overlay[e.track];
+            bool conflict = false;
+            for (size_t k = 0; k < e.repl.size() && !conflict; k++) {
+                std::map<uint64_t, uint8_t>::const_iterator it = ov.find(e.offset + k);
+                if (it != ov.end() && it->second != e.repl[k]) conflict = true;
             }
-            fclose(f);
+            if (conflict) { out.log.push_back(e.label + ": overlaps another edit, skipped"); continue; }
+            for (size_t k = 0; k < e.repl.size(); k++) ov[e.offset + k] = e.repl[k];
         }
     }
 
-    // trie + fusion des changements adjacents, par fichier
-    for (std::map<std::string, std::vector<Change> >::iterator it = out.changes.begin(); it != out.changes.end(); ++it) {
-        std::vector<Change> &v = it->second;
-        std::sort(v.begin(), v.end(), [](const Change &a, const Change &b) { return a.offset < b.offset; });
-        std::vector<Change> merged;
-        for (size_t i = 0; i < v.size(); i++) {
-            if (!merged.empty() && merged.back().offset + merged.back().bytes.size() == v[i].offset)
-                merged.back().bytes.insert(merged.back().bytes.end(), v[i].bytes.begin(), v[i].bytes.end());
-            else
-                merged.push_back(v[i]);
+    return overlayToChanges(img, overlay, out, err);
+}
+
+bool buildDiskPatches(const Image &img, const std::vector<DiskEdit> &edits, Build &out, std::string &err)
+{
+    out = Build();
+    out.status.resize(edits.size());
+    std::vector<std::map<uint64_t, uint8_t> > overlay(img.tracks.size());
+    for (size_t i = 0; i < edits.size(); i++) {
+        const DiskEdit &e = edits[i];
+        Status &st = out.status[i];
+        const std::string label = e.label.empty() ? ("text #" + std::to_string(i)) : e.label;
+        if (e.track < 0 || e.track >= (int)img.tracks.size() || e.orig.size() != e.repl.size() || e.orig.empty()) {
+            st.note = "invalid edit";
+            out.log.push_back(label + ": " + st.note);
+            continue;
         }
-        v.swap(merged);
-        uint64_t sz = 0; fileSizeOf(it->first, sz);
-        out.fileSize[it->first] = sz;
+        if (e.orig == e.repl) { st.note = "unchanged"; continue; }
+        std::vector<uint8_t> cur;
+        std::string rerr;
+        if (!readUserData(img, e.track, e.offset, e.orig.size(), cur, rerr)) {
+            st.note = rerr;
+            out.log.push_back(label + ": " + st.note);
+            continue;
+        }
+        if (cur != e.orig) {
+            st.note = "the disc holds other data at " + hexStr(e.offset) + " (other image or other version?)";
+            out.log.push_back(label + ": " + st.note);
+            continue;
+        }
+        std::map<uint64_t, uint8_t> &ov = overlay[e.track];
+        bool conflict = false;
+        for (size_t k = 0; k < e.repl.size() && !conflict; k++) {
+            std::map<uint64_t, uint8_t>::const_iterator it = ov.find(e.offset + k);
+            if (it != ov.end() && it->second != e.repl[k]) conflict = true;
+        }
+        if (conflict) {
+            st.note = "overlaps another text, skipped";
+            out.log.push_back(label + ": " + st.note);
+            continue;
+        }
+        for (size_t k = 0; k < e.repl.size(); k++) ov[e.offset + k] = e.repl[k];
+        st.matches = 1;
+        st.note = "patched at " + hexStr(e.offset);
+        out.applied++;
     }
+    return overlayToChanges(img, overlay, out, err);
+}
+
+uint64_t userDataSize(const Image &img, int track)
+{
+    if (track < 0 || track >= (int)img.tracks.size()) return 0;
+    return img.tracks[track].sectors * 2048;
+}
+
+bool readUserData(const Image &img, int track, uint64_t offset, size_t n, std::vector<uint8_t> &out,
+                  std::string &err)
+{
+    out.clear();
+    if (track < 0 || track >= (int)img.tracks.size()) { err = "No data track."; return false; }
+    const Track &tr = img.tracks[track];
+    if (offset + n > tr.sectors * 2048) { err = "Read past the end of the track."; return false; }
+    FILE *f = fopen(tr.file.c_str(), "rb");
+    if (!f) { err = "Cannot open " + tr.file; return false; }
+    out.resize(n);
+    size_t done = 0;
+    while (done < n) {
+        const uint64_t pos = offset + done, sector = pos / 2048, in = pos % 2048;
+        const size_t chunk = (size_t)std::min<uint64_t>(2048 - in, n - done);
+        if (!readAt(f, tr.fileOffset + sector * tr.sectorSize + tr.dataOffset + in, &out[done], chunk)) {
+            fclose(f); err = "Read error in " + tr.file; out.clear(); return false;
+        }
+        done += chunk;
+    }
+    fclose(f);
     return true;
 }
 
