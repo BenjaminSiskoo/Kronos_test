@@ -165,6 +165,14 @@ static const char * const SH2CacheDBList[] = {
    que Space Jam : le maitre ne paie presque rien pour ses acces aux
    registres et ses ecritures, l'esclave paie ses defauts de cache.
 
+   Retire de la liste le 20/10/2026 (9381b434e), le jeu se bloquait de
+   temps en temps en combat : l'esclave, reveille dans sa boucle d'attente
+   de FTCSR.ICF (0602C20C-0602C214), appelait une adresse nulle (PR =
+   0602C22A, R0 = 0), executait la Boot ROM a partir de 00000000 et
+   enchainait les exceptions d'instruction illegale en 00000002 jusqu'a
+   ecraser sa table de vecteurs (06000400) avec sa pile. Le jeu est donc
+   remis dans la liste.
+
    A retirer quand le cout des acces aux registres (Mednafen : SCU 8 cycles,
    B-Bus 5 a 10 cycles) sera modelise. Codes : Mednafen, qui classe aussi ce
    jeu parmi ceux qui dependent du temps du cache (CPUCACHE_EMUMODE_FULL). */
@@ -189,6 +197,7 @@ static const char * const SH2LegacyFetchDBList[] = {
    "T-27806G", //Yuukyuu no Kobako Official Collection (Japan)
    "T-31501G", // Vatlva
    "T-9103G", // Wangan Dead Heat + Real Arrange
+   "T-31601G", // Zero Divide - The Final Conflict (Japan)
    "T-21401G", // Zero4 Champ DooZy-J Type-R (Japan)
    NULL
 };
