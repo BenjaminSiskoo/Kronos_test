@@ -1509,6 +1509,14 @@ void SH2SetLegacyFetchTiming(int on)
    SH2LegacyBusTiming = on;
 }
 
+/* A appeler apres SH2SetLegacyFetchTiming() : ancien cout des acces au bus
+   seul. Les jeux de SH2LegacyFetchOnlyDBList (utils/src/db.c, Zero Divide)
+   gardent l'ancien cout du fetch avec le cout actuel du bus (on = 0). */
+void SH2SetLegacyBusTiming(int on)
+{
+   SH2LegacyBusTiming = on;
+}
+
 /* Acces au modele : 1 = succes (LRU mis a jour), 0 = defaut. Sur un
  * defaut, la ligne est chargee (voie la plus ancienne) sauf si noReplace.
  *
