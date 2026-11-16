@@ -5,9 +5,10 @@
     la CRAM de l'emulateur. Pour le reporter sur le disque, on retrouve les octets
     d'origine dans les donnees utilisateur de l'image (secteurs de 2048 octets),
     on les remplace, puis on regenere EDC/ECC des secteurs bruts touches.
-    Ca ne marche que si les donnees sont stockees telles quelles sur le disque :
-    des donnees compressees ne sont pas retrouvees (le pack .kmod, lui, marche
-    toujours). Aucune dependance a Qt ni au coeur de l'emulateur (C++11). */
+    Directement, ca ne marche que si les donnees sont stockees telles quelles sur
+    le disque ; UIEditsExport cherche ensuite les edits non trouves dans les blocs
+    PRS (TextTools) et les passe a buildPatches en 'extra'. Le pack .kmod marche
+    toujours. Aucune dependance a Qt ni au coeur de l'emulateur (C++11). */
 
 #ifndef EDITSPATCHER_H
 #define EDITSPATCHER_H
@@ -79,8 +80,28 @@ struct Build {
 typedef std::function<bool(const char *what, double fraction)> Progress;
 
 bool openImage(const std::string &path, Image &img, std::string &err);
+struct DiskEdit;
+// 'extra': ecritures a des offsets connus ajoutees aux edits trouves (blocs
+// compresses recompresses, voir UIEditsExport) ; leur resultat va dans le journal.
 bool buildPatches(const Image &img, const std::vector<Record> &recs, Build &out,
-                  std::string &err, Progress prog);
+                  std::string &err, Progress prog, const std::vector<DiskEdit> *extra = 0);
+// Ecritures a une position connue des donnees utilisateur d'une piste (textes
+// traduits, voir TextTools.h) : 'offset' = LBA relatif a la piste * 2048 + octet.
+// Les octets d'origine sont verifies sur le disque avant d'etre remplaces.
+struct DiskEdit {
+    int track;
+    uint64_t offset;
+    std::vector<uint8_t> orig, repl;        // meme taille
+    std::string label;
+    DiskEdit() : track(0), offset(0) {}
+};
+bool buildDiskPatches(const Image &img, const std::vector<DiskEdit> &edits, Build &out, std::string &err);
+
+// Lecture des donnees utilisateur (2048 octets par secteur) d'une piste de donnees.
+uint64_t userDataSize(const Image &img, int track);
+bool readUserData(const Image &img, int track, uint64_t offset, size_t n, std::vector<uint8_t> &out,
+                  std::string &err);
+
 // Copie l'image dans destDir (qui doit etre un autre dossier) et y applique les changements.
 bool writePatchedImage(const Image &img, const Build &b, const std::string &destDir,
                        std::string &err, Progress prog);
