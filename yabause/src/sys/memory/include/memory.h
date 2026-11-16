@@ -367,6 +367,7 @@ extern "C" {
      fetch pour les jeux de SH2LegacyFetchDBList (utils/src/db.c). */
   void SH2FetchCachePurge(SH2_struct *context);
   void SH2SetLegacyFetchTiming(int on);
+  void SH2SetLegacyBusTiming(int on);
   u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr);
   void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val);
   void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val);
