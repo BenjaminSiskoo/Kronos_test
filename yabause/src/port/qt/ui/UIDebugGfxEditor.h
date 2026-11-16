@@ -236,6 +236,8 @@ public:
     void pickAt(int x, int y, const QPoint &globalPos);
 
 public slots:
+    // arms "Pick on screen" (used by the text editor for texts drawn as graphics)
+    void startScreenPick();
     void done(int r) override;
 
 protected:
@@ -268,6 +270,7 @@ private slots:
     void onZoom(int delta);
     void onRegionChanged(int);
     void onRecolor();
+    void onTextTool();
     void onPickToggled(bool on);
     void onWatchToggled(bool on);
     void onWatchEvent();
@@ -411,6 +414,7 @@ private:
 
     QPushButton *pbRun = nullptr, *pbStep = nullptr, *pbRefresh = nullptr, *pbEdits = nullptr, *pbRevertAll = nullptr, *pbExportAll = nullptr, *pbImportFolder = nullptr;
     QPushButton *pbPick = nullptr;
+    QToolButton *tbText = nullptr;
     QCheckBox *cbWatch = nullptr;
     QLabel *lFootNote = nullptr;
 
