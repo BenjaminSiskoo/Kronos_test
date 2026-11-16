@@ -114,6 +114,8 @@ set( kronos_qt_MOC_HEADERS
     ui/UIDebugVDP1.h
     ui/UIEditsExport.h
     ui/UIDebugGfxEditor.h
+    ui/UIDebugTextEditor.h
+	TextTools.h
     ui/UIDebugVDP2.h
     ui/UIDebugVDP2Viewer.h
     ui/UIDisasm.h
@@ -133,6 +135,7 @@ set( kronos_qt_SOURCES
 	QtYabause.cpp
 	CommonDialogs.cpp
 	EditsPatcher.cpp
+	TextTools.cpp
 	PerQt.c
 	KeyboardQt.cpp
 	ui/UIYabause.cpp
@@ -167,6 +170,7 @@ set( kronos_qt_SOURCES
     ui/UIDebugVDP1.cpp
     ui/UIEditsExport.cpp
     ui/UIDebugGfxEditor.cpp
+    ui/UIDebugTextEditor.cpp
     ui/UIDebugVDP2.cpp
     ui/UIDebugVDP2Viewer.cpp
     ui/UIDisasm.cpp
