@@ -68,6 +68,8 @@
 #include <QWheelEvent>
 #include <QDialogButtonBox>
 #include <QFileSystemWatcher>
+#include <QFontComboBox>
+#include <QPlainTextEdit>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -80,6 +82,8 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <climits>
+#include <functional>
 #include <set>
 
 extern "C" {
@@ -1127,6 +1131,12 @@ void UIDebugGfxEditor::buildUi()
     tb->addWidget(makeTool(tr_("Pick"), tr_("Color picker (I, or Alt+click with any tool)"), GfxCanvas::Picker));
     tb->addWidget(makeTool(tr_("Erase"), tr_("Paints the transparent code (E)"), GfxCanvas::Eraser));
     mTools->button(GfxCanvas::Pencil)->setChecked(true);
+    tbText = new QToolButton(center);
+    tbText->setText(tr_("Text..."));
+    tbText->setProperty("toolbtn", true);
+    tbText->setToolTip(tr_("Writes a text with a font of the computer, in the primary color (outline: secondary color), "
+                           "with a live preview: for the texts drawn as graphics (title screens, PRESS START...)"));
+    tb->addWidget(tbText);
     tb->addSpacing(8);
     QLabel *lb = new QLabel(tr_("Size"), center);
     tb->addWidget(lb);
@@ -1380,6 +1390,7 @@ void UIDebugGfxEditor::buildUi()
     connect(pbImportFolder, SIGNAL(clicked()), this, SLOT(onImportSpriteFolder()));
     connect(pbClose, SIGNAL(clicked()), this, SLOT(reject()));
     connect(pbRecolor, SIGNAL(clicked()), this, SLOT(onRecolor()));
+    connect(tbText, SIGNAL(clicked()), this, SLOT(onTextTool()));
     connect(pbPick, SIGNAL(toggled(bool)), this, SLOT(onPickToggled(bool)));
     connect(cbWatch, SIGNAL(toggled(bool)), this, SLOT(onWatchToggled(bool)));
     connect(pbSamePalette, SIGNAL(clicked()), this, SLOT(onSelectSamePalette()));
@@ -3441,6 +3452,478 @@ void UIDebugGfxEditor::onRecolor()
     }
     refreshItemInfo();
     updateChips();
+}
+
+// ===========================================================================
+// Text tool: a text drawn with a font of the computer (titles, PRESS START,
+// menus made of tiles or sprites)
+// ===========================================================================
+
+// ---- words drawn with one VDP1 sprite per letter (menus, PRESS START...) ----
+// The sprites of the frame that sit side by side on the same line form a word;
+// the text is drawn over their screen area and each sprite gets its slice in
+// its texture. Only sprites drawn dot for dot are used (normal sprites, or
+// scaled ones at their own size; ST-013 CMDCTRL: Dir bits 4 / 5 = H / V flip).
+namespace {
+struct LineSprite {
+    u32 cmd;
+    VdpEditSprite s;
+    int x0, y0, w, h, mode;
+    bool flipH, flipV;
+    u32 tex, bytes;
+};
+struct SpriteLine {
+    std::vector<int> items;   // indices in the frame list, left to right
+    int x0, y0, x1, y1;       // union of the boxes (inclusive)
+};
+
+std::vector<LineSprite> frameSprites()
+{
+    std::vector<LineSprite> out;
+    std::vector<u32> addrs(16384);
+    const int n = Vdp1DebugGetCommandList(addrs.data(), (int)addrs.size());
+    if (n <= 0) return out;
+    addrs.resize(n);
+    std::vector<int> boxes(addrs.size() * 4, 0);
+    int fw = 0, fh = 0;
+    free(Vdp1DebugRenderFrame(addrs.data(), (int)addrs.size(), &fw, &fh, boxes.data()));
+    for (size_t i = 0; i < addrs.size(); i++) {
+        const int *b = &boxes[4 * i];
+        if (b[2] < b[0]) continue;
+        LineSprite l;
+        if (VdpEditSpriteFromCmd(NULL, addrs[i], &l.s) != 0) continue;
+        const int type = l.s.CMDCTRL & 0xF;
+        if (type != 0 && type != 1) continue;
+        VdpEditSpriteGeometry(&l.s, &l.w, &l.h, &l.mode, &l.tex, &l.bytes);
+        if (l.w <= 0 || l.h <= 0 || b[2] - b[0] + 1 != l.w || b[3] - b[1] + 1 != l.h) continue;
+        l.cmd = addrs[i];
+        l.x0 = b[0]; l.y0 = b[1];
+        l.flipH = (l.s.CMDCTRL >> 4) & 1;
+        l.flipV = (l.s.CMDCTRL >> 5) & 1;
+        out.push_back(l);
+    }
+    return out;
+}
+
+// Groups the sprites in lines: same color mode, color word and height,
+// overlapping rows (half the height at least), gap between two neighbours up
+// to two letter widths.
+std::vector<SpriteLine> spriteLines(const std::vector<LineSprite> &f)
+{
+    std::vector<int> parent(f.size());
+    for (size_t i = 0; i < f.size(); i++) parent[i] = (int)i;
+    std::function<int(int)> root = [&](int i) { return parent[i] == i ? i : parent[i] = root(parent[i]); };
+    for (size_t i = 0; i < f.size(); i++)
+        for (size_t j = i + 1; j < f.size(); j++) {
+            const LineSprite &a = f[i], &b = f[j];
+            // letters of one word: same color mode, colors and height (keeps
+            // out a cursor or an emblem drawn next to the word)
+            if (a.mode != b.mode || a.s.CMDCOLR != b.s.CMDCOLR || a.h != b.h) continue;
+            const int top = std::max<int>(a.y0, b.y0), bottom = std::min<int>(a.y0 + a.h, b.y0 + b.h);
+            if (bottom - top < std::min<int>(a.h, b.h) / 2 + 1) continue;
+            const int gap = std::max<int>(a.x0, b.x0) - std::min<int>(a.x0 + a.w, b.x0 + b.w);
+            if (gap > 2 * std::max<int>(a.w, b.w)) continue;
+            parent[root((int)i)] = root((int)j);
+        }
+    std::map<int, SpriteLine> g;
+    for (size_t i = 0; i < f.size(); i++) g[root((int)i)].items.push_back((int)i);
+    std::vector<SpriteLine> out;
+    for (std::map<int, SpriteLine>::iterator it = g.begin(); it != g.end(); ++it) {
+        SpriteLine l = it->second;
+        if (l.items.size() < 2 || l.items.size() > 128) continue;
+        std::sort(l.items.begin(), l.items.end(), [&](int a, int b) { return f[a].x0 < f[b].x0; });
+        l.x0 = l.y0 = INT_MAX; l.x1 = l.y1 = INT_MIN;
+        for (size_t k = 0; k < l.items.size(); k++) {
+            const LineSprite &sp = f[l.items[k]];
+            l.x0 = std::min<int>(l.x0, sp.x0); l.y0 = std::min<int>(l.y0, sp.y0);
+            l.x1 = std::max<int>(l.x1, sp.x0 + sp.w - 1); l.y1 = std::max<int>(l.y1, sp.y0 + sp.h - 1);
+        }
+        if (l.x1 - l.x0 > 1023 || l.y1 - l.y0 > 511) continue;
+        out.push_back(l);
+    }
+    std::sort(out.begin(), out.end(), [](const SpriteLine &a, const SpriteLine &b) { return a.y0 != b.y0 ? a.y0 < b.y0 : a.x0 < b.x0; });
+    return out;
+}
+
+std::vector<u32> textureCodes(const LineSprite &sp)
+{
+    const int need = (sp.mode <= 1) ? sp.w * sp.h / 2 : (sp.mode <= 4) ? sp.w * sp.h : sp.w * sp.h * 2;
+    std::vector<u8> bytes((size_t)std::max<int>(need, (int)sp.bytes), 0);
+    VdpEditReadVdp1(sp.tex, bytes.data(), sp.bytes);
+    std::vector<u32> codes((size_t)sp.w * sp.h, 0);
+    VdpEditSpriteDecode(sp.mode, bytes.data(), sp.w, sp.h, codes.data());
+    return codes;
+}
+} // namespace
+
+void UIDebugGfxEditor::startScreenPick()
+{
+    show();
+    raise();
+    if (pbPick && !pbPick->isChecked()) pbPick->setChecked(true);
+}
+
+void UIDebugGfxEditor::onTextTool()
+{
+    if (mItem.kind == Item::None || !emuReady()) return;
+    const int W = mCanvas->picWidth(), H = mCanvas->picHeight();
+    if (W <= 0 || H <= 0) return;
+    const std::vector<u32> base = mCanvas->codes();
+    const u32 textCode = mPrimaryCode, outlineCode = mSecondaryCode, clearCode = transparentCode();
+
+    // characters used in several places of the layer map (the empty cell, a
+    // letter met twice...): one drawing on them shows in every place
+    int shared = 0, sharedOutside = 0;
+    std::vector<char> isShared;
+    if (mItem.kind == Item::Cells && !mItem.blocks.empty()) {
+        const int cs = mItem.bg.csize > 0 ? mItem.bg.csize : 8;
+        // places = pattern names (VRAM address): a plane shown several times
+        // in the map (MPxx registers often all point to the same one) is one place
+        std::vector<std::set<u32> > places(mItem.blocks.size());
+        std::map<u32, size_t> byAddr;
+        for (size_t b = 0; b < mItem.blocks.size(); b++) byAddr[mItem.blocks[b].addr] = b;
+        for (int cy = 0; cy * cs < H; cy++)
+            for (int cx = 0; cx * cs < W; cx++) {
+                VdpEditCell c;
+                if (VdpEditBgCellAt(&mItem.bg, mItem.originX + cx * cs, mItem.originY + cy * cs, &c) != 0) continue;
+                std::map<u32, size_t>::iterator f = byAddr.find(c.charAddr);
+                if (f != byAddr.end()) places[f->second].insert(c.pnAddr);
+            }
+        std::vector<std::set<u32> > all = places;
+        for (int y = 0; y + cs <= mItem.bg.mapH; y += cs)
+            for (int x = 0; x + cs <= mItem.bg.mapW; x += cs) {
+                VdpEditCell c;
+                if (VdpEditBgCellAt(&mItem.bg, x, y, &c) != 0) continue;
+                std::map<u32, size_t>::iterator f = byAddr.find(c.charAddr);
+                if (f != byAddr.end()) all[f->second].insert(c.pnAddr);
+            }
+        isShared.assign(mItem.blocks.size(), 0);
+        for (size_t b = 0; b < places.size(); b++) {
+            if (all[b].size() > 1) { isShared[b] = 1; shared++; }
+            if (all[b].size() > places[b].size()) sharedOutside++;
+        }
+    }
+
+    // a sprite that is one letter of a word: the other letters are the
+    // sprites beside it on the same line
+    std::vector<LineSprite> frame;
+    std::vector<SpriteLine> lines;
+    if (mItem.kind == Item::Sprite) {
+        int iw = 0, ih = 0, imode = 0;
+        u32 iaddr = 0, ibytes = 0;
+        VdpEditSpriteGeometry(&mItem.spr, &iw, &ih, &imode, &iaddr, &ibytes);
+        frame = frameSprites();
+        const std::vector<SpriteLine> all = spriteLines(frame);
+        for (size_t l = 0; l < all.size(); l++) {
+            bool mine = false;
+            for (size_t k = 0; k < all[l].items.size() && !mine; k++) mine = frame[all[l].items[k]].tex == iaddr;
+            if (mine) lines.push_back(all[l]);
+        }
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr_("Text"));
+    QVBoxLayout *v = new QVBoxLayout(&dlg);
+    QComboBox *where = new QComboBox(&dlg);
+    where->addItem(tr_("This picture (%1 x %2 dots)").arg(W).arg(H));
+    for (size_t l = 0; l < lines.size(); l++)
+        where->addItem(tr_("Line of %1 sprites at (%2, %3) - (%4, %5), one letter each")
+                           .arg(lines[l].items.size()).arg(lines[l].x0).arg(lines[l].y0).arg(lines[l].x1).arg(lines[l].y1));
+    where->setToolTip(tr_("Words drawn with one sprite per letter: the text is drawn over the whole line on the screen, "
+                          "and each sprite gets its part in its texture. Spaces between the sprites cannot be drawn."));
+    if (!lines.empty()) {
+        QHBoxLayout *wl = new QHBoxLayout();
+        wl->addWidget(new QLabel(tr_("Write on"), &dlg));
+        wl->addWidget(where, 1);
+        v->addLayout(wl);
+        where->setCurrentIndex(1);
+    } else {
+        where->hide();
+    }
+    QLabel *linePreview = new QLabel(&dlg);
+    linePreview->setAlignment(Qt::AlignCenter);
+    linePreview->setMinimumHeight(60);
+    linePreview->setStyleSheet("background: #202020;");
+    linePreview->setVisible(!lines.empty());
+    v->addWidget(linePreview);
+    QPlainTextEdit *te = new QPlainTextEdit(&dlg);
+    te->setPlaceholderText(tr_("Text to write (several lines allowed)"));
+    te->setMaximumHeight(70);
+    v->addWidget(te);
+    QGridLayout *g = new QGridLayout();
+    QFontComboBox *fc = new QFontComboBox(&dlg);
+    QSpinBox *sz = new QSpinBox(&dlg);
+    sz->setRange(4, 128);
+    sz->setValue(qBound(6, H - 2, 16));
+    sz->setSuffix(tr_(" dots"));
+    QCheckBox *bold = new QCheckBox(tr_("Bold"), &dlg);
+    QCheckBox *outline = new QCheckBox(tr_("Outline (secondary color)"), &dlg);
+    QComboBox *align = new QComboBox(&dlg);
+    align->addItem(tr_("Left"));
+    align->addItem(tr_("Centered"));
+    align->addItem(tr_("Right"));
+    align->setCurrentIndex(1);
+    QSpinBox *sx = new QSpinBox(&dlg), *sy = new QSpinBox(&dlg);
+    sx->setRange(-1024, 1024);
+    sy->setRange(-512, 512);
+    QSpinBox *spacing = new QSpinBox(&dlg);
+    spacing->setRange(-4, 8);
+    spacing->setSuffix(tr_(" dots"));
+    QComboBox *clear = new QComboBox(&dlg);
+    clear->addItem(tr_("Keep the picture"));
+    clear->addItem(tr_("Clear the picture (transparent)"));
+    clear->addItem(tr_("Clear the picture (secondary color)"));
+    clear->setCurrentIndex(1);
+    g->addWidget(new QLabel(tr_("Font"), &dlg), 0, 0);      g->addWidget(fc, 0, 1, 1, 3);
+    g->addWidget(new QLabel(tr_("Height"), &dlg), 1, 0);    g->addWidget(sz, 1, 1);
+    g->addWidget(bold, 1, 2);                               g->addWidget(outline, 1, 3);
+    g->addWidget(new QLabel(tr_("Align"), &dlg), 2, 0);     g->addWidget(align, 2, 1);
+    g->addWidget(new QLabel(tr_("Letter spacing"), &dlg), 2, 2); g->addWidget(spacing, 2, 3);
+    g->addWidget(new QLabel(tr_("Move X / Y"), &dlg), 3, 0); g->addWidget(sx, 3, 1); g->addWidget(sy, 3, 2);
+    g->addWidget(new QLabel(tr_("Before"), &dlg), 4, 0);    g->addWidget(clear, 4, 1, 1, 3);
+    QComboBox *sharedMode = new QComboBox(&dlg);
+    sharedMode->addItem(tr_("Leave them as they are (safe)"));
+    sharedMode->addItem(tr_("Draw on them anyway (every place changes)"));
+    sharedMode->setToolTip(tr_("A character met in several cells of the layer (empty cell, letter used twice) holds one "
+                               "drawing only: changing it changes all its places, in this area and elsewhere on the screen."));
+    if (shared) {
+        g->addWidget(new QLabel(tr_("Shared characters"), &dlg), 5, 0);
+        g->addWidget(sharedMode, 5, 1, 1, 3);
+    } else {
+        sharedMode->hide();
+    }
+    v->addLayout(g);
+    QLabel *info = new QLabel(&dlg);
+    info->setWordWrap(true);
+    info->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    // room for the notes that appear while typing (word-wrapped labels do not
+    // grow the dialog by themselves)
+    info->setMinimumHeight(info->fontMetrics().lineSpacing() * ((lines.empty() && !shared) ? 3 : 9));
+    QString inf = tr_("Primary color %1 for the letters, secondary color %2 for the outline / background. "
+                      "The picture (%3 x %4 dots) shows the result while you type, the game too when the edits are applied.")
+                      .arg(QString::number(textCode, 16).toUpper()).arg(QString::number(outlineCode, 16).toUpper()).arg(W).arg(H);
+    if (shared)
+        inf += "\n" + tr_("Warning: %1 character(s) of this area are used in several places of the layer (%2 also outside "
+                          "this area): the empty cell, a letter met twice... They are left as they are unless you choose to "
+                          "draw on them, and the preview shows what the game will show. When a word needs them, write it "
+                          "where the cells are all different, or keep the new letters inside the cells of the old ones.")
+                          .arg(shared).arg(sharedOutside);
+    info->setText(inf);
+    v->addWidget(info);
+    QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    v->addWidget(bb);
+    connect(bb, SIGNAL(accepted()), &dlg, SLOT(accept()));
+    connect(bb, SIGNAL(rejected()), &dlg, SLOT(reject()));
+
+    // letters as a 1-bit mask (no smoothing: the colors are palette codes)
+    auto makeMask = [&](int MW, int MH) -> QImage {
+        QImage mask(MW, MH, QImage::Format_ARGB32);
+        mask.fill(0);
+        QFont f = fc->currentFont();
+        f.setPixelSize(sz->value());
+        f.setBold(bold->isChecked());
+        f.setStyleStrategy(QFont::NoAntialias);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, spacing->value());
+        {
+            QPainter pt(&mask);
+            pt.setRenderHint(QPainter::Antialiasing, false);
+            pt.setRenderHint(QPainter::TextAntialiasing, false);
+            pt.setFont(f);
+            pt.setPen(Qt::white);
+            const int a = align->currentIndex() == 0 ? Qt::AlignLeft : align->currentIndex() == 1 ? Qt::AlignHCenter : Qt::AlignRight;
+            pt.drawText(QRect(sx->value(), sy->value(), MW, MH), a | Qt::AlignVCenter, te->toPlainText());
+        }
+        return mask;
+    };
+    // code of a dot of the mask: letter, outline, or -1 (nothing drawn)
+    auto maskCode = [&](const QImage &mask, int x, int y) -> qint64 {
+        auto on = [&](int px, int py) { return px >= 0 && py >= 0 && px < mask.width() && py < mask.height() && qAlpha(mask.pixel(px, py)) > 127; };
+        if (on(x, y)) return textCode;
+        if (!outline->isChecked()) return -1;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) if (on(x + dx, y + dy)) return outlineCode;
+        return -1;
+    };
+    auto render = [&]() -> std::vector<u32> {
+        const QImage mask = makeMask(W, H);
+        std::vector<u32> out = base;
+        if (clear->currentIndex() == 1) std::fill(out.begin(), out.end(), clearCode);
+        else if (clear->currentIndex() == 2) std::fill(out.begin(), out.end(), outlineCode);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                const qint64 c = maskCode(mask, x, y);
+                if (c >= 0) out[(size_t)y * W + x] = (u32)c;
+            }
+        // shared characters: left as they are, or drawn on (the game then
+        // shows the last drawing in every place)
+        if (shared && sharedMode->currentIndex() == 0) {
+            for (size_t p = 0; p < out.size() && p < mItem.pixBlock.size(); p++)
+                if (isShared[(size_t)mItem.pixBlock[p]]) out[p] = base[p];
+        } else if (shared) {
+            std::vector<std::vector<u32> > bc(mItem.blocks.size());
+            for (size_t b = 0; b < bc.size(); b++) bc[b] = mItem.blocks[b].codes;
+            for (size_t p = 0; p < out.size() && p < mItem.pixBlock.size(); p++)
+                if (out[p] != base[p]) bc[(size_t)mItem.pixBlock[p]][(size_t)mItem.pixOff[p]] = out[p];
+            for (size_t p = 0; p < out.size() && p < mItem.pixBlock.size(); p++)
+                out[p] = bc[(size_t)mItem.pixBlock[p]][(size_t)mItem.pixOff[p]];
+        }
+        return out;
+    };
+    // line of sprites: new codes of each texture (first sprite of the line
+    // that uses it wins), dots in conflict, textures drawn elsewhere too
+    struct LineResult {
+        std::map<u32, std::vector<u32> > tex;
+        std::map<u32, int> owner;       // texture -> frame index
+        int conflicts = 0, outside = 0;
+        QImage picture;
+    };
+    auto renderLine = [&](const SpriteLine &ln) -> LineResult {
+        LineResult r;
+        const int LW = ln.x1 - ln.x0 + 1, LH = ln.y1 - ln.y0 + 1;
+        const QImage mask = makeMask(LW, LH);
+        std::set<u32> inLine;
+        for (size_t k = 0; k < ln.items.size(); k++) inLine.insert(frame[ln.items[k]].cmd);
+        for (size_t k = 0; k < ln.items.size(); k++) {
+            const LineSprite &sp = frame[ln.items[k]];
+            std::vector<u32> codes = textureCodes(sp);
+            if (clear->currentIndex() == 1) std::fill(codes.begin(), codes.end(), clearCode);
+            else if (clear->currentIndex() == 2) std::fill(codes.begin(), codes.end(), outlineCode);
+            for (int ty = 0; ty < sp.h; ty++)
+                for (int tx = 0; tx < sp.w; tx++) {
+                    const int x = sp.x0 - ln.x0 + (sp.flipH ? sp.w - 1 - tx : tx);
+                    const int y = sp.y0 - ln.y0 + (sp.flipV ? sp.h - 1 - ty : ty);
+                    const qint64 c = maskCode(mask, x, y);
+                    if (c >= 0) codes[(size_t)ty * sp.w + tx] = (u32)c;
+                }
+            std::map<u32, std::vector<u32> >::iterator f = r.tex.find(sp.tex);
+            if (f == r.tex.end()) {
+                r.tex[sp.tex] = codes;
+                r.owner[sp.tex] = ln.items[k];
+            } else {
+                for (size_t i = 0; i < codes.size() && i < f->second.size(); i++) r.conflicts += codes[i] != f->second[i];
+            }
+        }
+        for (std::map<u32, std::vector<u32> >::const_iterator it = r.tex.begin(); it != r.tex.end(); ++it) {
+            bool elsewhere = false;
+            for (size_t i = 0; i < frame.size() && !elsewhere; i++)
+                elsewhere = frame[i].tex == it->first && !inLine.count(frame[i].cmd);
+            r.outside += elsewhere;
+        }
+        // what the game will show
+        r.picture = QImage(LW, LH, QImage::Format_ARGB32);
+        r.picture.fill(qRgb(32, 32, 32));
+        for (size_t k = 0; k < ln.items.size(); k++) {
+            const LineSprite &sp = frame[ln.items[k]];
+            const std::vector<u32> &codes = r.tex[sp.tex];
+            for (int ty = 0; ty < sp.h; ty++)
+                for (int tx = 0; tx < sp.w; tx++) {
+                    const u32 code = codes[(size_t)ty * sp.w + tx];
+                    if (VdpEditSpriteCodeKind(&sp.s, code) != 0) continue;
+                    const u32 argb = VdpEditSpriteDataArgb(VdpEditSpriteCodeData(&sp.s, NULL, code));
+                    r.picture.setPixel(sp.x0 - ln.x0 + (sp.flipH ? sp.w - 1 - tx : tx),
+                                       sp.y0 - ln.y0 + (sp.flipV ? sp.h - 1 - ty : ty), 0xFF000000u | argb);
+                }
+        }
+        return r;
+    };
+    auto onLine = [&]() { return where->currentIndex() > 0 && where->currentIndex() <= (int)lines.size(); };
+    auto preview = [&]() {
+        if (!onLine()) {
+            linePreview->setVisible(false);
+            info->setText(inf);
+            mCanvas->replaceCodes(render(), false);
+            return;
+        }
+        mCanvas->replaceCodes(base, false);
+        const SpriteLine &ln = lines[(size_t)where->currentIndex() - 1];
+        const LineResult r = renderLine(ln);
+        const int scale = qBound(1, 480 / qMax(1, r.picture.width()), 4);
+        linePreview->setPixmap(QPixmap::fromImage(r.picture.scaled(r.picture.width() * scale, r.picture.height() * scale)));
+        linePreview->setVisible(true);
+        QString t = tr_("Line of %1 sprites, %2 texture(s). Primary color %3 for the letters, secondary color %4 for the "
+                        "outline / background (codes of each sprite's own colors). The picture above is what the game will show.")
+                        .arg(ln.items.size()).arg(r.tex.size()).arg(QString::number(textCode, 16).toUpper())
+                        .arg(QString::number(outlineCode, 16).toUpper());
+        if (r.conflicts)
+            t += "\n" + tr_("%1 dot(s) cannot be drawn: a texture used by two sprites of the line (the same letter met twice) "
+                            "holds one drawing only, the first one is kept. Move the text or change it so that these letters "
+                            "get the same part of the new word.").arg(r.conflicts);
+        if (r.outside)
+            t += "\n" + tr_("Warning: %1 texture(s) of this line are also drawn by other sprites of the screen (the same "
+                            "letters elsewhere): they change there too.").arg(r.outside);
+        info->setText(t);
+    };
+    connect(te, &QPlainTextEdit::textChanged, &dlg, preview);
+    connect(fc, &QFontComboBox::currentFontChanged, &dlg, preview);
+    connect(sz, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), &dlg, preview);
+    connect(sx, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), &dlg, preview);
+    connect(sy, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), &dlg, preview);
+    connect(spacing, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), &dlg, preview);
+    connect(bold, &QCheckBox::toggled, &dlg, preview);
+    connect(outline, &QCheckBox::toggled, &dlg, preview);
+    connect(align, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), &dlg, preview);
+    connect(clear, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), &dlg, preview);
+    connect(sharedMode, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), &dlg, preview);
+    connect(where, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), &dlg, [&](int i) {
+        if (i > 0 && i <= (int)lines.size()) {
+            QSignalBlocker b(sz);
+            sz->setValue(qBound(6, lines[(size_t)i - 1].y1 - lines[(size_t)i - 1].y0 + 1, 64));
+        }
+        preview();
+    });
+    if (onLine()) {
+        QSignalBlocker b(sz);
+        sz->setValue(qBound(6, lines[0].y1 - lines[0].y0 + 1, 64));
+    }
+    preview();
+    v->setSizeConstraint(QLayout::SetMinimumSize);   // the notes may grow while typing
+    dlg.resize(560, dlg.sizeHint().height());
+    const bool ok = dlg.exec() == QDialog::Accepted;
+    if (onLine()) {
+        mCanvas->replaceCodes(base, false);
+        if (!ok || te->toPlainText().isEmpty()) return;
+        // each texture of the line written as one VDP1 edit named after the text
+        const LineResult r = renderLine(lines[(size_t)where->currentIndex() - 1]);
+        const QByteArray name = ("text " + te->toPlainText().simplified().left(40)).toUtf8();
+        int written = 0, pending = 0, failed = 0;
+        for (std::map<u32, std::vector<u32> >::const_iterator it = r.tex.begin(); it != r.tex.end(); ++it) {
+            const LineSprite &sp = frame[(size_t)r.owner.at(it->first)];
+            const int need = (sp.mode <= 1) ? sp.w * sp.h / 2 : (sp.mode <= 4) ? sp.w * sp.h : sp.w * sp.h * 2;
+            QByteArray orig((int)sp.bytes, 0);
+            VdpEditReadVdp1(sp.tex, (u8 *)orig.data(), sp.bytes);
+            QByteArray full = orig;
+            if (full.size() < need) full.append(QByteArray(need - full.size(), 0));
+            VdpEditSpriteEncode(sp.mode, it->second.data(), sp.w, sp.h, (u8 *)full.data());
+            const QByteArray repl = full.left((int)sp.bytes);
+            if (repl == orig) continue;
+            char meta[VDPEDIT_META_SIZE];
+            VdpEditSpriteMeta(&sp.s, meta);
+            u32 id = 0;
+            const int rc = VdpEditWriteEx(VDPEDIT_VDP1, sp.tex, (const u8 *)orig.constData(), (const u8 *)repl.constData(),
+                                          sp.bytes, meta, NULL, &id);
+            if (rc < 0) { failed++; continue; }
+            if (id) VdpEditSetName(id, name.constData());
+            written++;
+            if (rc == 0) pending++;
+        }
+        reloadItemFromMemory();
+        refreshSource(true);
+        updateChips();
+        updateActionState();
+        lApplyStatus->setText(tr_("Text written on %1 sprite texture(s)%2%3. Each one is an edit named \"%4\" "
+                                  "(Save / load edits: undo, turn off, save in a pack).")
+                                  .arg(written)
+                                  .arg(pending ? tr_(", %1 waiting for the game to load them").arg(pending) : QString())
+                                  .arg(failed ? tr_(", %1 failed").arg(failed) : QString())
+                                  .arg(QString::fromUtf8(name)));
+        return;
+    }
+    const std::vector<u32> result = render();
+    mCanvas->replaceCodes(base, false);
+    if (!ok || te->toPlainText().isEmpty() || result == base) return;
+    mCanvas->replaceCodes(result, true);
+    onCanvasEdited();
+    lApplyStatus->setText(tr_("Text written. Apply it to see it in the game (or keep \"Apply as you draw\" on)."));
 }
 
 // ===========================================================================
