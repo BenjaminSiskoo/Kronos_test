@@ -23,6 +23,8 @@
     characters / bitmap rows and color RAM, whatever dialog made them. */
 
 #include "UIEditsExport.h"
+#include "../TextTools.h"
+#include <algorithm>
 #include "UIDebugGfxEditor.h"
 #include "../QtYabause.h"
 #include "../Settings.h"
@@ -413,8 +415,8 @@ UIEditsExport::UIEditsExport(QWidget *parent)
     QWidget *tDisc = new QWidget(tabs);
     QVBoxLayout *vd = new QVBoxLayout(tDisc);
     vd->setContentsMargins(0, 8, 0, 0);
-    QLabel *dl = new QLabel(tr_("Write the edits into the disc image (only if the data is stored uncompressed). "
-                                "The pack always works, even when the game data is compressed."), tDisc);
+    QLabel *dl = new QLabel(tr_("Write the edits into the disc image: the data stored as such, and the data packed "
+                                "in PRS blocks (packed again). The pack always works, whatever the game does with its data."), tDisc);
     dl->setWordWrap(true);
     dl->setProperty("dim", true);
     vd->addWidget(dl);
@@ -427,6 +429,12 @@ UIEditsExport::UIEditsExport(QWidget *parent)
     browse->setProperty("flat2", true);
     imgRow->addWidget(browse);
     vd->addLayout(imgRow);
+    cbPacked = new QCheckBox(tr_("Also look inside compressed data (PRS blocks of the files)"), tDisc);
+    cbPacked->setChecked(true);
+    cbPacked->setToolTip(tr_("The edits not found as such are looked for in the PRS blocks (Sega's compression) of every file "
+                             "up to 16 MB. A block that holds some is packed again; it must fit in its old room "
+                             "(plus the 00 padding after it)."));
+    vd->addWidget(cbPacked);
     QGridLayout *dg = new QGridLayout();
     QPushButton *analyze = new QPushButton(tr_("Analyze"), tDisc);
     QPushButton *image = new QPushButton(tr_("Export patched image..."), tDisc);
@@ -898,6 +906,36 @@ bool UIEditsExport::prepare(EditsPatcher::Image &img, EditsPatcher::Build &build
         QMessageBox::warning(this, windowTitle(), QString::fromLocal8Bit(err.c_str()));
         return false;
     }
+    // ---- edits not found as such: inside the PRS blocks of the files ----
+    if (cbPacked->isChecked()) {
+        std::vector<size_t> missing;
+        // only the edits searched and not found (not those skipped as too
+        // short / too generic: inside unpacked data they would match anywhere)
+        for (size_t i = 0; i < build.status.size(); i++)
+            if (build.status[i].matches == 0 && build.status[i].note.compare(0, 9, "not found") == 0) missing.push_back(i);
+        std::vector<EditsPatcher::DiskEdit> extra;
+        std::vector<int> foundIn(recs.size(), 0);
+        std::vector<QString> notes(recs.size());
+        if (!missing.empty() && findInPacked(img, recs, missing, extra, foundIn, notes, prog) >= 0 && !extra.empty()) {
+            EditsPatcher::Build b2;
+            if (EditsPatcher::buildPatches(img, recs, b2, err, prog, &extra)) {
+                for (size_t k = 0; k < missing.size(); k++) {
+                    const size_t i = missing[k];
+                    if (foundIn[i] <= 0) continue;
+                    b2.status[i].matches = foundIn[i];
+                    b2.status[i].note = notes[i].toStdString();
+                    b2.applied++;
+                }
+                build = b2;
+            }
+        }
+        for (size_t k = 0; k < missing.size(); k++) {
+            const size_t i = missing[k];
+            if (notes[i].isEmpty()) continue;
+            build.status[i].note = notes[i].toStdString();
+            build.log.push_back(recs[i].label + ": " + notes[i].toStdString());
+        }
+    }
     pd.setValue(100);
 
     addLog(QString("--- %1 ---").arg(path));
@@ -907,12 +945,100 @@ bool UIEditsExport::prepare(EditsPatcher::Image &img, EditsPatcher::Build &build
 
     if (build.applied == 0) {
         QMessageBox::warning(this, windowTitle(), tr_(
-            "None of the edits was found in this image: the game most likely stores its graphics "
-            "compressed, or in a different layout than in VRAM.\n\n"
+            "None of the edits was found in this image, not even inside its PRS blocks: the game most likely "
+            "stores its graphics with another compression, or in a different layout than in VRAM.\n\n"
             "Use the edit pack (.kmod) instead, which does not depend on the disc format."));
         return false;
     }
     return true;
+}
+
+// PRS blocks of the files (Sega's compression, see TextTools.h): the edits not
+// found as such are looked for in the unpacked data. A block that holds some is
+// packed again and must fit in its old room plus the 00 bytes after it in the
+// file. Returns the number of edits found, -1 when cancelled.
+int UIEditsExport::findInPacked(const EditsPatcher::Image &img, const std::vector<EditsPatcher::Record> &recs,
+                                const std::vector<size_t> &missing, std::vector<EditsPatcher::DiskEdit> &extra,
+                                std::vector<int> &foundIn, std::vector<QString> &notes, EditsPatcher::Progress prog)
+{
+    std::vector<TextTools::IsoFile> files;
+    std::string err;
+    if (!TextTools::listIsoFiles(img, 0, files, err)) return 0;
+    const uint64_t maxFile = 16u << 20;
+    uint64_t total = 0, done = 0;
+    for (size_t f = 0; f < files.size(); f++) if (files[f].size <= maxFile) total += files[f].size;
+    int found = 0;
+    for (size_t f = 0; f < files.size(); f++) {
+        const TextTools::IsoFile &file = files[f];
+        if (file.size == 0 || file.size > maxFile) continue;
+        std::vector<uint8_t> data;
+        if (!EditsPatcher::readUserData(img, 0, (uint64_t)file.lba * 2048, file.size, data, err)) continue;
+        const std::string what = "PRS blocks of " + file.path;
+        const uint64_t base = done;
+        const std::vector<TextTools::PackedBlock> blocks = TextTools::findPrsBlocks(data.data(), data.size(), 64, 4000,
+            [&](double fr) { return !prog || prog(what.c_str(), total ? (double)(base + (uint64_t)(fr * file.size)) / (double)total : 0.0); });
+        done += file.size;
+        if (prog && !prog(what.c_str(), total ? (double)done / (double)total : 1.0)) return -1;
+        for (size_t b = 0; b < blocks.size(); b++) {
+            std::vector<uint8_t> plain, mod;
+            size_t used = 0;
+            if (!TextTools::decompress(TextTools::CodecPrs, data.data() + blocks[b].offset, data.size() - blocks[b].offset,
+                                       plain, &used, 16u << 20, err))
+                continue;
+            mod = plain;
+            std::vector<std::pair<size_t, int> > hitsHere;    // record, occurrences
+            for (size_t k = 0; k < missing.size(); k++) {
+                const EditsPatcher::Record &r = recs[missing[k]];
+                for (int variant = 0; variant < 2; variant++) {
+                    const std::vector<uint8_t> &o = variant ? r.origAlt : r.orig, &n = variant ? r.replAlt : r.repl;
+                    if (o.size() < 4 || o.size() != n.size()) continue;
+                    int hits = 0;
+                    std::vector<uint8_t>::const_iterator it = plain.begin();
+                    while (hits < 64) {
+                        it = std::search(it, plain.cend(), o.begin(), o.end());
+                        if (it == plain.cend()) break;
+                        const size_t at = (size_t)(it - plain.cbegin());
+                        bool clash = false;
+                        for (size_t j = 0; j < n.size() && !clash; j++) clash = mod[at + j] != plain[at + j] && mod[at + j] != n[j];
+                        if (!clash) { std::copy(n.begin(), n.end(), mod.begin() + at); hits++; }
+                        ++it;
+                    }
+                    if (hits) { hitsHere.push_back(std::make_pair(missing[k], hits)); break; }
+                }
+            }
+            if (hitsHere.empty()) continue;
+            const uint64_t at = blocks[b].offset;
+            uint64_t room = blocks[b].packedSize;
+            while (at + room < data.size() && data[at + room] == 0 && room < blocks[b].packedSize + 65536u) room++;
+            std::vector<uint8_t> packed = TextTools::compress(TextTools::CodecPrs, mod), back;
+            const QString where = tr_("PRS block at %1 of %2").arg(QString::number(at, 16).toUpper()).arg(QString::fromStdString(file.path));
+            TextTools::decompress(TextTools::CodecPrs, packed.data(), packed.size(), back, 0, mod.size() + 16, err);
+            if (packed.size() > room || back != mod) {
+                for (size_t h = 0; h < hitsHere.size(); h++)
+                    if (notes[hitsHere[h].first].isEmpty())
+                        notes[hitsHere[h].first] = packed.size() > room
+                            ? tr_("found in the %1, but packed again it takes %2 bytes, %3 more than its room").arg(where).arg(packed.size()).arg(packed.size() - room)
+                            : tr_("found in the %1, but packing it again failed").arg(where);
+                continue;
+            }
+            EditsPatcher::DiskEdit e;
+            e.track = 0;
+            e.offset = (uint64_t)file.lba * 2048 + at;
+            const size_t len = std::max<size_t>(blocks[b].packedSize, packed.size());
+            e.orig.assign(data.begin() + at, data.begin() + at + len);
+            e.repl = packed;
+            e.repl.resize(len, 0);
+            e.label = where.toStdString();
+            extra.push_back(e);
+            for (size_t h = 0; h < hitsHere.size(); h++) {
+                foundIn[hitsHere[h].first] += hitsHere[h].second;
+                notes[hitsHere[h].first] = tr_("patched %1 occurrence(s) inside the %2 (packed again: %3 bytes, room %4)")
+                                               .arg(foundIn[hitsHere[h].first]).arg(where).arg(packed.size()).arg(room);
+                found++;
+            }
+        }
+    }
+    return found;
 }
 
 void UIEditsExport::onChooseImage()
