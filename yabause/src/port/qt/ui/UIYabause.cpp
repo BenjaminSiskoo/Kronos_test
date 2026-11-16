@@ -30,6 +30,7 @@
 #include "UIDebugVDP1.h"
 #include "UIDebugVDP2.h"
 #include "UIDebugGfxEditor.h"
+#include "UIDebugTextEditor.h"
 #include "UIEditsExport.h"
 #include <QPointer>
 #include "UIDebugM68K.h"
@@ -1657,6 +1658,22 @@ void UIYabause::on_aViewDebugGfxEditor_triggered()
 	static QPointer<UIDebugGfxEditor> editor;
 	if (!editor) {
 		editor = new UIDebugGfxEditor(this);
+		editor->setAttribute(Qt::WA_DeleteOnClose);
+		editor->setModal(false);
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
+}
+
+// Editeur de textes (traduction) : non modal, une seule instance. Il travaille
+// sur l'image disque ; "Live in game" ecrit dans la Work RAM sur ce thread
+// (celui de l'emulation, YabauseGL::event).
+void UIYabause::on_aViewDebugTextEditor_triggered()
+{
+	static QPointer<UIDebugTextEditor> editor;
+	if (!editor) {
+		editor = new UIDebugTextEditor(this);
 		editor->setAttribute(Qt::WA_DeleteOnClose);
 		editor->setModal(false);
 	}
