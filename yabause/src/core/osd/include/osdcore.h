@@ -40,7 +40,10 @@ extern "C" {
 #define OSDMSG_VDP1_FPS  1
 #define OSDMSG_STATUS    2
 #define OSDMSG_DEBUG     3
-#define OSDMSG_COUNT     4
+/* Tool-assisted speedrun line (movie.c): frame, lag frames, re-records and
+   the input of the frame. Shown at the bottom of the picture. */
+#define OSDMSG_TAS       4
+#define OSDMSG_COUNT     5
 
 typedef struct {
    int type;
