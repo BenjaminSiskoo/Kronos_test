@@ -115,6 +115,8 @@ set( kronos_qt_MOC_HEADERS
     ui/UIEditsExport.h
     ui/UIDebugGfxEditor.h
     ui/UIDebugTextEditor.h
+    ui/UIMovieEditor.h
+    ui/UIRamWatch.h
 	TextTools.h
     ui/UIDebugVDP2.h
     ui/UIDebugVDP2Viewer.h
@@ -171,6 +173,8 @@ set( kronos_qt_SOURCES
     ui/UIEditsExport.cpp
     ui/UIDebugGfxEditor.cpp
     ui/UIDebugTextEditor.cpp
+    ui/UIMovieEditor.cpp
+    ui/UIRamWatch.cpp
     ui/UIDebugVDP2.cpp
     ui/UIDebugVDP2Viewer.cpp
     ui/UIDisasm.cpp
