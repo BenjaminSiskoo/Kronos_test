@@ -68,7 +68,7 @@ UIWheelSetting::UIWheelSetting( PerInterface_struct* core, uint port, uint pad, 
 	
 	foreach ( QToolButton* tb, findChildren<QToolButton*>() )
 	{
-		tb->installEventFilter( this );
+		/* no event filter: the style sheet draws the checked (awaiting input) state */
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbButton_clicked() ) );
 	}
 	
