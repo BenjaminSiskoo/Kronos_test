@@ -45,6 +45,11 @@ public:
   QImage grabFrameBuffer();
 	void makeCurrent();
 	bool isPaused() { return mPause;}
+	/* Tool-assisted speedruns: runs exactly one frame while the emulation is
+	   paused (frame advance). Returns false if a frame is already being
+	   emulated (called from a nested event loop). */
+	bool stepFrame();
+	bool inFrame() const { return mInFrame; }
 
 private:
 	void requestFrame();
@@ -52,6 +57,9 @@ private:
 Q_SIGNALS:
 	void glInitialized();
 	void emulationPaused();
+	/* The movie code asked to stop on this very frame (seek target reached,
+	   end of a read-only playback): no further frame has been requested. */
+	void pauseRequested();
 	void frameSwapped();
 
 protected:
