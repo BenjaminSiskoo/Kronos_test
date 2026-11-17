@@ -256,6 +256,28 @@ profile_index = 0;
 
 
 
+/* One line of text on a dark band, so that it stays readable over any
+   picture (status messages and the TAS line). */
+static void OSDNanovgDrawBand(int vidwidth, int vidheight, float y, const char *text, float fontsize)
+{
+  float bounds[4];
+  const float x = 10.0f;
+
+  nvgBeginFrame(vg, vidwidth, vidheight, 1.0f);
+  nvgFontSize(vg, fontsize);
+  nvgFontFace(vg, "sans");
+  nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+  nvgTextBounds(vg, x, y, text, NULL, bounds);
+  nvgBeginPath(vg);
+  nvgRect(vg, bounds[0] - 6.0f, bounds[1] - 3.0f,
+          (bounds[2] - bounds[0]) + 12.0f, (bounds[3] - bounds[1]) + 6.0f);
+  nvgFillColor(vg, nvgRGBA(0, 0, 0, 160));
+  nvgFill(vg);
+  nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+  nvgText(vg, x, y, text, NULL);
+  nvgEndFrame(vg);
+}
+
 void OSDNanovgDisplayMessage(OSDMessage_struct * message, pixel_t * buffer, int w, int h)
 {
   int LeftX = 10;
@@ -268,17 +290,31 @@ void OSDNanovgDisplayMessage(OSDMessage_struct * message, pixel_t * buffer, int 
   int maxlen = 0;
   int i = 0;
 
-  if ((message->type != OSDMSG_FPS)&&(message->type != OSDMSG_VDP1_FPS)) return;
+  if (vg == NULL || message->message == NULL) return;
 
   VIDCore->GetGlSize(&vidwidth, &vidheight);
+
+  /* The status messages ("STATE SAVED", the messages of movie.c...) were
+     pushed but never drawn: the test below returned for every type other
+     than the two FPS lines, although a position was computed for
+     OSDMSG_STATUS further down. They are drawn at the bottom of the
+     picture, above the TAS line. */
+  if (message->type == OSDMSG_TAS) {
+    OSDNanovgDrawBand(vidwidth, vidheight, (float)(vidheight - 16), message->message, fontsize);
+    return;
+  }
+  if (message->type == OSDMSG_STATUS) {
+    OSDNanovgDrawBand(vidwidth, vidheight, (float)(vidheight - 44), message->message, fontsize);
+    return;
+  }
+
+  if ((message->type != OSDMSG_FPS)&&(message->type != OSDMSG_VDP1_FPS)) return;
+
   Width = vidwidth - 2 * LeftX;
 
   switch (message->type) {
   case OSDMSG_VDP1_FPS:
     TxtY = Height + TxtY;
-    break;
-  case OSDMSG_STATUS:
-    TxtY = vidheight - (Height + TxtY);
     break;
   }
 
