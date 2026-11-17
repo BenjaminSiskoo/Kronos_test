@@ -39,6 +39,12 @@
 #include "junzip.h"
 #include "zlib.h"
 #include "chd.h"
+#include "threads.h"
+
+/* Thread slot of the zip inflate worker. YAB_THREAD_CS_CMD_1 is declared in
+   every version of threads.h and is not used anywhere else, so no change to
+   threads.h is needed. */
+#define CD_ZIP_THREAD_ID YAB_THREAD_CS_CMD_1
 
 #ifndef HAVE_STRICMP
 #ifdef HAVE_STRCASECMP
@@ -745,146 +751,395 @@ static int LoadBinCue(const char *cuefilename, FILE *iso_file)
 }
 
 
-int infoFile(JZFile *zip, int idx, JZFileHeader *header, char *filename, void *user_data) {
-    size_t offset;
-    char name[1024];
-    ZipEntry *entry;
-    offset = zip->tell(zip); // store current position
-    entry = (ZipEntry*)user_data;
+//////////////////////////////////////////////////////////////////////////////
+// Zipped BIN/CUE: progressive decompression
+//
+// A deflate stream cannot be seeked, so a zipped track has to be inflated
+// from its first byte. The loader used to inflate EVERY file of the archive
+// to the end before returning (hundreds of MB, on the emulation thread, with
+// one full scan of the central directory per FILE line of the cue).
+//
+// Now the central directory is read once, only the cue is inflated at load
+// time, and the tracks are inflated by a background thread, in cue order,
+// into buffers whose final size is known from the directory. A read only
+// waits until the bytes it needs are there: the head of track 1 is ready
+// within milliseconds, so the disc boots at once. When a read targets a
+// track that is not the one being inflated (CD-DA track, far seek), the
+// worker switches to that track first; every stream keeps its own inflate
+// state so the interrupted one is simply resumed later.
+//
+// Without thread support (YabThreadStart() failing, thr-dummy.c) the same
+// streams are inflated on demand by the reader itself.
+//////////////////////////////////////////////////////////////////////////////
 
-   if (entry == NULL) exit(-1);
+#define ZIP_IN_CHUNK   (256 * 1024)    // compressed bytes read per fread()
+#define ZIP_OUT_CHUNK  (1024 * 1024)   // inflated bytes published per step
 
-    if(zip->seek(zip, header->offset, SEEK_SET)) {
-        printf("Cannot seek in zip file!\n");
-        return 0; // abort
-    }
+typedef struct
+{
+   char *name;
+   u32 offset;      // local file header offset
+   u32 compSize;
+   u32 size;
+   u16 method;
+} ZipDirEntry;
 
-    if (entry->filename == NULL){
-      //look for *.cue file
-       char *last = strstr(filename, ".cue");
-       if (last == NULL) last = strstr(filename, ".Cue");
-       if (last == NULL) last = strstr(filename, ".CUE");
-       if (last != NULL) {
-        if(jzReadLocalFileHeader(zip, header, name, sizeof(name))) {
-          printf("Couldn't read local file header!\n");
-          exit(-1);
-        }
-        if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-        entry->zipBuffer = NULL;
-        entry->size = header->uncompressedSize;
-        return 0;
-       }
-    } else {
-      char *last = strrchr(filename, '/');
-      char* fileToSearch = entry->filename;
-      if (last == NULL) last = filename;
-      else last = last+1;
-      if (strcmp(last, fileToSearch) == 0) {
-        //File found
-        if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-        entry->zipBuffer = NULL;
-        entry->size = header->uncompressedSize;
-        return 0;
+typedef struct
+{
+   ZipDirEntry *ent;
+   int count;
+   int cap;
+} ZipDir;
+
+typedef struct
+{
+   ZipEntry e;      // MUST stay first: track_info_struct.tr points to it
+   u32 localOffset;
+   u32 compSize;
+   u16 method;
+   // Private to whoever runs ZipStreamStep() (the worker, or the reader
+   // when there is no worker)
+   int started;
+   int strmInit;
+   u32 filePos;     // next compressed byte in the archive
+   u32 compLeft;
+   u32 produced;
+   z_stream strm;
+   u8 *inbuf;
+   // Shared between the worker and the reader, under zipldr.mtx
+   u32 avail;       // bytes of e.zipBuffer that are valid
+   int done;        // stream finished (completely, or on error)
+   int error;
+} ZipStream;
+
+static struct
+{
+   ZipStream **stream;
+   int count;
+   FILE *fp;            // the archive; only ZipStreamStep() touches it
+   YabMutex *mtx;
+   int threaded;
+   int quit;
+   ZipStream *wanted;   // stream the reader is waiting for
+} zipldr;
+
+static int ZipDirCollect(JZFile *zip, int idx, JZFileHeader *header, char *filename, void *user_data)
+{
+   ZipDir *dir = (ZipDir *)user_data;
+   ZipDirEntry *d;
+
+   (void)zip; (void)idx;
+   if (dir->count == dir->cap)
+   {
+      int cap = dir->cap ? dir->cap * 2 : 64;
+      ZipDirEntry *n = (ZipDirEntry *)realloc(dir->ent, cap * sizeof(ZipDirEntry));
+      if (n == NULL) return 0; // abort
+      dir->ent = n;
+      dir->cap = cap;
+   }
+   d = &dir->ent[dir->count];
+   if ((d->name = strdup(filename)) == NULL) return 0;
+   d->offset = header->offset;
+   d->compSize = header->compressedSize;
+   d->size = header->uncompressedSize;
+   d->method = header->compressionMethod;
+   dir->count++;
+   return 1; // continue
+}
+
+static void ZipDirFree(ZipDir *dir)
+{
+   int i;
+   for (i = 0; i < dir->count; i++) free(dir->ent[i].name);
+   free(dir->ent);
+   memset(dir, 0, sizeof(*dir));
+}
+
+static const char *ZipBaseName(const char *name)
+{
+   const char *s = strrchr(name, '/');
+   const char *b = strrchr(name, '\\');
+   if (b != NULL && (s == NULL || b > s)) s = b;
+   return s ? s + 1 : name;
+}
+
+static int ZipNameEqualNoCase(const char *a, const char *b)
+{
+   for (; *a && *b; a++, b++)
+      if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+   return *a == *b;
+}
+
+// filename == NULL: first entry whose name ends with ".cue" (any case).
+// Otherwise the entry with that base name: exact match first, then
+// ignoring case (cue sheets written on Windows).
+static ZipDirEntry *ZipDirFind(ZipDir *dir, const char *filename)
+{
+   int i;
+   if (filename == NULL)
+   {
+      for (i = 0; i < dir->count; i++)
+      {
+         size_t l = strlen(dir->ent[i].name);
+         if (l >= 4 && ZipNameEqualNoCase(dir->ent[i].name + l - 4, ".cue"))
+            return &dir->ent[i];
       }
-    }
-
-    zip->seek(zip, offset, SEEK_SET); // return to position
-
-    return 1; // continue
+      return NULL;
+   }
+   filename = ZipBaseName(filename);
+   for (i = 0; i < dir->count; i++)
+      if (strcmp(ZipBaseName(dir->ent[i].name), filename) == 0) return &dir->ent[i];
+   for (i = 0; i < dir->count; i++)
+      if (ZipNameEqualNoCase(ZipBaseName(dir->ent[i].name), filename)) return &dir->ent[i];
+   return NULL;
 }
 
-int deflateFile(JZFile *zip, int idx, JZFileHeader *header, char *filename, void *user_data) {
-    size_t offset;
-    char name[1024];
-    offset = zip->tell(zip); // store current position
-    ZipEntry *entry = (ZipEntry*)user_data;
-   if (entry == NULL) exit(-1);
-    if(zip->seek(zip, header->offset, SEEK_SET)) {
-        printf("Cannot seek in zip file!\n");
-        return 0; // abort
-    }
-    if (entry->filename == NULL){
-      //look for *.cue file
-       char *last = strstr(filename, ".cue");
-       if (last == NULL) last = strstr(filename, ".Cue");
-       if (last == NULL) last = strstr(filename, ".CUE");
-       if (last != NULL) {
-        if(jzReadLocalFileHeader(zip, header, name, sizeof(name))) {
-          printf("Couldn't read local file header!\n");
-          exit(-1);
-        }
-        CDLOG("uncompressed %d %f %f\n", header->uncompressedSize, header->uncompressedSize/2448.0, header->uncompressedSize/2352.0);
-        if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-        if((entry->zipBuffer = (u8*)calloc(1, header->uncompressedSize)) == NULL) {
-          printf("Couldn't allocate memory!\n");
-          exit(-1);
-        }
-        if (jzReadData(zip, header, entry->zipBuffer) == Z_OK)
-          entry->size = header->uncompressedSize;
-        else {
-          if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-          entry->zipBuffer = NULL;
-          entry->size = 0;
-        }
-        return 0;
-       }
-    } else {
-      char *last = strrchr(filename, '/');
-      char* fileToSearch = entry->filename;
-      if (last == NULL) last = filename;
-      else last = last+1;
-      if (strcmp(last, fileToSearch) == 0) {
-        if(jzReadLocalFileHeader(zip, header, name, sizeof(name))) {
-          printf("Couldn't read local file header!\n");
-          exit(-1);
-        }
-        CDLOG("uncompressed %d %f %f\n", header->uncompressedSize, header->uncompressedSize/2448.0, header->uncompressedSize/2352.0);
-        if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-        if((entry->zipBuffer = (u8*)calloc(1, header->uncompressedSize)) == NULL) {
-          printf("Couldn't allocate memory!\n");
-          exit(-1);
-        }
-        if (jzReadData(zip, header, entry->zipBuffer) == Z_OK)
-          entry->size = header->uncompressedSize;
-        else {
-          if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-          entry->zipBuffer = NULL;
-          entry->size = 0;
-        }
-        return 0;
+// The buffer is zero-filled and one byte longer than the file: whatever is
+// not inflated (yet, or ever if the archive is damaged) reads as zeroes,
+// and the cue sheet is a NUL-terminated string.
+static ZipStream *ZipStreamNew(const ZipDirEntry *d)
+{
+   ZipStream *s;
+   ZipStream **list;
+
+   if (d->method != 0 && d->method != 8)
+   {
+      YuiMsg("[CD] zip: \"%s\" uses unsupported compression method %u (only store/deflate)\n", d->name, d->method);
+      return NULL;
+   }
+   list = (ZipStream **)realloc(zipldr.stream, (zipldr.count + 1) * sizeof(ZipStream *));
+   if (list == NULL) return NULL;
+   zipldr.stream = list;
+   if ((s = (ZipStream *)calloc(1, sizeof(ZipStream))) == NULL) return NULL;
+   s->e.filename = strdup(ZipBaseName(d->name));
+   s->e.size = d->size;
+   s->e.zipBuffer = (u8 *)calloc(1, (size_t)d->size + 1);
+   if (s->e.zipBuffer == NULL)
+   {
+      free(s->e.filename);
+      free(s);
+      return NULL;
+   }
+   s->localOffset = d->offset;
+   s->compSize = d->compSize;
+   s->method = d->method;
+   zipldr.stream[zipldr.count++] = s;
+   return s;
+}
+
+static void ZipStreamEnd(ZipStream *s)
+{
+   if (s->strmInit) inflateEnd(&s->strm);
+   s->strmInit = 0;
+   free(s->inbuf);
+   s->inbuf = NULL;
+}
+
+// Inflate (or copy, for a stored entry) up to ZIP_OUT_CHUNK more bytes.
+// Returns the number of bytes added to the buffer; *fin is set when the
+// stream is over, *err when it ended on an error. Never called by two
+// threads at once (see zipldr.threaded).
+static u32 ZipStreamStep(ZipStream *s, int *fin, int *err)
+{
+   FILE *fp = zipldr.fp;
+   u32 want, got = 0;
+   int ended = 0;
+
+   *fin = 0;
+   *err = 0;
+
+   if (!s->started)
+   {
+      u8 lh[30];
+      s->started = 1;
+      // The sizes come from the central directory: the local header may
+      // hold zeroes (data descriptor, general purpose bit 3). It is only
+      // needed to find where the data starts.
+      if (fseek(fp, (long)s->localOffset, SEEK_SET) != 0 || fread(lh, 1, 30, fp) != 30 ||
+          lh[0] != 'P' || lh[1] != 'K' || lh[2] != 3 || lh[3] != 4)
+         goto fail;
+      s->filePos = s->localOffset + 30 + (lh[26] | (lh[27] << 8)) + (lh[28] | (lh[29] << 8));
+      s->compLeft = s->compSize;
+      if (s->method == 8)
+      {
+         memset(&s->strm, 0, sizeof(s->strm));
+         if (inflateInit2(&s->strm, -MAX_WBITS) != Z_OK) goto fail;
+         s->strmInit = 1;
+         if ((s->inbuf = (u8 *)malloc(ZIP_IN_CHUNK)) == NULL) goto fail;
       }
-    }
-    zip->seek(zip, offset, SEEK_SET); // return to position
-    return 1; // continue
+   }
+
+   want = s->e.size - s->produced;
+   if (want > ZIP_OUT_CHUNK) want = ZIP_OUT_CHUNK;
+
+   if (want != 0 && s->method == 0)
+   {
+      if (fseek(fp, (long)s->filePos, SEEK_SET) != 0) goto fail;
+      got = (u32)fread(s->e.zipBuffer + s->produced, 1, want, fp);
+      if (got == 0) goto fail;
+      s->filePos += got;
+   }
+   else if (want != 0)
+   {
+      s->strm.next_out = s->e.zipBuffer + s->produced;
+      s->strm.avail_out = want;
+      while (s->strm.avail_out > 0)
+      {
+         int ret;
+         if (s->strm.avail_in == 0)
+         {
+            u32 n = (s->compLeft < ZIP_IN_CHUNK) ? s->compLeft : ZIP_IN_CHUNK;
+            if (n == 0 || fseek(fp, (long)s->filePos, SEEK_SET) != 0) break;
+            n = (u32)fread(s->inbuf, 1, n, fp);
+            if (n == 0) break;
+            s->filePos += n;
+            s->compLeft -= n;
+            s->strm.next_in = s->inbuf;
+            s->strm.avail_in = n;
+         }
+         ret = inflate(&s->strm, Z_NO_FLUSH);
+         if (ret == Z_STREAM_END) { ended = 1; break; }
+         if (ret != Z_OK) { ended = 1; break; }
+      }
+      got = want - s->strm.avail_out;
+      if (!ended && s->strm.avail_out > 0) ended = 1; // truncated archive
+   }
+
+   s->produced += got;
+   if (ended || s->produced >= s->e.size)
+   {
+      *fin = 1;
+      if (s->produced < s->e.size) *err = 1;
+      ZipStreamEnd(s);
+   }
+   return got;
+
+fail:
+   *fin = 1;
+   *err = 1;
+   ZipStreamEnd(s);
+   return 0;
 }
 
-static ZipEntry* getZipFileLocalInfo(JZFile *zip, JZEndRecord* endRecord, char* filename, int deflate) {
-   ZipEntry* entry = (ZipEntry*)calloc(1, sizeof(ZipEntry));
-   entry->filename = NULL;
-   if (entry->zipBuffer != NULL) free(entry->zipBuffer);
-   entry->zipBuffer = NULL;
-   entry->size = 0;
-   if (filename != NULL)
-     entry->filename = strdup(filename);
-   if (deflate != 0) {
-     if(jzReadCentralDirectory(zip, endRecord, deflateFile, entry)) {
-      printf("Couldn't read ZIP file central record.\n");
-      return NULL;
-     }
-  } else {
-     if(jzReadCentralDirectory(zip, endRecord, infoFile, entry)) {
-      printf("Couldn't read ZIP file central record.\n");
-      return NULL;
-     }
-  }
-  return entry;
+static void ZipStreamPublish(ZipStream *s, u32 got, int fin, int err)
+{
+   if (zipldr.threaded) YabThreadLock(zipldr.mtx);
+   s->avail += got;
+   if (err) s->error = 1;
+   if (fin) s->done = 1;
+   if (zipldr.threaded) YabThreadUnLock(zipldr.mtx);
+   if (err)
+      YuiMsg("[CD] zip: \"%s\" could not be fully decompressed (%u of %u bytes) - the archive may be damaged\n",
+             s->e.filename ? s->e.filename : "?", s->avail, s->e.size);
 }
 
+static void *ZipWorker(void *arg)
+{
+   (void)arg;
+   for (;;)
+   {
+      ZipStream *s = NULL;
+      int i, fin, err;
+      u32 got;
+
+      YabThreadLock(zipldr.mtx);
+      if (!zipldr.quit)
+      {
+         if (zipldr.wanted != NULL && !zipldr.wanted->done)
+            s = zipldr.wanted;
+         else
+            for (i = 0; i < zipldr.count; i++)
+               if (!zipldr.stream[i]->done) { s = zipldr.stream[i]; break; }
+      }
+      YabThreadUnLock(zipldr.mtx);
+      if (s == NULL) break; // everything is inflated, or we are told to stop
+
+      got = ZipStreamStep(s, &fin, &err);
+      ZipStreamPublish(s, got, fin, err);
+   }
+   return NULL;
+}
+
+// Returns once bytes [0, end) of the entry are in its buffer (or the stream
+// is over). Costs one uncontended lock when the data is already there.
+static void ZipStreamWait(ZipEntry *entry, u32 end)
+{
+   ZipStream *s = (ZipStream *)entry;
+
+   if (s == NULL) return;
+   if (end > s->e.size) end = s->e.size;
+
+   if (!zipldr.threaded)
+   {
+      while (!s->done && s->avail < end)
+      {
+         int fin, err;
+         u32 got = ZipStreamStep(s, &fin, &err);
+         ZipStreamPublish(s, got, fin, err);
+      }
+      return;
+   }
+
+   for (;;)
+   {
+      int ready;
+      YabThreadLock(zipldr.mtx);
+      ready = s->done || s->avail >= end;
+      if (!ready) zipldr.wanted = s;
+      YabThreadUnLock(zipldr.mtx);
+      if (ready) return;
+      // Polling on purpose: YabThreadCondWait() takes the mutex itself, so
+      // it cannot be used to wait on a predicate without losing wake-ups.
+      YabThreadUSleep(1000);
+   }
+}
+
+static void ZipLoaderStart(FILE *fp)
+{
+   zipldr.fp = fp;
+   zipldr.quit = 0;
+   zipldr.wanted = NULL;
+   zipldr.threaded = 0;
+   if (zipldr.mtx == NULL) zipldr.mtx = YabThreadCreateMutex();
+   if (zipldr.mtx != NULL)
+   {
+      // Set before the thread exists: it reads the flag through
+      // ZipStreamPublish().
+      zipldr.threaded = 1;
+      if (YabThreadStart(CD_ZIP_THREAD_ID, ZipWorker, NULL) != 0)
+         zipldr.threaded = 0;
+   }
+}
+
+// Stops the worker and releases every stream. Must run before the archive
+// is closed.
+static void ZipLoaderStop(void)
+{
+   int i;
+
+   if (zipldr.threaded)
+   {
+      YabThreadLock(zipldr.mtx);
+      zipldr.quit = 1;
+      YabThreadUnLock(zipldr.mtx);
+      YabThreadWait(CD_ZIP_THREAD_ID);
+   }
+   for (i = 0; i < zipldr.count; i++)
+   {
+      ZipStream *s = zipldr.stream[i];
+      ZipStreamEnd(s);
+      free(s->e.zipBuffer);
+      free(s->e.filename);
+      free(s);
+   }
+   free(zipldr.stream);
+   if (zipldr.mtx != NULL) YabThreadFreeMutex(zipldr.mtx);
+   memset(&zipldr, 0, sizeof(zipldr));
+}
 
 static int LoadBinCueInZip(const char *filename, FILE *fp)
 {
    long size;
-   char* temp_buffer;
    unsigned int track_num = 0;
    unsigned int indexnum, min, sec, frame;
    unsigned int pregap=0;
@@ -896,50 +1151,65 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
    int fad = 150;
    int file_base_fad = 150; // base FAD du FILE courant (cf. LoadBinCue)
    int pos;
+   char *temp_buffer = NULL;
 
-   JZEndRecord* endRecord = (JZEndRecord*)calloc(1, sizeof(JZEndRecord));
-   JZFileHeader header;
+   JZEndRecord endRecord;
    u8* data;
    ZipEntry* tracktr = NULL;
    JZFile *zip;
-   FILE *iso_file;
-   ZipEntry *cue;
+   ZipDir dir;
+   ZipDirEntry *cuefile;
+   ZipStream *cue;
    int index = 0;
 
-  zip = jzfile_from_stdio_file(fp);
-
-  if(jzReadEndRecord(zip, endRecord)) {
-    printf("Couldn't read ZIP file end record.\n");
-    return -1;
-  }
-
-  cue = getZipFileLocalInfo(zip, endRecord, NULL, 1);
-  if (cue == NULL) return -1;
-
+   memset(&dir, 0, sizeof(dir));
    memset(trk, 0, sizeof(trk));
+   ZipLoaderStop(); // nothing left from a previous image
+   zipldr.fp = fp;
+
+   // The JZFile wrapper is only needed to read the directory. On failure it
+   // is freed WITHOUT closing fp: ISOCDInit() closes the file itself.
+   zip = jzfile_from_stdio_file(fp);
+   if (zip == NULL) return -1;
+
+   // One pass over the central directory for the whole archive.
+   if (jzReadEndRecord(zip, &endRecord) ||
+       jzReadCentralDirectory(zip, &endRecord, ZipDirCollect, &dir) ||
+       dir.count != endRecord.numEntries)
+   {
+      YuiMsg("[CD] zip: cannot read the directory of \"%s\"\n", filename);
+      goto zipfail;
+   }
+
+   // The cue sheet is tiny: inflate it right here.
+   cuefile = ZipDirFind(&dir, NULL);
+   if (cuefile == NULL || cuefile->size == 0 || (cue = ZipStreamNew(cuefile)) == NULL)
+   {
+      YabSetError(YAB_ERR_FILEREAD, filename);
+      goto zipfail;
+   }
+   ZipStreamWait(&cue->e, cue->e.size);
+   if (cue->error)
+   {
+      YabSetError(YAB_ERR_FILEREAD, filename);
+      goto zipfail;
+   }
+
    disc.session = (session_info_struct*)calloc(1, sizeof(session_info_struct));
    if (disc.session == NULL)
    {
       disc.session_num = 0;
       YabSetError(YAB_ERR_MEMORYALLOC, NULL);
-      return -1;
+      goto zipfail;
    }
    disc.session_num = 1;
-   disc.zip = zip;
-   disc.endRecord = endRecord;
 
-   size = cue->size;
-
-   if(size == 0)
-   {
-      YabSetError(YAB_ERR_FILEREAD, filename);
-      return -1;
-   }
-
-   data = cue->zipBuffer;
-   // Allocate buffer with enough space for reading cue
-   if ((temp_buffer = (char *)calloc(size, 1)) == NULL)
-      return -1;
+   size = cue->e.size;
+   data = cue->e.zipBuffer; // NUL-terminated, see ZipStreamNew()
+   // Allocate buffer with enough space for reading cue (+1: a token can be
+   // as long as the whole sheet)
+   if ((temp_buffer = (char *)calloc(size + 1, 1)) == NULL)
+      goto zipfail;
    // Time to generate TOC
    for (;;)
    {
@@ -949,15 +1219,29 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
       index+= pos;
       if (strncmp(temp_buffer, "FILE", 4) == 0)
       {
-         ZipEntry *f;
+         ZipDirEntry *d;
+         ZipStream *f;
          matched = sscanf((const char *)&data[index], " \"%[^\"]\"%n", temp_buffer, &pos);
+         if (matched != 1) break; // FILE without a quoted name
          index+= pos;
-         f = getZipFileLocalInfo(zip, endRecord, temp_buffer, 1);
-         if (f == NULL) return -1;
-         trackfp_size = f->size;
+         // Only the directory is consulted here: the track is inflated by
+         // the worker started at the end of this function.
+         d = ZipDirFind(&dir, temp_buffer);
+         if (d == NULL)
+         {
+            YuiMsg("[CD] zip: \"%s\" (FILE of the cue sheet) is not in the archive\n", temp_buffer);
+            YabSetError(YAB_ERR_FILENOTFOUND, temp_buffer);
+            goto zipfail;
+         }
+         if ((f = ZipStreamNew(d)) == NULL)
+         {
+            YabSetError(YAB_ERR_MEMORYALLOC, NULL);
+            goto zipfail;
+         }
+         trackfp_size = f->e.size;
          current_file_id++;
          trackfp = strdup(temp_buffer);
-         tracktr = f;
+         tracktr = &f->e;
          if(track_num > 0) {
            // La piste precedente s'arrete a la fin de SON fichier (inclusive) ;
            // le nouveau FILE commence au FAD suivant.
@@ -975,6 +1259,12 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
          if (sscanf((const char *)&data[index], "%d %[^\r\n]\r\n%n", &track_num, temp_buffer, &pos) == EOF)
             break;
          index+= pos;
+         if (track_num < 1 || track_num > 99 || tracktr == NULL)
+         {
+            // trk[] holds 100 entries; a TRACK before any FILE has no data
+            YabSetError(YAB_ERR_FILEREAD, filename);
+            goto zipfail;
+         }
          trk[track_num-1].isZip = 1;
          trk[track_num-1].filename = trackfp;
          trk[track_num-1].file_size = trackfp_size;
@@ -1045,10 +1335,7 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
 
    if (track_num == 0) {
      YabSetError(YAB_ERR_FILENOTFOUND, NULL);
-     free(disc.session);
-     disc.session_num = 0;
-     disc.session = NULL;
-     return -1;
+     goto zipfail;
    }
 
    // Derniere piste : fin inclusive ; le lead-out (session.fad_end) est le
@@ -1065,18 +1352,39 @@ static int LoadBinCueInZip(const char *filename, FILE *fp)
    if (disc.session[0].track == NULL)
    {
       YabSetError(YAB_ERR_MEMORYALLOC, NULL);
-      free(disc.session);
-      disc.session_num = 0;
-      disc.session = NULL;
-      return -1;
+      goto zipfail;
    }
 
    memcpy(disc.session[0].track, trk, track_num * sizeof(track_info_struct));
 
    // buffer is no longer needed
    free(temp_buffer);
+   ZipDirFree(&dir);
+
+   // From now on the archive belongs to the loader (ISOCDDeInit() closes it
+   // through disc.zip once the worker is stopped). Track 1 is inflated
+   // first, then the others in cue order.
+   disc.zip = zip;
+   disc.endRecord = NULL;
+   ZipLoaderStart(fp);
 
    return 0;
+
+zipfail:
+   // trk[].filename strings are duplicated per FILE line
+   for (i = 0; i < 100; i++)
+      if (trk[i].filename != NULL && (i == 0 || trk[i].filename != trk[i-1].filename))
+         free(trk[i].filename);
+   free(temp_buffer);
+   ZipDirFree(&dir);
+   ZipLoaderStop();
+   free(disc.session);
+   disc.session = NULL;
+   disc.session_num = 0;
+   disc.zip = NULL;
+   disc.endRecord = NULL;
+   free(zip); // wrapper only, fp stays open for the caller
+   return -1;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1756,6 +2064,9 @@ static int ISOCDInit(const char * iso) {
 static void ISOCDDeInit(void) {
    int i, j, k;
    if( ISOCDInitStatus == 0) return;
+   // Stop the zip worker before anything it uses goes away; this also
+   // releases every decompressed track (track->tr).
+   ZipLoaderStop();
    if (disc.session != NULL)
    {
       for (i = 0; i < disc.session_num; i++)
@@ -1766,24 +2077,14 @@ static void ISOCDDeInit(void) {
             {
                if (disc.session[i].track[j].isZip == 1)
                {
-                 if(disc.session[i].track[j].tr != NULL)
-                 {
-                   int shallDelete = (j==0);
-                   if (j>0) shallDelete |= disc.session[i].track[j].tr != disc.session[i].track[j-1].tr;
-                   if (shallDelete == 0) continue;
-                   else {
-                     if (disc.session[i].track[j].tr->zipBuffer != NULL) {
-                       free(disc.session[i].track[j].tr->zipBuffer);
-                     }
-                     disc.session[i].track[j].tr->zipBuffer = NULL;
-                     if (disc.session[i].track[j].tr->filename != NULL)
-                     free(disc.session[i].track[j].tr->filename);
-                     disc.session[i].track[j].tr->filename = NULL;
-                     free(disc.session[i].track[j].tr);
-                   }
-                 }
+                  // Buffers already released by ZipLoaderStop()
+                  disc.session[i].track[j].tr = NULL;
+                  // The name is duplicated once per FILE line and shared by
+                  // the tracks of that file (it was never freed).
+                  if (disc.session[i].track[j].filename != NULL &&
+                      (j == 0 || disc.session[i].track[j].filename != disc.session[i].track[j-1].filename))
+                     free(disc.session[i].track[j].filename);
                }
-
 
                if (disc.session[i].track[j].fp)
                {
@@ -1807,8 +2108,7 @@ static void ISOCDDeInit(void) {
       if (disc.zip != NULL)
         disc.zip->close(disc.zip);
       disc.zip = NULL;
-      if (disc.endRecord != NULL)
-        disc.endRecord = NULL;
+      disc.endRecord = NULL; // no longer allocated (see LoadBinCueInZip)
    }
    ISOCDInitStatus = 0;
 }
@@ -1908,6 +2208,7 @@ static long BinTrackReadAt(track_info_struct *track, long pos, u8 *buf, long len
       ZipEntry *z = track->tr;
       if (z == NULL || z->zipBuffer == NULL || pos >= (long)z->size) return 0;
       if (pos + len > (long)z->size) len = (long)z->size - pos;
+      ZipStreamWait(z, (u32)(pos + len)); // inflated in the background
       memcpy(buf, z->zipBuffer + pos, (size_t)len);
       return len;
    }
@@ -2090,6 +2391,10 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
      fseek(currentTrack->fp, offset, SEEK_SET);
    } else {
 	 if (offset > tr->size) offset = tr->size;
+     // The track is inflated in the background: wait until this sector
+     // (2352 + 3 * 2448 covers the widest read, interleaved subcode) is
+     // there. Immediate once the worker has gone past it.
+     ZipStreamWait(tr, (u32)offset + 2352 + 3 * 2448);
      zipBuffer = &tr->zipBuffer[offset];
    }
 
@@ -2129,12 +2434,17 @@ static int ISOCDReadSectorFAD(u32 FAD, void *buffer) {
          } else {
            int delta = ((tr->size - offset) < 2352)?(tr->size - offset):2352;
            //if ((tr->size - offset) < 2352) return 0;
+           int k;
            memcpy(buffer, zipBuffer, delta);
-           zipBuffer+=delta;
-           memcpy(&subcode_buffer[0], zipBuffer, 96);
-           memcpy(&subcode_buffer[96], zipBuffer, 96);
-           memcpy(&subcode_buffer[192], zipBuffer, 96);
-           zipBuffer+=96;
+           // Same layout as the fread() path above: the 96 subcode bytes of
+           // this sector and of the next two (2448 bytes apart). This path
+           // used to copy the same 96 bytes three times.
+           memset(subcode_buffer, 0, sizeof(subcode_buffer));
+           for (k = 0; k < 3; k++) {
+             u32 subpos = (u32)offset + 2352 + (u32)k * 2448;
+             if (subpos + 96 <= tr->size)
+               memcpy(&subcode_buffer[96 * k], &tr->zipBuffer[subpos], 96);
+           }
          }
            for (i = 0; i < 96; i++)
               ((u8 *)buffer)[2352+i] = subcode_buffer[deint_offsets[i]];
