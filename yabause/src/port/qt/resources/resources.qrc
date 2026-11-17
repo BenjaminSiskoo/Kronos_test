@@ -11,6 +11,8 @@
         <file>icons/actions/compatibility.png</file>
         <file alias="controller.png">icons/controller.png</file>
         <file alias="cabinet.png">icons/cabinet.png</file>
+        <file alias="stv_cabinet.png">icons/stv_cabinet.png</file>
+        <file alias="stv_cabinet@2x.png">icons/stv_cabinet@2x.png</file>
         <file>icons/actions/fps.png</file>
         <file>icons/actions/frame_skipping.png</file>
         <file alias="fullscreen.png">icons/actions/fullscreen.png</file>
