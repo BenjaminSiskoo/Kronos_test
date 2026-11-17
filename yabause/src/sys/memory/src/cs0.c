@@ -1559,7 +1559,30 @@ static int cartBupSaveDisabled = 0;
 
 static void CartBupLoad(u8 *bupram, u32 size, const char *filename)
 {
-   int status = BackupLoadFile(bupram, size, filename, 0);
+   int status;
+   int fsize;
+
+   /* Le fichier existe mais n'a pas la taille de cette cartouche : ce n'est
+    * pas une sauvegarde de ce type (ex. une ROM 16 Mbit reglee par erreur en
+    * backup RAM 4 Mbit avec le meme chemin, issue FCare/Kronos#504). On ne le
+    * charge pas, on ne le renomme pas (BackupLoadFile() le deplacerait en
+    * ".bad", la ROM disparaitrait de son chemin) et on ne l'ecrasera pas :
+    * la cartouche tourne sur une memoire vide formatee, non sauvegardee. */
+   if ((filename != NULL) && (filename[0] != 0))
+   {
+      fsize = TSize(filename);
+      if ((fsize > 0) && ((u32)fsize != size))
+      {
+         YuiMsg("Backup cartridge: %s is %d bytes, %u expected for this cartridge type - file left untouched, nothing will be saved\n",
+                filename, fsize, (unsigned int)size);
+         YabSetError(YAB_ERR_FILEREAD, (void *)filename);
+         FormatBackupRam(bupram, size);
+         cartBupSaveDisabled = 1;
+         return;
+      }
+   }
+
+   status = BackupLoadFile(bupram, size, filename, 0);
    cartBupSaveDisabled = 0;
    if (status < 0) {
       FormatBackupRam(bupram, size);
