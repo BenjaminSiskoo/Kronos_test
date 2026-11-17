@@ -300,6 +300,7 @@ const Choice resolutions[] = {
 const Choice filters[] = {
 	{ "none", 0, false }, { "bilinear", 1, false }, { "bicubic", 2, false },
 	{ "deinterlace-adaptive", 3, false }, { "deinterlace-debug", 4, false }, { "deinterlace-bob", 5, false },
+	{ "deinterlace-smooth-bob", 14, false }, { "deinterlace-blend", 13, false }, { "deinterlace-adaptive-field", 15, false },
 	{ "scanline", 6, false }, { "lanczos3", 7, false }, { "sharp-bilinear", 8, false },
 	{ "fxaa", 9, false }, { "crt", 10, false }, { "toon", 12, false },
 	{ NULL, 0, false } };
