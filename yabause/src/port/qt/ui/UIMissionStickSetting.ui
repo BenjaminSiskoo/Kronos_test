@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>526</width>
-    <height>486</height>
+    <width>529</width>
+    <height>565</height>
    </rect>
   </property>
   <property name="focusPolicy">
@@ -16,6 +16,33 @@
   <property name="windowTitle">
    <string>Mission Stick Configuration</string>
   </property>
+  <property name="minimumSize"><size><width>529</width><height>565</height></size></property>
+  <property name="maximumSize"><size><width>529</width><height>565</height></size></property>
+  <property name="styleSheet"><string notr="true">
+QDialog#UIMissionStickSetting { background:#f1f3f7; }
+QLabel#label { background:#ffffff; }
+QLabel#lHint { color:#6b7280; font-size:11px; }
+QLabel#lInfos { color:#b45309; font-weight:bold; font-size:12px; }
+QLabel#label_2, QLabel#label_3 { color:#374151; font-size:11px; }
+QToolButton { background:rgba(37,99,235,26); border:2px solid rgba(37,99,235,140); }
+QToolButton:hover { background:rgba(37,99,235,72); border:2px solid rgba(37,99,235,230); }
+QToolButton:checked { background:rgba(245,158,11,90); border:3px solid #f59e0b; }
+QToolButton#tbX { border-radius:10px; }
+QToolButton#tbY { border-radius:10px; }
+QToolButton#tbZ { border-radius:10px; }
+QToolButton#tbC { border-radius:10px; }
+QToolButton#tbB { border-radius:10px; }
+QToolButton#tbA { border-radius:10px; }
+QToolButton#tbStart { border-radius:15px; }
+QToolButton#tbRightTrigger { border-radius:20px; }
+QToolButton#tbLeftTrigger { border-radius:20px; }
+QToolButton#tbAxis1Left { border-radius:15px; }
+QToolButton#tbAxis2Down { border-radius:15px; }
+QToolButton#tbAxis3Up { border-radius:15px; }
+QDialogButtonBox QPushButton { background:#ffffff; color:#1f2937; border:1px solid #cbd2dc; border-radius:6px; padding:5px 16px; min-width:64px; }
+QDialogButtonBox QPushButton:hover { background:#e8edf5; }
+QDialogButtonBox QPushButton:pressed { background:#d9e0ec; }
+</string></property>
   <widget class="QLabel" name="label">
    <property name="geometry">
     <rect>
@@ -50,17 +77,11 @@
    <property name="toolTip">
     <string>X</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbY">
@@ -78,17 +99,11 @@
    <property name="toolTip">
     <string>Y</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbZ">
@@ -106,17 +121,11 @@
    <property name="toolTip">
     <string>Z</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbC">
@@ -134,17 +143,11 @@
    <property name="toolTip">
     <string>C</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbB">
@@ -162,17 +165,11 @@
    <property name="toolTip">
     <string>B</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbA">
@@ -190,17 +187,11 @@
    <property name="toolTip">
     <string>A</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbStart">
@@ -218,17 +209,11 @@
    <property name="toolTip">
     <string>Start</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbRightTrigger">
@@ -246,17 +231,11 @@
    <property name="toolTip">
     <string>Right trigger</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbLeftTrigger">
@@ -274,40 +253,23 @@
    <property name="toolTip">
     <string>Left trigger</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QLabel" name="lInfos">
    <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>440</y>
-     <width>191</width>
-     <height>41</height>
-    </rect>
+    <rect><x>10</x><y>517</y><width>399</width><height>40</height></rect>
    </property>
-   <property name="alignment">
-    <set>Qt::AlignCenter</set>
-   </property>
+   <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set></property>
+     <property name="wordWrap"><bool>true</bool></property>
   </widget>
   <widget class="QDialogButtonBox" name="padButtons">
    <property name="geometry">
-    <rect>
-     <x>220</x>
-     <y>440</y>
-     <width>60</width>
-     <height>30</height>
-    </rect>
+    <rect><x>419</x><y>521</y><width>100</width><height>30</height></rect>
    </property>
    <property name="standardButtons">
     <set>QDialogButtonBox::Close</set>
@@ -328,17 +290,11 @@
    <property name="toolTip">
     <string>Stick Left</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5); 
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbAxis2Down">
@@ -356,17 +312,11 @@
    <property name="toolTip">
     <string>Stick Down</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5);
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QToolButton" name="tbAxis3Up">
@@ -384,33 +334,28 @@
    <property name="toolTip">
     <string>Throttle Up</string>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton:hover,QToolButton:hover {
-  background-color: rgba(117, 190, 218, 0.5);
-}
-</string>
-   </property>
    <property name="checkable">
     <bool>true</bool>
    </property>
    <property name="autoRaise">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
   </widget>
   <widget class="QLabel" name="label_2">
    <property name="geometry">
-    <rect>
-     <x>300</x>
-     <y>442</y>
-     <width>221</width>
-     <height>41</height>
-    </rect>
+    <rect><x>300</x><y>438</y><width>221</width><height>41</height></rect>
    </property>
    <property name="text">
     <string>Stick left button: same as A 
 Stick right button: same as B 
 Stick trigger: same as C</string>
    </property>
+     <property name="wordWrap"><bool>true</bool></property>
+  </widget>
+  <widget class="QLabel" name="lHint">
+   <property name="geometry"><rect><x>10</x><y>481</y><width>509</width><height>32</height></rect></property>
+   <property name="text"><string>Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.</string></property>
+   <property name="wordWrap"><bool>true</bool></property>
   </widget>
  </widget>
  <resources>
