@@ -29,6 +29,7 @@
 class YabauseGL;
 class QPlainTextEdit;
 class QDockWidget;
+class QActionGroup;
 
 enum ACTIONS_ENUM
 {
@@ -114,6 +115,12 @@ public:
 	void setScreenPick( std::function<void(int, int, const QPoint&)> pick );
 	virtual bool eventFilter( QObject* o, QEvent* e );
 
+	// Outils de TAS (voir UIYabause.cpp). tasSeek() : place le film a
+	// 'frame' trames executees ; tasSeekFinished() est emis une fois arrive.
+	bool tasSeek( int frame, bool resume = false );
+	bool tasSeeking() const { return mSeeking; }
+	YabauseGL* yabauseGL() const { return mYabauseGL; }
+
 	YabauseThread* mYabauseThread;
 private:
 	void takeScreenshot(void);
@@ -125,6 +132,8 @@ private:
 	void createMovieMenu();
 	void movieRecord();
 	void moviePlay();
+	void tasSetSpeed( int percent );
+	void tasEndSeek();
 	int loadGameFromFile(QString const & fullFilePath);
 	int loadCDRom();
 	void openSettingsOnTabs(int index);
@@ -164,6 +173,19 @@ protected:
 	QAction* aMovieReadOnly;
 	QTimer* mMovieTimer;
 	QString mMovieTitleSuffix;
+	// Outils de TAS
+	QAction* aTasFrameAdvance;
+	QAction* aTasSkipLag;
+	QAction* aTasFastForward;
+	QMenu* mTasSpeedMenu;
+	QActionGroup* mTasSpeedGroup;
+	QAction* aTasSlower;
+	QAction* aTasFaster;
+	QAction* aTasOSD;
+	QAction* aTasEditor;
+	QAction* aTasRamWatch;
+	bool mSeeking;      // avance rapide vers la trame demandee par tasSeek()
+	bool mSeekResume;   // reprendre l'emulation une fois arrive
 	QList <translation_struct> translations;
 	virtual void showEvent( QShowEvent* event );
 	virtual void closeEvent( QCloseEvent* event );
@@ -203,6 +225,17 @@ public slots:
 	void movieStopTriggered();
 	void movieReadOnlyTriggered();
 	void movieTimerTick();
+	// Outils de TAS
+	void tasFrameAdvance();
+	void tasSkipLagToggled( bool toggled );
+	void tasFastForwardToggled( bool toggled );
+	void tasSpeedTriggered( QAction* action );
+	void tasSlowerTriggered();
+	void tasFasterTriggered();
+	void tasOSDToggled( bool toggled );
+	void tasEditorTriggered();
+	void tasRamWatchTriggered();
+	void tasPauseRequested();
 protected slots:
 	void errorReceived( const QString& error, bool internal = true );
 	void sizeRequested( const QSize& size );
@@ -267,6 +300,10 @@ protected slots:
 	void threadInitialized();
 signals:
 	void requestReset();
+	// une trame vient d'etre executee par l'avance image par image
+	void tasFrameStepped();
+	// tasSeek() est arrive (ou a ete abandonne)
+	void tasSeekFinished();
 };
 
 #endif // UIYABAUSE_H
