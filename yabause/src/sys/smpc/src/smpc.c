@@ -1310,6 +1310,11 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                break;
             //th control mode (acquire id)
             case 0x40:
+               /* The game polls the pad itself (direct mode): this is not
+                  a lag frame (movie.c). Only the INTBACK cleared the
+                  flag, so every frame of a direct mode game counted as
+                  lag. */
+               LagFrameFlag = 0;
               if(PERCore)
                    PERCore->HandleEvents();
                SmpcRegs->PDR[0] = do_th_mode(val, &PORTDATA1);
@@ -1317,6 +1322,7 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
                break;
             //th tr control mode
             case 0x60:
+               LagFrameFlag = 0; /* pad polled in direct mode: not a lag frame */
                switch (val & 0x60) {
                   case 0x60: // 1st Data
                      val = (val & 0x80) | 0x14 | (PORTDATA1.data[3] & 0x8);
@@ -1362,12 +1368,14 @@ void FASTCALL SmpcWriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val) {
 			  break;
         //th control mode (acquire id)
       case 0x40:
+        LagFrameFlag = 0; /* pad polled in direct mode: not a lag frame */
         if(PERCore)
              PERCore->HandleEvents();
          SmpcRegs->PDR[1] = do_th_mode(val, &PORTDATA2);
          SMPCLOG("PDR 1 %x %x %x => %x\n", val, PORTDATA2.data[2], PORTDATA2.data[3], SmpcRegs->PDR[1]);
          break;
 		  case 0x60:
+			  LagFrameFlag = 0; /* pad polled in direct mode: not a lag frame */
 			  switch (val & 0x60) {
 			  case 0x60: // 1st Data
 				  val = (val & 0x80) | 0x14 | (PORTDATA2.data[3] & 0x8);
