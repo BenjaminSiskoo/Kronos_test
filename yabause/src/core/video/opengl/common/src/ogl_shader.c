@@ -2039,6 +2039,76 @@ static const char fblitnear_interlace_img[] =
       "    return texelFetch( textureSampler, ivec2(coord.x,coord.y) , 0 ); \n"
       "} \n";
 
+    /* Deinterlacers added with ids 13..15 (AA_DEINT_*). Same conventions as
+     * the Bob filter above: one Saturn line = `scale` texture rows, and the
+     * lines of the field being displayed are the ones whose parity equals
+     * `field` (TVSTAT.ODD); the other lines still hold the previous field. */
+
+    /* Blend: vertical [1 2 1]/4 over three consecutive lines (the "linear
+     * blend" of ffmpeg). Both fields contribute to every output line: no
+     * combing, no bobbing, but a slight vertical blur and ghosting on motion. */
+    static const char fdeint_blend_img[] =
+      "vec4 Filter( sampler2D textureSampler, vec2 TexCoord ) \n"
+      "{ \n"
+      "    ivec2 sz = textureSize(textureSampler,0);\n"
+      "    ivec2 coord = min(ivec2(vec2(sz)*TexCoord), sz-ivec2(1));\n"
+      "    int s = max(scale,1);\n"
+      "    int ya = clamp(coord.y - s, 0, sz.y-1);\n"
+      "    int yb = clamp(coord.y + s, 0, sz.y-1);\n"
+      "    vec4 a = texelFetch( textureSampler, ivec2(coord.x,ya) , 0 ); \n"
+      "    vec4 c = texelFetch( textureSampler, ivec2(coord.x,coord.y) , 0 ); \n"
+      "    vec4 b = texelFetch( textureSampler, ivec2(coord.x,yb) , 0 ); \n"
+      "    return 0.25*a + 0.5*c + 0.25*b; \n"
+      "} \n";
+
+    /* Smooth Bob: keeps the lines of the current field and rebuilds the
+     * others by linear interpolation of the two neighbouring lines of the
+     * current field (the plain Bob above only duplicates the line). */
+    static const char fdeint_bobsmooth_img[] =
+      "vec4 Filter( sampler2D textureSampler, vec2 TexCoord ) \n"
+      "{ \n"
+      "    ivec2 sz = textureSize(textureSampler,0);\n"
+      "    ivec2 coord = min(ivec2(vec2(sz)*TexCoord), sz-ivec2(1));\n"
+      "    int s = max(scale,1);\n"
+      "    if (((coord.y/s)&0x1) == field)\n"
+      "      return texelFetch( textureSampler, coord , 0 ); \n"
+      "    int ya = coord.y - s;\n"
+      "    int yb = coord.y + s;\n"
+      "    if (ya < 0) ya = yb;\n"
+      "    if (yb >= sz.y) yb = ya;\n"
+      "    ya = clamp(ya, 0, sz.y-1);\n"
+      "    yb = clamp(yb, 0, sz.y-1);\n"
+      "    vec4 a = texelFetch( textureSampler, ivec2(coord.x,ya) , 0 ); \n"
+      "    vec4 b = texelFetch( textureSampler, ivec2(coord.x,yb) , 0 ); \n"
+      "    return mix(a, b, 0.5); \n"
+      "} \n";
+
+    /* Adaptive (field-aware): the lines of the current field are always kept.
+     * For the other lines (previous field), weave is used where the picture is
+     * static and interpolation where the previous line disagrees with the
+     * interpolation of its two neighbours (combing = motion). The decision
+     * is progressive (smoothstep) instead of the hard thresholds of the
+     * Adaptive filter, which also ignores `field` (odd lines only). Same
+     * thresholds as Adaptive: 0.15 (combing), 0.5 (vertical edge). */
+    static const char fdeint_adaptivefield_img[] =
+      "vec4 Filter( sampler2D textureSampler, vec2 TexCoord ) \n"
+      "{ \n"
+      "    ivec2 sz = textureSize(textureSampler,0);\n"
+      "    ivec2 coord = min(ivec2(vec2(sz)*TexCoord), sz-ivec2(1));\n"
+      "    int s = max(scale,1);\n"
+      "    vec4 cur = texelFetch( textureSampler, coord , 0 ); \n"
+      "    if (((coord.y/s)&0x1) == field) return cur;\n"
+      "    int ya = coord.y - s;\n"
+      "    int yb = coord.y + s;\n"
+      "    if ((ya < 0) || (yb >= sz.y)) return cur;\n"
+      "    vec4 a = texelFetch( textureSampler, ivec2(coord.x,ya) , 0 ); \n"
+      "    vec4 b = texelFetch( textureSampler, ivec2(coord.x,yb) , 0 ); \n"
+      "    vec4 interpol = mix(a, b, 0.5); \n"
+      "    float w = smoothstep(0.10, 0.20, distance(cur, interpol)); \n"
+      "    w = max(w, smoothstep(0.40, 0.60, distance(a, b))); \n"
+      "    return mix(cur, interpol, w); \n"
+      "} \n";
+
 
 /////
 
@@ -2067,6 +2137,9 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   const GLchar * fblit_adaptative_debug_img_v[] = { fblit_head, fboadaptative_debug_img, fblit_img, fblit_img_end, NULL };
 
   const GLchar * fblit_bob_img_v[] = { fblit_head, fbobob_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_deint_blend_img_v[] = { fblit_head, fdeint_blend_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_deint_bobsmooth_img_v[] = { fblit_head, fdeint_bobsmooth_img, fblit_img, fblit_img_end, NULL };
+  const GLchar * fblit_deint_adaptivefield_img_v[] = { fblit_head, fdeint_adaptivefield_img, fblit_img, fblit_img_end, NULL };
 
   const GLchar * fblit_lanczos3_img_v[] = { fblit_head, fblitlanczos3_img, fblit_img, fblit_img_end, NULL };
   const GLchar * fblit_sharpbilinear_img_v[] = { fblit_head, fblitsharpbilinear_img, fblit_img, fblit_img_end, NULL };
@@ -2077,7 +2150,7 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
 
   int aamode = _Ygl->aamode;
   /* Unknown value (e.g. config written by a newer build): plain display */
-  if ((aamode < AA_NONE) || (aamode > AA_CELL_SHADING)) aamode = AA_NONE;
+  if ((aamode < AA_NONE) || (aamode > AA_DEINT_ADAPTIVE_FIELD)) aamode = AA_NONE;
 
   float const vertexPosition[] = {
     1.0f, -1.0f,
@@ -2144,7 +2217,8 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   }
   //if ((aamode == AA_NONE) && ((w != dispw) || (h != disph))) aamode = AA_BILINEAR_FILTER;
   if (_Ygl->interlace == NORMAL_INTERLACE) {
-    if ((aamode >= AA_ADAPTATIVE_FILTER) && (aamode < AA_SCANLINE)) {
+    if (((aamode >= AA_ADAPTATIVE_FILTER) && (aamode < AA_SCANLINE)) ||
+        (aamode >= AA_DEINT_BLEND)) {
       aamode = AA_NONE;
     }
   }
@@ -2225,6 +2299,15 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
         break;
       case AA_CELL_SHADING:
         glShaderSource(fshader, 4, fblit_cellshading_img_v, NULL);
+        break;
+      case AA_DEINT_BLEND:
+        glShaderSource(fshader, 4, fblit_deint_blend_img_v, NULL);
+        break;
+      case AA_DEINT_BOB_SMOOTH:
+        glShaderSource(fshader, 4, fblit_deint_bobsmooth_img_v, NULL);
+        break;
+      case AA_DEINT_ADAPTIVE_FIELD:
+        glShaderSource(fshader, 4, fblit_deint_adaptivefield_img_v, NULL);
         break;
     }
     glCompileShader(fshader);
