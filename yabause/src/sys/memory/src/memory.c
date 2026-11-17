@@ -3053,7 +3053,8 @@ int YabSaveStateBuffer(void ** buffer, size_t * size)
       return -1;
    }
 
-   OSDPushMessage(OSDMSG_STATUS, 150, "STATE SAVED");
+   if (!MovieStateIsLight())
+      OSDPushMessage(OSDMSG_STATUS, 150, "STATE SAVED");
    return 0;
 }
 
@@ -3192,6 +3193,13 @@ int YabSaveStateStream(void ** stream)
 
    VIDCore->GetGlSize(&outputwidth, &outputheight);
    if ((outputwidth < 0) || (outputheight < 0)) {
+      outputwidth = 0;
+      outputheight = 0;
+   }
+   /* Snapshots taken by the movie code to seek backwards (input editor):
+      no picture of the screen, which is most of the size of a state (4
+      bytes per pixel of the window) and costs a glReadPixels per snapshot. */
+   if (MovieStateIsLight()) {
       outputwidth = 0;
       outputheight = 0;
    }
@@ -3558,7 +3566,8 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
    SH2PostLoadState(SSH2);
    ScuPostLoadState();
 
-   OSDPushMessage(OSDMSG_STATUS, 150, "STATE LOADED");
+   if (!MovieStateIsLight())
+      OSDPushMessage(OSDMSG_STATUS, 150, "STATE LOADED");
    return 0;
 }
 
