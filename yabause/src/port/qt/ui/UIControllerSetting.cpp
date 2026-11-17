@@ -98,10 +98,14 @@ void UIControllerSetting::keyPressEvent( QKeyEvent* e )
 		else
 		{
 			e->ignore();
-			mButtons.key( mPadKey )->setChecked( false );
+			/* mButtons.key() returns NULL when no button is mapped to mPadKey */
+			QToolButton* tbCancel = mButtons.key( mPadKey );
+			if ( tbCancel )
+				tbCancel->setChecked( false );
 			mlInfos->clear();
 			mTimer->stop();
-			curTb->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+			if ( curTb )
+				curTb->setAttribute(Qt::WA_TransparentForMouseEvents, false);
 		}
 	}
 	else if ( e->key() == Qt::Key_Escape )
@@ -147,8 +151,15 @@ void UIControllerSetting::setPadKey( u32 key )
 		.arg( mPadKey );
 
 	QtYabause::settings()->setValue( settingsKey, (quint32)key );
-	mButtons.key( mPadKey )->setIcon( QIcon( ":/actions/icons/actions/button_ok.png" ) );
-	mButtons.key( mPadKey )->setChecked( false );
+	/* A key can exist in mNames without any button (3D Control Pad:
+	   PERPAD_LEFT/RIGHT_TRIGGER, replaced by analog axes). With an old saved
+	   setting for it, loadPadSettings() dereferenced a NULL button. */
+	QToolButton* tbAssigned = mButtons.key( mPadKey );
+	if ( tbAssigned )
+	{
+		tbAssigned->setIcon( QIcon( ":/actions/icons/actions/button_ok.png" ) );
+		tbAssigned->setChecked( false );
+	}
 	mlInfos->clear();
 	mTimer->stop();
 	if (curTb)
