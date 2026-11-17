@@ -30,8 +30,11 @@ extern "C" {
 #endif
 
 
-#define LOGSTV
-//YuiMsg
+/* Journal desactive. Etait "#define LOGSTV" (vide) : chaque appel devenait
+   une expression a virgules evaluee pour rien (avertissements, et des
+   arguments comme availableGames[x].entry->name dereferences pour rien).
+   Pour reactiver : #define LOGSTV YuiMsg */
+#define LOGSTV(...) ((void)0)
 #define ROTATED 1
 
 #define NB_STV_GAMES 119
@@ -2887,12 +2890,16 @@ int copyBios(JZFile *zip, void* id) {
     JZFileHeader header;
     char long_filename[MAX_LENGTH_FILENAME];
     char* filename;
-    char* biosname = NULL;
+    /* Pointe dans la table des jeux : plus de malloc() non libere a chaque
+       entree du zip. */
+    const char* biosname = NULL;
     u8* data;
-    unsigned int i,j, dataAvailable;
+    unsigned int i,j, dataAvailable, copyLen;
     rominfo* info = (rominfo*)id;
     int gameId = -1;
     if (info != NULL) gameId = info->gameId;
+    if ((info == NULL) || (gameId < 0) || (gameId >= NB_STV_GAMES) ||
+        (availableGames[gameId].entry == NULL)) return -1;
 
     if(jzReadLocalFileHeader(zip, &header, long_filename, sizeof(long_filename))) {
         LOGSTV("Couldn't read local file header!\n");
@@ -2911,8 +2918,7 @@ int copyBios(JZFile *zip, void* id) {
     while(availableGames[gameId].entry->blobs[i].type != GAME_END) {
       if (availableGames[gameId].entry->blobs[i].type == BIOS_BLOB) {
         // We need a specific bios
-        biosname = (char*)malloc(strlen(availableGames[gameId].entry->blobs[i].filename) + 1);
-        strcpy(biosname, availableGames[gameId].entry->blobs[i].filename);
+        biosname = availableGames[gameId].entry->blobs[i].filename;
       }
       i++;
     }
@@ -2930,27 +2936,33 @@ int copyBios(JZFile *zip, void* id) {
           } else {
             fileFound[gameId][i] = 1;
           }
+          /* Jamais plus que ce que contient le fichier : un fichier tronque
+             de meme nom faisait lire au-dela du tampon. */
+          copyLen = biosLink.entry->blobs[i].length;
+          if (copyLen > header.uncompressedSize) copyLen = header.uncompressedSize;
           switch (biosLink.entry->blobs[i].type) {
             case BIOS_BLOB:
               if(biosname != NULL) {
                 // Load the special bios (sfish2 & sfish2j have a special bios, part of the romset, which allow optical media reading)
                 if (strcmp(biosname,filename) == 0) {
                   LOGSTV("Load bios %s\n", filename);
-                  for (j=0; j<biosLink.entry->blobs[i].length;j++) {
+                  for (j=0; j<copyLen;j++) {
                     T1WriteByte(BiosRom, biosLink.entry->blobs[i].offset+j, data[j]);
                   }
                 }
               } else {
                 // Load a bios from stvbios, restricted by allowed regions for the game, further restricted by favorite region if allowed
-                if (biosloaded > i && (biosLink.entry->blobs[i].region & availableGames[gameId].entry->regions) == biosLink.entry->blobs[i].region
+                if (biosloaded > (int)i && (biosLink.entry->blobs[i].region & availableGames[gameId].entry->regions) == biosLink.entry->blobs[i].region
                 && (stv_favorite_region == biosLink.entry->blobs[i].region || (availableGames[gameId].entry->regions & stv_favorite_region) != stv_favorite_region)) {
                   LOGSTV("Load bios %s\n", filename);
-                  for (j=0; j<biosLink.entry->blobs[i].length;j++) {
+                  for (j=0; j<copyLen;j++) {
                     T1WriteByte(BiosRom, biosLink.entry->blobs[i].offset+j, data[j]);
                   }
                   biosloaded = i;
                 }
               }
+              break;
+            default:
               break;
           }
         }
@@ -2968,10 +2980,13 @@ int copyFile(JZFile *zip, void* id) {
     char long_filename[MAX_LENGTH_FILENAME];
     char* filename;
     u8* data;
-    int i,j, dataAvailable;
+    int i, dataAvailable;
+    u32 j, copyLen;
     rominfo* info = (rominfo*)id;
     int gameId = -1;
     if (info != NULL) gameId = info->gameId;
+    if ((info == NULL) || (gameId < 0) || (gameId >= NB_STV_GAMES) ||
+        (availableGames[gameId].entry == NULL)) return -1;
 
     if(jzReadLocalFileHeader(zip, &header, long_filename, sizeof(long_filename))) {
         LOGSTV("Couldn't read local file header!\n");
@@ -2998,41 +3013,51 @@ int copyFile(JZFile *zip, void* id) {
         }
         if(dataAvailable != 0) {
           fileFound[gameId][i] = 1;
+          /* Jamais plus que ce que contient le fichier du zip : un fichier
+             tronque de meme nom faisait lire au-dela du tampon (la CRC
+             n'est verifiee que lors du scan, pas ici). */
+          copyLen = availableGames[gameId].entry->blobs[i].length;
+          if (copyLen > header.uncompressedSize) copyLen = header.uncompressedSize;
           switch (availableGames[gameId].entry->blobs[i].type) {
             case BIOS_BLOB:
               if (biosloaded > i) {
                 LOGSTV("Load bios %s\n", filename);
-                for (j=0; j<availableGames[gameId].entry->blobs[i].length;j++) {
+                for (j=0; j<copyLen;j++) {
                   T1WriteByte(BiosRom, availableGames[gameId].entry->blobs[i].offset+j, data[j]);
                 }
                 biosloaded = i;
               }
               break;
             case GAME_WORD_BLOB:
-              for (j=0; j<availableGames[gameId].entry->blobs[i].length;j++) {
+              for (j=0; j<copyLen;j++) {
                 T2WriteByte(CartridgeArea->rom, availableGames[gameId].entry->blobs[i].offset+j, data[j]);
               }
               break;
             case HEADER_BLOB:
-              for (j=0; j<availableGames[gameId].entry->blobs[i].length;j++) {
+              for (j=0; j<copyLen;j++) {
                 T1WriteByte(CartridgeArea->rom, availableGames[gameId].entry->blobs[i].offset+(2*j), data[j]);
                 // is zeroing odd bytes required ? i couldn't find a game requiring it, and it's breaking interlaced roms
                 //T1WriteByte(CartridgeArea->rom, availableGames[gameId].entry->blobs[i].offset+(2*j+1), 0);
               }
               break;
             case GAME_BYTE_BLOB:
-              for (j=0; j<availableGames[gameId].entry->blobs[i].length;j++) {
+              for (j=0; j<copyLen;j++) {
                 T1WriteByte(CartridgeArea->rom, availableGames[gameId].entry->blobs[i].offset+j, data[j]);
               }
               break;
             case EEPROM_BLOB:
-              eeprom_start(data);
-              hasEeprom = 1;
+              /* eeprom_start() lit 0x80 octets */
+              if (header.uncompressedSize >= 0x80) {
+                eeprom_start(data);
+                hasEeprom = 1;
+              }
               break;
             case RAX_BLOB:
               RaxLoadRom(availableGames[gameId].entry->blobs[i].offset, data,
                          (header.uncompressedSize < availableGames[gameId].entry->blobs[i].length) ?
                          header.uncompressedSize : availableGames[gameId].entry->blobs[i].length);
+              break;
+            default:
               break;
           }
         } else LOGSTV("Error : No data read from %s\n", filename);
@@ -3076,6 +3101,30 @@ int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, v
     return 1; // continue
 }
 
+/* Vrai si tous les blobs de cartouche de a (hors EEPROM/RAX) se retrouvent
+   dans b (meme nom, meme CRC) et que b en possede strictement plus. */
+static int gameBlobsStrictSubset(const Game *a, const Game *b) {
+  int i, j, na = 0, nb = 0;
+  for (j = 0; b->blobs[j].type != GAME_END; j++) {
+    if (b->blobs[j].type != EEPROM_BLOB && b->blobs[j].type != RAX_BLOB) nb++;
+  }
+  for (i = 0; a->blobs[i].type != GAME_END; i++) {
+    int found = 0;
+    if (a->blobs[i].type == EEPROM_BLOB || a->blobs[i].type == RAX_BLOB) continue;
+    na++;
+    for (j = 0; b->blobs[j].type != GAME_END; j++) {
+      if (b->blobs[j].type == EEPROM_BLOB || b->blobs[j].type == RAX_BLOB) continue;
+      if ((a->blobs[i].crc32 == b->blobs[j].crc32) &&
+          (strcmp(a->blobs[i].filename, b->blobs[j].filename) == 0)) {
+        found = 1;
+        break;
+      }
+    }
+    if (!found) return 0;
+  }
+  return (na > 0) && (nb > na);
+}
+
 char * updateGameList(const char* file, int *nbGames){
   FILE *fp;
   JZEndRecord endRecord;
@@ -3083,6 +3132,7 @@ char * updateGameList(const char* file, int *nbGames){
   char *romset = NULL;
   int i, j;
   u8 isASTVGame, isBiosFound, isBlobFound;
+  u8 zipMatch[NB_STV_GAMES];
   rominfo info;
   info.filename = file;
   info.gameId = -1;
@@ -3122,6 +3172,7 @@ char * updateGameList(const char* file, int *nbGames){
       j++;
     }
   }
+  /* 1ere passe : quels jeux sont complets dans ce zip. */
   for (i=0; i<NB_STV_GAMES; i++) {
     isASTVGame = 1;
     isBiosFound = 0;
@@ -3137,7 +3188,24 @@ char * updateGameList(const char* file, int *nbGames){
       j++;
     }
     isASTVGame = isBlobFound & (isBiosFound | hasBios);
-    if (isASTVGame == 1) {
+    zipMatch[i] = (isASTVGame == 1);
+  }
+
+  /* 2e passe : un zip complet d'un jeu contient aussi tous les fichiers d'un
+     jeu plus ancien dont la liste est incluse dans la sienne (ffreveng V1.100
+     contient ffrevng10 V1.000). On ne garde que le jeu le plus complet, sinon
+     le dernier de la table gagnait : lancer ffreveng.zip chargeait V1.000. */
+  for (i=0; i<NB_STV_GAMES; i++) {
+    int shadowed = 0;
+    if (!zipMatch[i]) continue;
+    for (j=0; j<NB_STV_GAMES; j++) {
+      if ((j != i) && zipMatch[j] && gameBlobsStrictSubset(&GameList[i], &GameList[j])) {
+        shadowed = 1;
+        break;
+      }
+    }
+    if (shadowed) continue;
+    {
       //Add the filename as a Game
       int found = 0;
       for (j=0; j<NB_STV_GAMES; j++) {
@@ -3146,9 +3214,11 @@ char * updateGameList(const char* file, int *nbGames){
           break;
         }
       }
-      if (found == 0) {
+      if ((found == 0) && (*nbGames < NB_STV_GAMES)) {
         availableGames[*nbGames].entry = &GameList[i];
-        strncpy(availableGames[*nbGames].path, file, MAX_LENGTH_FILEPATH);
+        strncpy(availableGames[*nbGames].path, file, MAX_LENGTH_FILEPATH - 1);
+        availableGames[*nbGames].path[MAX_LENGTH_FILEPATH - 1] = '\0';
+        free(romset); /* un zip peut contenir plusieurs jeux : plus de fuite */
         romset = strdup(GameList[i].romset);
         (*nbGames)++;
         //break;
@@ -3201,12 +3271,15 @@ int loadGame(const char *romset){
   JZEndRecord endRecord;
   JZFile *zip;
   int i = 0;
-  int gameId = 0;
+  int gameId = -1;
   u8 isBiosFound = 0;
   u8 isBlobFound = 1;
-  u8 hasBios = 0;
+  u8 biosOk = 0; /* etait "hasBios", qui masquait la variable globale */
   rominfo info;
 
+  /* Romset inconnu : on echoue. Avant, on retombait sur le jeu 0 de la liste
+     (un autre jeu que celui demande) ou, liste vide, sur une entree NULL
+     dereferencee par copyBios(). */
   if (romset != NULL) {
     for (int l=0; l<NB_STV_GAMES; l++) {
       if (availableGames[l].entry == NULL) break;
@@ -3218,12 +3291,25 @@ int loadGame(const char *romset){
       }
     }
   }
+  if (gameId < 0) {
+    LOGSTV("loadGame: romset %s not found\n", romset ? romset : "(null)");
+    return -1;
+  }
   LOGSTV("loadGame %d path = %s\n", gameId, availableGames[gameId].path);
 
   info.filename = availableGames[gameId].path;
   info.gameId = gameId;
   info.bios = 0;
-  hasBios = loadBios(gameId);
+  /* Remises a zero AVANT loadBios() : biosloaded gardait l'indice du BIOS du
+     jeu precedent, donc un jeu EU/US lance apres un jeu JP (indice plus
+     petit) ne chargeait aucun BIOS. hasEeprom gardait le 1 du jeu precedent
+     et empechait eeprom_start() : l'EEPROM d'un jeu se retrouvait dans le
+     suivant. */
+  biosloaded = 0xFF;
+  hasEeprom = 0;
+  biosOk = loadBios(gameId);
+  /* Et APRES : un BIOS propre au jeu (sfish2) compare l'indice de son blob a
+     biosloaded, qui ne doit plus contenir celui du BIOS de stvbios.zip. */
   biosloaded = 0xFF;
 
   LOGSTV("Loading game[%d] %s from %s\n", gameId, availableGames[gameId].entry->name, availableGames[gameId].path);
@@ -3264,8 +3350,8 @@ int loadGame(const char *romset){
     }
     i++;
   }
-  LOGSTV("isBlobFound %d isBiosFound %d hasBios %d\n",isBlobFound,isBiosFound,hasBios);
-  if (isBlobFound & (isBiosFound|hasBios)) {
+  LOGSTV("isBlobFound %d isBiosFound %d hasBios %d\n",isBlobFound,isBiosFound,biosOk);
+  if (isBlobFound & (isBiosFound|biosOk)) {
     LOGSTV("%s has been sucessfully loaded\n", availableGames[gameId].entry->name);
     if (availableGames[gameId].entry->eeprom != NULL || hasEeprom == 0)
       eeprom_start(availableGames[gameId].entry->eeprom);
@@ -3303,7 +3389,10 @@ int STVGetRomList(const char* path, int force){
     updateGameList((const char *)file, &nbGames);
     free(file);
     while ((dir = readdir(d)) != NULL) {
-      if (dir->d_type == DT_REG)
+      /* DT_LNK (liens vers les zip) et DT_UNKNOWN (certains systemes de
+         fichiers reseau/FUSE ne renseignent pas d_type) etaient ignores :
+         les jeux n'apparaissaient pas. */
+      if ((dir->d_type == DT_REG) || (dir->d_type == DT_LNK) || (dir->d_type == DT_UNKNOWN))
       {
         char *dot = strrchr(dir->d_name, '.');
         if (dot && !strcmp(dot, ".zip")) {
@@ -3316,14 +3405,17 @@ int STVGetRomList(const char* path, int force){
       }
     }
     closedir(d);
+    /* Dossier en lecture seule : fp NULL faisait planter fprintf(). */
     fp = fopen(savefile, "w");
-    if (biosLink.entry != NULL) {
-      fprintf(fp, "%s$%s\n", biosLink.entry->name, biosLink.path);
+    if (fp != NULL) {
+      if (biosLink.entry != NULL) {
+        fprintf(fp, "%s$%s\n", biosLink.entry->name, biosLink.path);
+      }
+      for (i=0; i<nbGames; i++) {
+        fprintf(fp, "%s$%s\n", availableGames[i].entry->name, availableGames[i].path);
+      }
+      fclose(fp);
     }
-    for (i=0; i<nbGames; i++) {
-      fprintf(fp, "%s$%s\n", availableGames[i].entry->name, availableGames[i].path);
-    }
-    fclose(fp);
   }
   return nbGames;
 }
@@ -3361,13 +3453,15 @@ int STVGetRomList(const char* path, int force){
     }while(FindNextFileA(hFind, &FindFileData));
     FindClose(hFind);
     fp = fopen(savefile, "w");
-    if (biosLink.entry != NULL) {
-        fprintf(fp, "%s$%s\n", biosLink.entry->name, biosLink.path);
+    if (fp != NULL) {
+      if (biosLink.entry != NULL) {
+          fprintf(fp, "%s$%s\n", biosLink.entry->name, biosLink.path);
+      }
+      for (i=0; i<nbGames; i++) {
+        fprintf(fp, "%s$%s\n", availableGames[i].entry->name, availableGames[i].path);
+      }
+      fclose(fp);
     }
-    for (i=0; i<nbGames; i++) {
-      fprintf(fp, "%s$%s\n", availableGames[i].entry->name, availableGames[i].path);
-    }
-    fclose(fp);
   }
   return nbGames;
 }
@@ -3386,41 +3480,60 @@ int loadGames(char* path) {
   int i, nbGames = 0;
   int character;
   char* field;
+  size_t n, cap;
+  int hasPath;
   char gameName[1024];
   char gamePath[MAX_LENGTH_FILEPATH];
   FILE *fp;
-  if (path != NULL) LOGSTV("Load Games from %s\n", path);
+  if (path == NULL) return 0;
+  LOGSTV("Load Games from %s\n", path);
   fp = fopen(path, "r");
   if (fp == NULL) return 0;
   for(;;) {
-    i=0;
+    /* Lecture bornee : le fichier de cache est editable, une ligne trop
+       longue debordait gameName/gamePath. Seul le 1er '$' separe le nom du
+       chemin (un chemin contenant '$' etait tronque). */
+    n = 0;
+    hasPath = 0;
     field = &gameName[0];
+    cap = sizeof(gameName);
+    gameName[0] = '\0';
+    gamePath[0] = '\0';
     while((character = fgetc(fp)) != EOF) {
-      field[i] = character;
-      if (field[i] == '\n') {
-        field[i] = '\0';
+      if (character == '\n') {
+        field[n] = '\0';
         break;
       }
-      else {
-        if (field[i] == '$') {
-          field[i] = '\0';
-          field = &gamePath[0];
-          i = 0;
-        } else {
-          i++;
-        }
+      if ((character == '$') && !hasPath) {
+        field[n] = '\0';
+        field = &gamePath[0];
+        cap = sizeof(gamePath);
+        n = 0;
+        hasPath = 1;
+        continue;
       }
+      if (n + 1 < cap) field[n++] = (char)character;
     }
     if (character == EOF) break;
+    if (n > 0 && field[n - 1] == '\r') field[n - 1] = '\0'; /* fin de ligne Windows */
+    if (!hasPath) continue; /* ligne sans '$' */
     LOGSTV("Scan new game %s %s!!!\n", gameName, gamePath);
-    if (strncmp(gameName,BiosList.name,1024)==0) {
+    if (strncmp(gameName,BiosList.name,sizeof(gameName))==0) {
       biosLink.entry = &BiosList;
-      strncpy(biosLink.path, gamePath, MAX_LENGTH_FILEPATH);
+      strncpy(biosLink.path, gamePath, MAX_LENGTH_FILEPATH - 1);
+      biosLink.path[MAX_LENGTH_FILEPATH - 1] = '\0';
     } else {
       for (i=0; i<NB_STV_GAMES; i++) {
-        if (strncmp(gameName,GameList[i].name,1024)==0) {
+        if (strncmp(gameName,GameList[i].name,sizeof(gameName))==0) {
+          FILE *chk;
+          /* Zip disparu depuis la derniere analyse : on ne le liste plus
+             (il restait dans la liste jusqu'a un rafraichissement force). */
+          if ((chk = fopen(gamePath, "rb")) == NULL) break;
+          fclose(chk);
+          if (nbGames >= NB_STV_GAMES) break;
           availableGames[nbGames].entry = &GameList[i];
-          strncpy(availableGames[nbGames].path, gamePath, MAX_LENGTH_FILEPATH);
+          strncpy(availableGames[nbGames].path, gamePath, MAX_LENGTH_FILEPATH - 1);
+          availableGames[nbGames].path[MAX_LENGTH_FILEPATH - 1] = '\0';
           LOGSTV("Rebuild %s from %s\n", gameName, gamePath);
           nbGames++;
           break;
@@ -3433,7 +3546,7 @@ int loadGames(char* path) {
 }
 
 int STVGetSingle(const char *pathfile, const char *biospath, char **romset){
-  int i, nbGames = 0;
+  int nbGames = 0;
   memset(availableGames, 0x0, sizeof(GameLink)*NB_STV_GAMES);
   /* FIX: removed unused "struct dirent *dir;" - it was never used here,
      and dirent.h is only included under #ifndef WIN32, so this line
@@ -3482,15 +3595,24 @@ int STVSingleInit(const char *gamepath, const char *biospath, const char *eeprom
   LOGSTV("Single Init\n");
   if (favorite_region != 0) stv_favorite_region = favorite_region;
   if ((gamepath == NULL) || (biospath == NULL)) return -1;
+  /* Comme STVInit() : sans cartouche ST-V, CartridgeArea->rom est NULL et
+     loadGame() ecrivait dedans. */
+  if ((CartridgeArea == NULL) || (CartridgeArea->carttype != CART_ROMSTV)) return -1;
+  if (eepromdir == NULL) eepromdir = ".";
   nbGame = STVGetSingle(gamepath, biospath, &romset);
+  (void)nbGame;
+  if (romset == NULL) return -1; /* zip non reconnu */
+  cryptoReset(); /* STVInit() le fait, pas STVSingleInit() */
   if (loadGame(romset) == 0) {
     char eeprom_path[4096];
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
     STVCoinBookkeepingInit(eepromdir, romset);
+    free(romset);
     yabsys.isSTV = 1;
     return 0;
   }
+  free(romset);
   return -1;
 }
 
@@ -3500,7 +3622,8 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
   if (romset == NULL) return -1;
   if (favorite_region != 0) stv_favorite_region = favorite_region;
   cryptoReset();
-  if (CartridgeArea->carttype != CART_ROMSTV) return 0;
+  if (CartridgeArea == NULL || CartridgeArea->carttype != CART_ROMSTV) return 0;
+  if (eepromdir == NULL) eepromdir = ".";
 // #ifndef __LIBRETRO__
 // printf("Load romset %s from %s\n",romset, path);
 //   int nbGames = STVGetRomList(path, 0);
