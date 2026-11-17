@@ -23,6 +23,10 @@
 #include <QKeyEvent>
 #include <QApplication>
 
+extern "C" {
+#include "movie.h"
+}
+
 
 YabauseGL::YabauseGL( ) : QOpenGLWindow()
 {
@@ -108,7 +112,17 @@ bool YabauseGL::event(QEvent *event)
             mInFrame = true;
             YabauseExec();
             mInFrame = false;
-            requestFrame();
+            /* A pause asked for this exact frame (movie.c: seek target,
+               end of a read-only playback) cannot go through pause(): the
+               FrameStop it posts is queued behind the FrameRequest posted
+               here, so one more frame would run first. Stop the chain
+               instead; UIYabause then pauses the emulation thread. */
+            if (MovieConsumePauseRequest()) {
+              mPause = true;
+              emit pauseRequested();
+            } else {
+              requestFrame();
+            }
           }
           return true;
     case FrameStop::mType:
@@ -118,6 +132,18 @@ bool YabauseGL::event(QEvent *event)
     default:
         return QWindow::event(event);
     }
+}
+
+bool YabauseGL::stepFrame()
+{
+  if (mInFrame)
+    return false;
+  mInFrame = true;
+  YabauseExec();
+  mInFrame = false;
+  /* already paused: nothing more to do with a pause request */
+  MovieConsumePauseRequest();
+  return true;
 }
 
 void YabauseGL::swapBuffers()
