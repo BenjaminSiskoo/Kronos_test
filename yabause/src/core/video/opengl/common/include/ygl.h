@@ -404,7 +404,13 @@ typedef enum
   AA_FXAA_FILTER,
   AA_CRT_FILTER,
   AA_CRT_CGWG_FAST,
-  AA_CELL_SHADING
+  AA_CELL_SHADING,
+  /* Deinterlacers added after the others (ids 13..15). They only make sense
+   * on an interlaced output: YglBlitFramebuffer() falls back to AA_NONE in
+   * NORMAL_INTERLACE, like AA_ADAPTATIVE_FILTER..AA_BOB_FILTER. */
+  AA_DEINT_BLEND,
+  AA_DEINT_BOB_SMOOTH,
+  AA_DEINT_ADAPTIVE_FIELD
 } AAMODE;
 
 typedef enum
