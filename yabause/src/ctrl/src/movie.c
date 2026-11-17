@@ -54,6 +54,23 @@
         chargement d'etat : la fin de l'ancien film restait dans le fichier) ;
       - MovieReadState() lisait le bloc du film meme quand l'etat n'en
         contenait pas (lecture hors du tampon).
+
+    Speedruns assistes par outil (TAS) :
+      - toutes les trames sont en memoire (table mv_buf), le fichier suit ;
+      - l'octet de drapeaux de chaque trame dit si c'etait une trame de lag
+        (le jeu n'a pas lu les manettes) : bit 0 = lag, bit 1 = lag connu ;
+      - en lecture seule, charger un etat reprend la lecture a sa trame ;
+        en lecture/ecriture il reprend l'enregistrement (re-record), et la
+        fin du film enchaine sur un enregistrement ;
+      - le bloc du film dans les etats contient ce qui manque au reste de
+        l'etat pour retrouver exactement la meme suite (voir
+        SaveMovieInState()) ;
+      - l'editeur d'entrees modifie la table (MovieEdit*()), revient en
+        arriere avec MovieSeek() a partir d'instantanes gardes en memoire ;
+      - une modification rend caduques les empreintes des trames suivantes :
+        l'en-tete garde la premiere trame dont l'empreinte n'est plus
+        valable (hash_invalid_from, drapeau 2), une relecture en
+        lecture/ecriture les refait.
 */
 
 #include <stdarg.h>
@@ -101,9 +118,21 @@ int FrameAdvanceVariable = 0;
 #define MOVIE_MIN_PORT_LEN 16
 #define MOVIE_MAX_PORT_LEN 255
 
-/* Offsets des champs reecrits a l'arret de l'enregistrement. */
+/* Offsets des champs reecrits pendant la vie du film. */
 #define HDR_OFS_FRAMES     20
 #define HDR_OFS_RERECORDS  24
+#define HDR_OFS_FLAGS      28
+#define HDR_OFS_HASHMARK   302
+
+/* Drapeaux de l'en-tete. */
+#define HDR_FLAG_HASH      1   /* chaque trame a une empreinte */
+#define HDR_FLAG_HASHMARK  2   /* hash_invalid_from est renseigne */
+
+/* Drapeaux d'une trame. */
+#define REC_LAG            0x01
+#define REC_LAG_KNOWN      0x02
+
+#define MOVIE_NOT_STALE    0x7FFFFFFF
 
 typedef struct
 {
@@ -135,6 +164,9 @@ typedef struct
    u32 record_time;
    u32 bup_size, bup_crc, bup_packed;
    u32 cbup_size, cbup_crc, cbup_packed;
+   /* premiere trame dont l'empreinte n'est pas valable (les films d'avant
+      n'ont pas ce champ : toutes le sont) */
+   u32 hash_invalid_from;
 } MovieHeader;
 
 static MovieHeader hdr;
@@ -499,7 +531,7 @@ static void MovieFillHeaderFromMachine(MovieHeader *h)
    h->carttype = CartridgeArea ? (u32)CartridgeArea->carttype : 0;
    h->sh2steprun = (u32)yabsys.sh2StepRun;
    h->record_time = (u32)time(NULL);
-   h->flags = 1;
+   h->flags = HDR_FLAG_HASH;
 }
 
 /* Ecrit l'en-tete complet (avec les images de sauvegarde) en debut de
@@ -572,6 +604,7 @@ static int MovieWriteHeader(FILE *fp, MovieHeader *h)
    put32(p, h->cbup_size);                 p += 4;
    put32(p, h->cbup_crc);                  p += 4;
    put32(p, h->cbup_packed);               p += 4;
+   put32(p, h->hash_invalid_from);         p += 4;   /* HDR_OFS_HASHMARK */
 
    fseek(fp, 0, SEEK_SET);
    if (fwrite(fixed, 1, MOVIE_FIXED_SIZE, fp) != MOVIE_FIXED_SIZE)
@@ -643,6 +676,8 @@ static int MovieReadHeader(FILE *fp, MovieHeader *h)
    h->cbup_size = get32(p);    p += 4;
    h->cbup_crc = get32(p);     p += 4;
    h->cbup_packed = get32(p);  p += 4;
+   h->hash_invalid_from = (h->flags & HDR_FLAG_HASHMARK) ? get32(p) : 0xFFFFFFFFu;
+   p += 4;
 
    if (h->port_len < 4 || h->port_len > MOVIE_MAX_PORT_LEN)
       return -1;
@@ -768,23 +803,436 @@ static void MovieApplyBackupImages(FILE *fp, const MovieHeader *h)
 }
 
 //////////////////////////////////////////////////////////////////////////////
+// Table des trames
+//////////////////////////////////////////////////////////////////////////////
+
+/* Toutes les trames du film sont en memoire (mv_buf, Movie.Frames entrees de
+   hdr.frame_len octets) ; le fichier est tenu a jour au fil de l'eau quand
+   il est ouvert en ecriture. L'editeur d'entrees lit et modifie cette
+   table. */
+static u8 *mv_buf = NULL;
+static u32 mv_cap = 0;         /* capacite, en trames */
+static int mv_writable = 0;    /* fichier ouvert en lecture/ecriture */
+
+static u8 *MovieRec(u32 index)
+{
+   return mv_buf + (size_t)index * hdr.frame_len;
+}
+
+static int MovieReserve(u32 frames)
+{
+   u32 cap;
+   u8 *nb;
+   if (frames <= mv_cap && mv_buf != NULL)
+      return 0;
+   if (frames > 0x7FFFFFFFu / (hdr.frame_len ? hdr.frame_len : 1))
+      return -1;
+   cap = mv_cap ? mv_cap : 4096;
+   while (cap < frames) {
+      u32 more = cap / 2 + 4096;
+      if (cap > 0x7FFFFFFFu / (hdr.frame_len ? hdr.frame_len : 1) - more) {
+         cap = frames;
+         break;
+      }
+      cap += more;
+   }
+   nb = (u8 *)realloc(mv_buf, (size_t)cap * hdr.frame_len);
+   if (nb == NULL)
+      return -1;
+   mv_buf = nb;
+   mv_cap = cap;
+   return 0;
+}
+
+static void MovieFreeFrames(void)
+{
+   free(mv_buf);
+   mv_buf = NULL;
+   mv_cap = 0;
+}
+
+/* Ecrit des trames de la table dans le fichier. */
+static int MovieFlushFrames(u32 from, u32 count)
+{
+   if (!mv_writable || Movie.fp == NULL || count == 0)
+      return 0;
+   fseek(Movie.fp, (long)(hdr.header_size + (u64)from * hdr.frame_len), SEEK_SET);
+   if (fwrite(MovieRec(from), hdr.frame_len, count, Movie.fp) != count)
+      return -1;
+   fflush(Movie.fp);
+   return 0;
+}
+
+/* Champs de l'en-tete qui changent pendant la vie du film. Pendant un
+   enregistrement le nombre de trames reste a 0 dans le fichier (final = 0) :
+   apres un plantage, la longueur du film est celle du fichier. */
+static void MovieWriteCounts(int final)
+{
+   u8 b[4];
+   if (!mv_writable || Movie.fp == NULL)
+      return;
+   put32(b, final ? (u32)Movie.Frames : 0);
+   fseek(Movie.fp, HDR_OFS_FRAMES, SEEK_SET);
+   fwrite(b, 1, 4, Movie.fp);
+   put32(b, (u32)Movie.Rerecords);
+   fseek(Movie.fp, HDR_OFS_RERECORDS, SEEK_SET);
+   fwrite(b, 1, 4, Movie.fp);
+   hdr.flags |= HDR_FLAG_HASHMARK;
+   put32(b, hdr.flags);
+   fseek(Movie.fp, HDR_OFS_FLAGS, SEEK_SET);
+   fwrite(b, 1, 4, Movie.fp);
+   put32(b, hdr.hash_invalid_from);
+   fseek(Movie.fp, HDR_OFS_HASHMARK, SEEK_SET);
+   fwrite(b, 1, 4, Movie.fp);
+   fflush(Movie.fp);
+}
+
+/* Reecrit tout le fichier a partir de la table (le film a raccourci, ou des
+   trames ont ete inserees). Le nouveau contenu est ecrit dans un fichier
+   temporaire qui remplace ensuite l'ancien : une erreur d'ecriture (disque
+   plein) ne detruit pas le film. Renvoie 0 ou -1 ; apres -1, Movie.fp est
+   toujours le fichier d'origine s'il a pu etre rouvert, NULL sinon. */
+static int MovieRewriteFile(int final)
+{
+   u8 *head;
+   char *tmpname;
+   FILE *tmp;
+   size_t len;
+   int ok;
+
+   if (!mv_writable || Movie.fp == NULL || movie_filename == NULL)
+      return -1;
+
+   head = (u8 *)malloc(hdr.header_size);
+   if (head == NULL)
+      return -1;
+   fflush(Movie.fp);
+   fseek(Movie.fp, 0, SEEK_SET);
+   if (fread(head, 1, hdr.header_size, Movie.fp) != hdr.header_size) {
+      free(head);
+      return -1;
+   }
+   hdr.flags |= HDR_FLAG_HASHMARK;
+   put32(head + HDR_OFS_FRAMES, final ? (u32)Movie.Frames : 0);
+   put32(head + HDR_OFS_RERECORDS, (u32)Movie.Rerecords);
+   put32(head + HDR_OFS_FLAGS, hdr.flags);
+   put32(head + HDR_OFS_HASHMARK, hdr.hash_invalid_from);
+
+   len = strlen(movie_filename);
+   tmpname = (char *)malloc(len + 5);
+   if (tmpname == NULL) {
+      free(head);
+      return -1;
+   }
+   memcpy(tmpname, movie_filename, len);
+   memcpy(tmpname + len, ".tmp", 5);
+
+   tmp = fopen(tmpname, "wb");
+   if (tmp == NULL) {
+      free(head);
+      free(tmpname);
+      return -1;
+   }
+   ok = (fwrite(head, 1, hdr.header_size, tmp) == hdr.header_size);
+   if (ok && Movie.Frames > 0)
+      ok = (fwrite(mv_buf, hdr.frame_len, (size_t)Movie.Frames, tmp) == (size_t)Movie.Frames);
+   if (fclose(tmp) != 0)
+      ok = 0;
+   free(head);
+   if (!ok) {
+      remove(tmpname);
+      free(tmpname);
+      return -1;
+   }
+
+   /* rename() ne remplace pas un fichier existant sous Windows */
+   fclose(Movie.fp);
+   Movie.fp = NULL;
+   remove(movie_filename);
+   if (rename(tmpname, movie_filename) != 0) {
+      /* le film complet est dans le fichier temporaire */
+      MovieReport(_("Couldn't replace the movie file, its content is in %s"), tmpname);
+      free(tmpname);
+      return -1;
+   }
+   free(tmpname);
+   Movie.fp = fopen(movie_filename, "r+b");
+   if (Movie.fp == NULL)
+      return -1;
+   return 0;
+}
+
+/* Les entrees de deux trames (tailles et donnees des deux ports) sont-elles
+   les memes ? Les drapeaux et l'empreinte ne comptent pas. */
+static int MovieSameInput(const u8 *a, const u8 *b)
+{
+   return memcmp(a + 1, b + 1, hdr.frame_len - 5) == 0;
+}
+
+static int MoviePortIsPad(const u8 *data, int size)
+{
+   return (size >= 4 && data[0] == 0xF1 && data[1] == PERPAD);
+}
+
+/* Relache les boutons d'une manette numerique branchee directement. */
+static void MovieReleasePad(PortData_struct *port)
+{
+   if (MoviePortIsPad(port->data, port->size)) {
+      port->data[2] = 0xFF;
+      port->data[3] = 0xFF;
+   }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Instantanes (retour en arriere de l'editeur d'entrees)
+//////////////////////////////////////////////////////////////////////////////
+
+/* Etats de sauvegarde gardes en memoire a intervalle regulier pendant un
+   film, sans capture d'ecran et compresses (PackBits). MovieSeek() repart
+   du plus proche au lieu de rejouer le film depuis la mise sous tension. */
+typedef struct
+{
+   int frame;      /* trames executees quand l'instantane a ete pris */
+   u8 *data;
+   u32 packed;
+   u32 size;
+} MovieSnap;
+
+static MovieSnap *snaps = NULL;
+static int nsnaps = 0;
+static int snaps_cap = 0;
+static int snap_interval = 0;                    /* 0 : pas d'instantanes */
+static u64 snap_budget = (u64)256 * 1024 * 1024; /* octets */
+static u64 snap_bytes = 0;
+static int movie_state_light = 0;
+
+int MovieStateIsLight(void)
+{
+   return movie_state_light;
+}
+
+static void MovieSnapRemove(int i)
+{
+   snap_bytes -= snaps[i].packed;
+   free(snaps[i].data);
+   memmove(snaps + i, snaps + i + 1, (size_t)(nsnaps - i - 1) * sizeof(MovieSnap));
+   nsnaps--;
+}
+
+static void MovieSnapClear(void)
+{
+   while (nsnaps > 0)
+      MovieSnapRemove(nsnaps - 1);
+   free(snaps);
+   snaps = NULL;
+   snaps_cap = 0;
+   snap_bytes = 0;
+}
+
+/* Les instantanes pris apres 'frame' trames ne sont plus valables (une
+   entree de la trame 'frame' ou d'apres a change). */
+static void MovieSnapInvalidateAfter(int frame)
+{
+   while (nsnaps > 0 && snaps[nsnaps - 1].frame > frame)
+      MovieSnapRemove(nsnaps - 1);
+}
+
+/* Dernier instantane pris a 'frame' trames ou avant, ou -1. */
+static int MovieSnapFind(int frame)
+{
+   int i, best = -1;
+   for (i = 0; i < nsnaps; i++) {
+      if (snaps[i].frame > frame)
+         break;
+      best = i;
+   }
+   return best;
+}
+
+static void MovieSnapTake(void)
+{
+   void *state = NULL;
+   size_t size = 0;
+   u8 *packed;
+   u32 plen;
+   int i, pos, status;
+
+   for (pos = 0; pos < nsnaps && snaps[pos].frame < framecounter; pos++)
+      ;
+   if (pos < nsnaps && snaps[pos].frame == framecounter)
+      return; /* deja pris */
+
+   movie_state_light = 1;
+   status = YabSaveStateBuffer(&state, &size);
+   movie_state_light = 0;
+   if (status != 0 || state == NULL || size == 0 || size > 0x7FFFFFFFu) {
+      free(state);
+      return;
+   }
+   packed = (u8 *)malloc(size + size / 128 + 16);
+   if (packed == NULL) {
+      free(state);
+      return;
+   }
+   plen = MoviePack((const u8 *)state, (u32)size, packed);
+   free(state);
+   {
+      u8 *shrunk = (u8 *)realloc(packed, plen ? plen : 1);
+      if (shrunk != NULL)
+         packed = shrunk;
+   }
+
+   if (nsnaps >= snaps_cap) {
+      int cap = snaps_cap ? snaps_cap * 2 : 64;
+      MovieSnap *ns = (MovieSnap *)realloc(snaps, (size_t)cap * sizeof(MovieSnap));
+      if (ns == NULL) {
+         free(packed);
+         return;
+      }
+      snaps = ns;
+      snaps_cap = cap;
+   }
+   memmove(snaps + pos + 1, snaps + pos, (size_t)(nsnaps - pos) * sizeof(MovieSnap));
+   snaps[pos].frame = framecounter;
+   snaps[pos].data = packed;
+   snaps[pos].packed = plen;
+   snaps[pos].size = (u32)size;
+   nsnaps++;
+   snap_bytes += plen;
+
+   /* budget memoire depasse : les plus anciens partent d'abord (on revient
+      surtout sur la fin du film) ; celui qui vient d'etre pris reste */
+   for (i = 0; snap_bytes > snap_budget && nsnaps > 1 && i < nsnaps; ) {
+      if (snaps[i].frame == framecounter) {
+         i++;
+         continue;
+      }
+      MovieSnapRemove(i);
+   }
+}
+
+void MovieSetSnapshots(int interval_frames, int budget_mb)
+{
+   if (interval_frames < 0)
+      interval_frames = 0;
+   if (budget_mb < 16)
+      budget_mb = 16;
+   snap_interval = interval_frames;
+   snap_budget = (u64)budget_mb * 1024 * 1024;
+   if (snap_interval == 0)
+      MovieSnapClear();
+}
+
+int MovieGetSnapshotCount(void)
+{
+   return nsnaps;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Affichage
+//////////////////////////////////////////////////////////////////////////////
+
+/* Boutons d'une manette numerique, dans l'ordre d'affichage. PORTDATA :
+   data[2] = Droite Gauche Bas Haut Start A C B (bits 7 a 0), data[3] =
+   R X Y Z L (bits 7 a 3), 0 = appuye. */
+static const struct { u8 byte; u8 mask; char letter; } pad_buttons[MOVIE_PAD_BUTTONS] = {
+   { 2, 0x10, 'U' }, { 2, 0x20, 'D' }, { 2, 0x40, 'L' }, { 2, 0x80, 'R' },
+   { 2, 0x08, 'S' }, { 2, 0x04, 'A' }, { 2, 0x01, 'B' }, { 2, 0x02, 'C' },
+   { 3, 0x40, 'X' }, { 3, 0x20, 'Y' }, { 3, 0x10, 'Z' }, { 3, 0x08, 'l' },
+   { 3, 0x80, 'r' }
+};
+
+static void MovieInputString(const u8 *data, int size, char *out, size_t outlen)
+{
+   size_t n = 0;
+   int i;
+
+   out[0] = 0;
+   if (size <= 0 || outlen < 2)
+      return;
+   if (MoviePortIsPad(data, size)) {
+      for (i = 0; i < MOVIE_PAD_BUTTONS && n + 1 < outlen; i++)
+         out[n++] = (data[pad_buttons[i].byte] & pad_buttons[i].mask) ? '.' : pad_buttons[i].letter;
+      out[n] = 0;
+      return;
+   }
+   /* autre peripherique : les premiers octets, en hexadecimal */
+   for (i = 0; i < size && i < 10 && n + 3 < outlen; i++) {
+      snprintf(out + n, outlen - n, "%02X", data[i]);
+      n += 2;
+   }
+}
+
+/* L'ancienne version intervertissait Gauche et Droite (bit 6 = Gauche,
+   bit 7 = Droite, voir PerPadLeftPressed()/PerPadRightPressed()). */
+static void SetInputDisplayCharacters(void)
+{
+   MovieInputString(PORTDATA1.data, PORTDATA1.size, InputDisplayString, sizeof(InputDisplayString));
+}
+
+static int movie_osd = 0;
+static int movie_stale_from = MOVIE_NOT_STALE;
+
+void MovieSetOSD(int on)
+{
+   movie_osd = on ? 1 : 0;
+}
+
+int MovieGetOSD(void)
+{
+   return movie_osd;
+}
+
+static void MovieOSD(void)
+{
+   char in1[40], in2[40], line[256];
+   size_t n;
+
+   SetInputDisplayCharacters();
+   if (!movie_osd)
+      return;
+
+   MovieInputString(PORTDATA1.data, PORTDATA1.size, in1, sizeof(in1));
+   MovieInputString(PORTDATA2.data, PORTDATA2.size, in2, sizeof(in2));
+
+   if (Movie.Status == Recording)
+      snprintf(line, sizeof(line), "REC %d", framecounter);
+   else if (Movie.Status == Playback)
+      snprintf(line, sizeof(line), "PLAY %d/%d%s", framecounter, Movie.Frames, Movie.ReadOnly ? "" : " RW");
+   else
+      snprintf(line, sizeof(line), "FRAME %d", framecounter);
+   n = strlen(line);
+   snprintf(line + n, sizeof(line) - n, "   LAG %d", lagframecounter);
+   n = strlen(line);
+   if (IsMovieLoaded()) {
+      snprintf(line + n, sizeof(line) - n, "   RR %d", Movie.Rerecords);
+      n = strlen(line);
+   }
+   if (in1[0]) {
+      snprintf(line + n, sizeof(line) - n, "   1:%s", in1);
+      n = strlen(line);
+   }
+   if (in2[0]) {
+      snprintf(line + n, sizeof(line) - n, "   2:%s", in2);
+      n = strlen(line);
+   }
+   if (movie_stale_from != MOVIE_NOT_STALE)
+      snprintf(line + n, sizeof(line) - n, "   EDITED: SEEK NEEDED");
+   else if (movie_desync >= 0)
+      snprintf(line + n, sizeof(line) - n, "   DESYNC@%d", movie_desync);
+   OSDPushMessage(OSDMSG_TAS, 1, "%s", line);
+}
+
+//////////////////////////////////////////////////////////////////////////////
 // Trames
 //////////////////////////////////////////////////////////////////////////////
 
-static void SetInputDisplayCharacters(void)
-{
-   static const char *Buttons[8]  = {"B", "C", "A", "S", "U", "D", "R", "L"};
-   static const char *Buttons2[8] = {"", "", "", "L", "Z", "Y", "X", "R"};
-   char str[40];
-   int x;
-
-   str[0] = 0;
-   for (x = 0; x < 8; x++)
-      strcat(str, (PORTDATA1.data[2] & (1 << x)) ? " " : Buttons[x]);
-   for (x = 3; x < 8; x++)
-      strcat(str, (PORTDATA1.data[3] & (1 << x)) ? " " : Buttons2[x]);
-   strcpy(InputDisplayString, str);
-}
+static int movie_cur_index = -1;     /* trame du film en cours d'execution */
+static int movie_rec_dirty = 0;      /* son entree doit etre reecrite */
+static int movie_last_lag = 0;
+static int movie_pause_at = -1;
+static int movie_pause_req = 0;
+static int movie_keep_on_load = 0;
 
 static void MovieWritePort(u8 *p, const PortData_struct *port)
 {
@@ -808,43 +1256,131 @@ static void MovieReadPort(const u8 *p, PortData_struct *port)
    memcpy(port->data, p + 1, hdr.port_len);
 }
 
+/* Remet les ports de l'utilisateur (mis de cote au debut de la lecture),
+   boutons relaches : les donnees du film ne doivent pas rester "appuyees". */
+static void MovieRestoreUserPorts(void)
+{
+   if (!movie_ports_saved)
+      return;
+   PORTDATA1 = movie_saved_port1;
+   PORTDATA2 = movie_saved_port2;
+   MovieReleasePad(&PORTDATA1);
+   MovieReleasePad(&PORTDATA2);
+   movie_ports_saved = 0;
+}
+
 static void MovieFinishPlayback(void)
 {
-   if (Movie.fp)
+   if (Movie.fp) {
+      if (mv_writable && !Movie.ReadOnly)
+         MovieWriteCounts(1);
       fclose(Movie.fp);
+   }
    Movie.fp = NULL;
    Movie.Status = Stopped;
    MovieLeaveDeterministic();
-   if (movie_ports_saved) {
-      PORTDATA1 = movie_saved_port1;
-      PORTDATA2 = movie_saved_port2;
-      movie_ports_saved = 0;
-   }
+   MovieRestoreUserPorts();
+   MovieSnapClear();
+   MovieFreeFrames();
+   movie_stale_from = MOVIE_NOT_STALE;
+   movie_pause_at = -1;
    strcpy(MovieStatus, "Playback Stopped");
+}
+
+static void MovieAnnounceEnd(void)
+{
+   movie_ended = 1;
+   if (movie_desync >= 0)
+      MovieMessage(_("End of movie (%d frames) - DESYNC at frame %d"), Movie.Frames, movie_desync);
+   else
+      MovieMessage(_("End of movie (%d frames), in sync"), Movie.Frames);
+}
+
+/* Enregistrement -> lecture (chargement d'un etat en lecture seule, ou
+   modification du film par l'editeur). */
+static void MovieSwitchToPlayback(void)
+{
+   if (Movie.Status != Recording)
+      return;
+   Movie.Status = Playback;
+   MovieWriteCounts(1);
+   movie_saved_port1 = PORTDATA1;
+   movie_saved_port2 = PORTDATA2;
+   movie_ports_saved = 1;
+   /* A partir d'ici la RAM de sauvegarde suit le film (etats, retours en
+      arriere) : celle de l'utilisateur est mise de cote telle qu'elle est
+      maintenant, avec ce que le jeu y a ecrit depuis le debut. */
+   if (!bup_swapped)
+      MovieSaveUserBackup();
+   strcpy(MovieStatus, "Playback Started");
+}
+
+/* Lecture -> enregistrement (fin du film en lecture/ecriture, ou reprise a
+   partir d'un etat). */
+static void MovieSwitchToRecording(void)
+{
+   if (Movie.Status != Playback)
+      return;
+   Movie.Status = Recording;
+   Movie.ReadOnly = 0;
+   MovieRestoreUserPorts();
+   MovieWriteCounts(0);
+   strcpy(MovieStatus, "Recording Resumed");
 }
 
 void DoMovie(void)
 {
-   u8 rec[1 + 2 * (1 + MOVIE_MAX_PORT_LEN) + 4];
    u32 index, hash;
+   u8 *rec;
 
-   if (LagFrameFlag == 1)
-      lagframecounter++;
    framecounter++;
+   /* Leve par le SMPC quand le jeu lit les manettes (INTBACK ou acces
+      direct aux ports) ; regarde a la fin de la trame, MovieFrameEnd(). */
+   LagFrameFlag = 1;
+   movie_cur_index = -1;
+   movie_rec_dirty = 0;
 
-   if (Movie.Status != Recording && Movie.Status != Playback)
+   if (Movie.Status != Recording && Movie.Status != Playback) {
+      MovieOSD();
       return;
+   }
 
    /* Trame dont on traite l'entree (0 = premiere trame apres le reset). */
    index = (u32)(framecounter - 1);
-   LagFrameFlag = 1;
 
    /* PerInit() a pu remettre une autre interface pendant le film. */
    MovieWrapPerCore();
 
+   /* Une trame deja executee a ete modifiee dans l'editeur : la machine ne
+      correspond plus au film tant qu'on n'est pas revenu en arriere
+      (MovieSeek()). On n'enregistre et on ne compare rien. */
+   if (movie_stale_from != MOVIE_NOT_STALE) {
+      MovieOSD();
+      return;
+   }
+
+   if (Movie.Status == Playback && (int)index >= Movie.Frames) {
+      if (!Movie.ReadOnly && mv_writable && (int)index == Movie.Frames) {
+         /* fin du film en lecture/ecriture : la suite s'enregistre */
+         MovieSwitchToRecording();
+         MovieMessage(_("End of movie: recording from frame %u"), index);
+      } else {
+         MovieFinishPlayback();
+         MovieAnnounceEnd();
+         MovieOSD();
+         return;
+      }
+   }
+
    hash = MovieStateHash();
 
    if (Movie.Status == Recording) {
+      if ((int)index != Movie.Frames || MovieReserve(index + 1) != 0) {
+         MovieMessage(_("Movie out of step or out of memory, recording stopped"));
+         StopMovie();
+         MovieOSD();
+         return;
+      }
       /* Seul point de la trame ou l'hote peut changer les entrees. */
       if (movie_real_percore != NULL && movie_real_percore->HandleEvents != NULL)
          movie_real_percore->HandleEvents();
@@ -854,51 +1390,110 @@ void DoMovie(void)
          alone during a movie (peripheral.c). */
       PerMovieRecordUpdate();
 
+      rec = MovieRec(index);
       rec[0] = 0;
       MovieWritePort(rec + 1, &PORTDATA1);
       MovieWritePort(rec + 2 + hdr.port_len, &PORTDATA2);
       put32(rec + hdr.frame_len - 4, hash);
-      fseek(Movie.fp, (long)(hdr.header_size + (u64)index * hdr.frame_len), SEEK_SET);
-      if (fwrite(rec, 1, hdr.frame_len, Movie.fp) != hdr.frame_len) {
+      Movie.Frames = (int)index + 1;
+      if (hdr.hash_invalid_from >= index)
+         hdr.hash_invalid_from = index + 1;
+      /* Le film doit survivre a un plantage de l'emulateur. */
+      if (MovieFlushFrames(index, 1) != 0) {
          MovieMessage(_("Movie write error, recording stopped"));
          StopMovie();
+         MovieOSD();
          return;
       }
-      /* Le film doit survivre a un plantage de l'emulateur. */
-      fflush(Movie.fp);
-      Movie.Frames = (int)index + 1;
-      SetInputDisplayCharacters();
+      movie_cur_index = (int)index;
+      MovieOSD();
       return;
    }
 
    /* Lecture */
-   if ((int)index >= Movie.Frames) {
-      MovieFinishPlayback();
-      movie_ended = 1;
-      if (movie_desync >= 0)
-         MovieMessage(_("End of movie (%d frames) - DESYNC at frame %d"), Movie.Frames, movie_desync);
-      else
-         MovieMessage(_("End of movie (%d frames), in sync"), Movie.Frames);
-      return;
-   }
-   fseek(Movie.fp, (long)(hdr.header_size + (u64)index * hdr.frame_len), SEEK_SET);
-   if (fread(rec, 1, hdr.frame_len, Movie.fp) != hdr.frame_len) {
-      MovieFinishPlayback();
-      movie_ended = 1;
-      MovieMessage(_("Movie truncated at frame %u, playback stopped"), index);
-      return;
-   }
+   rec = MovieRec(index);
    MovieReadPort(rec + 1, &PORTDATA1);
    MovieReadPort(rec + 2 + hdr.port_len, &PORTDATA2);
-   SetInputDisplayCharacters();
+   movie_cur_index = (int)index;
 
-   if ((hdr.flags & 1) && movie_desync < 0 && get32(rec + hdr.frame_len - 4) != hash) {
-      movie_desync = (int)index;
-      MovieMessage(_("DESYNC at frame %u (diverged during frame %d)"),
-                   index, (int)index - 1);
+   if (hdr.flags & HDR_FLAG_HASH) {
+      if (index < hdr.hash_invalid_from) {
+         if (movie_desync < 0 && get32(rec + hdr.frame_len - 4) != hash) {
+            movie_desync = (int)index;
+            MovieMessage(_("DESYNC at frame %u (diverged during frame %d)"),
+                         index, (int)index - 1);
+         }
+      } else if (index == hdr.hash_invalid_from && !Movie.ReadOnly && mv_writable) {
+         /* Empreintes perimees par une modification du film : cette
+            relecture les refait, trame apres trame. */
+         put32(rec + hdr.frame_len - 4, hash);
+         hdr.hash_invalid_from = index + 1;
+         movie_rec_dirty = 1;
+      }
    }
-   /* La lecture s'arrete au debut de la trame qui suit la derniere entree
-      (test en tete de la fonction). */
+   MovieOSD();
+}
+
+/* Appele par YabauseEmulate() a la fin de chaque trame, quand le thread son
+   a fini la sienne : la machine est dans l'etat qu'un etat de sauvegarde
+   enregistrerait. */
+void MovieFrameEnd(void)
+{
+   const int lag = (LagFrameFlag == 1);
+
+   movie_last_lag = lag;
+   if (lag)
+      lagframecounter++;
+
+   if (movie_cur_index >= 0 && movie_cur_index < Movie.Frames && mv_buf != NULL) {
+      u8 *rec = MovieRec((u32)movie_cur_index);
+      const u8 flags = (u8)((rec[0] & ~(REC_LAG | REC_LAG_KNOWN)) | REC_LAG_KNOWN | (lag ? REC_LAG : 0));
+      if (flags != rec[0] || movie_rec_dirty) {
+         rec[0] = flags;
+         if (Movie.Status == Recording || !Movie.ReadOnly)
+            MovieFlushFrames((u32)movie_cur_index, 1);
+      }
+   }
+   movie_cur_index = -1;
+   movie_rec_dirty = 0;
+
+   if (Movie.Status != Recording && Movie.Status != Playback)
+      return;
+   if (movie_stale_from != MOVIE_NOT_STALE)
+      return;
+
+   /* Fin d'une lecture seule : arret exact apres la derniere trame du film
+      (avant, la lecture n'etait arretee qu'au debut de la trame suivante,
+      et la pause de l'interface venait quelques trames plus tard). */
+   if (Movie.Status == Playback && framecounter >= Movie.Frames &&
+       (Movie.ReadOnly || !mv_writable)) {
+      MovieFinishPlayback();
+      MovieAnnounceEnd();
+      movie_pause_req = 1;
+      return;
+   }
+
+   if (movie_pause_at >= 0 && framecounter >= movie_pause_at) {
+      movie_pause_at = -1;
+      movie_pause_req = 1;
+   }
+
+   if (snap_interval > 0 && framecounter > 0 && (framecounter % snap_interval) == 0)
+      MovieSnapTake();
+}
+
+void MovieSetPauseFrame(int frame)
+{
+   movie_pause_at = frame;
+}
+
+int MovieConsumePauseRequest(void)
+{
+   if (movie_pause_req) {
+      movie_pause_req = 0;
+      return 1;
+   }
+   return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -912,20 +1507,33 @@ static void MovieSetFilename(const char *filename)
    Movie.filename = movie_filename;
 }
 
+static void MovieResetSession(void)
+{
+   MovieSnapClear();
+   MovieFreeFrames();
+   movie_desync = -1;
+   movie_ended = 0;
+   movie_port_overflow = 0;
+   movie_stale_from = MOVIE_NOT_STALE;
+   movie_pause_at = -1;
+   movie_pause_req = 0;
+   movie_cur_index = -1;
+   movie_rec_dirty = 0;
+}
+
 void StopMovie(void)
 {
    if (Movie.Status == Recording && Movie.fp != NULL) {
-      u8 b[4];
-      put32(b, (u32)Movie.Frames);
-      fseek(Movie.fp, HDR_OFS_FRAMES, SEEK_SET);
-      fwrite(b, 1, 4, Movie.fp);
-      put32(b, (u32)Movie.Rerecords);
-      fseek(Movie.fp, HDR_OFS_RERECORDS, SEEK_SET);
-      fwrite(b, 1, 4, Movie.fp);
+      MovieWriteCounts(1);
       fclose(Movie.fp);
       Movie.fp = NULL;
       Movie.Status = Stopped;
       MovieLeaveDeterministic();
+      MovieRestoreUserPorts();
+      MovieSnapClear();
+      MovieFreeFrames();
+      movie_stale_from = MOVIE_NOT_STALE;
+      movie_pause_at = -1;
       strcpy(MovieStatus, "Recording Stopped");
       MovieMessage(_("Recording stopped (%d frames)"), Movie.Frames);
    } else if (Movie.Status == Playback) {
@@ -949,15 +1557,14 @@ int SaveMovie(const char *filename)
    if ((fp = fopen(filename, "w+b")) == NULL)
       return -1;
 
+   MovieResetSession();
    MovieSetFilename(filename);
    Movie.fp = fp;
+   mv_writable = 1;
    Movie.ReadOnly = 0;
    Movie.Rerecords = 0;
    Movie.Frames = 0;
    Movie.Size = 0;
-   movie_desync = -1;
-   movie_ended = 0;
-   movie_port_overflow = 0;
 
    /* Taille des ports avec la configuration actuelle des manettes. */
    plen = (u32)PORTDATA1.size;
@@ -983,13 +1590,22 @@ int SaveMovie(const char *filename)
    hdr.frame_len = 1 + 2 * (1 + plen) + 4;
    hdr.frames = 0;
    hdr.rerecords = 0;
-   if (MovieWriteHeader(fp, &hdr) != 0) {
+   hdr.hash_invalid_from = 0;
+   /* la table existe des la trame 0 : un etat pris avant la premiere trame
+      doit porter le film (SaveMovieInState()) */
+   if (MovieReserve(1) != 0 || MovieWriteHeader(fp, &hdr) != 0) {
       fclose(fp);
       Movie.fp = NULL;
       Movie.Status = Stopped;
       MovieReport(_("Couldn't write the movie header"));
       return -1;
    }
+
+   /* Les entrees d'une borne ST-V passent par l'IOGA (IOPortReadByte(),
+      peripheral.c), pas par les ports du SMPC : elles ne sont pas dans le
+      film. */
+   if (yabsys.isSTV)
+      MovieReport(_("ST-V: the cabinet inputs are not recorded (only the SMPC ports are)"));
 
    MovieEnterDeterministic();
    strcpy(MovieStatus, "Recording Started");
@@ -1002,6 +1618,8 @@ int PlayMovie(const char *filename)
    FILE *fp;
    MovieHeader h;
    long size;
+   int writable = 1;
+   u32 frames;
 
    movie_report[0] = 0;
    if (filename == NULL)
@@ -1009,8 +1627,13 @@ int PlayMovie(const char *filename)
    if (Movie.Status == Recording || Movie.Status == Playback || bup_swapped)
       StopMovie();
 
-   if ((fp = fopen(filename, "rb")) == NULL)
-      return -1;
+   /* En lecture/ecriture si possible : la lecture peut devenir un
+      enregistrement (etat charge hors lecture seule, editeur d'entrees). */
+   if ((fp = fopen(filename, "r+b")) == NULL) {
+      writable = 0;
+      if ((fp = fopen(filename, "rb")) == NULL)
+         return -1;
+   }
 
    if (MovieReadHeader(fp, &h) != 0) {
       fclose(fp);
@@ -1030,22 +1653,38 @@ int PlayMovie(const char *filename)
       return -2;
    }
 
+   MovieResetSession();
    hdr = h;
+   frames = (u32)((size - (long)h.header_size) / (long)h.frame_len);
+   if (h.frames != 0 && h.frames < frames)
+      frames = h.frames;
+   if (MovieReserve(frames ? frames : 1) != 0) {
+      fclose(fp);
+      MovieReport(_("Not enough memory to load the movie"));
+      return -1;
+   }
+   fseek(fp, (long)h.header_size, SEEK_SET);
+   if (frames != 0 && fread(mv_buf, h.frame_len, frames, fp) != frames) {
+      fclose(fp);
+      MovieFreeFrames();
+      MovieReport(_("Truncated movie"));
+      return -2;
+   }
+   if (hdr.hash_invalid_from > frames)
+      hdr.hash_invalid_from = frames;
+
    MovieSetFilename(filename);
    Movie.fp = fp;
+   mv_writable = writable;
    Movie.Size = (int)size;
-   Movie.Frames = (int)((size - (long)h.header_size) / (long)h.frame_len);
-   if (h.frames != 0 && (int)h.frames < Movie.Frames)
-      Movie.Frames = (int)h.frames;
+   Movie.Frames = (int)frames;
    Movie.Rerecords = (int)h.rerecords;
    Movie.ReadOnly = 1;
-   movie_desync = -1;
-   movie_ended = 0;
-   movie_port_overflow = 0;
 
    if (MovieSaveUserBackup() != 0) {
       fclose(fp);
       Movie.fp = NULL;
+      MovieFreeFrames();
       MovieReport(_("Not enough memory to set the backup RAM aside"));
       return -1;
    }
@@ -1073,6 +1712,74 @@ int PlayMovie(const char *filename)
    return 0;
 }
 
+/* Remet la machine au debut du film en cours (retour en arriere sans
+   instantane) : meme remise a zero que PlayMovie(). */
+static int MovieRestart(void)
+{
+   if (Movie.Status != Playback || Movie.fp == NULL)
+      return -1;
+   if (!bup_swapped && MovieSaveUserBackup() != 0)
+      return -1;
+   MovieApplyBackupImages(Movie.fp, &hdr);
+
+   MovieClearMachine();
+   movie_starting = 1;
+   framecounter = 0;
+   lagframecounter = 0;
+   YabauseReset();
+   movie_starting = 0;
+
+   MovieEnterDeterministic();
+   movie_desync = -1;
+   movie_stale_from = MOVIE_NOT_STALE;
+   return 0;
+}
+
+int MovieSeek(int target)
+{
+   int limit, i;
+
+   if (Movie.Status != Recording && Movie.Status != Playback)
+      return -1;
+   if (target < 0)
+      target = 0;
+   if (target > Movie.Frames)
+      target = Movie.Frames;
+
+   /* Ou reprendre : pas apres la premiere trame modifiee derriere nous. */
+   limit = target;
+   if (movie_stale_from != MOVIE_NOT_STALE && movie_stale_from < limit)
+      limit = movie_stale_from;
+
+   if (movie_stale_from == MOVIE_NOT_STALE && target >= framecounter) {
+      /* vers l'avant : un instantane plus loin que la trame courante fait
+         gagner du temps, sinon il n'y a qu'a laisser tourner */
+      i = MovieSnapFind(target);
+      if (i < 0 || snaps[i].frame <= framecounter)
+         return 0;
+   }
+
+   if (Movie.Status == Recording)
+      MovieSwitchToPlayback();
+
+   for (i = MovieSnapFind(limit); i >= 0; i = MovieSnapFind(limit)) {
+      u8 *state = (u8 *)malloc(snaps[i].size);
+      int status = -1;
+      if (state != NULL && MovieUnpack(snaps[i].data, snaps[i].packed, state, snaps[i].size) == 0) {
+         movie_state_light = 1;
+         status = YabLoadStateBuffer(state, snaps[i].size);
+         movie_state_light = 0;
+      }
+      free(state);
+      if (status == 0 && Movie.Status == Playback)
+         return 0;
+      if (Movie.Status != Playback)
+         return -1; /* le chargement a arrete le film */
+      MovieSnapRemove(i); /* inutilisable */
+   }
+   return MovieRestart();
+}
+
 void MovieResetHook(void)
 {
    if (movie_starting) {
@@ -1089,141 +1796,318 @@ void MovieResetHook(void)
    StopMovie();
 }
 
+/* Lecture seule : charger un etat ne touche pas au film, la lecture reprend
+   a la trame de l'etat (y compris pendant un enregistrement, qui devient une
+   lecture). Lecture/ecriture : charger un etat reprend l'enregistrement a
+   la trame de l'etat (re-record). */
+void MovieSetReadOnly(int readonly)
+{
+   if (Movie.Status != Recording && Movie.Status != Playback)
+      return;
+   readonly = readonly ? 1 : 0;
+   if (!readonly && !mv_writable) {
+      MovieMessage(_("The movie file can't be written: it stays read-only"));
+      return;
+   }
+   if (Movie.ReadOnly == readonly)
+      return;
+   Movie.ReadOnly = readonly;
+   MovieMessage(Movie.ReadOnly ? _("Movie is read-only") : _("Movie is read+write"));
+}
+
 void MovieToggleReadOnly(void)
 {
-   if (Movie.Status == Playback) {
-      Movie.ReadOnly = !Movie.ReadOnly;
-      MovieMessage(Movie.ReadOnly ? _("Movie is read-only") : _("Movie is read+write"));
-   }
+   MovieSetReadOnly(!Movie.ReadOnly);
+}
+
+void MovieSetKeepOnLoad(int keep)
+{
+   movie_keep_on_load = keep ? 1 : 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Etats de sauvegarde
 //////////////////////////////////////////////////////////////////////////////
 
+/* Bloc ajoute a la fin de chaque etat (petit-boutiste) :
+      0 "YMVT"                 4 version (1)        8 longueur du bloc
+     12 drapeaux (1 = film, 2 = instantane sans les trames)
+     16 trame (framecounter)  20 trames de lag     24 re-records
+     28 header_size du film   32 frame_len         36 limite des empreintes
+     40 nombre de trames jointes
+     44 taille / 48 taille compressee de la RAM de sauvegarde interne
+     52 taille / 56 taille compressee de la cartouche de sauvegarde
+     60 etat de synchronisation (YAB_SYNC_STATE_WORDS x u64)
+    124 trames [0, trame) du film, puis les deux images PackBits
+
+   Par rapport a l'ancien bloc "YMVS" (toujours lu) :
+     - l'etat de synchronisation (fractions de cycles reportees d'une trame
+       a l'autre, compteur de trames) et la RAM de sauvegarde ne sont pas
+       dans le reste de l'etat : sans eux, la machine restauree ne donne pas
+       la meme suite que le film rejoue depuis le debut, et un film repris a
+       partir d'un etat se desynchronise a la relecture ;
+     - seules les trames deja jouees sont jointes, pas tout le fichier ;
+     - le bloc est ecrit meme sans film (synchronisation seule). */
+#define STATE_MAGIC_NEW   0x54564D59u /* "YMVT" */
+#define STATE_VERSION     1
+#define STATE_FLAG_MOVIE  1
+#define STATE_FLAG_LIGHT  2
+#define STATE_HEAD        (60 + 8 * YAB_SYNC_STATE_WORDS)
+
+static void put64(u8 *p, u64 v)
+{
+   put32(p, (u32)v);
+   put32(p + 4, (u32)(v >> 32));
+}
+
+static u64 get64(const u8 *p)
+{
+   return (u64)get32(p) | ((u64)get32(p + 4) << 32);
+}
+
 void SaveMovieInState(void ** stream)
 {
-   u32 magic = MOVIE_STATE_MAGIC;
-   u32 frame = (u32)framecounter;
-   u32 size;
-   long fpos;
+   const int active = (Movie.Status == Recording || Movie.Status == Playback) && mv_buf != NULL;
+   u8 head[STATE_HEAD];
+   u8 *bup_packed = NULL, *cbup_packed = NULL;
+   u32 bup_size = 0, bup_plen = 0, cbup_size = 0, cbup_plen = 0;
+   u32 nframes = 0, flags = 0, total;
+   u64 sync[YAB_SYNC_STATE_WORDS];
+   int i;
 
-   if ((Movie.Status != Recording && Movie.Status != Playback) || Movie.fp == NULL)
-      return;
+   if (active) {
+      flags |= STATE_FLAG_MOVIE;
+      if (movie_state_light)
+         flags |= STATE_FLAG_LIGHT;
+      else
+         nframes = (u32)((framecounter < Movie.Frames) ? framecounter : Movie.Frames);
 
-   fflush(Movie.fp);
-   fpos = ftell(Movie.fp);
-   fseek(Movie.fp, 0, SEEK_END);
-   size = (u32)ftell(Movie.fp);
-
-   MemStateWrite(&magic, 4, 1, stream);
-   MemStateWrite(&frame, 4, 1, stream);
-   MemStateWrite(&size, 4, 1, stream);
-
-   if (stream == NULL) {
-      /* passe de dimensionnement */
-      MemStateWrite(NULL, size, 1, NULL);
-   } else {
-      u8 *data = (u8 *)malloc(size ? size : 1);
-      if (data != NULL) {
-         fseek(Movie.fp, 0, SEEK_SET);
-         if (fread(data, 1, size, Movie.fp) != size)
-            memset(data, 0, size);
-         MemStateWrite(data, size, 1, stream);
-         free(data);
-      } else {
-         /* garder la taille annoncee */
-         u8 zero[256];
-         u32 left = size;
-         memset(zero, 0, sizeof(zero));
-         while (left) {
-            u32 n = left > sizeof(zero) ? (u32)sizeof(zero) : left;
-            MemStateWrite(zero, n, 1, stream);
-            left -= n;
+      if (BupRam != NULL && backup_file_size != 0) {
+         bup_packed = (u8 *)malloc(backup_file_size + backup_file_size / 128 + 16);
+         if (bup_packed != NULL) {
+            bup_size = backup_file_size;
+            bup_plen = MoviePack(BupRam, bup_size, bup_packed);
+         }
+      }
+      if (CartBupSize() != 0) {
+         const u32 csize = CartBupSize();
+         cbup_packed = (u8 *)malloc(csize + csize / 128 + 16);
+         if (cbup_packed != NULL) {
+            cbup_size = csize;
+            cbup_plen = MoviePack(CartridgeArea->bupram, cbup_size, cbup_packed);
          }
       }
    }
-   if (fpos >= 0)
-      fseek(Movie.fp, fpos, SEEK_SET);
+
+   total = STATE_HEAD + nframes * hdr.frame_len + bup_plen + cbup_plen;
+   YabauseSyncStateGet(sync);
+
+   memset(head, 0, sizeof(head));
+   put32(head + 0, STATE_MAGIC_NEW);
+   put32(head + 4, STATE_VERSION);
+   put32(head + 8, total);
+   put32(head + 12, flags);
+   put32(head + 16, (u32)framecounter);
+   put32(head + 20, (u32)lagframecounter);
+   put32(head + 24, (u32)Movie.Rerecords);
+   put32(head + 28, active ? hdr.header_size : 0);
+   put32(head + 32, active ? hdr.frame_len : 0);
+   put32(head + 36, active ? ((hdr.hash_invalid_from < nframes) ? hdr.hash_invalid_from : nframes) : 0);
+   put32(head + 40, nframes);
+   put32(head + 44, bup_size);
+   put32(head + 48, bup_plen);
+   put32(head + 52, cbup_size);
+   put32(head + 56, cbup_plen);
+   for (i = 0; i < YAB_SYNC_STATE_WORDS; i++)
+      put64(head + 60 + 8 * i, sync[i]);
+
+   /* stream == NULL : passe de dimensionnement, seule la taille compte */
+   MemStateWrite(head, STATE_HEAD, 1, stream);
+   if (nframes)
+      MemStateWrite(mv_buf, hdr.frame_len, nframes, stream);
+   if (bup_plen)
+      MemStateWrite(bup_packed, 1, bup_plen, stream);
+   if (cbup_plen)
+      MemStateWrite(cbup_packed, 1, cbup_plen, stream);
+   free(bup_packed);
+   free(cbup_packed);
+}
+
+/* Remet une image PackBits de la RAM de sauvegarde venant d'un etat. */
+static void MovieStateApplyBup(const u8 *packed, u32 plen, u32 size, u8 *dst, u32 dstsize)
+{
+   u8 *img;
+   if (plen == 0 || size == 0 || dst == NULL || size != dstsize)
+      return;
+   img = (u8 *)malloc(size);
+   if (img == NULL)
+      return;
+   if (MovieUnpack(packed, plen, img, size) == 0)
+      memcpy(dst, img, size);
+   free(img);
 }
 
 void MovieReadState(const void * stream, int available)
 {
-   u32 magic, frame, size;
-   int fpos;
+   const u8 *p = (const u8 *)stream + MemStateGetOffset();
+   const int active = (Movie.Status == Recording || Movie.Status == Playback);
+   const u8 *recs = NULL, *bup = NULL, *cbup = NULL;
+   u32 flags = 0, frame = 0, nframes = 0, hashmark = 0;
+   u32 s_header_size = 0, s_frame_len = 0;
+   u32 bup_size = 0, bup_plen = 0, cbup_size = 0, cbup_plen = 0;
+   int found = 0, has_extra = 0;
+   u32 d, common;
 
-   if (Movie.Status != Recording && Movie.Status != Playback)
-      return;
-   if (available < 12)
+   if (available >= STATE_HEAD && get32(p) == STATE_MAGIC_NEW && get32(p + 4) == STATE_VERSION) {
+      const u32 total = get32(p + 8);
+      u64 need;
+      u64 sync[YAB_SYNC_STATE_WORDS];
+      int i;
+
+      flags = get32(p + 12);
+      frame = get32(p + 16);
+      s_header_size = get32(p + 28);
+      s_frame_len = get32(p + 32);
+      hashmark = get32(p + 36);
+      nframes = get32(p + 40);
+      bup_size = get32(p + 44);
+      bup_plen = get32(p + 48);
+      cbup_size = get32(p + 52);
+      cbup_plen = get32(p + 56);
+      need = (u64)STATE_HEAD + (u64)nframes * s_frame_len + (u64)bup_plen + (u64)cbup_plen;
+      if (total <= (u32)available && need <= total) {
+         found = 1;
+         has_extra = 1;
+         recs = p + STATE_HEAD;
+         bup = recs + (size_t)nframes * s_frame_len;
+         cbup = bup + bup_plen;
+         /* synchronisation : toujours, film ou pas */
+         for (i = 0; i < YAB_SYNC_STATE_WORDS; i++)
+            sync[i] = get64(p + 60 + 8 * i);
+         YabauseSyncStateSet(sync);
+         framecounter = (int)frame;
+         lagframecounter = (int)get32(p + 20);
+      }
+   } else if (available >= 12) {
+      /* ancien bloc : magic, trame, taille, puis le fichier du film entier
+         (ecrits dans l'ordre des octets de l'hote) */
+      u32 magic, size;
+      memcpy(&magic, p, 4);
+      if (magic == MOVIE_STATE_MAGIC) {
+         memcpy(&frame, p + 4, 4);
+         memcpy(&size, p + 8, 4);
+         if ((u64)size <= (u64)(available - 12) && size >= MOVIE_FIXED_SIZE &&
+             memcmp(p + 12, MOVIE_MAGIC, 4) == 0) {
+            const u8 *file = p + 12;
+            found = 1;
+            flags = STATE_FLAG_MOVIE;
+            s_header_size = get32(file + 8);
+            s_frame_len = get32(file + 12);
+            if (s_frame_len != 0 && s_header_size <= size) {
+               nframes = (size - s_header_size) / s_frame_len;
+               if (nframes > frame)
+                  nframes = frame;
+               recs = file + s_header_size;
+            }
+            hashmark = nframes;
+         }
+      }
+   }
+
+   if (!active)
       return;
 
-   fpos = MemStateGetOffset();
-   MemStateRead(&magic, 4, 1, stream);
-   if (magic != MOVIE_STATE_MAGIC) {
-      MemStateSetOffset(fpos);
+   if (!found || !(flags & STATE_FLAG_MOVIE)) {
+      /* etat pris hors du film : la suite n'a plus de rapport avec lui */
+      MovieMessage(_("Save state without movie data: movie stopped"));
+      StopMovie();
       return;
    }
-   MemStateRead(&frame, 4, 1, stream);
-   MemStateRead(&size, 4, 1, stream);
-   if ((u64)size > (u64)(available - 12)) {
-      MemStateSetOffset(fpos);
+   if (s_header_size != hdr.header_size || s_frame_len != hdr.frame_len) {
+      MovieMessage(_("Save state from another movie: movie stopped"));
+      StopMovie();
       return;
    }
 
-   if (Movie.Status == Recording || (Movie.Status == Playback && !Movie.ReadOnly)) {
-      /* Reprise d'enregistrement : le film de l'etat, coupe a la trame de
-         l'etat, remplace le fichier. */
-      u8 *data = (u8 *)malloc(size ? size : 1);
-      u64 keep = (u64)hdr.header_size + (u64)frame * hdr.frame_len;
-      FILE *fp;
+   /* RAM de sauvegarde de l'etat ; celle de l'utilisateur est mise de cote
+      la premiere fois (elle revient a l'arret du film). */
+   if (has_extra && (bup_plen != 0 || cbup_plen != 0)) {
+      if (!bup_swapped)
+         MovieSaveUserBackup();
+      MovieStateApplyBup(bup, bup_plen, bup_size, BupRam, backup_file_size);
+      if (CartBupSize() != 0)
+         MovieStateApplyBup(cbup, cbup_plen, cbup_size, CartridgeArea->bupram, CartBupSize());
+   }
 
-      if (data == NULL)
-         return;
-      MemStateRead(data, 1, size, stream);
-      if (size < MOVIE_FIXED_SIZE || memcmp(data, MOVIE_MAGIC, 4) != 0 ||
-          get32(data + 8) != hdr.header_size || get32(data + 12) != hdr.frame_len) {
-         free(data);
-         MovieMessage(_("Save state from another movie: movie stopped"));
-         StopMovie();
-         return;
-      }
-      if (keep > size)
-         keep = size;
-      if (Movie.fp)
-         fclose(Movie.fp);
-      fp = fopen(movie_filename, "w+b");
-      if (fp == NULL) {
-         free(data);
-         Movie.fp = NULL;
-         Movie.Status = Stopped;
-         MovieLeaveDeterministic();
-         MovieMessage(_("Couldn't rewrite the movie"));
-         return;
-      }
-      fwrite(data, 1, (size_t)keep, fp);
-      fflush(fp);
-      free(data);
-      Movie.fp = fp;
-      if (Movie.Status == Playback) {
-         /* la lecture devient un enregistrement : la RAM de sauvegarde du
-            testeur reste isolee jusqu'a l'arret */
-         MovieMessage(_("Recording resumed at frame %u"), frame);
-      }
-      Movie.Status = Recording;
-      Movie.ReadOnly = 0;
-      Movie.Rerecords++;
-      Movie.Frames = (int)frame;
-      strcpy(MovieStatus, "Recording Resumed");
-   } else {
-      /* lecture seule : on continue la lecture a la trame de l'etat */
-      if ((int)frame > Movie.Frames) {
+   if (flags & STATE_FLAG_LIGHT) {
+      /* instantane de MovieSeek() : le film ne change pas */
+      framecounter = (int)frame;
+      if (movie_desync >= (int)frame)
+         movie_desync = -1;
+      if (movie_stale_from != MOVIE_NOT_STALE && (int)frame <= movie_stale_from)
+         movie_stale_from = MOVIE_NOT_STALE;
+      return;
+   }
+
+   /* premiere trame ou les entrees de l'etat different du film actuel */
+   common = nframes;
+   if (common > (u32)Movie.Frames)
+      common = (u32)Movie.Frames;
+   for (d = 0; d < common; d++)
+      if (!MovieSameInput(recs + (size_t)d * hdr.frame_len, MovieRec(d)))
+         break;
+
+   if (Movie.ReadOnly || movie_keep_on_load || !mv_writable) {
+      /* le film reste tel quel : la lecture reprend a la trame de l'etat */
+      if ((int)frame > Movie.Frames || nframes < frame) {
          MovieMessage(_("Save state is past the end of the movie: playback stopped"));
          StopMovie();
          return;
       }
+      if (d < frame)
+         MovieMessage(_("Save state made with other inputs (from frame %u): expect a desync"), d);
+      if (Movie.Status == Recording)
+         MovieSwitchToPlayback();
+      framecounter = (int)frame;
+      movie_desync = -1;
+      if (d >= frame)
+         movie_stale_from = MOVIE_NOT_STALE;
+      return;
    }
+
+   /* Reprise d'enregistrement (re-record) : les trames de l'etat, coupees a
+      sa trame, remplacent le film. */
+   if (nframes < frame || MovieReserve(nframes ? nframes : 1) != 0) {
+      MovieMessage(_("Save state unusable for this movie: movie stopped"));
+      StopMovie();
+      return;
+   }
+   memcpy(mv_buf, recs, (size_t)nframes * hdr.frame_len);
+   Movie.Frames = (int)nframes;
+   if (hashmark > nframes)
+      hashmark = nframes;
+   hdr.hash_invalid_from = hashmark;
+   MovieSnapInvalidateAfter((int)d);
+   if (Movie.Status == Playback) {
+      MovieSwitchToRecording();
+      MovieMessage(_("Recording resumed at frame %u"), frame);
+   }
+   Movie.ReadOnly = 0;
+   Movie.Rerecords++;
    framecounter = (int)frame;
    movie_desync = -1;
+   movie_stale_from = MOVIE_NOT_STALE;
+   strcpy(MovieStatus, "Recording Resumed");
+   if (MovieRewriteFile(0) != 0) {
+      MovieMessage(_("Couldn't rewrite the movie"));
+      if (Movie.fp == NULL) {
+         Movie.Status = Stopped;
+         MovieLeaveDeterministic();
+         MovieSnapClear();
+         MovieFreeFrames();
+         MovieRestoreUserBackup();
+      }
+   }
 }
 
 const char *MakeMovieStateName(const char *filename)
@@ -1239,6 +2123,186 @@ const char *MakeMovieStateName(const char *filename)
       return retbuf;
    }
    return filename;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Editeur d'entrees
+//////////////////////////////////////////////////////////////////////////////
+
+int MovieCanEdit(void)
+{
+   return ((Movie.Status == Recording || Movie.Status == Playback) && mv_writable && mv_buf != NULL);
+}
+
+int MovieEditFrameCount(void)
+{
+   return (Movie.Status == Recording || Movie.Status == Playback) ? Movie.Frames : 0;
+}
+
+int MovieEditPortLen(void)
+{
+   return (int)hdr.port_len;
+}
+
+int MovieEditGetPort(int frame, int port, u8 *data, int maxlen)
+{
+   const u8 *rec;
+   int n;
+   if (mv_buf == NULL || frame < 0 || frame >= MovieEditFrameCount() || port < 0 || port > 1)
+      return -1;
+   rec = MovieRec((u32)frame) + 1 + port * (1 + hdr.port_len);
+   n = (int)hdr.port_len;
+   if (n > maxlen)
+      n = maxlen;
+   if (data != NULL && n > 0)
+      memcpy(data, rec + 1, (size_t)n);
+   return rec[0];
+}
+
+int MovieEditGetLag(int frame)
+{
+   u8 flags;
+   if (mv_buf == NULL || frame < 0 || frame >= MovieEditFrameCount())
+      return -1;
+   flags = MovieRec((u32)frame)[0];
+   if (!(flags & REC_LAG_KNOWN))
+      return -1;
+   return (flags & REC_LAG) ? 1 : 0;
+}
+
+/* Les entrees des trames 'first' et suivantes ont change ; les empreintes
+   restent valables jusqu'a 'hash_ok' exclu. */
+static void MovieEdited(int first, u32 hash_ok)
+{
+   int i;
+   if (hdr.hash_invalid_from > hash_ok)
+      hdr.hash_invalid_from = hash_ok;
+   MovieSnapInvalidateAfter(first);
+   /* le lag des trames suivantes n'est plus connu */
+   for (i = first + 1; i < Movie.Frames; i++)
+      MovieRec((u32)i)[0] &= (u8)~(REC_LAG | REC_LAG_KNOWN);
+   if (first < framecounter && first < movie_stale_from)
+      movie_stale_from = first;
+   if (movie_desync > first)
+      movie_desync = -1;
+}
+
+/* Toute modification passe le film en lecture (lecture/ecriture) : a la fin
+   du film, l'enregistrement reprend. */
+static int MovieEditBegin(void)
+{
+   if (!MovieCanEdit())
+      return -1;
+   if (Movie.Status == Recording)
+      MovieSwitchToPlayback();
+   Movie.ReadOnly = 0;
+   return 0;
+}
+
+int MovieEditSetPort(int frame, int port, int size, const u8 *data, int len)
+{
+   u8 *rec;
+   if (MovieEditBegin() != 0 || frame < 0 || frame >= Movie.Frames || port < 0 || port > 1 || data == NULL)
+      return -1;
+   if (size < 0 || (u32)size > hdr.port_len || len < 0)
+      return -1;
+   if ((u32)len > hdr.port_len)
+      len = (int)hdr.port_len;
+   rec = MovieRec((u32)frame) + 1 + port * (1 + hdr.port_len);
+   if (rec[0] == (u8)size && memcmp(rec + 1, data, (size_t)len) == 0)
+      return 0;
+   rec[0] = (u8)size;
+   memcpy(rec + 1, data, (size_t)len);
+   MovieEdited(frame, (u32)frame + 1);
+   if (MovieFlushFrames((u32)frame, 1) != 0)
+      return -1;
+   MovieWriteCounts(1);
+   return 0;
+}
+
+int MovieEditGetButton(int frame, int port, int button)
+{
+   u8 data[4];
+   const int size = MovieEditGetPort(frame, port, data, 4);
+   if (size < 0 || button < 0 || button >= MOVIE_PAD_BUTTONS || !MoviePortIsPad(data, size))
+      return -1;
+   return (data[pad_buttons[button].byte] & pad_buttons[button].mask) ? 0 : 1;
+}
+
+int MovieEditSetButton(int frame, int port, int button, int pressed)
+{
+   u8 data[MOVIE_MAX_PORT_LEN];
+   int size;
+   if (button < 0 || button >= MOVIE_PAD_BUTTONS)
+      return -1;
+   size = MovieEditGetPort(frame, port, data, (int)sizeof(data));
+   if (size < 0 || !MoviePortIsPad(data, size))
+      return -1;
+   if (pressed)
+      data[pad_buttons[button].byte] &= (u8)~pad_buttons[button].mask;
+   else
+      data[pad_buttons[button].byte] |= pad_buttons[button].mask;
+   return MovieEditSetPort(frame, port, size, data, (int)hdr.port_len);
+}
+
+char MovieEditButtonLetter(int button)
+{
+   if (button < 0 || button >= MOVIE_PAD_BUTTONS)
+      return '?';
+   return pad_buttons[button].letter;
+}
+
+/* Insere 'count' trames sans bouton appuye avant la trame 'at' (at ==
+   nombre de trames : a la fin). Le peripherique est celui de la trame
+   voisine. */
+int MovieEditInsert(int at, int count)
+{
+   u8 *tmpl;
+   int i, port;
+
+   if (MovieEditBegin() != 0 || at < 0 || at > Movie.Frames || count <= 0 || count > 1000000)
+      return -1;
+   if (MovieReserve((u32)Movie.Frames + (u32)count) != 0)
+      return -1;
+
+   tmpl = (u8 *)calloc(1, hdr.frame_len);
+   if (tmpl == NULL)
+      return -1;
+   if (Movie.Frames > 0) {
+      memcpy(tmpl, MovieRec((u32)(at > 0 ? at - 1 : 0)), hdr.frame_len);
+   } else {
+      MovieWritePort(tmpl + 1, movie_ports_saved ? &movie_saved_port1 : &PORTDATA1);
+      MovieWritePort(tmpl + 2 + hdr.port_len, movie_ports_saved ? &movie_saved_port2 : &PORTDATA2);
+   }
+   tmpl[0] = 0;
+   put32(tmpl + hdr.frame_len - 4, 0);
+   for (port = 0; port < 2; port++) {
+      u8 *pd = tmpl + 1 + port * (1 + hdr.port_len);
+      if (MoviePortIsPad(pd + 1, pd[0])) {
+         pd[3] = 0xFF;
+         pd[4] = 0xFF;
+      }
+   }
+
+   memmove(MovieRec((u32)(at + count)), MovieRec((u32)at), (size_t)(Movie.Frames - at) * hdr.frame_len);
+   for (i = 0; i < count; i++)
+      memcpy(MovieRec((u32)(at + i)), tmpl, hdr.frame_len);
+   free(tmpl);
+   Movie.Frames += count;
+   MovieEdited(at, (u32)at);
+   return MovieRewriteFile(1);
+}
+
+int MovieEditDelete(int at, int count)
+{
+   if (MovieEditBegin() != 0 || at < 0 || count <= 0 || at >= Movie.Frames)
+      return -1;
+   if (count > Movie.Frames - at)
+      count = Movie.Frames - at;
+   memmove(MovieRec((u32)at), MovieRec((u32)(at + count)), (size_t)(Movie.Frames - at - count) * hdr.frame_len);
+   Movie.Frames -= count;
+   MovieEdited(at, (u32)at);
+   return MovieRewriteFile(1);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1274,6 +2338,31 @@ int MovieIsActive(void)
 int MovieGetFrame(void)
 {
    return IsMovieLoaded() ? framecounter : 0;
+}
+
+int MovieGetFrameCounter(void)
+{
+   return framecounter;
+}
+
+int MovieGetLagCount(void)
+{
+   return lagframecounter;
+}
+
+int MovieLastFrameWasLag(void)
+{
+   return movie_last_lag;
+}
+
+int MovieGetRerecords(void)
+{
+   return Movie.Rerecords;
+}
+
+int MovieIsStale(void)
+{
+   return IsMovieLoaded() && movie_stale_from != MOVIE_NOT_STALE;
 }
 
 int MovieGetLength(void)
