@@ -106,7 +106,9 @@ UIPatocarSetting::UIPatocarSetting( PerInterface_struct* core, uint port, uint p
 
 	foreach ( QToolButton* tb, findChildren<QToolButton*>() )
 	{
-		tb->installEventFilter( this );
+		/* No installEventFilter(): the base class eventFilter() repaints a checked
+		   button with the native style, which would hide the style sheet. The
+		   "awaiting input" state is drawn by the :checked rule. */
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbButton_clicked() ) );
 	}
 
