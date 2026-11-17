@@ -40,6 +40,9 @@
 #include "UIDebugSCSPDSP.h"
 #include "UIMemoryEditor.h"
 #include "UIMemoryTransfer.h"
+#include "UIMovieEditor.h"
+#include "UIRamWatch.h"
+#include <QActionGroup>
 #include "UIAbout.h"
 #include "../YabauseGL.h"
 #include "../QtYabause.h"
@@ -1194,11 +1197,25 @@ void UIYabause::loadSlotAs() {
 //////////////////////////////////////////////////////////////////////////////
 // Films d'entrees (movie.c) : un testeur enregistre sa partie, la partie est
 // rejouee a l'identique a partir de son fichier .ymv.
+//
+// Speedruns assistes par outil (TAS), dans le meme menu : avance image par
+// image, ralenti / acceleration, lecture seule ou re-record au chargement
+// d'un etat, ligne d'information a l'ecran, editeur d'entrees et
+// surveillance de la memoire.
 //////////////////////////////////////////////////////////////////////////////
+
+// Vitesses du menu, en pourcent de la vitesse reelle.
+static const int tasSpeeds[] = { 6, 12, 25, 50, 75, 100, 150, 200, 400 };
+static const int tasSpeedCount = (int)( sizeof( tasSpeeds ) / sizeof( tasSpeeds[0] ) );
 
 void UIYabause::createMovieMenu()
 {
-	mMovieMenu = new QMenu( QtYabause::translate( "Input &movie" ), this );
+	VolatileSettings* vs = QtYabause::volatileSettings();
+
+	mSeeking = false;
+	mSeekResume = false;
+
+	mMovieMenu = new QMenu( QtYabause::translate( "TAS / Input &movie" ), this );
 	mMovieMenu->setObjectName( "mMovie" );
 
 	aMovieRecord = new QAction( QtYabause::translate( "&Record input movie..." ), this );
@@ -1213,26 +1230,111 @@ void UIYabause::createMovieMenu()
 	aMovieStop->setObjectName( "aMovieStop" );
 	aMovieStop->setEnabled( false );
 
-	aMovieReadOnly = new QAction( QtYabause::translate( "Read-&only playback" ), this );
+	aMovieReadOnly = new QAction( QtYabause::translate( "Read-&only movie" ), this );
 	aMovieReadOnly->setObjectName( "aMovieReadOnly" );
 	aMovieReadOnly->setCheckable( true );
 	aMovieReadOnly->setChecked( true );
 	aMovieReadOnly->setEnabled( false );
-	aMovieReadOnly->setStatusTip( QtYabause::translate( "When unchecked, loading a save state during playback resumes the recording from that frame" ) );
+	aMovieReadOnly->setShortcut( QKeySequence( "Ctrl+R" ) );
+	aMovieReadOnly->setStatusTip( QtYabause::translate( "Checked: loading a save state keeps the movie and plays it from that frame. Unchecked: loading a save state resumes the recording from that frame (re-record)" ) );
+
+	aTasFrameAdvance = new QAction( QtYabause::translate( "Frame &advance" ), this );
+	aTasFrameAdvance->setObjectName( "aTasFrameAdvance" );
+	aTasFrameAdvance->setShortcut( QKeySequence( "F6" ) );
+	aTasFrameAdvance->setStatusTip( QtYabause::translate( "Pause, then run one frame each time (hold the key to repeat)" ) );
+
+	aTasSkipLag = new QAction( QtYabause::translate( "Skip &lag frames when advancing" ), this );
+	aTasSkipLag->setObjectName( "aTasSkipLag" );
+	aTasSkipLag->setCheckable( true );
+	aTasSkipLag->setChecked( vs->value( "TAS/SkipLag", false ).toBool() );
+	aTasSkipLag->setStatusTip( QtYabause::translate( "Frame advance goes on until a frame where the game reads the controllers" ) );
+
+	aTasFastForward = new QAction( QtYabause::translate( "&Fast forward" ), this );
+	aTasFastForward->setObjectName( "aTasFastForward" );
+	aTasFastForward->setCheckable( true );
+	aTasFastForward->setShortcut( QKeySequence( "F7" ) );
+	aTasFastForward->setStatusTip( QtYabause::translate( "Run as fast as the computer allows" ) );
+
+	mTasSpeedMenu = new QMenu( QtYabause::translate( "Emulation s&peed" ), this );
+	mTasSpeedMenu->setObjectName( "mTasSpeed" );
+	mTasSpeedGroup = new QActionGroup( this );
+	for ( int i = 0; i < tasSpeedCount; i++ )
+	{
+		QAction* a = new QAction( QString( "%1 %" ).arg( tasSpeeds[i] ), this );
+		a->setObjectName( QString( "aTasSpeed%1" ).arg( tasSpeeds[i] ) );
+		a->setCheckable( true );
+		a->setChecked( tasSpeeds[i] == 100 );
+		a->setData( tasSpeeds[i] );
+		mTasSpeedGroup->addAction( a );
+		mTasSpeedMenu->addAction( a );
+	}
+	aTasSlower = new QAction( QtYabause::translate( "S&lower" ), this );
+	aTasSlower->setObjectName( "aTasSlower" );
+	aTasSlower->setShortcut( QKeySequence( "Ctrl+Down" ) );
+	aTasFaster = new QAction( QtYabause::translate( "&Faster" ), this );
+	aTasFaster->setObjectName( "aTasFaster" );
+	aTasFaster->setShortcut( QKeySequence( "Ctrl+Up" ) );
+	mTasSpeedMenu->addSeparator();
+	mTasSpeedMenu->addAction( aTasSlower );
+	mTasSpeedMenu->addAction( aTasFaster );
+
+	aTasOSD = new QAction( QtYabause::translate( "Show frame, lag and &input on screen" ), this );
+	aTasOSD->setObjectName( "aTasOSD" );
+	aTasOSD->setCheckable( true );
+	aTasOSD->setChecked( vs->value( "TAS/ShowOSD", false ).toBool() );
+	MovieSetOSD( aTasOSD->isChecked() ? 1 : 0 );
+
+	aTasEditor = new QAction( QtYabause::translate( "Input &editor..." ), this );
+	aTasEditor->setObjectName( "aTasEditor" );
+	aTasEditor->setShortcut( QKeySequence( "Ctrl+E" ) );
+	aTasEditor->setStatusTip( QtYabause::translate( "Edit the inputs of the movie frame by frame" ) );
+
+	aTasRamWatch = new QAction( QtYabause::translate( "RAM &watch..." ), this );
+	aTasRamWatch->setObjectName( "aTasRamWatch" );
+	aTasRamWatch->setShortcut( QKeySequence( "Ctrl+W" ) );
+	aTasRamWatch->setStatusTip( QtYabause::translate( "Watch memory addresses while the game runs" ) );
 
 	mMovieMenu->addAction( aMovieRecord );
 	mMovieMenu->addAction( aMoviePlay );
 	mMovieMenu->addAction( aMovieStop );
-	mMovieMenu->addSeparator();
 	mMovieMenu->addAction( aMovieReadOnly );
+	mMovieMenu->addSeparator();
+	mMovieMenu->addAction( aTasFrameAdvance );
+	mMovieMenu->addAction( aTasSkipLag );
+	mMovieMenu->addAction( aTasFastForward );
+	mMovieMenu->addMenu( mTasSpeedMenu );
+	mMovieMenu->addSeparator();
+	mMovieMenu->addAction( aTasOSD );
+	mMovieMenu->addAction( aTasEditor );
+	mMovieMenu->addAction( aTasRamWatch );
 
 	mTools->addSeparator();
 	mTools->addMenu( mMovieMenu );
+
+	// Les raccourcis doivent rester actifs quand la barre de menus est cachee
+	// (plein ecran) : les actions appartiennent aussi a la fenetre.
+	addAction( aMovieReadOnly );
+	addAction( aTasFrameAdvance );
+	addAction( aTasFastForward );
+	addAction( aTasSlower );
+	addAction( aTasFaster );
+	addAction( aTasEditor );
+	addAction( aTasRamWatch );
 
 	connect( aMovieRecord, SIGNAL( triggered() ), this, SLOT( movieRecordTriggered() ) );
 	connect( aMoviePlay, SIGNAL( triggered() ), this, SLOT( moviePlayTriggered() ) );
 	connect( aMovieStop, SIGNAL( triggered() ), this, SLOT( movieStopTriggered() ) );
 	connect( aMovieReadOnly, SIGNAL( triggered() ), this, SLOT( movieReadOnlyTriggered() ) );
+	connect( aTasFrameAdvance, SIGNAL( triggered() ), this, SLOT( tasFrameAdvance() ) );
+	connect( aTasSkipLag, SIGNAL( toggled( bool ) ), this, SLOT( tasSkipLagToggled( bool ) ) );
+	connect( aTasFastForward, SIGNAL( toggled( bool ) ), this, SLOT( tasFastForwardToggled( bool ) ) );
+	connect( mTasSpeedGroup, SIGNAL( triggered( QAction* ) ), this, SLOT( tasSpeedTriggered( QAction* ) ) );
+	connect( aTasSlower, SIGNAL( triggered() ), this, SLOT( tasSlowerTriggered() ) );
+	connect( aTasFaster, SIGNAL( triggered() ), this, SLOT( tasFasterTriggered() ) );
+	connect( aTasOSD, SIGNAL( toggled( bool ) ), this, SLOT( tasOSDToggled( bool ) ) );
+	connect( aTasEditor, SIGNAL( triggered() ), this, SLOT( tasEditorTriggered() ) );
+	connect( aTasRamWatch, SIGNAL( triggered() ), this, SLOT( tasRamWatchTriggered() ) );
+	connect( mYabauseGL, SIGNAL( pauseRequested() ), this, SLOT( tasPauseRequested() ) );
 
 	mMovieTimer = new QTimer( this );
 	connect( mMovieTimer, SIGNAL( timeout() ), this, SLOT( movieTimerTick() ) );
@@ -1263,17 +1365,18 @@ void UIYabause::moviePlayTriggered()
 
 void UIYabause::movieStopTriggered()
 {
-	/* L'emulation tourne dans ce thread, entre deux trames : pas de verrou
-	   necessaire. */
+	// Meme thread que l'emulation (YabauseGL::event) : on est entre deux
+	// trames.
+	tasEndSeek();
 	StopMovie();
 	movieTimerTick();
 }
 
 void UIYabause::movieReadOnlyTriggered()
 {
-	if ( IsMovieLoaded() && Movie.Status == Playback
-		&& ( Movie.ReadOnly != 0 ) != aMovieReadOnly->isChecked() )
-		MovieToggleReadOnly();
+	if ( IsMovieLoaded() )
+		MovieSetReadOnly( aMovieReadOnly->isChecked() ? 1 : 0 );
+	movieTimerTick();
 }
 
 void UIYabause::movieRecord()
@@ -1286,7 +1389,7 @@ void UIYabause::movieRecord()
 		return;
 	if ( QFileInfo( fn ).suffix().isEmpty() )
 		fn += ".ymv";
-
+	tasEndSeek();
 	if ( SaveMovie( QFile::encodeName( fn ).constData() ) != 0 )
 	{
 		QString report = QString::fromUtf8( MovieGetReport() );
@@ -1294,7 +1397,11 @@ void UIYabause::movieRecord()
 		return;
 	}
 	appendLog( QString( "Input movie: recording to %1" ).arg( fn ).toUtf8().constData() );
-	aMovieReadOnly->setChecked( false );
+	{
+		const QString report = QString::fromUtf8( MovieGetReport() ).trimmed();
+		if ( !report.isEmpty() )
+			CommonDialogs::warning( report );
+	}
 	movieTimerTick();
 	aEmulationRun->trigger();
 }
@@ -1307,7 +1414,7 @@ void UIYabause::moviePlay()
 		QtYabause::translate( "Kronos input movie (*.ymv)" ) );
 	if ( fn.isEmpty() )
 		return;
-
+	tasEndSeek();
 	const int ret = PlayMovie( QFile::encodeName( fn ).constData() );
 	const QString report = QString::fromUtf8( MovieGetReport() ).trimmed();
 	if ( ret != 0 )
@@ -1323,7 +1430,6 @@ void UIYabause::moviePlay()
 		CommonDialogs::warning( QtYabause::translate( "The movie was not recorded in the same conditions, the replay may diverge:" )
 			+ "\n\n" + report );
 	}
-	aMovieReadOnly->setChecked( true );
 	movieTimerTick();
 	aEmulationRun->trigger();
 }
@@ -1336,6 +1442,7 @@ void UIYabause::movieTimerTick()
 	if ( MovieConsumeEndedFlag() )
 	{
 		// Fin de la lecture : la partie est la ou le testeur s'est arrete.
+		// (movie.c a deja demande la pause sur la trame exacte.)
 		aEmulationPause->trigger();
 		appendLog( ( desync >= 0
 			? QString( "Input movie: end of playback (%1 frames), DESYNC at frame %2" ).arg( MovieGetLength() ).arg( desync )
@@ -1343,17 +1450,24 @@ void UIYabause::movieTimerTick()
 	}
 
 	if ( IsMovieLoaded() && Movie.Status == Recording )
-		suffix = QString( "[REC %1]" ).arg( MovieGetFrame() );
+		suffix = QString( "[REC %1" ).arg( MovieGetFrame() );
 	else if ( IsMovieLoaded() && Movie.Status == Playback )
-		suffix = QString( "[PLAY %1/%2]" ).arg( MovieGetFrame() ).arg( MovieGetLength() );
+		suffix = QString( "[PLAY %1/%2%3" ).arg( MovieGetFrame() ).arg( MovieGetLength() ).arg( Movie.ReadOnly ? "" : " RW" );
 	else if ( MovieIsActive() )
 		suffix = QString( "[END %1]" ).arg( MovieGetLength() );
+	if ( IsMovieLoaded() )
+		suffix += QString( " | lag %1 | rr %2]" ).arg( MovieGetLagCount() ).arg( MovieGetRerecords() );
 	if ( !suffix.isEmpty() && desync >= 0 )
 		suffix += QString( " DESYNC @%1" ).arg( desync );
+	if ( YabauseGetSpeedPercent() != 100 )
+		suffix += QString( " %1%" ).arg( YabauseGetSpeedPercent() );
 
 	const bool active = MovieIsActive();
 	aMovieStop->setEnabled( active );
-	aMovieReadOnly->setEnabled( IsMovieLoaded() && Movie.Status == Playback );
+	aMovieReadOnly->setEnabled( IsMovieLoaded() );
+	// movie.c change aussi ce mode (re-record, editeur d'entrees)
+	if ( IsMovieLoaded() && aMovieReadOnly->isChecked() != ( Movie.ReadOnly != 0 ) )
+		aMovieReadOnly->setChecked( Movie.ReadOnly != 0 );
 
 	// QtYabause::updateTitle() peut avoir remis le titre de base entre-temps.
 	QString title = windowTitle();
@@ -1364,6 +1478,206 @@ void UIYabause::movieTimerTick()
 	if ( title != windowTitle() )
 		setWindowTitle( title );
 	mMovieTitleSuffix = suffix;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Outils de TAS
+//////////////////////////////////////////////////////////////////////////////
+
+// Avance d'une trame. L'emulation tourne dans ce thread (YabauseGL::event) :
+// en pause, aucune trame n'est en cours et YabauseExec() peut etre appele
+// d'ici. La premiere pression met en pause, les suivantes avancent ; les
+// boutons tenus au moment de l'appui sont ceux de la trame.
+void UIYabause::tasFrameAdvance()
+{
+	if ( mYabauseThread->init() < 0 )
+		return;
+	if ( mSeeking )
+		return;
+	if ( !mYabauseThread->emulationPaused() )
+	{
+		mYabauseThread->pauseEmulation( true, false );
+		return;
+	}
+	// YabauseGL finit de traiter sa derniere trame demandee avant de
+	// s'arreter (FrameStop) : pas encore en pause de son cote.
+	if ( !mYabauseGL->isPaused() || mLocker != NULL )
+		return;
+	if ( !mYabauseGL->stepFrame() )
+		return;
+	if ( aTasSkipLag->isChecked() )
+	{
+		// borne : un jeu qui ne lit pas les manettes (chargement, borne ST-V
+		// dont les entrees ne passent pas par le SMPC) n'avancerait jamais
+		for ( int i = 0; i < 120 && MovieLastFrameWasLag(); i++ )
+			if ( !mYabauseGL->stepFrame() )
+				break;
+	}
+	movieTimerTick();
+	emit tasFrameStepped();
+}
+
+void UIYabause::tasSkipLagToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "TAS/SkipLag", toggled );
+}
+
+void UIYabause::tasFastForwardToggled( bool toggled )
+{
+	if ( !mSeeking )
+		YabauseSetTurbo( toggled ? 1 : 0 );
+}
+
+void UIYabause::tasSetSpeed( int percent )
+{
+	YabauseSetSpeedPercent( percent );
+	foreach ( QAction* a, mTasSpeedGroup->actions() )
+		if ( a->data().toInt() == percent && !a->isChecked() )
+			a->setChecked( true );
+	movieTimerTick();
+}
+
+void UIYabause::tasSpeedTriggered( QAction* a )
+{
+	if ( a )
+		tasSetSpeed( a->data().toInt() );
+}
+
+void UIYabause::tasSlowerTriggered()
+{
+	const int cur = YabauseGetSpeedPercent();
+	for ( int i = tasSpeedCount - 1; i >= 0; i-- )
+		if ( tasSpeeds[i] < cur )
+		{
+			tasSetSpeed( tasSpeeds[i] );
+			return;
+		}
+}
+
+void UIYabause::tasFasterTriggered()
+{
+	const int cur = YabauseGetSpeedPercent();
+	for ( int i = 0; i < tasSpeedCount; i++ )
+		if ( tasSpeeds[i] > cur )
+		{
+			tasSetSpeed( tasSpeeds[i] );
+			return;
+		}
+}
+
+void UIYabause::tasOSDToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "TAS/ShowOSD", toggled );
+	MovieSetOSD( toggled ? 1 : 0 );
+}
+
+// Place le film a 'frame' trames executees et s'arrete la : retour en
+// arriere par MovieSeek() (instantane ou debut du film), puis avance rapide
+// sans son jusqu'a la trame demandee. 'resume' : l'emulation reprend une
+// fois arrivee, sinon elle reste en pause.
+bool UIYabause::tasSeek( int frame, bool resume )
+{
+	if ( mYabauseThread->init() < 0 || !IsMovieLoaded() )
+		return false;
+	// une trame est en cours (boucle d'evenements imbriquee) ou une action
+	// attend la pause
+	if ( mYabauseGL->inFrame() || mLocker != NULL )
+		return false;
+
+	if ( frame < 0 )
+		frame = 0;
+	if ( frame > MovieGetLength() )
+		frame = MovieGetLength();
+
+	if ( MovieSeek( frame ) != 0 || !IsMovieLoaded() )
+	{
+		tasEndSeek();
+		movieTimerTick();
+		return false;
+	}
+
+	if ( MovieGetFrame() >= frame && !MovieIsStale() )
+	{
+		// deja sur la trame
+		tasEndSeek();
+		MovieSetPauseFrame( -1 );
+		if ( resume && mYabauseThread->emulationPaused() )
+			aEmulationRun->trigger();
+		else if ( !resume && !mYabauseThread->emulationPaused() )
+			mYabauseThread->pauseEmulation( true, false );
+		movieTimerTick();
+		emit tasSeekFinished();
+		return true;
+	}
+
+	mSeeking = true;
+	mSeekResume = resume;
+	MovieSetPauseFrame( frame );
+	YabauseSetTurbo( 1 );
+	if ( mYabauseThread->emulationPaused() )
+		mYabauseThread->pauseEmulation( false, false );
+	// pauseEmulation( false ) vient de remettre le son
+	ScspMuteAudio( SCSP_MUTE_SYSTEM );
+	return true;
+}
+
+void UIYabause::tasEndSeek()
+{
+	if ( !mSeeking )
+		return;
+	mSeeking = false;
+	MovieSetPauseFrame( -1 );
+	YabauseSetTurbo( aTasFastForward->isChecked() ? 1 : 0 );
+	if ( !mYabauseThread->emulationPaused() )
+		ScspUnMuteAudio( SCSP_MUTE_SYSTEM );
+}
+
+// YabauseGL s'est arrete sur la trame demandee par movie.c (cible d'un
+// retour en arriere, fin d'une lecture seule).
+void UIYabause::tasPauseRequested()
+{
+	const bool wasSeeking = mSeeking;
+	const bool resume = mSeeking && mSeekResume && IsMovieLoaded();
+
+	mYabauseThread->pauseEmulation( true, false );
+	tasEndSeek();
+	if ( resume )
+		mYabauseThread->pauseEmulation( false, false );
+	movieTimerTick();
+	if ( wasSeeking )
+		emit tasSeekFinished();
+	else
+		emit tasFrameStepped();
+}
+
+// Editeur d'entrees et surveillance de la memoire : non modaux, une seule
+// instance, ils travaillent pendant que le jeu tourne.
+void UIYabause::tasEditorTriggered()
+{
+	static QPointer<UIMovieEditor> editor;
+	if ( !editor )
+	{
+		editor = new UIMovieEditor( this );
+		editor->setAttribute( Qt::WA_DeleteOnClose );
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
+}
+
+void UIYabause::tasRamWatchTriggered()
+{
+	static QPointer<UIRamWatch> watch;
+	if ( !watch )
+	{
+		watch = new UIRamWatch( this );
+		watch->setAttribute( Qt::WA_DeleteOnClose );
+	}
+	watch->show();
+	watch->raise();
+	watch->activateWindow();
 }
 
 void UIYabause::on_mFileSaveState_triggered( QAction* a )
