@@ -106,6 +106,20 @@ void EnableAutoFrameSkip(void);
 int isAutoFrameSkip(void);
 void DisableAutoFrameSkip(void);
 
+/* Emulation speed in percent (1..1000, 100 = real speed): host pacing
+   only, the emulated frames are the same at any speed. */
+void YabauseSetSpeedPercent(int percent);
+int YabauseGetSpeedPercent(void);
+/* Fast forward: frames are not paced at all while it is on. */
+void YabauseSetTurbo(int on);
+int YabauseGetTurbo(void);
+
+/* Timing fractions and frame counter missing from the save states, stored
+   by movie.c in its block of the state (see yabause.c). */
+#define YAB_SYNC_STATE_WORDS 8
+void YabauseSyncStateGet(u64 *v);
+void YabauseSyncStateSet(const u64 *v);
+
 #define YABSYS_TIMING_BITS  20
 #define YABSYS_TIMING_MASK  ((1 << YABSYS_TIMING_BITS) - 1)
 
