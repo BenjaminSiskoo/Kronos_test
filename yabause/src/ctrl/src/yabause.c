@@ -215,6 +215,10 @@ static u64 scspSampleFrac = 0;
 /* Microseconds handed to the SMPC and the CD block, see SubSystemUs(). */
 static u64 subUsFrac = 0;
 
+/* Fraction of SH-2 cycle carried between decilines, see
+   SH2CyclesForDeciline(). */
+static u64 sh2CycleFrac = 0;
+
 /* The OS sleep is only precise to about a millisecond (Windows timer
    granularity, scheduler latency elsewhere): sleep until SYNC_SPIN_US before
    the deadline, then yield until the deadline itself. */
@@ -225,13 +229,95 @@ static u64 subUsFrac = 0;
 #endif
 #define SYNC_MAX_LAG_DIV (10)
 
+/* Emulation speed in percent of the real speed (tool-assisted speedruns:
+   slow motion and fast forward). It only changes the host deadline of the
+   frames: the emulated machine runs exactly the same frames whatever the
+   speed, so it has no effect on an input movie. 100 = exact frame rate. */
+#define SPEED_PERCENT_MIN (1)
+#define SPEED_PERCENT_MAX (1000)
+static int speedPercent = 100;
+/* Fast forward: no host deadline at all (seeking in a movie). */
+static int turboOn = 0;
+
+void YabauseSetTurbo(int on) {
+  on = on ? 1 : 0;
+  if (on == turboOn) return;
+  turboOn = on;
+  nextFrameTime = 0;
+  frameTimeFrac = 0;
+  fpsticks = 0;
+}
+
+int YabauseGetTurbo(void) {
+  return turboOn;
+}
+
+void YabauseSetSpeedPercent(int percent) {
+  if (percent < SPEED_PERCENT_MIN) percent = SPEED_PERCENT_MIN;
+  if (percent > SPEED_PERCENT_MAX) percent = SPEED_PERCENT_MAX;
+  if (percent == speedPercent) return;
+  speedPercent = percent;
+  /* new period: start again from "now" */
+  nextFrameTime = 0;
+  frameTimeFrac = 0;
+  fpsticks = 0;
+}
+
+int YabauseGetSpeedPercent(void) {
+  return speedPercent;
+}
+
 static void advanceFrameDeadline(void) {
+  if (speedPercent != 100) {
+    /* tickfreq * frameRateDen * 100 / (frameRateNum * speed): the fraction
+       of a tick lost per frame does not matter outside the real speed */
+    nextFrameTime += (int64_t)((yabsys.tickfreq * frameRateDen * 100) /
+                               (frameRateNum * (u64)speedPercent));
+    return;
+  }
   nextFrameTime += (int64_t)yabsys.OneFrameTime;
   frameTimeFrac += frameTimeRem;
   if (frameTimeFrac >= frameRateNum) {
     frameTimeFrac -= frameRateNum;
     nextFrameTime++;
   }
+}
+
+/* Timing state that the save states (memory.c) do not hold: the fractions
+   carried from one frame / deciline to the next, and the frame counter.
+   Without them, a machine restored from a save state does not hand out
+   exactly the same cycles as the machine that reached the same frame from
+   power-on (the cycles each SH-2 overran its last slice are in the same
+   case): the two drift apart after a few frames, and a movie re-recorded
+   from a save state does not replay. movie.c stores them in its block of
+   the save state (SaveMovieInState / MovieReadState). */
+void YabauseSyncStateGet(u64 *v) {
+  int i;
+  for (i = 0; i < YAB_SYNC_STATE_WORDS; i++) v[i] = 0;
+  v[0] = scspSampleFrac;
+  v[1] = subUsFrac;
+  v[2] = sh2CycleFrac;
+  /* cycles overrun by each SH-2 (sh2ExecuteSync), signed */
+  v[3] = (MSH2 != NULL) ? (u32)MSH2->cdiff : 0;
+  v[4] = (SSH2 != NULL) ? (u32)SSH2->cdiff : 0;
+  v[5] = yabsys.frame_count;
+  v[6] = (MSH2 != NULL) ? MSH2->cycleLost : 0;
+  v[7] = (SSH2 != NULL) ? SSH2->cycleLost : 0;
+}
+
+void YabauseSyncStateSet(const u64 *v) {
+  scspSampleFrac = v[0];
+  subUsFrac = v[1];
+  sh2CycleFrac = v[2];
+  if (MSH2 != NULL) {
+    MSH2->cdiff = (int)(u32)v[3];
+    MSH2->cycleLost = (u32)v[6];
+  }
+  if (SSH2 != NULL) {
+    SSH2->cdiff = (int)(u32)v[4];
+    SSH2->cycleLost = (u32)v[7];
+  }
+  yabsys.frame_count = (u32)v[5];
 }
 
 static void syncVideoMode(void) {
@@ -242,7 +328,7 @@ static void syncVideoMode(void) {
     nextFrameTime = now;
     frameTimeFrac = 0;
   }
-  if (isAutoFrameSkip() == 0) {
+  if ((isAutoFrameSkip() == 0) && !turboOn) {
     const int64_t spin = (int64_t)((yabsys.tickfreq * SYNC_SPIN_US) / 1000000);
     if (nextFrameTime - now > spin) {
       u64 us = ((u64)(nextFrameTime - now - spin) * 1000000) / yabsys.tickfreq;
@@ -337,7 +423,7 @@ static const u32 cycles[DECILINE_STEP][2][2] = {
  * frameRateNum cycles, carrying the fraction from one deciline to the next.
  * The fraction is cleared on a clock change (YabauseChangeTiming) and on a
  * video format change. */
-static u64 sh2CycleFrac = 0;
+/* declared with the frame pacing variables, see YabauseSyncStateGet() */
 
 static u32 SH2WeightPerLine(int ntsc) {
   u32 sum = 0;
@@ -1025,6 +1111,26 @@ void YabauseResetNoLoad(void) {
       repartition des cycles du 68000 dependait de la duree de la session
       precedente (et la relecture d'un film divergeait). */
    scspSampleFrac = 0;
+   /* Same for the two other fractions carried from one deciline to the
+      next (microseconds of the SMPC / CD block, SH-2 cycles): they were
+      only cleared by a video format change, so after a reset the first
+      decilines got one microsecond or one cycle more or less depending on
+      what had run before, and an input movie replayed from the reset could
+      diverge from its recording. */
+   subUsFrac = 0;
+   sh2CycleFrac = 0;
+   /* And the cycles each SH-2 ran beyond its last slice, which
+      sh2ExecuteSync() takes back from the next one: they were only cleared
+      at YabauseInit(), so the first slice after a reset was shortened by
+      what the previous game had overrun (0 to a few cycles). */
+   if (MSH2 != NULL) {
+      MSH2->cdiff = 0;
+      MSH2->cycleLost = 0;
+   }
+   if (SSH2 != NULL) {
+      SSH2->cdiff = 0;
+      SSH2->cycleLost = 0;
+   }
 
    SH2PowerOn(MSH2);
 }
@@ -1363,6 +1469,10 @@ int YabauseEmulate(void) {
       cycles are run, as it already does every 8 lines during the frame. */
    ScspSyncToLine();
    SyncCPUtoSCSP();
+
+   /* End of the emulated frame, sound thread included: lag frame
+      accounting, snapshots and pause requests of the movie code. */
+   MovieFrameEnd();
 
    syncVideoMode();
    FPSDisplay();
@@ -2093,11 +2203,18 @@ int YabauseQuickLoadGame(void)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* The frame limiter only concerns the host: switching it on or off must not
+   change what the emulated machine does. Both functions used to call
+   YabauseSetVideoFormat(), which clears the cycle / microsecond / sample
+   fractions carried between frames and puts the line counters back to 0
+   (YabauseChangeTiming), i.e. it shifted the emulated timing each time the
+   limiter was toggled: an input movie recorded or replayed across a toggle
+   (fast forward) no longer matched. Only the host deadline is reset. */
 void EnableAutoFrameSkip(void)
 {
    autoframeskipenab = 1;
    nextFrameTime = 0;
-   YabauseSetVideoFormat((yabsys.IsPal==1)?VIDEOFORMATTYPE_PAL:VIDEOFORMATTYPE_NTSC);
+   frameTimeFrac = 0;
 }
 
 int isAutoFrameSkip(void)
@@ -2112,7 +2229,7 @@ void DisableAutoFrameSkip(void)
 {
    autoframeskipenab = 0;
    nextFrameTime = 0;
-   YabauseSetVideoFormat((yabsys.IsPal==1)?VIDEOFORMATTYPE_PAL:VIDEOFORMATTYPE_NTSC);
+   frameTimeFrac = 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
