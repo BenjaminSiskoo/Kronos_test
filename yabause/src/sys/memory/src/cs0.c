@@ -1868,6 +1868,16 @@ int CartInit(const char * filename, int type)
          CartridgeArea->Cs0ReadByte = &JapModemCs0ReadByte;
          CartridgeArea->Cs0ReadWord = &JapModemCs0ReadWord;
          CartridgeArea->Cs0ReadLong = &JapModemCs0ReadLong;
+         CartridgeArea->Cs0WriteByte = &JapModemCs0WriteByte;
+         CartridgeArea->Cs0WriteWord = &JapModemCs0WriteWord;
+         CartridgeArea->Cs0WriteLong = &JapModemCs0WriteLong;
+
+         CartridgeArea->Cs1ReadByte = &JapModemCs1ReadByte;
+         CartridgeArea->Cs1ReadWord = &JapModemCs1ReadWord;
+         CartridgeArea->Cs1ReadLong = &JapModemCs1ReadLong;
+         CartridgeArea->Cs1WriteByte = &JapModemCs1WriteByte;
+         CartridgeArea->Cs1WriteWord = &JapModemCs1WriteWord;
+         CartridgeArea->Cs1WriteLong = &JapModemCs1WriteLong;
 
          CartridgeArea->Cs2ReadByte = &JapModemCs2ReadByte;
          CartridgeArea->Cs2WriteByte = &JapModemCs2WriteByte;
