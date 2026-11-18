@@ -35,6 +35,9 @@ typedef struct
 u8 FASTCALL JapModemCs0ReadByte(SH2_struct *context, u8* mem, u32 addr);
 u16 FASTCALL JapModemCs0ReadWord(SH2_struct *context, u8* mem, UNUSED u32 addr);
 u32 FASTCALL JapModemCs0ReadLong(SH2_struct *context, u8* mem, UNUSED u32 addr);
+void FASTCALL JapModemCs0WriteByte(SH2_struct *context, u8* mem, u32 addr, u8 val);
+void FASTCALL JapModemCs0WriteWord(SH2_struct *context, u8* mem, u32 addr, u16 val);
+void FASTCALL JapModemCs0WriteLong(SH2_struct *context, u8* mem, u32 addr, u32 val);
 u8 FASTCALL JapModemCs1ReadByte(SH2_struct *context, u8* mem, UNUSED u32 addr);
 u16 FASTCALL JapModemCs1ReadWord(SH2_struct *context, u8* mem, UNUSED u32 addr);
 u32 FASTCALL JapModemCs1ReadLong(SH2_struct *context, u8* mem, UNUSED u32 addr);
