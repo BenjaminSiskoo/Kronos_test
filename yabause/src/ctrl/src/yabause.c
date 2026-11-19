@@ -1104,6 +1104,10 @@ void YabauseResetNoLoad(void) {
    Vdp1Reset();
    Vdp2Reset();
    SmpcReset();
+   /* ST-V IOGA registers (PORT_DIRECTION, output latches, RS-422): reset
+      with the machine. They used to be cleared by PerPortReset(), which
+      also runs when the controllers are reconfigured during a game. */
+   PerIogaReset();
 
    nextFrameTime = 0;
    /* Phase du partage des echantillons SCSP entre les trames (735/736 en
