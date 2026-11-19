@@ -969,13 +969,22 @@ void MappedMemoryInit()
                                 &Cs1WriteWord,
                                 &Cs1WriteLong,
                                 &VoidMem); //A voir ici
-   FillMemoryArea(0x580, 0x58F, &Cs2ReadByte,
-                                &Cs2ReadWord,
-                                &Cs2ReadLong,
-                                &Cs2WriteByte,
-                                &Cs2WriteWord,
-                                &Cs2WriteLong,
-                                &VoidMem); //A voir ici
+   /* A-bus CS2 : CD block de la Saturn (et NetLink/modem en 0x05890000).
+      La ST-V n'a ni CD block ni cartouche CS2 : MAME stv_mem ne mappe rien
+      entre 0x05000000 et 0x059FFFFF. Ces acces restaient routes vers le CD
+      block emule ; en ST-V ils sont maintenant non mappes (lecture 0,
+      ecriture perdue), comme le reste de l'A-bus deja libre (0x500-0x57F,
+      0x590-0x59F). Le CD block emule ne peut donc plus etre programme par
+      un jeu ST-V : HIRQMASK reste a 0 (Cs2Reset) et il ne leve plus
+      d'interruption externe SCU 0 (Cs2SetIRQ). */
+   if (!yabsys.isSTV)
+      FillMemoryArea(0x580, 0x58F, &Cs2ReadByte,
+                                   &Cs2ReadWord,
+                                   &Cs2ReadLong,
+                                   &Cs2WriteByte,
+                                   &Cs2WriteWord,
+                                   &Cs2WriteLong,
+                                   &VoidMem);
    FillMemoryArea(0x5A0, 0x5AF, &SoundRamReadByte,
                                 &SoundRamReadWord,
                                 &SoundRamReadLong,
