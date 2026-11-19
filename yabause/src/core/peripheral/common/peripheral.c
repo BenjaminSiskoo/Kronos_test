@@ -232,6 +232,92 @@ u8 m_ioga_portg = 0;
 static u8 m_port_direction = 0;
 #define PORT_DIR_E_INPUT 0x10
 
+/* RS-422 of the IOGA 315-5649, two channels (MAME sega/315_5649.cpp, byte
+   offsets x2+1 on the ST-V bus, umask32(0x00ff00ff)):
+     0x13 / 0x15  TXD1 / TXD2   write: byte sent on channel 1 / 2
+     0x17 / 0x19  RXD1 / RXD2   read : last byte received on channel 1 / 2
+     0x1b         FLAG          bit 0/1 TX1BF/TX2BF (1 = transmit buffer full)
+                                bit 2/3 RX1BF/RX2BF (1 = receive buffer full)
+                                bit 4/5 RX1FE/RX2FE, bit 6/7 RX1IE/RX2IE (errors)
+     0x1d         MODE          bit 4 RS-422 loopback, bit 5 satellite mode
+   The transmitted bytes used to be dropped and FLAG always read 0. Now
+   each byte goes to the device plugged on the channel
+   (PerIogaSerialSetPeer(), e.g. a future printer model), or back into the
+   receive side of the same channel when MODE bit 4 (loopback) is set. The
+   receive side is a FIFO filled by PerIogaSerialReceive(); RXnBF is set
+   while it holds a byte, and reading RXDn takes the oldest one. With
+   nothing plugged in, the line stays silent: TX never full, RX empty, as
+   before for the games. MAME forces 0x0c (receive buffers always full) as
+   a hack instead. */
+#define IOGA_SERIAL_CHANNELS 2
+#define IOGA_SERIAL_FIFO_SIZE 256
+#define IOGA_MODE_LOOPBACK 0x10
+typedef struct {
+   u8  buf[IOGA_SERIAL_FIFO_SIZE];
+   u16 head;
+   u16 count;
+   u8  last; /* RXDn register: last byte taken from the FIFO */
+} IogaSerialRx_struct;
+static IogaSerialRx_struct ioga_serial_rx[IOGA_SERIAL_CHANNELS];
+static PerIogaSerialTxFunc ioga_serial_peer[IOGA_SERIAL_CHANNELS];
+static u8 ioga_serial_warned[IOGA_SERIAL_CHANNELS];
+
+static void IogaSerialReset(void) {
+   memset(ioga_serial_rx, 0, sizeof(ioga_serial_rx));
+   memset(ioga_serial_warned, 0, sizeof(ioga_serial_warned));
+}
+
+int PerIogaSerialReceive(int channel, u8 data) {
+   IogaSerialRx_struct *rx;
+   if (channel < 0 || channel >= IOGA_SERIAL_CHANNELS)
+      return -1;
+   rx = &ioga_serial_rx[channel];
+   if (rx->count >= IOGA_SERIAL_FIFO_SIZE)
+      return -1; /* overrun: byte lost */
+   rx->buf[(rx->head + rx->count) % IOGA_SERIAL_FIFO_SIZE] = data;
+   rx->count++;
+   return 0;
+}
+
+void PerIogaSerialSetPeer(int channel, PerIogaSerialTxFunc tx) {
+   if (channel < 0 || channel >= IOGA_SERIAL_CHANNELS)
+      return;
+   ioga_serial_peer[channel] = tx;
+}
+
+static u8 IogaSerialRead(int channel) {
+   IogaSerialRx_struct *rx = &ioga_serial_rx[channel];
+   if (rx->count) {
+      rx->last = rx->buf[rx->head];
+      rx->head = (u16)((rx->head + 1) % IOGA_SERIAL_FIFO_SIZE);
+      rx->count--;
+   }
+   return rx->last;
+}
+
+static void IogaSerialWrite(int channel, u8 data) {
+   if (m_ioga_mode & IOGA_MODE_LOOPBACK) {
+      PerIogaSerialReceive(channel, data);
+      return;
+   }
+   if (ioga_serial_peer[channel] != NULL) {
+      ioga_serial_peer[channel](channel, data);
+      return;
+   }
+   if (!ioga_serial_warned[channel]) {
+      ioga_serial_warned[channel] = 1;
+      YuiMsg("ST-V IOGA: RS-422 channel %d transmits (first byte %02X), nothing is plugged in\n",
+             channel + 1, data);
+   }
+}
+
+static u8 IogaSerialFlag(void) {
+   u8 flag = 0; /* TX1BF/TX2BF = 0: bytes leave at once */
+   if (ioga_serial_rx[0].count) flag |= 0x04; /* RX1BF */
+   if (ioga_serial_rx[1].count) flag |= 0x08; /* RX2BF */
+   return flag;
+}
+
 /* PORT-D cabinet outputs: bit0/1 = coin counter 1/2 (counted on rising
    edge), bit2/3 = coin lockout 1/2 (active low), bit 7 = hopper motor.
    Exposed through PerGetCoinCounter()/PerGetCoinLockout(). */
@@ -629,7 +715,9 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
        else
          val = IOPORT[PORT_G];
        break;
-     case 0x1b: val = 0x0; break; // Serial COM READ status
+     case 0x17: val = IogaSerialRead(0); break; // RS-422 RXD1
+     case 0x19: val = IogaSerialRead(1); break; // RS-422 RXD2
+     case 0x1b: val = IogaSerialFlag(); break;  // RS-422 FLAG
      case 0x1d: val = m_ioga_mode; break;
 
    }
@@ -695,6 +783,12 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
       break;
     case 0x11:
       m_port_direction = val;
+      break;
+    case 0x13: // RS-422 TXD1
+      IogaSerialWrite(0, val);
+      break;
+    case 0x15: // RS-422 TXD2
+      IogaSerialWrite(1, val);
       break;
     case 0x1d:
       m_ioga_mode = val;
@@ -2608,6 +2702,7 @@ void PerPortReset(void)
           MJPORT[i] = 0xFF;
         mj_mux_data = 0;
         m_port_direction = 0;
+        IogaSerialReset();
 
         /* Keyboards are plugged in again by the port (PerKeyboardAdd). The
            host key state is kept: keys still held are sent again as Make. */
@@ -2825,8 +2920,11 @@ void PerSetCoinCounters(u32 coin1, u32 coin2) {
    (bookkeeping kept in <romset>.coins): loading an older state must not
    wind them back.
 */
-#define PER_IOGA_STATE_VERSION 1
+/* Version 2 adds the RS-422 receive side (2 x FIFO + RXDn register) after
+   the version 1 fields; a version 1 block still loads, with empty FIFOs. */
+#define PER_IOGA_STATE_VERSION 2
 #define PER_IOGA_STATE_SIZE (4 + 4 + 4*2*2 + 1 + 1 + 4 + 2 + 2)
+#define PER_IOGA_STATE_SERIAL_SIZE (IOGA_SERIAL_CHANNELS * (2 + 2 + 1 + IOGA_SERIAL_FIFO_SIZE))
 
 void PerIogaSaveState(void ** stream) {
    u32 version = PER_IOGA_STATE_VERSION;
@@ -2851,6 +2949,15 @@ void PerIogaSaveState(void ** stream) {
    MemStateWrite(&frames, 4, 1, stream);
    MemStateWrite(&hopper[1], 1, 2, stream);       /* status, stopping */
    MemStateWrite(per_coin_lockout, 1, 2, stream);
+   {
+      int ch;
+      for (ch = 0; ch < IOGA_SERIAL_CHANNELS; ch++) {
+         MemStateWrite(&ioga_serial_rx[ch].head, 2, 1, stream);
+         MemStateWrite(&ioga_serial_rx[ch].count, 2, 1, stream);
+         MemStateWrite(&ioga_serial_rx[ch].last, 1, 1, stream);
+         MemStateWrite(ioga_serial_rx[ch].buf, 1, IOGA_SERIAL_FIFO_SIZE, stream);
+      }
+   }
 }
 
 int PerIogaLoadState(const void * stream, int size) {
@@ -2863,7 +2970,9 @@ int PerIogaLoadState(const void * stream, int size) {
    if (size < PER_IOGA_STATE_SIZE)
       return -1;
    MemStateRead(&version, 4, 1, stream);
-   if (version != PER_IOGA_STATE_VERSION)
+   if (version != 1 && version != PER_IOGA_STATE_VERSION)
+      return -1;
+   if (version >= 2 && size < PER_IOGA_STATE_SIZE + PER_IOGA_STATE_SERIAL_SIZE)
       return -1;
 
    MemStateRead(regs, 1, 4, stream);
@@ -2874,6 +2983,20 @@ int PerIogaLoadState(const void * stream, int size) {
    MemStateRead(&frames, 4, 1, stream);
    MemStateRead(hopper, 1, 2, stream);
    MemStateRead(per_coin_lockout, 1, 2, stream);
+
+   IogaSerialReset();
+   if (version >= 2) {
+      int ch;
+      for (ch = 0; ch < IOGA_SERIAL_CHANNELS; ch++) {
+         IogaSerialRx_struct *rx = &ioga_serial_rx[ch];
+         MemStateRead(&rx->head, 2, 1, stream);
+         MemStateRead(&rx->count, 2, 1, stream);
+         MemStateRead(&rx->last, 1, 1, stream);
+         MemStateRead(rx->buf, 1, IOGA_SERIAL_FIFO_SIZE, stream);
+         if (rx->head >= IOGA_SERIAL_FIFO_SIZE || rx->count > IOGA_SERIAL_FIFO_SIZE)
+            rx->head = rx->count = 0; /* corrupt block: start empty */
+      }
+   }
 
    m_system_output = regs[0];
    m_ioga_mode = regs[1];
