@@ -228,9 +228,22 @@ u8 m_ioga_portg = 0;
 /* PORT_DIRECTION (0x11): bit n configures port n (A..G), 1 = input, 0 = output.
    Bit 4 is PORT-E: a mahjong/hanafuda cabinet drives its row-scan mux through
    PORT-E (output, bit clear) and its joystick lines come back as inputs (bit set),
-   which is how MAME's stvmp_ioga_r() tells the two panels apart. */
-static u8 m_port_direction = 0;
+   which is how MAME's stvmp_ioga_r() tells the two panels apart.
+   The chip comes out of reset with every port as an input (MAME
+   sega/315_5649.cpp, device_reset(): m_port_config = 0xff). This used to be
+   0 (every port an output), so a mahjong cabinet saw its button panel
+   selected before the game had programmed the register. */
+static u8 m_port_direction = 0xFF;
 #define PORT_DIR_E_INPUT 0x10
+
+/* Output latch of PORT-A..G (0x01..0x0d, index addr >> 1): the last value
+   the game wrote. A port configured as an output reads this latch back
+   (MAME 315_5649.cpp read(): m_port_value[offset] when the PORT_DIRECTION
+   bit is 0); it used to read the input lines (IOPORT[]) instead. PORT-D
+   keeps its own copy, m_system_output. Initial value 0xff like MAME's
+   m_port_value. */
+#define IOGA_PORT_COUNT 7
+static u8 m_ioga_port_latch[IOGA_PORT_COUNT] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 /* RS-422 of the IOGA 315-5649, two channels (MAME sega/315_5649.cpp, byte
    offsets x2+1 on the ST-V bus, umask32(0x00ff00ff)):
@@ -687,6 +700,16 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
      if (addr == 0x03) return PerCritcrshRead(1); // hammer Y
      if (addr == 0x05) return PerCritcrshPortC(); // SYSTEM, bit 4 = hammer hit
    }
+   /* A port programmed as an output reads back its latch. Exceptions:
+      PORT-D (0x07) always reads m_system_output (same value), and PORT-G in
+      counter mode (MODE bit 7) reads the counters whatever its direction,
+      as in MAME. */
+   if (addr >= 0x01 && addr <= 0x0d && (addr & 1) && addr != 0x07 &&
+       !(m_port_direction & (1 << (addr >> 1))) &&
+       !(addr == 0x0d && (m_ioga_mode & 0x80)) &&
+       !(PerMahjongPanelEnabled() && (addr == 0x01 || addr == 0x03)))
+     return m_ioga_port_latch[addr >> 1];
+
    switch(addr) {
      case 0x01: // P1
        if (PerMahjongPanelEnabled() && !(m_port_direction & PORT_DIR_E_INPUT)) {
@@ -741,6 +764,8 @@ u32 FASTCALL IOPortReadLong(SH2_struct *context, UNUSED u8* memory, u32 addr)
 void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 addr, UNUSED u8 val)
 {
    addr = addr&0x1F;
+   if (addr >= 0x01 && addr <= 0x0d && (addr & 1))
+     m_ioga_port_latch[addr >> 1] = val; /* output latch, read back when the port is an output */
   switch(addr)
   {
     case 0x07:
@@ -2663,6 +2688,27 @@ void PerAxisMove(u32 key, s32 dispx, s32 dispy)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Reset of the IOGA (315-5649) registers, with the machine
+   (YabauseResetNoLoad()), not with the host controllers. MAME:
+   315_5649.cpp device_reset() (m_port_config = 0xff, m_mode = 0) and
+   stv.cpp machine_reset() (m_mux_data = 0). PORT-D (m_system_output, coin
+   counters and lockouts) keeps its value as before. The PORT-G counter
+   baseline is re-latched on the current counts, like a write of PORT-G
+   with bit 7 clear. */
+void PerIogaReset(void)
+{
+   int i;
+   m_port_direction = 0xFF;
+   m_ioga_mode = 0;
+   m_ioga_portg = 0;
+   for (i = 0; i < IOGA_PORT_COUNT; i++)
+      m_ioga_port_latch[i] = 0xFF;
+   mj_mux_data = 0;
+   for (i = 0; i < 4; i++)
+      IOPORT_COUNTER_BASE[i] = IOPORT_COUNTER[i];
+   IogaSerialReset();
+}
+
 void PerPortReset(void)
 {
   int i;
@@ -2700,9 +2746,12 @@ void PerPortReset(void)
            the game writes PORT-E for the first time. */
         for (i=0; i<10; i++)
           MJPORT[i] = 0xFF;
-        mj_mux_data = 0;
-        m_port_direction = 0;
-        IogaSerialReset();
+        /* The IOGA registers the game programs (PORT_DIRECTION, output
+           latches, mahjong row select, RS-422 receive side) are not touched
+           here any more: PerPortReset() also runs when the controllers are
+           reconfigured during a game (YabauseThread::reloadControllers()),
+           which cleared them behind the game's back. They are reset with
+           the machine, by PerIogaReset() from YabauseResetNoLoad(). */
 
         /* Keyboards are plugged in again by the port (PerKeyboardAdd). The
            host key state is kept: keys still held are sent again as Make. */
@@ -2921,8 +2970,10 @@ void PerSetCoinCounters(u32 coin1, u32 coin2) {
    wind them back.
 */
 /* Version 2 adds the RS-422 receive side (2 x FIFO + RXDn register) after
-   the version 1 fields; a version 1 block still loads, with empty FIFOs. */
-#define PER_IOGA_STATE_VERSION 2
+   the version 1 fields; version 3 then adds the PORT-A..G output latches.
+   Older blocks still load, with empty FIFOs and latches at 0xff. */
+#define PER_IOGA_STATE_VERSION 3
+#define PER_IOGA_STATE_LATCH_SIZE IOGA_PORT_COUNT
 #define PER_IOGA_STATE_SIZE (4 + 4 + 4*2*2 + 1 + 1 + 4 + 2 + 2)
 #define PER_IOGA_STATE_SERIAL_SIZE (IOGA_SERIAL_CHANNELS * (2 + 2 + 1 + IOGA_SERIAL_FIFO_SIZE))
 
@@ -2958,6 +3009,7 @@ void PerIogaSaveState(void ** stream) {
          MemStateWrite(ioga_serial_rx[ch].buf, 1, IOGA_SERIAL_FIFO_SIZE, stream);
       }
    }
+   MemStateWrite(m_ioga_port_latch, 1, IOGA_PORT_COUNT, stream);
 }
 
 int PerIogaLoadState(const void * stream, int size) {
@@ -2970,9 +3022,11 @@ int PerIogaLoadState(const void * stream, int size) {
    if (size < PER_IOGA_STATE_SIZE)
       return -1;
    MemStateRead(&version, 4, 1, stream);
-   if (version != 1 && version != PER_IOGA_STATE_VERSION)
+   if (version < 1 || version > PER_IOGA_STATE_VERSION)
       return -1;
    if (version >= 2 && size < PER_IOGA_STATE_SIZE + PER_IOGA_STATE_SERIAL_SIZE)
+      return -1;
+   if (version >= 3 && size < PER_IOGA_STATE_SIZE + PER_IOGA_STATE_SERIAL_SIZE + PER_IOGA_STATE_LATCH_SIZE)
       return -1;
 
    MemStateRead(regs, 1, 4, stream);
@@ -2997,6 +3051,13 @@ int PerIogaLoadState(const void * stream, int size) {
             rx->head = rx->count = 0; /* corrupt block: start empty */
       }
    }
+   {
+      int i;
+      for (i = 0; i < IOGA_PORT_COUNT; i++)
+         m_ioga_port_latch[i] = 0xFF;
+   }
+   if (version >= 3)
+      MemStateRead(m_ioga_port_latch, 1, IOGA_PORT_COUNT, stream);
 
    m_system_output = regs[0];
    m_ioga_mode = regs[1];
