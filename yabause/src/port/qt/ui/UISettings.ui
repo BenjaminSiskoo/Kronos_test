@@ -213,6 +213,7 @@ QToolTip { background:#ffffff; color:#1f2937; border:1px solid #c9d3e3; padding:
          <property name="text">
           <string>Enable vertical synchronization</string>
          </property>
+         <property name="toolTip"><string>Keeps the emulation at the console frame rate (59.94 Hz NTSC, 50 Hz PAL). When off, the emulator runs as fast as it can with automatic frame skip. How frames are shown on your display is chosen on the Video page (Presentation).</string></property>
         </widget>
        </item><item><spacer name="hsInterface"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item></layout></item></layout></widget></item><item><spacer name="pgGeneral_sp"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item></layout></widget></widget></item></layout></widget><widget class="QWidget" name="wVideo"><attribute name="title"><string>Video</string></attribute><layout class="QVBoxLayout" name="pgVideo_outer"><property name="spacing"><number>0</number></property><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><item><widget class="QScrollArea" name="pgVideo_scroll"><property name="frameShape"><enum>QFrame::NoFrame</enum></property><property name="widgetResizable"><bool>true</bool></property><widget class="QWidget" name="pgVideo_content"><property name="role" stdset="0"><string notr="true">pagecontent</string></property><layout class="QVBoxLayout" name="pgVideo_vl"><property name="spacing"><number>12</number></property><property name="leftMargin"><number>24</number></property><property name="topMargin"><number>16</number></property><property name="rightMargin"><number>24</number></property><property name="bottomMargin"><number>16</number></property><item><widget class="QGroupBox" name="cardWindow"><property name="title"><string>Display</string></property><property name="role" stdset="0"><string notr="true">card</string></property><layout class="QGridLayout" name="glWindow" columnstretch="0,1,0"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><property name="horizontalSpacing"><number>10</number></property><property name="verticalSpacing"><number>10</number></property><item row="0" column="0" rowspan="1" colspan="1"><widget class="QLabel" name="lOSDCore">
          <property name="text">
@@ -229,7 +230,19 @@ QToolTip { background:#ffffff; color:#1f2937; border:1px solid #c9d3e3; padding:
          </property>
         <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set></property><property name="role" stdset="0"><string notr="true">row</string></property><property name="minimumSize"><size><width>150</width><height>0</height></size></property></widget>
        </item><item row="1" column="1" rowspan="1" colspan="2"><widget class="QComboBox" name="cbAspectRatio" />
-       </item><item row="2" column="0" rowspan="1" colspan="3"><widget class="QCheckBox" name="cbFullscreen">
+       </item><item row="2" column="0" rowspan="1" colspan="1"><widget class="QLabel" name="lSwapMode">
+         <property name="text"><string>Presentation :</string></property><property name="toolTip"><string>How finished frames are shown on your display. This is separate from "Enable vertical synchronization" (General page), which keeps the emulation at the console frame rate.</string></property><property name="textFormat">
+          <enum>Qt::PlainText</enum>
+         </property>
+        <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set></property><property name="role" stdset="0"><string notr="true">row</string></property><property name="minimumSize"><size><width>150</width><height>0</height></size></property></widget>
+       </item><item row="2" column="1" rowspan="1" colspan="2"><widget class="QComboBox" name="cbSwapMode"><property name="toolTip"><string>Off: lowest latency, tearing possible. V-Sync: no tearing. Adaptive: V-Sync, but a late frame is shown immediately (needs driver support, otherwise plain V-Sync). Automatically off during fast forward or when the speed is not 100%.</string></property></widget>
+       </item><item row="3" column="0" rowspan="1" colspan="3"><widget class="QCheckBox" name="cbLowLatencyPresent">
+         <property name="text">
+          <string>Low latency presentation (wait for the display, V-Sync modes only)</string>
+         </property>
+         <property name="toolTip"><string>The emulator waits until the display has taken each frame, so the graphics driver cannot queue frames ahead. Lowers input lag; may cost speed on slow GPUs.</string></property>
+        </widget>
+       </item><item row="4" column="0" rowspan="1" colspan="3"><widget class="QCheckBox" name="cbFullscreen">
          <property name="text">
           <string>Start in Fullscreen</string>
          </property>
