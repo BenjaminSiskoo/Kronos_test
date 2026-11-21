@@ -58,4 +58,26 @@
         <file alias="sensor.png">icons/hopper/sensor.png</file>
         <file alias="trackball.png">icons/hopper/trackball.png</file>
     </qresource>
+    <qresource prefix="/settings">
+        <file alias="general.png">icons/settings/general.png</file>
+        <file alias="general@2x.png">icons/settings/general@2x.png</file>
+        <file alias="video.png">icons/settings/video.png</file>
+        <file alias="video@2x.png">icons/settings/video@2x.png</file>
+        <file alias="sound.png">icons/settings/sound.png</file>
+        <file alias="sound@2x.png">icons/settings/sound@2x.png</file>
+        <file alias="cart.png">icons/settings/cart.png</file>
+        <file alias="cart@2x.png">icons/settings/cart@2x.png</file>
+        <file alias="input.png">icons/settings/input.png</file>
+        <file alias="input@2x.png">icons/settings/input@2x.png</file>
+        <file alias="advanced.png">icons/settings/advanced.png</file>
+        <file alias="advanced@2x.png">icons/settings/advanced@2x.png</file>
+        <file alias="shortcuts.png">icons/settings/shortcuts.png</file>
+        <file alias="shortcuts@2x.png">icons/settings/shortcuts@2x.png</file>
+        <file alias="debug.png">icons/settings/debug.png</file>
+        <file alias="debug@2x.png">icons/settings/debug@2x.png</file>
+        <file alias="check.png">icons/settings/check.png</file>
+        <file alias="check@2x.png">icons/settings/check@2x.png</file>
+        <file alias="arrow.png">icons/settings/arrow.png</file>
+        <file alias="arrow@2x.png">icons/settings/arrow@2x.png</file>
+    </qresource>
 </RCC>
