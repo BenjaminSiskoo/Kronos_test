@@ -76,6 +76,7 @@ protected slots:
 	void changeWireframe(int id);
 	void changeMeshMode(int id);
 	void changeBandingMode(int id);
+	void updateSwapModeWidgets();
 private:
 	QString getCartridgePathSettingsKey(int cartridgeType = -1) const;
 	void updateVolatileSettings() const;
