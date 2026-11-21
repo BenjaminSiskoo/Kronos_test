@@ -24,6 +24,8 @@
 #include "../CommonDialogs.h"
 #include "ygl.h"
 #include "stv.h"
+/* after ygl.h: YabauseGL.h pulls Qt's gl.h, which must not come before glew.h */
+#include "../YabauseGL.h"
 #include "UIPortManager.h"
 
 #include <QDir>
@@ -172,6 +174,11 @@ const Items mAspectRatio = Items()
 	<< Item("1", "Stretch to window")
 	<< Item("2", "Pixel Perfect - Full screen")
 	<< Item("3", "Pixel Perfect");
+
+const Items mSwapMode = Items()
+	<< Item("0", "Off (lowest latency, tearing possible)")
+	<< Item("1", "V-Sync")
+	<< Item("2", "Adaptive V-Sync");
 
 const Items mMeshMode = Items()
 	<< Item("0", "Original")
@@ -670,6 +677,11 @@ void UISettings::loadCores()
 
   connect(cbAspectRatio, SIGNAL(currentIndexChanged(int)), this, SLOT(changeAspectRatio(int)));
 
+  foreach(const Item& it, mSwapMode)
+    cbSwapMode->addItem(QtYabause::translate(it.Name), it.id);
+  /* the low latency box only means something with a V-Sync mode */
+  connect(cbSwapMode, SIGNAL(currentIndexChanged(int)), this, SLOT(updateSwapModeWidgets()));
+
 	foreach(const Item& it, mWireframe)
     cbWireframeFilter->addItem(QtYabause::translate(it.Name), it.id);
 
@@ -857,6 +869,12 @@ void UISettings::loadSettings()
         cbUpscaleMode->setCurrentIndex(cbUpscaleMode->findData(s->value("Video/upscale_type", mUpscaleFilterMode.at(0).id).toInt()));
 	cbResolution->setCurrentIndex(cbResolution->findData(s->value("Video/resolution_mode", mResolutionMode.at(0).id).toInt()));
   cbAspectRatio->setCurrentIndex(cbAspectRatio->findData(s->value("Video/AspectRatio", mAspectRatio.at(0).id).toInt()));
+  {
+    int idx = cbSwapMode->findData(s->value("Video/SwapMode", mSwapMode.at(0).id).toInt());
+    cbSwapMode->setCurrentIndex(idx < 0 ? 0 : idx);
+    cbLowLatencyPresent->setChecked(s->value("Video/LowLatencyPresent", false).toBool());
+    updateSwapModeWidgets();
+  }
 	cbWireframeFilter->setCurrentIndex(cbWireframeFilter->findData(s->value("Video/Wireframe", mWireframe.at(0).id).toInt()));
 	cbMeshModeFilter->setCurrentIndex(cbMeshModeFilter->findData(s->value("Video/MeshMode", mMeshMode.at(0).id).toInt()));
 	cbBandingModeFilter->setCurrentIndex(cbBandingModeFilter->findData(s->value("Video/BandingMode", mBandingMode.at(0).id).toInt()));
@@ -965,6 +983,10 @@ void UISettings::saveSettings()
 
 	// Save new version of keys
         s->setValue("Video/AspectRatio", cbAspectRatio->itemData(cbAspectRatio->currentIndex()).toInt());
+	s->setValue("Video/SwapMode", cbSwapMode->itemData(cbSwapMode->currentIndex()).toInt());
+	s->setValue("Video/LowLatencyPresent", cbLowLatencyPresent->isChecked());
+	/* applied at the next swap, no restart needed where the platform allows it */
+	YabauseGL::setRequestedSwapMode(cbSwapMode->itemData(cbSwapMode->currentIndex()).toInt(), cbLowLatencyPresent->isChecked());
 				s->setValue("Video/Wireframe", cbWireframeFilter->itemData(cbWireframeFilter->currentIndex()).toInt());
 				s->setValue("Video/MeshMode", cbMeshModeFilter->itemData(cbMeshModeFilter->currentIndex()).toInt());
 				s->setValue("Video/BandingMode", cbBandingModeFilter->itemData(cbBandingModeFilter->currentIndex()).toInt());
@@ -1034,6 +1056,12 @@ void UISettings::saveSettings()
 	// debug
 	s->setValue( "Debug/Addr2Line", leAddr2Line->text() );
 	QtYabause::updateTitle();
+}
+
+void UISettings::updateSwapModeWidgets()
+{
+	const int mode = cbSwapMode->itemData(cbSwapMode->currentIndex()).toInt();
+	cbLowLatencyPresent->setEnabled(mode != YabauseGL::SwapOff);
 }
 
 void UISettings::accept()
