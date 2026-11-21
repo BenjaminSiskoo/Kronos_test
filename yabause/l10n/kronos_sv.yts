@@ -942,3 +942,67 @@ http://www.monkeystudio.org|http://www.monkeystudio.org
 nanovg OSD Interface|nanovg OSD-gränssnitt
 no memory selected|inget minne valt
 toolBar|Verktygsfält
+6Player multitap connected|6Player-multitap ansluten
+Aspect ratio|Bildformat
+Auto (first region of the disc)|Auto (skivans första region)
+Buttons|Knappar
+Cell Shading (Toon)|Cel shading (Toon)
+Choose the floppy disk folder|Välj diskettmapp
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Klicka på en kontroll och tryck på en tangent eller knapp för att tilldela den. Esc avbryter. En bock visar en tilldelad kontroll.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Klicka på en kontroll och tryck på tangenten eller knappen som ska tilldelas. Esc avbryter. En bock visar en tilldelad kontroll.
+Connect the floppy disk drive|Anslut diskettenheten
+Console region|Konsolregion
+Controller driver|Kontrollerdrivrutin
+Debugging|Felsökning
+Deinterlacing Adaptive (field-aware)|Deinterlacing adaptiv (fältbaserad)
+Deinterlacing Blend|Deinterlacing blandning
+Disc drive|Skivenhet
+Display|Bild
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Dubbelklicka på kolumnen Genväg för en åtgärd och tryck på den nya tangentkombinationen. Lämna tomt för att ta bort genvägen.
+Emulation cores|Emuleringskärnor
+FAMILY-SPECIFIC & DIAGNOSTICS|FAMILJESPECIFIKT & DIAGNOSTIK
+Floppy disk drive (communication connector)|Diskettenhet (kommunikationskontakt)
+Folders|Mappar
+Gun / mouse|Pistol / mus
+Held: the button is pressed with turbo (turbo switch on)|Hålls: knappen trycks med turbo (turboomkopplare på)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Hålls: omkopplare i Hu-läge (Start 15 gånger per sekund, låser upp extra i Hudson-spel)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Hålls: omkopplare i SLOW-läge (Start trycks upprepat, slow motion)
+Hu position|Hu-läge
+Interface|Gränssnitt
+Internal memory|Internt minne
+Internal resolution :|Intern upplösning :
+Left stick|Vänster spak
+On (sprite colors)|På (sprite-färger)
+On (white)|På (vit)
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Region för den emulerade Saturn. En skiva för flera regioner fungerar i denna; Auto väljer skivans första region. Gäller vid nästa spelstart.
+Right stick|Höger spak
+SLOW position|SLOW-läge
+SLOW switch|SLOW-omkopplare
+ST-V game|ST-V-spel
+ST-V region|ST-V-region
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Sega 6Player eller Hudson SBom Multitap på denna port: platserna 1-6 är dess kontakter. Inte kompatibel med pistolen.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Sega Saturn diskettenhet (HSS-0128). Kräver riktig BIOS. Disketten är mappen nedan (fdd_part0.bin, fdd_part1.bin).
+Sound output|Ljudutgång
+COINS & CONTROL PANEL|MYNT & KONTROLLPANEL
+Turbo speed (presses per second)|Turbohastighet (tryck per sekund)
+Up to 26 on the real pad. Common to every SBom Joycard.|Upp till 26 på den riktiga handkontrollen. Gemensamt för alla SBom Joycard.
+Video CD card|Video CD-kort
+Video filter :|Videofilter :
+Write protected|Skrivskyddad
+hold to force a payout pulse|håll för att tvinga fram en utbetalningspuls
+Button|Knapp
+Button 1|Knapp 1
+Button 3|Knapp 3
+Button 4|Knapp 4
+Button 6|Knapp 6
+Coin 1|Mynt 1
+COIN 1|MYNT 1
+PLAYER 1|SPELARE 1
+PLAYER 1 PANEL|SPELARE 1 PANEL
+Coin 2|Mynt 2
+COIN 2|MYNT 2
+PLAYER 2|SPELARE 2
+PLAYER 2 PANEL|SPELARE 2 PANEL
+PAUSE|PAUS
+micrombc only|micrombc endast
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl endast

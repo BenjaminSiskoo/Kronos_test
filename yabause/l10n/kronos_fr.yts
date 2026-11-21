@@ -906,3 +906,69 @@ Ctrl+wheel to zoom, click a sprite to select its command|Ctrl+molette pour zoome
 Approximation: no color calculation, mesh or user clipping|Approximation : ni calcul de couleur, ni mesh, ni clipping utilisateur
 Nothing to draw|Rien à tracer
 Command #%1 at 0x%2: %3|Commande n°%1 en 0x%2 : %3
+6Player multitap connected|Multitap 6Player connecté
+Aspect ratio|Format d'image
+Auto (first region of the disc)|Auto (première région du disque)
+Buttons|Boutons
+Cell Shading (Toon)|Cell shading (Toon)
+Choose the floppy disk folder|Choisir le dossier de la disquette
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Cliquez sur une commande, puis appuyez sur une touche ou un bouton pour l'assigner. Échap annule. Une coche indique une commande assignée.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Cliquez sur une commande, puis appuyez sur la touche ou le bouton à assigner. Échap annule. Une coche indique une commande assignée.
+Connect the floppy disk drive|Connecter le lecteur de disquettes
+Console region|Région de la console
+Controller driver|Pilote de manette
+Debugging|Débogage
+Deinterlacing Adaptive (field-aware)|Désentrelacement adaptatif (selon le champ)
+Deinterlacing Blend|Désentrelacement par fusion
+Deinterlacing Smooth Bob|Désentrelacement Bob lissé
+Disc drive|Lecteur de disque
+Display|Affichage
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Double-cliquez sur la colonne Raccourci d'une action, puis appuyez sur la nouvelle combinaison de touches. Laissez vide pour supprimer le raccourci.
+Emulation cores|Cœurs d'émulation
+FAMILY-SPECIFIC & DIAGNOSTICS|SPÉCIFIQUE À LA FAMILLE ET DIAGNOSTICS
+Floppy disk drive (communication connector)|Lecteur de disquettes (connecteur de communication)
+Folders|Dossiers
+Gun / mouse|Pistolet / souris
+Held: the button is pressed with turbo (turbo switch on)|Maintenu : le bouton est pressé avec turbo (interrupteur turbo activé)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Maintenu : interrupteur en position Hu (Start 15 fois par seconde, débloque des bonus dans les jeux Hudson)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Maintenu : interrupteur en position SLOW (Start pressé en rafale, ralenti)
+Hu position|Position Hu
+Internal memory|Mémoire interne
+Internal resolution :|Résolution interne :
+Left stick|Stick gauche
+On (sprite colors)|Activé (couleurs du sprite)
+On (white)|Activé (blanc)
+Panel|Panneau
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Région de la Saturn émulée. Un disque prévu pour plusieurs régions fonctionne dans celle-ci ; Auto prend la première région indiquée par le disque. Pris en compte au prochain lancement d'un jeu.
+Rendering|Rendu
+Right stick|Stick droit
+SLOW position|Position SLOW
+SLOW switch|Interrupteur SLOW
+ST-V game|Jeu ST-V
+ST-V region|Région ST-V
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Multitap Sega 6Player ou Hudson SBom sur ce port : les emplacements 1 à 6 sont ses connecteurs. Incompatible avec le pistolet.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Lecteur de disquettes Sega Saturn (HSS-0128). Nécessite le vrai BIOS. La disquette est le dossier ci-dessous (fdd_part0.bin, fdd_part1.bin).
+Sound output|Sortie audio
+System|Système
+COINS & CONTROL PANEL|PIÈCES ET PANNEAU DE CONTRÔLE
+Turbo speed (presses per second)|Vitesse turbo (appuis par seconde)
+Up to 26 on the real pad. Common to every SBom Joycard.|Jusqu'à 26 sur la vraie manette. Commun à toutes les SBom Joycard.
+Video CD card|Carte Video CD
+Video filter :|Filtre vidéo :
+Write protected|Protégé en écriture
+hold to force a payout pulse|maintenir pour forcer une impulsion de paiement
+Button|Bouton
+Button 1|Bouton 1
+Button 3|Bouton 3
+Button 4|Bouton 4
+Button 6|Bouton 6
+Coin 1|Pièce 1
+COIN 1|PIÈCE 1
+PLAYER 1|JOUEUR 1
+PLAYER 1 PANEL|PANNEAU JOUEUR 1
+Coin 2|Pièce 2
+COIN 2|PIÈCE 2
+PLAYER 2|JOUEUR 2
+PLAYER 2 PANEL|PANNEAU JOUEUR 2
+micrombc only|micrombc uniquement
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl uniquement

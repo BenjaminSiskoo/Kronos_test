@@ -942,3 +942,79 @@ http://www.monkeystudio.org|http://www.monkeystudio.org
 nanovg OSD Interface|nanovg OSD 接口
 no memory selected|未选择内存
 toolBar|工具栏
+6Player multitap connected|已连接6Player多路适配器
+Aspect ratio|宽高比
+Auto (first region of the disc)|自动（光盘的第一个区域）
+Buttons|按钮
+Cell Shading (Toon)|卡通渲染（Toon）
+Choose the floppy disk folder|选择软盘文件夹
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|点击一个控件，然后按下要分配的按键或按钮。按Esc取消。勾号表示已分配的控件。
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|点击一个控件，然后按下要分配的按键或按钮。按Esc取消。勾号表示已分配的控件。
+Connect the floppy disk drive|连接软盘驱动器
+Console region|主机区域
+Controller driver|手柄驱动
+Debugging|调试
+Deinterlacing Adaptive (field-aware)|去隔行 自适应（按场）
+Deinterlacing Blend|去隔行 混合
+Deinterlacing Smooth Bob|去隔行 平滑Bob
+Disc drive|光驱
+Display|显示
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|双击某操作的“快捷键”列，然后按下新的组合键。留空则删除快捷键。
+Emulation cores|模拟核心
+FAMILY-SPECIFIC & DIAGNOSTICS|机型专属与诊断
+Floppy disk drive (communication connector)|软盘驱动器（通信接口）
+Folders|文件夹
+Gun / mouse|光枪 / 鼠标
+Held: the button is pressed with turbo (turbo switch on)|按住：按钮以连发方式按下（连发开关开启）
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|按住：开关处于Hu位置（每秒按Start 15次，可解锁Hudson游戏的额外内容）
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|按住：开关处于SLOW位置（反复按Start，慢动作）
+Hu position|Hu位置
+Interface|界面
+Internal memory|内部存储
+Internal resolution :|内部分辨率 :
+Left stick|左摇杆
+On (sprite colors)|开（精灵颜色）
+On (white)|开（白色）
+Panel|面板
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|模拟土星的区域。支持多区域的光盘可在此区域运行；自动将使用光盘列出的第一个区域。下次启动游戏时生效。
+Rendering|渲染
+Right stick|右摇杆
+SLOW position|SLOW位置
+SLOW switch|SLOW开关
+ST-V game|ST-V游戏
+ST-V region|ST-V区域
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|此端口上的世嘉6Player或Hudson SBom多路适配器：插槽1-6为其接口。与光枪不兼容。
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|世嘉土星软盘驱动器（HSS-0128）。需要真实BIOS。软盘即下方的文件夹（fdd_part0.bin、fdd_part1.bin）。
+Sound output|声音输出
+System|系统
+TRACKBALL|轨迹球
+COINS & CONTROL PANEL|投币与控制面板
+Turbo|连发
+Turbo speed (presses per second)|连发速度（每秒按键次数）
+Up to 26 on the real pad. Common to every SBom Joycard.|真实手柄最多26。所有SBom Joycard通用。
+Video CD card|Video CD卡
+Video filter :|视频滤镜 :
+Write protected|写保护
+hold to force a payout pulse|按住以强制发出一次出币脉冲
+Button|按钮
+Button 1|按钮 1
+Button 3|按钮 3
+Button 4|按钮 4
+Button 6|按钮 6
+Start 1|开始 1
+START 1|开始 1
+Coin 1|投币 1
+COIN 1|投币 1
+PLAYER 1|玩家 1
+PLAYER 1 PANEL|玩家 1 面板
+Start 2|开始 2
+START 2|开始 2
+Coin 2|投币 2
+COIN 2|投币 2
+PLAYER 2|玩家 2
+PLAYER 2 PANEL|玩家 2 面板
+SERVICE|服务
+TEST|测试
+PAUSE|暂停
+micrombc only|micrombc专用
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl专用

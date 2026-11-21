@@ -887,3 +887,71 @@ addr2line utility is not configured properly, source not available.|L'utilità a
 nanovg OSD Interface|Interfaccia OSD nanovg
 no memory selected|nessuna memoria selezionata
 toolBar|Barra degli strumenti
+6Player multitap connected|Multitap 6Player collegato
+Aspect ratio|Rapporto d'aspetto
+Auto (first region of the disc)|Auto (prima regione del disco)
+Buttons|Pulsanti
+Cell Shading (Toon)|Cel shading (Toon)
+Choose the floppy disk folder|Scegli la cartella del floppy
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Fai clic su un controllo, poi premi un tasto o un pulsante per assegnarlo. Esc annulla. Un segno di spunta indica un controllo assegnato.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Fai clic su un controllo, poi premi il tasto o il pulsante da assegnare. Esc annulla. Un segno di spunta indica un controllo assegnato.
+Connect the floppy disk drive|Collega il lettore floppy
+Console region|Regione della console
+Controller driver|Driver del controller
+Debugging|Debug
+Deinterlacing Adaptive (field-aware)|Deinterlacciamento adattivo (per campo)
+Deinterlacing Blend|Deinterlacciamento a miscela
+Deinterlacing Smooth Bob|Deinterlacciamento Smooth Bob
+Disc drive|Unità disco
+Display|Schermo
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Fai doppio clic sulla colonna Scorciatoia di un'azione, poi premi la nuova combinazione di tasti. Lasciala vuota per rimuovere la scorciatoia.
+Emulation cores|Core di emulazione
+FAMILY-SPECIFIC & DIAGNOSTICS|SPECIFICO DELLA FAMIGLIA E DIAGNOSTICA
+Floppy disk drive (communication connector)|Lettore floppy (connettore di comunicazione)
+Folders|Cartelle
+Gun / mouse|Pistola / mouse
+Held: the button is pressed with turbo (turbo switch on)|Tenuto: il pulsante è premuto con turbo (interruttore turbo attivo)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Tenuto: interruttore in posizione Hu (Start 15 volte al secondo, sblocca extra nei giochi Hudson)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Tenuto: interruttore in posizione SLOW (Start premuto ripetutamente, rallentatore)
+Hu position|Posizione Hu
+Interface|Interfaccia
+Internal memory|Memoria interna
+Internal resolution :|Risoluzione interna :
+Left stick|Stick sinistro
+On (sprite colors)|Attivo (colori sprite)
+On (white)|Attivo (bianco)
+Panel|Pannello
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Regione del Saturn emulato. Un disco per più regioni funziona in questa; Auto usa la prima regione indicata dal disco. Ha effetto al prossimo avvio di un gioco.
+Right stick|Stick destro
+SLOW position|Posizione SLOW
+SLOW switch|Interruttore SLOW
+ST-V game|Gioco ST-V
+ST-V region|Regione ST-V
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Multitap Sega 6Player o Hudson SBom su questa porta: gli slot 1-6 sono i suoi connettori. Non compatibile con la pistola.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Lettore floppy Sega Saturn (HSS-0128). Richiede il BIOS reale. Il floppy è la cartella qui sotto (fdd_part0.bin, fdd_part1.bin).
+Sound output|Uscita audio
+System|Sistema
+COINS & CONTROL PANEL|MONETE E PANNELLO DI CONTROLLO
+Turbo speed (presses per second)|Velocità turbo (pressioni al secondo)
+Up to 26 on the real pad. Common to every SBom Joycard.|Fino a 26 sul pad reale. Comune a ogni SBom Joycard.
+Video CD card|Scheda Video CD
+Video filter :|Filtro video :
+Write protected|Protetto da scrittura
+hold to force a payout pulse|tieni premuto per forzare un impulso di pagamento
+Button|Pulsante
+Button 1|Pulsante 1
+Button 3|Pulsante 3
+Button 4|Pulsante 4
+Button 6|Pulsante 6
+Coin 1|Gettone 1
+COIN 1|GETTONE 1
+PLAYER 1|GIOCATORE 1
+PLAYER 1 PANEL|PANNELLO GIOCATORE 1
+Coin 2|Gettone 2
+COIN 2|GETTONE 2
+PLAYER 2|GIOCATORE 2
+PLAYER 2 PANEL|PANNELLO GIOCATORE 2
+SERVICE|SERVIZIO
+PAUSE|PAUSA
+micrombc only|micrombc solo
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl solo

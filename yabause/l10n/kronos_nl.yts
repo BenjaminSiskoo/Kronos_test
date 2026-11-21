@@ -942,3 +942,68 @@ http://www.monkeystudio.org|http://www.monkeystudio.org
 nanovg OSD Interface|nanovg OSD-interface
 no memory selected|geen geheugen geselecteerd
 toolBar|Hulpmiddelbalk
+6Player multitap connected|6Player-multitap aangesloten
+Aspect ratio|Beeldverhouding
+Auto (first region of the disc)|Auto (eerste regio van de schijf)
+Buttons|Knoppen
+Cell Shading (Toon)|Cel shading (Toon)
+Choose the floppy disk folder|Kies de diskettemap
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Klik op een besturingselement en druk op een toets of knop om het toe te wijzen. Esc annuleert. Een vinkje toont een toegewezen element.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Klik op een besturingselement en druk op de toe te wijzen toets of knop. Esc annuleert. Een vinkje toont een toegewezen element.
+Connect the floppy disk drive|Diskettestation verbinden
+Console region|Consoleregio
+Controller driver|Controllerstuurprogramma
+Debugging|Foutopsporing
+Deinterlacing Adaptive (field-aware)|Deinterlacing adaptief (veldgebaseerd)
+Deinterlacing Blend|Deinterlacing menging
+Disc drive|Schijfstation
+Display|Weergave
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Dubbelklik op de kolom Sneltoets van een actie en druk op de nieuwe toetscombinatie. Laat leeg om de sneltoets te verwijderen.
+Emulation cores|Emulatiekernen
+FAMILY-SPECIFIC & DIAGNOSTICS|FAMILIESPECIFIEK & DIAGNOSTIEK
+Floppy disk drive (communication connector)|Diskettestation (communicatieaansluiting)
+Folders|Mappen
+Gun / mouse|Pistool / muis
+Held: the button is pressed with turbo (turbo switch on)|Ingedrukt: de knop wordt met turbo ingedrukt (turboschakelaar aan)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Ingedrukt: schakelaar in Hu-stand (Start 15 keer per seconde, ontgrendelt extra's in Hudson-spellen)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Ingedrukt: schakelaar in SLOW-stand (Start herhaaldelijk ingedrukt, slow motion)
+Hu position|Hu-stand
+Internal memory|Intern geheugen
+Internal resolution :|Interne resolutie :
+Left stick|Linkerstick
+On (sprite colors)|Aan (spritekleuren)
+On (white)|Aan (wit)
+Panel|Paneel
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Regio van de geëmuleerde Saturn. Een schijf voor meerdere regio's werkt hierin; Auto neemt de eerste regio van de schijf. Geldt bij de volgende spelstart.
+Right stick|Rechterstick
+SLOW position|SLOW-stand
+SLOW switch|SLOW-schakelaar
+ST-V game|ST-V-spel
+ST-V region|ST-V-regio
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Sega 6Player of Hudson SBom Multitap op deze poort: sleuven 1-6 zijn de aansluitingen. Niet compatibel met het pistool.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Sega Saturn diskettestation (HSS-0128). Vereist de echte BIOS. De diskette is de map hieronder (fdd_part0.bin, fdd_part1.bin).
+Sound output|Geluidsuitvoer
+System|Systeem
+COINS & CONTROL PANEL|MUNTEN & BEDIENINGSPANEEL
+Turbo speed (presses per second)|Turbosnelheid (drukken per seconde)
+Up to 26 on the real pad. Common to every SBom Joycard.|Tot 26 op de echte pad. Gemeenschappelijk voor elke SBom Joycard.
+Video CD card|Video-CD-kaart
+Video filter :|Videofilter :
+Write protected|Schrijfbeveiligd
+hold to force a payout pulse|ingedrukt houden om een uitbetalingspuls af te dwingen
+Button|Knop
+Button 1|Knop 1
+Button 3|Knop 3
+Button 4|Knop 4
+Button 6|Knop 6
+Coin 1|Munt 1
+COIN 1|MUNT 1
+PLAYER 1|SPELER 1
+PLAYER 1 PANEL|SPELER 1 PANEEL
+Coin 2|Munt 2
+COIN 2|MUNT 2
+PLAYER 2|SPELER 2
+PLAYER 2 PANEL|SPELER 2 PANEEL
+PAUSE|PAUZE
+micrombc only|micrombc alleen
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl alleen

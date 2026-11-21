@@ -900,3 +900,65 @@ addr2line utility is not configured properly, source not available.|Das Programm
 nanovg OSD Interface|nanovg OSD Schnittstelle
 no memory selected|kein Speicher ausgewählt
 toolBar|Werkzeugleiste
+6Player multitap connected|6Player-Multitap angeschlossen
+Aspect ratio|Seitenverhältnis
+Auto (first region of the disc)|Auto (erste Region der Disc)
+Buttons|Tasten
+Cell Shading (Toon)|Cel-Shading (Toon)
+Choose the floppy disk folder|Diskettenordner auswählen
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Klicke auf ein Steuerelement und drücke dann eine Taste oder einen Knopf zum Zuweisen. Esc bricht ab. Ein Häkchen zeigt ein zugewiesenes Steuerelement.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Klicke auf ein Steuerelement und drücke dann die zuzuweisende Taste oder den Knopf. Esc bricht ab. Ein Häkchen zeigt ein zugewiesenes Steuerelement.
+Connect the floppy disk drive|Diskettenlaufwerk verbinden
+Console region|Konsolenregion
+Controller driver|Controller-Treiber
+Deinterlacing Adaptive (field-aware)|Deinterlacing adaptiv (halbbildbasiert)
+Deinterlacing Blend|Deinterlacing Überblendung
+Disc drive|Disc-Laufwerk
+Display|Anzeige
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Doppelklicke in der Spalte „Tastenkürzel“ einer Aktion und drücke dann die neue Tastenkombination. Leer lassen, um das Kürzel zu entfernen.
+Emulation cores|Emulationskerne
+FAMILY-SPECIFIC & DIAGNOSTICS|FAMILIENSPEZIFISCH & DIAGNOSE
+Floppy disk drive (communication connector)|Diskettenlaufwerk (Kommunikationsanschluss)
+Folders|Ordner
+Gun / mouse|Pistole / Maus
+Held: the button is pressed with turbo (turbo switch on)|Gehalten: Die Taste wird mit Turbo gedrückt (Turbo-Schalter an)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Gehalten: Schalter in Hu-Stellung (Start 15-mal pro Sekunde, schaltet Extras in Hudson-Spielen frei)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Gehalten: Schalter in SLOW-Stellung (Start wiederholt gedrückt, Zeitlupe)
+Hu position|Hu-Stellung
+Interface|Oberfläche
+Internal memory|Interner Speicher
+Internal resolution :|Interne Auflösung :
+Left stick|Linker Stick
+On (sprite colors)|An (Sprite-Farben)
+On (white)|An (weiß)
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Region der emulierten Saturn. Eine Disc für mehrere Regionen läuft in dieser; Auto nimmt die erste auf der Disc genannte Region. Wirkt beim nächsten Spielstart.
+Right stick|Rechter Stick
+SLOW position|SLOW-Stellung
+SLOW switch|SLOW-Schalter
+ST-V game|ST-V-Spiel
+ST-V region|ST-V-Region
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Sega 6Player oder Hudson SBom Multitap an diesem Port: Steckplätze 1-6 sind seine Anschlüsse. Nicht mit der Pistole kompatibel.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Sega Saturn Diskettenlaufwerk (HSS-0128). Benötigt das echte BIOS. Die Diskette ist der Ordner unten (fdd_part0.bin, fdd_part1.bin).
+Sound output|Tonausgabe
+COINS & CONTROL PANEL|MÜNZEN & BEDIENFELD
+Turbo speed (presses per second)|Turbo-Geschwindigkeit (Drücke pro Sekunde)
+Up to 26 on the real pad. Common to every SBom Joycard.|Bis zu 26 am echten Pad. Gilt für jedes SBom Joycard.
+Video CD card|Video-CD-Karte
+Video filter :|Videofilter :
+Write protected|Schreibgeschützt
+hold to force a payout pulse|halten, um einen Auszahlimpuls zu erzwingen
+Button|Taste
+Button 1|Taste 1
+Button 3|Taste 3
+Button 4|Taste 4
+Button 6|Taste 6
+Coin 1|Münze 1
+COIN 1|MÜNZE 1
+PLAYER 1|SPIELER 1
+PLAYER 1 PANEL|SPIELER 1 PANEL
+Coin 2|Münze 2
+COIN 2|MÜNZE 2
+PLAYER 2|SPIELER 2
+PLAYER 2 PANEL|SPIELER 2 PANEL
+micrombc only|micrombc nur
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl nur

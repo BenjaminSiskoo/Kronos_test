@@ -942,3 +942,72 @@ http://www.monkeystudio.org|http://www.monkeystudio.org
 nanovg OSD Interface|Interface OSD nanovg
 no memory selected|nenhuma memória selecionada
 toolBar|Barra de Ferramentas
+6Player multitap connected|Multitap 6Player conectado
+Aspect ratio|Proporção da tela
+Auto (first region of the disc)|Auto (primeira região do disco)
+Buttons|Botões
+Cell Shading (Toon)|Cel shading (Toon)
+Choose the floppy disk folder|Escolher a pasta do disquete
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Clique em um controle e pressione uma tecla ou botão para atribuí-lo. Esc cancela. Uma marca indica um controle atribuído.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Clique em um controle e pressione a tecla ou botão a atribuir. Esc cancela. Uma marca indica um controle atribuído.
+Connect the floppy disk drive|Conectar a unidade de disquete
+Console region|Região do console
+Controller driver|Driver do controle
+Debugging|Depuração
+Deinterlacing Adaptive (field-aware)|Desentrelaçamento adaptativo (por campo)
+Deinterlacing Blend|Desentrelaçamento por mistura
+Deinterlacing Smooth Bob|Desentrelaçamento Bob suavizado
+Disc drive|Unidade de disco
+Display|Tela
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Clique duas vezes na coluna Atalho de uma ação e pressione a nova combinação de teclas. Deixe vazio para remover o atalho.
+Emulation cores|Núcleos de emulação
+FAMILY-SPECIFIC & DIAGNOSTICS|ESPECÍFICO DA FAMÍLIA E DIAGNÓSTICO
+Floppy disk drive (communication connector)|Unidade de disquete (conector de comunicação)
+Folders|Pastas
+Gun / mouse|Pistola / mouse
+Held: the button is pressed with turbo (turbo switch on)|Mantido: o botão é pressionado com turbo (chave turbo ligada)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Mantido: chave na posição Hu (Start 15 vezes por segundo, libera extras em jogos Hudson)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Mantido: chave na posição SLOW (Start pressionado repetidamente, câmera lenta)
+Hu position|Posição Hu
+Internal memory|Memória interna
+Internal resolution :|Resolução interna :
+Left stick|Direcional esquerdo
+On (sprite colors)|Ligado (cores do sprite)
+On (white)|Ligado (branco)
+Panel|Painel
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Região do Saturn emulado. Um disco para várias regiões funciona nesta; Auto usa a primeira região indicada pelo disco. Vale a partir do próximo jogo iniciado.
+Rendering|Renderização
+Right stick|Direcional direito
+SLOW position|Posição SLOW
+SLOW switch|Chave SLOW
+ST-V game|Jogo ST-V
+ST-V region|Região ST-V
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Multitap Sega 6Player ou Hudson SBom nesta porta: os slots 1-6 são seus conectores. Não é compatível com a pistola.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Unidade de disquete Sega Saturn (HSS-0128). Requer a BIOS real. O disquete é a pasta abaixo (fdd_part0.bin, fdd_part1.bin).
+Sound output|Saída de som
+System|Sistema
+COINS & CONTROL PANEL|MOEDAS E PAINEL DE CONTROLE
+Turbo speed (presses per second)|Velocidade do turbo (toques por segundo)
+Up to 26 on the real pad. Common to every SBom Joycard.|Até 26 no controle real. Comum a todos os SBom Joycard.
+Video CD card|Cartão Video CD
+Video filter :|Filtro de vídeo :
+Write protected|Protegido contra gravação
+hold to force a payout pulse|segure para forçar um pulso de pagamento
+Button|Botão
+Button 1|Botão 1
+Button 3|Botão 3
+Button 4|Botão 4
+Button 6|Botão 6
+Coin 1|Ficha 1
+COIN 1|FICHA 1
+PLAYER 1|JOGADOR 1
+PLAYER 1 PANEL|PAINEL JOGADOR 1
+Coin 2|Ficha 2
+COIN 2|FICHA 2
+PLAYER 2|JOGADOR 2
+PLAYER 2 PANEL|PAINEL JOGADOR 2
+SERVICE|SERVIÇO
+TEST|TESTE
+PAUSE|PAUSA
+micrombc only|micrombc somente
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl somente

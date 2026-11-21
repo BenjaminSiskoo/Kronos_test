@@ -942,3 +942,78 @@ http://www.monkeystudio.org|http://www.monkeystudio.org
 nanovg OSD Interface|Интерфейс OSD nanovg
 no memory selected|память не выбрана
 toolBar|Панель инструментов
+6Player multitap connected|Мультитап 6Player подключён
+Aspect ratio|Соотношение сторон
+Auto (first region of the disc)|Авто (первый регион диска)
+Buttons|Кнопки
+Cell Shading (Toon)|Cel shading (Toon)
+Choose the floppy disk folder|Выберите папку дискеты
+Click a control, then press a key or button to assign it. Esc cancels. A check mark shows an assigned control.|Щёлкните элемент, затем нажмите клавишу или кнопку для назначения. Esc — отмена. Галочка отмечает назначенный элемент.
+Click a control, then press the key or button to assign. Esc cancels. A check mark shows an assigned control.|Щёлкните элемент, затем нажмите назначаемую клавишу или кнопку. Esc — отмена. Галочка отмечает назначенный элемент.
+Connect the floppy disk drive|Подключить дисковод гибких дисков
+Console region|Регион консоли
+Controller driver|Драйвер контроллера
+Debugging|Отладка
+Deinterlacing Adaptive (field-aware)|Деинтерлейсинг адаптивный (по полям)
+Deinterlacing Blend|Деинтерлейсинг со смешиванием
+Deinterlacing Smooth Bob|Деинтерлейсинг Smooth Bob
+Disc drive|Дисковод
+Display|Экран
+Double-click the Shortcut column of an action, then press the new key combination. Leave it empty to remove the shortcut.|Дважды щёлкните столбец «Сочетание» у действия и нажмите новое сочетание клавиш. Оставьте пустым, чтобы удалить сочетание.
+Emulation cores|Ядра эмуляции
+FAMILY-SPECIFIC & DIAGNOSTICS|СПЕЦИФИКА СЕМЕЙСТВА И ДИАГНОСТИКА
+Floppy disk drive (communication connector)|Дисковод гибких дисков (коммуникационный разъём)
+Folders|Папки
+Gun / mouse|Пистолет / мышь
+Held: the button is pressed with turbo (turbo switch on)|Удерживается: кнопка нажата с турбо (турбо-переключатель включён)
+Held: switch in the Hu position (Start 15 times per second, unlocks extras in Hudson games)|Удерживается: переключатель в положении Hu (Start 15 раз в секунду, открывает бонусы в играх Hudson)
+Held: switch in the SLOW position (Start pressed repeatedly, slow motion)|Удерживается: переключатель в положении SLOW (Start нажимается многократно, замедление)
+Hu position|Положение Hu
+Interface|Интерфейс
+Internal memory|Внутренняя память
+Internal resolution :|Внутреннее разрешение :
+Left stick|Левый стик
+On (sprite colors)|Вкл. (цвета спрайтов)
+On (white)|Вкл. (белый)
+Panel|Панель
+Region of the emulated Saturn. A disc made for several regions runs in this one; Auto takes the first region listed by the disc. Takes effect the next time a game is started.|Регион эмулируемой Saturn. Диск для нескольких регионов запустится в этом; «Авто» берёт первый регион диска. Вступает в силу при следующем запуске игры.
+Rendering|Рендеринг
+Right stick|Правый стик
+SLOW position|Положение SLOW
+SLOW switch|Переключатель SLOW
+ST-V game|Игра ST-V
+ST-V region|Регион ST-V
+Sega 6Player or Hudson SBom Multitap in this port: slots 1-6 are its connectors. Not compatible with the gun.|Мультитап Sega 6Player или Hudson SBom на этом порту: гнёзда 1-6 — его разъёмы. Несовместим с пистолетом.
+Sega Saturn Floppy Disk Drive (HSS-0128). Requires the real BIOS. The floppy is the folder below (fdd_part0.bin, fdd_part1.bin).|Дисковод Sega Saturn (HSS-0128). Требуется настоящий BIOS. Дискета — это папка ниже (fdd_part0.bin, fdd_part1.bin).
+Sound output|Вывод звука
+System|Система
+COINS & CONTROL PANEL|МОНЕТЫ И ПУЛЬТ УПРАВЛЕНИЯ
+Turbo|Турбо
+Turbo speed (presses per second)|Скорость турбо (нажатий в секунду)
+Up to 26 on the real pad. Common to every SBom Joycard.|До 26 на настоящем геймпаде. Общее для всех SBom Joycard.
+Video CD card|Карта Video CD
+Video filter :|Видеофильтр :
+Write protected|Защита от записи
+hold to force a payout pulse|удерживайте для принудительного импульса выплаты
+Button|Кнопка
+Button 1|Кнопка 1
+Button 3|Кнопка 3
+Button 4|Кнопка 4
+Button 6|Кнопка 6
+Start 1|Старт 1
+START 1|СТАРТ 1
+Coin 1|Монета 1
+COIN 1|МОНЕТА 1
+PLAYER 1|ИГРОК 1
+PLAYER 1 PANEL|ИГРОК 1 ПАНЕЛЬ
+Start 2|Старт 2
+START 2|СТАРТ 2
+Coin 2|Монета 2
+COIN 2|МОНЕТА 2
+PLAYER 2|ИГРОК 2
+PLAYER 2 PANEL|ИГРОК 2 ПАНЕЛЬ
+SERVICE|СЕРВИС
+TEST|ТЕСТ
+PAUSE|ПАУЗА
+micrombc only|micrombc только
+patocar / skychal / supgoal / techbowl only|patocar / skychal / supgoal / techbowl только
