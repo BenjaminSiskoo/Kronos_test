@@ -32,6 +32,9 @@
 #include <QImageWriter>
 #include <QStorageInfo>
 #include <QToolTip>
+#include <QListWidget>
+#include <QTabBar>
+#include <QTabWidget>
 
 #include "VolatileSettings.h"
 
@@ -203,6 +206,12 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 		setWindowFlags( Qt::Sheet );
 	}
 
+	// The pages are chosen from the side bar (lwPages); the QTabWidget is only
+	// used as a stack, so its own tab bar is hidden. The page order is the
+	// one used by UIYabause::openSettingsOnTabs().
+	twPages->tabBar()->hide();
+	setupSideBar();
+
 	setupCdDrives();
 
 	// load cores informations
@@ -221,12 +230,67 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 	// load settings
 	loadSettings();
 
-	// connections
-	foreach ( QToolButton* tb, findChildren<QToolButton*>() )
-	{
+	// connections: only the "..." buttons of this dialog. findChildren() used
+	// to catch the tool buttons of the two UIPortManager too (not harmful,
+	// tbBrowse_clicked() ignores them, but 36 useless connections).
+	QToolButton* const browseButtons[] = { tbBios, tbBiosSettings, tbCdRom, tbSaveStates, tbScreenshots,
+		tbCartridge, tbMemory, tbMpegROM, tbFloppyFolder, tbAddr2Line };
+	for ( QToolButton* tb : browseButtons )
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbBrowse_clicked() ) );
+
+	updateGunMouseLabel( sGunMouseSensitivity->value() );
+}
+
+void UISettings::setupSideBar()
+{
+	// ":/settings/<name>.png" (see resources.qrc), same order as the pages
+	static const char* const icons[] = { "general", "video", "sound", "cart", "input", "advanced", "shortcuts", "debug" };
+
+	lwPages->clear();
+	for ( int i = 0; i < twPages->count(); i++ )
+	{
+		QListWidgetItem* item = new QListWidgetItem( twPages->tabText( i ), lwPages );
+		if ( i < (int)( sizeof( icons ) / sizeof( icons[ 0 ] ) ) )
+			item->setIcon( QIcon( QString( ":/settings/%1.png" ).arg( icons[ i ] ) ) );
 	}
 
+	connect( lwPages, SIGNAL( currentRowChanged( int ) ), twPages, SLOT( setCurrentIndex( int ) ) );
+	connect( twPages, SIGNAL( currentChanged( int ) ), lwPages, SLOT( setCurrentRow( int ) ) );
+	lwPages->setCurrentRow( twPages->currentIndex() );
+}
+
+void UISettings::refreshSideBar()
+{
+	// the tab texts are translated by retranslateWidget(): copy them again
+	for ( int i = 0; i < lwPages->count() && i < twPages->count(); i++ )
+		lwPages->item( i )->setText( twPages->tabText( i ) );
+}
+
+void UISettings::updateGunMouseLabel( int value )
+{
+	lGunMouseValue->setText( QString( "%1 %" ).arg( value ) );
+}
+
+void UISettings::on_sGunMouseSensitivity_valueChanged( int value )
+{
+	updateGunMouseLabel( value );
+}
+
+QList<QAction*> UISettings::parentActions() const
+{
+	// parent() is NULL when the dialog is created without a main window
+	QObject* const mainWindow = parent();
+	return mainWindow ? mainWindow->findChildren<QAction*>() : QList<QAction*>();
+}
+
+void UISettings::reject()
+{
+	// The video options are applied to the running core as soon as they are
+	// changed in the dialog (changeFilterMode()...). Cancelling used to leave
+	// them applied until the dialog was opened again: put the saved values
+	// back, which also applies them to the core again.
+	loadSettings();
+	QDialog::reject();
 }
 
 void UISettings::setCurrentOpenedTab(int idx)
@@ -241,6 +305,7 @@ int UISettings::exec()
 	loadSettings();
 	// retranslate widgets
 	QtYabause::retranslateWidget( this );
+	refreshSideBar();
 
 	return QDialog::exec();
 }
@@ -274,9 +339,9 @@ void UISettings::requestSTVFolder( const QString& c, QLineEdit* e, QString propo
 {
 	auto const & path = proposedPath.isEmpty() ? e->text() : proposedPath;
 	const QString existingDirectoryPath = CommonDialogs::getExistingDirectory(path, c );
-	if ( !existingDirectoryPath.isNull() ) {
-		e->setText( existingDirectoryPath );
-	}
+	if ( existingDirectoryPath.isNull() )
+		return; // cancelled: keep the folder and the list of games as they are
+	e->setText( existingDirectoryPath );
 	/* toStdString() donne de l'UTF-8, que fopen() de Windows ne comprend pas
 	   pour un caractere non ASCII : encodage du systeme de fichiers. */
 	int const nbGames = STVGetRomList(QFile::encodeName(existingDirectoryPath).constData(), 1);
@@ -299,20 +364,21 @@ QStringList getCdDriveList()
 			list.append(storage.rootPath());
 	}
 #elif defined Q_OS_LINUX
-	FILE * f = fopen("/proc/sys/dev/cdrom/info", "r");
-	char buffer[1024];
-	char drive_name[10];
-	char drive_path[255];
-
-	if (f != NULL) {
-		while (fgets(buffer, 1024, f) != NULL) {
-			if (sscanf(buffer, "drive name:%s", drive_name) == 1) {
-				sprintf(drive_path, "/dev/%s", drive_name);
-
-				list.append(drive_path);
-			}
+	// /proc/sys/dev/cdrom/info: "drive name:\t\tsr0\tsr1". The old code read
+	// one name into a 10 byte buffer (overflow with a longer name) and
+	// ignored the other drives of the line.
+	QFile f( "/proc/sys/dev/cdrom/info" );
+	if ( f.open( QIODevice::ReadOnly | QIODevice::Text ) )
+	{
+		while ( !f.atEnd() )
+		{
+			const QString line = QString::fromLocal8Bit( f.readLine() );
+			if ( !line.startsWith( "drive name:" ) )
+				continue;
+			const QStringList names = line.mid( 11 ).split( QRegExp( "\\s+" ), QString::SkipEmptyParts );
+			foreach ( const QString& name, names )
+				list.append( "/dev/" + name );
 		}
-		fclose(f);
 	}
 #elif defined Q_OS_MAC
 #endif
@@ -429,9 +495,9 @@ void UISettings::tbBrowse_clicked()
 void UISettings::on_cbInput_currentIndexChanged( int id )
 {
 	PerInterface_struct* core = QtYabause::getPERCore( cbInput->itemData( id ).toInt() );
-        core->Init();
-
-	Q_ASSERT( core );
+	if ( !core ) // id == -1 (empty combo) or unknown core: Init() used to be called before the check
+		return;
+	core->Init();
 
 	pmPort1->setCore( core );
 	pmPort2->setCore( core );
@@ -440,8 +506,8 @@ void UISettings::on_cbInput_currentIndexChanged( int id )
 void UISettings::on_cbCdRom_currentIndexChanged( int id )
 {
 	CDInterface* core = QtYabause::getCDCore( cbCdRom->itemData( id ).toInt() );
-
-	Q_ASSERT( core );
+	if ( !core )
+		return;
 
 	switch (core->id)
 	{
@@ -471,37 +537,37 @@ void UISettings::on_cbClockSync_stateChanged( int state )
 
 void UISettings::changeAspectRatio(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_ASPECT_RATIO, (mAspectRatio.at(id).id).toInt());
+    if (id >= 0 && id < mAspectRatio.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_ASPECT_RATIO, (mAspectRatio.at(id).id).toInt());
 }
 
 void UISettings::changeWireframe(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_WIREFRAME, (mWireframe.at(id).id).toInt());
+    if (id >= 0 && id < mWireframe.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_WIREFRAME, (mWireframe.at(id).id).toInt());
 }
 
 void UISettings::changeMeshMode(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_MESH_MODE, (mMeshMode.at(id).id).toInt());
+    if (id >= 0 && id < mMeshMode.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_MESH_MODE, (mMeshMode.at(id).id).toInt());
 }
 
 void UISettings::changeBandingMode(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_BANDING_MODE, (mBandingMode.at(id).id).toInt());
+    if (id >= 0 && id < mBandingMode.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_BANDING_MODE, (mBandingMode.at(id).id).toInt());
 }
 
 void UISettings::changeResolution(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_RESOLUTION_MODE, (mResolutionMode.at(id).id).toInt());
+    if (id >= 0 && id < mResolutionMode.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_RESOLUTION_MODE, (mResolutionMode.at(id).id).toInt());
 }
 
 void UISettings::changeFilterMode(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_FILTERMODE, (mVideoFilterMode.at(id).id).toInt());
+    if (id >= 0 && id < mVideoFilterMode.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_FILTERMODE, (mVideoFilterMode.at(id).id).toInt());
 }
 
 void UISettings::changeUpscaleMode(int id)
 {
-    if (VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_UPSCALMODE, (mUpscaleFilterMode.at(id).id).toInt());
+    if (id >= 0 && id < mUpscaleFilterMode.size() && VIDCore != NULL) VIDCore->SetSettingValue(VDP_SETTING_UPSCALMODE, (mUpscaleFilterMode.at(id).id).toInt());
 }
 
 void UISettings::on_cbCartridge_currentIndexChanged( int index )
@@ -560,6 +626,7 @@ void UISettings::on_cbCartridge_currentIndexChanged( int index )
 		cbSTVGame->setCurrentIndex( curGame );
 	}
 	cbSTVGame->setVisible(cart.pathFlag);
+	lSTVGame->setVisible(cart.pathFlag);
 	lRegion->setVisible(cart.pathFlag);
 	cbRegion->setVisible(cart.pathFlag);
 	selectedCartridgeType = id;
@@ -673,7 +740,7 @@ void UISettings::loadTranslations()
 
 void UISettings::populateShortcutsView()
 {
-	QList<QAction *> actions = parent()->findChildren<QAction *>();
+	QList<QAction *> actions = parentActions();
 	foreach ( QAction* action, actions )
 	{
 		if (action->text().isEmpty() || !action->isShortcutVisibleInContextMenu())
@@ -728,7 +795,10 @@ void UISettings::loadSettings()
 	leCdRom->setText( s->value( "General/CdRomISO" ).toString() );
 	QtYabause::updateTitle();
 	if (s->value( "General/CdRom", QtYabause::defaultCDCore().id ).toInt() == CDCORE_ARCH)
-		cbCdDrive->setCurrentIndex(leCdRom->text().isEmpty() ? 0 : cbCdDrive->findText(leCdRom->text()));
+	{
+		int const driveIndex = leCdRom->text().isEmpty() ? 0 : cbCdDrive->findText(leCdRom->text());
+		cbCdDrive->setCurrentIndex(driveIndex < 0 ? 0 : driveIndex); // the saved drive may be gone
+	}
 
 	leSaveStates->setText( s->value( "General/SaveStates", getDataDirPath() ).toString() );
 	//screenshots
@@ -821,6 +891,7 @@ void UISettings::loadSettings()
 	// input
 	cbInput->setCurrentIndex( cbInput->findData( s->value( "Input/PerCore", QtYabause::defaultPERCore().id ).toInt() ) );
 	sGunMouseSensitivity->setValue(s->value( "Input/GunMouseSensitivity", 100).toInt() );
+	updateGunMouseLabel( sGunMouseSensitivity->value() );
 
 	// advanced
 	cbRegion->setCurrentIndex( cbRegion->findData( s->value( "STV/Region", mRegions.at( 0 ).id ).toString() ) );
@@ -832,7 +903,7 @@ void UISettings::loadSettings()
 
 	//shortcuts
 	{
-		auto const actions = parent()->findChildren<QAction *>();
+		auto const actions = parentActions();
 		for(auto const action : actions)
 		{
 			if (action->text().isEmpty() || !action->isShortcutVisibleInContextMenu())
@@ -868,7 +939,7 @@ void UISettings::saveSettings()
 	s->setValue( "General/SH2Cache", cbUseCache->isChecked() );
 	s->setValue( "General/CdRom", cbCdRom->itemData( cbCdRom->currentIndex() ).toInt() );
 	CDInterface* core = QtYabause::getCDCore( cbCdRom->itemData( cbCdRom->currentIndex() ).toInt() );
-	if ( core->id == CDCORE_ARCH )
+	if ( core && core->id == CDCORE_ARCH )
 		s->setValue( "General/CdRomISO", cbCdDrive->currentText() );
 	else
 		s->setValue( "General/CdRomISO", leCdRom->text() );
@@ -949,7 +1020,7 @@ void UISettings::saveSettings()
 	// shortcuts
 	applyShortcuts();
 	s->beginGroup("Shortcuts");
-	auto const actions = parent()->findChildren<QAction *>();
+	auto const actions = parentActions();
 	for ( auto const * const action : actions )
 	{
 		if (action->text().isEmpty() || !action->isShortcutVisibleInContextMenu())
