@@ -51,9 +51,29 @@ public:
 	bool stepFrame();
 	bool inFrame() const { return mInFrame; }
 
+	/* Presentation of the frames on the host display ("Video/SwapMode").
+	   This is independent of the speed limiter of the core (the
+	   "General/EnableVSync" setting, which only decides whether the core
+	   waits for the console frame rate): the limiter stays the master clock,
+	   the swap interval only decides whether the host waits for its vertical
+	   blank before showing a finished frame. */
+	enum SwapMode {
+		SwapOff = 0,      /* no wait: lowest latency, tearing possible */
+		SwapVSync = 1,    /* wait for the vertical blank: no tearing */
+		SwapAdaptive = 2  /* vertical blank, but a late frame is shown at once
+		                     (needs the swap control tear extension; falls
+		                     back to SwapVSync when it is not there) */
+	};
+	/* Can be called from the settings dialog at any time: the new mode is
+	   applied at the next swap. lowLatency makes the swap wait until the
+	   display has taken the frame (glFinish) so that the driver cannot queue
+	   frames ahead; it has no effect with SwapOff. */
+	static void setRequestedSwapMode(int mode, bool lowLatency);
+
 private:
 	void requestFrame();
 	void pauseFrame();
+	void applySwapInterval();
 Q_SIGNALS:
 	void glInitialized();
 	void emulationPaused();
@@ -74,6 +94,9 @@ protected:
 		bool mPause;
 		/* Re-entrancy guard for YabauseExec(). See YabauseGL::event(). */
 		bool mInFrame = false;
+		/* Swap interval last handed to the driver (-1 adaptive, 0 off, 1 on);
+		   99 = nothing applied yet. */
+		int mAppliedInterval = 99;
 
 };
 
