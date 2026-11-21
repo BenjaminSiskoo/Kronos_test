@@ -45,6 +45,10 @@ protected:
 	void requestFolder( const QString& caption, QLineEdit* edit, QString proposedPath = QString());
 	void requestSTVFolder(const QString & caption, QLineEdit * edit, QString proposedPath = QString());
 	void setupCdDrives();
+	void setupSideBar();
+	void refreshSideBar();
+	void updateGunMouseLabel( int value );
+	QList<QAction*> parentActions() const;
 	void loadCores();
 	void loadTranslations();
 	void populateShortcutsView();
@@ -62,7 +66,9 @@ protected slots:
 	void on_cbClockSync_stateChanged( int state );
 	void on_cbCartridge_currentIndexChanged( int id );
 	void on_cbAutostart_toggled(bool enable);
+	void on_sGunMouseSensitivity_valueChanged( int value );
 	void accept();
+	void reject() override;
 	void changeResolution(int id);
   void changeFilterMode(int id);
   void changeUpscaleMode(int id);
