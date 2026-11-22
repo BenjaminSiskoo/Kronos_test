@@ -27,6 +27,7 @@
 /* after ygl.h: YabauseGL.h pulls Qt's gl.h, which must not come before glew.h */
 #include "../YabauseGL.h"
 #include "UIPortManager.h"
+#include "../CameraCapture.h"
 
 #include <QDir>
 #include <QList>
@@ -418,6 +419,41 @@ void UISettings::on_leBiosSettings_textChanged(const QString & text){
 		lSysLanguageID->setVisible(true);
 		cbSysLanguageID->setCurrentIndex( cbSysLanguageID->findData( s->value( "General/SystemLanguageID", mSysLanguageID.at( 0 ).id ).toString() ) );
 	}
+}
+
+/* Print Club camera (PrintClub/Camera, read by YabauseThread::reloadCamera()):
+   item data "" = automatic (first camera), "none" = no camera, else the
+   unique ID of a camera. A saved camera that is not plugged in now stays in
+   the list, so opening and closing the dialog does not lose it. */
+void UISettings::setupCameras( const QString& selected )
+{
+	cbCamera->clear();
+	cbCamera->addItem( QtYabause::translate( "Automatic (first camera)" ), QString() );
+	cbCamera->addItem( QtYabause::translate( "None (test pattern)" ), QString( "none" ) );
+	if ( !CameraCapture::available() )
+	{
+		const QString why = QtYabause::translate( "Kronos was built without camera support (openpnp-capture)." );
+		cbCamera->setCurrentIndex( 1 );
+		cbCamera->setEnabled( false );
+		cbCamera->setToolTip( why );
+		tbCameraRefresh->setEnabled( false );
+		lCameraHint->setText( why );
+		return;
+	}
+	foreach ( const CameraCapture::Device& d, CameraCapture::devices() )
+		cbCamera->addItem( d.name, d.id );
+	int i = cbCamera->findData( selected );
+	if ( i < 0 )
+	{
+		cbCamera->addItem( QtYabause::translate( "%1 (not connected)" ).arg( selected ), selected );
+		i = cbCamera->count() - 1;
+	}
+	cbCamera->setCurrentIndex( i );
+}
+
+void UISettings::on_tbCameraRefresh_clicked()
+{
+	setupCameras( cbCamera->currentData().toString() );
 }
 
 void UISettings::on_cbFloppyEnabled_toggled( bool checked )
@@ -904,6 +940,7 @@ void UISettings::loadSettings()
 		cbFloppyWriteProtect->setChecked( s->value( "CommPort/FloppyWriteProtect", false ).toBool() );
 		on_cbFloppyEnabled_toggled( cbFloppyEnabled->isChecked() );
 	}
+	setupCameras( s->value( "PrintClub/Camera", QString() ).toString() );
   	//the path needs to go into the volatile settings since we keep only one cartridge path there to keep things simple.
 
 	// input
@@ -1028,6 +1065,8 @@ void UISettings::saveSettings()
 	s->setValue( "CommPort/FloppyEnabled", cbFloppyEnabled->isChecked() );
 	s->setValue( "CommPort/FloppyFolder", leFloppyFolder->text() );
 	s->setValue( "CommPort/FloppyWriteProtect", cbFloppyWriteProtect->isChecked() );
+	if ( CameraCapture::available() )
+		s->setValue( "PrintClub/Camera", cbCamera->currentData().toString() );
 	s->setValue("Cartridge/Path", leCartridge->text());
 
 	// input
