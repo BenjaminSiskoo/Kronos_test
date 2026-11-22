@@ -917,6 +917,7 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
           cacheCode[context->isslave][cacheId[id]][(context->regs.PC >> 1) & cacheMask[cacheId[id]]] = opcodeTable[context->instruction];
         (void)SH2TakeInstructionCommit(context);
         if(context->isBlocked == 0) {
+          if (SH2ProfileActive) SH2ProfileHook(context);
           SH2HandleBackTrace(context);
           SH2HandleStepOverOut(context);
           SH2HandleTrackInfLoop(context);
@@ -1048,6 +1049,7 @@ FASTCALL void SH2KronosDebugInterpreterExec(SH2_struct *context, u32 cycles)
       // Execute it
       if (shallExecute != 0) {
         context->instruction = krfetchlist[id](context, context->regs.PC);
+        if (SH2ProfileActive) SH2ProfileHook(context);
         SH2HandleBackTrace(context);
         SH2HandleStepOverOut(context);
         SH2HandleTrackInfLoop(context);
