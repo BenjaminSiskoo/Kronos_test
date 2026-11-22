@@ -235,6 +235,7 @@ set( kronos_qt_MOC_HEADERS
 	ui/UIShortcutManager.h
     ui/UIDebugCPU.h
     ui/UIDebugM68K.h
+    ui/UIDebugSH2Profile.h
     ui/UIDebugSCSP.h
     ui/UIDebugSCSPChan.h
     ui/UIDebugSCSPDSP.h
@@ -294,6 +295,7 @@ set( kronos_qt_SOURCES
 	ui/UIShortcutManager.cpp
     ui/UIDebugCPU.cpp
     ui/UIDebugM68K.cpp
+    ui/UIDebugSH2Profile.cpp
     ui/UIDebugSCSP.cpp
     ui/UIDebugSCSPChan.cpp
     ui/UIDebugSCSPDSP.cpp
