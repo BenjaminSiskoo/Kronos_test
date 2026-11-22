@@ -30,6 +30,8 @@
 
 #include "QtYabause.h"
 
+class CameraCapture;
+
 class YabauseThread : public QObject
 {
 	Q_OBJECT
@@ -68,6 +70,8 @@ protected:
 	QList<char *> mRetiredStrings;
 	bool mIsCdIn;
 	bool mIsCDDirty;
+	/* Print Club webcam (PrintClub/Camera), see CameraCapture.h */
+	CameraCapture* mCamera;
 
 public slots:
 	void initEmulation();
@@ -75,6 +79,7 @@ public slots:
 	bool resetEmulation();
 	void reloadControllers();
 	void reloadCommPort();
+	void reloadCamera();
 	void reloadClock();
 	void reloadSettings();
 
