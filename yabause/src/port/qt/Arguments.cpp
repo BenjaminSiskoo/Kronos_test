@@ -655,6 +655,7 @@ const std::vector<Option>& buildOptions()
 	o.push_back(value(NULL, "--autoload", "<SLOT>", "Start the emulation and load save state slot 0-9.", doAutoload));
 	o.push_back(flag("-f", "--fullscreen", "Start in full screen.", PrioNormal, setConst("Video/Fullscreen", true)));
 	o.push_back(value(NULL, "--binary", "<FILE>[:ADDRESS]", "Load and run a program: SN Systems CPE file (own addresses and entry point) or raw binary at ADDRESS (hex, default 06004000). Reloaded on each reset. Combine with --no-disc to start without a disc.", doBinary));
+	o.push_back(value(NULL, "--lua", "<FILE>", "Run a Lua script (memory access, per-frame callbacks); it starts with the first emulated frame. See yabause/scripts/README.md.", setPath("lua/script", true, false)));
 	o.push_back(value(NULL, "--log-file", "<FILE>", "Also write the emulator log to a file (same as the KRONOS_LOG_FILE variable).", doLogFile));
 
 	o.push_back(heading("BIOS and disc"));
