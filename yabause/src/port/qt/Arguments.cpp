@@ -289,6 +289,7 @@ const Choice m68kCores[] = {
 const Choice aspectRatios[] = {
 	{ "original", 0, false }, { "stretch", 1, false },
 	{ "pixel-perfect-fullscreen", 2, false }, { "pixel-perfect", 3, false },
+	{ "16:9", 4, false }, { "16:10", 5, false }, { "21:9", 6, false },
 	{ NULL, 0, false } };
 
 const Choice resolutions[] = {
