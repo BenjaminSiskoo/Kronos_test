@@ -49,6 +49,7 @@
 #include "movie.h"
 #include "bios.h"
 #include "peripheral.h"
+#include "pclub.h"
 
 //#ifdef HAVE_LIBGL
 //#define USE_OPENGL
@@ -936,6 +937,19 @@ void MappedMemoryInit()
                                 &IOPortWriteWord,
                                 &IOPortWriteLong,
                                 &VoidMem);
+   /* ST-V Print Club: video board 837-12936 on the expansion connectors,
+      registers at 0x00500000, capture port at 0x00540000, UART #2 at
+      0x00580000 and print VRAM at 0x00600000-0x007FFFFF (see pclub.h).
+      stv.c turns the board on for the Print Club romsets before this map
+      is built; for the other games the range stays unmapped. */
+   if (yabsys.isSTV && PClubIsEnabled())
+      FillMemoryArea(0x050, 0x07F, &PClubReadByte,
+                                   &PClubReadWord,
+                                   &PClubReadLong,
+                                   &PClubWriteByte,
+                                   &PClubWriteWord,
+                                   &PClubWriteLong,
+                                   &VoidMem);
    /* MINIT / SINIT : l'input capture du FRT de l'autre CPU est declenchee par
       n'importe quelle ecriture dans la fenetre, quelle que soit sa taille.
       Seul le handler "word" etait cable ; une ecriture octet ou long partait
