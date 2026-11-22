@@ -35,6 +35,7 @@
 #include <QPointer>
 #include "UIDebugM68K.h"
 #include "UIDebugSH2Profile.h"
+#include "UILuaConsole.h"
 #include "UIDebugSCUDSP.h"
 #include "UIDebugSCSP.h"
 #include "UIDebugSCSPChan.h"
@@ -2013,6 +2014,13 @@ void UIYabause::on_aViewDebugSH2Profile_triggered()
 {
 	// Non modal et sans YabauseLocker : le profiler mesure le jeu pendant qu'il tourne.
 	UIDebugSH2Profile* w = new UIDebugSH2Profile( this );
+	w->show();
+}
+
+void UIYabause::on_aViewDebugLuaConsole_triggered()
+{
+	// Non modal et sans YabauseLocker : les scripts tournent avec le jeu.
+	UILuaConsole* w = new UILuaConsole( this );
 	w->show();
 }
 
