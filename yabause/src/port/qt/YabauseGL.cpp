@@ -31,6 +31,9 @@ extern "C" {
 #include "movie.h"
 }
 
+/* yglcs.c: blits the last composed frame again at the current window size. */
+extern "C" void YglRepresentLastFrame(void);
+
 /* ---- Swap interval -------------------------------------------------------
    Qt only reads QSurfaceFormat::swapInterval() when the context is created,
    and knows nothing about "adaptive" (negative) intervals. The interval has to
@@ -306,7 +309,26 @@ void YabauseGL::resizeGL( int w, int h )
     VIDCore->Resize(0, 0, w, h, 0);
   }
     glInitialized();
+  /* Paused: nothing else will draw. Ask for a repaint so that paintGL()
+     shows the last frame again (see there). */
+  if ( mPause && !mInFrame )
+    update();
  }
+
+/* Called by Qt when the window has to be redrawn (expose, resize, update()),
+   and Qt swaps the buffers right after it returns. The back buffer of a
+   window that was just resized, shown or hidden next to the log dock has an
+   undefined content: with an empty paintGL() the paused emulator showed a
+   black picture, because nothing draws while it is paused. The composed
+   frame is still in the video core, so it is blitted again.
+   While the emulation runs the next frame replaces the picture anyway, and a
+   frame can be suspended mid-way (nested event loop of a debugger dialog):
+   nothing is drawn then. */
+void YabauseGL::paintGL()
+{
+  if ( mPause && !mInFrame && VIDCore )
+    YglRepresentLastFrame();
+}
 
 QImage YabauseGL::grabFrameBuffer()
 {
