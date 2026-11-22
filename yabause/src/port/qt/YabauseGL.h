@@ -85,6 +85,9 @@ Q_SIGNALS:
 protected:
         void initializeGL() override;
         void resizeGL(int width, int height) override;
+        /* Re-draws the last composed frame while the emulation is paused, see
+           YabauseGL::paintGL(). */
+        void paintGL() override;
         void keyPressEvent( QKeyEvent* e ) override;
         void keyReleaseEvent( QKeyEvent* e ) override;
 
