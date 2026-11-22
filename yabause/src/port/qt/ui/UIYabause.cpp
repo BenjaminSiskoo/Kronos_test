@@ -1086,6 +1086,7 @@ void UIYabause::openSettingsOnTabs(int index) {
 
 		mYabauseThread->reloadControllers();
 		mYabauseThread->reloadCommPort();
+		mYabauseThread->reloadCamera();
 		refreshStatesActions();
 
 		if (yabsys.isReloadingImage == 2) emit requestReset();
