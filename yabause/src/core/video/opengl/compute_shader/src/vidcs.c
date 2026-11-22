@@ -3377,6 +3377,16 @@ void VIDCSGetScale(float *xRatio, float *yRatio, int *xUp, int *yUp) {
       x = 0;
       y = 0;
       break;
+    case WIDE_RATIO_16_9:
+    case WIDE_RATIO_16_10:
+    case WIDE_RATIO_21_9: {
+      const double tar = YGL_WIDE_RATIO(modeScreen);
+      w = (dar>tar)?(double)GlHeight*tar:(double)GlWidth;
+      h = (dar>tar)?(double)GlHeight:(double)GlWidth/tar;
+      x = (GlWidth-w)/2;
+      y = (GlHeight-h)/2;
+      break;
+    }
     case INTEGER_RATIO:
     case INTEGER_RATIO_FULL:
       w = Int * _Ygl->width;
