@@ -656,6 +656,40 @@ void SH2NMI(SH2_struct *context);
 
 void SH2SetExecSet(int debug);
 
+/* ---------------------------------------------------------------------------
+ * Profiler de cycles (coeur "SH2 Debug" uniquement).
+ *
+ * Le coeur Debug appelle SH2ProfileHook() avant chaque instruction quand
+ * SH2ProfileActive vaut 1. Les cycles ecoules depuis l'instruction precedente
+ * sont ajoutes a la fonction en cours (exclusif) ; une fonction est detectee a
+ * l'appel (JSR / BSR / BSRF) : son adresse est celle de la premiere
+ * instruction executee apres l'appel. Une entree d'interruption (saut non
+ * sequentiel apres une instruction qui n'est pas un branchement) ouvre un
+ * cadre a part, ferme par RTE. Les cycles inclusifs sont comptes au retour ;
+ * une fonction recursive est donc comptee une fois par niveau.
+ * --------------------------------------------------------------------------- */
+#define SH2PROF_STACK_MAX 256
+
+typedef struct {
+   u32 addr;        /* entree de la fonction, ou debut du bloc de 256 octets */
+   u64 excl;        /* cycles passes dans la fonction elle-meme */
+   u64 incl;        /* cycles passes dans la fonction et ses appelees */
+   u64 calls;       /* nombre d'appels */
+} sh2prof_entry;
+
+extern volatile u8 SH2ProfileActive;
+
+void SH2ProfileSetActive(int on);
+void SH2ProfileReset(void);
+void SH2ProfileHook(SH2_struct *context);
+u64  SH2ProfileTotalCycles(int cpu);
+/* Copie les entrees triees par cycles exclusifs decroissants ; retourne le
+   nombre copie. cpu : 0 = maitre, 1 = esclave. */
+int  SH2ProfileGetFunctions(int cpu, sh2prof_entry *out, int max);
+int  SH2ProfileGetBlocks(int cpu, sh2prof_entry *out, int max);
+/* Zone memoire : 0 BIOS, 1 Low WRAM, 2 High WRAM, 3 cartouche, 4 autre. */
+u64  SH2ProfileAreaCycles(int cpu, int area);
+
 void SH2GetRegisters(SH2_struct *context, sh2regs_struct * r);
 void SH2SetRegisters(SH2_struct *context, sh2regs_struct * r);
 void SH2WriteNotify(SH2_struct *context, u32 start, u32 length);
