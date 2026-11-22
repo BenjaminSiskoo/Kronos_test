@@ -33,6 +33,7 @@
 #include "yui.h"
 #include "rax.h"
 #include "peripheral.h"
+#include "pclub.h"
 #include "eeprom.h"
 #include "movie.h"
 
@@ -2106,6 +2107,7 @@ static u32 CartStateDramSize(int carttype)
  *     "IOGA" I/O gate array registers, PORT-G counters, hopper (peripheral.c)
  *     "EEPR" ST-V serial EEPROM: interface state and contents (eeprom.c)
  *     "RAX " Acclaim RAX sound board of Batman Forever (rax.c, adsp2181.c)
+ *     "PCLB" Print Club video board and printer (pclub.c)
  * Version 1 (type + DRAM when the type has one) is still read. Before
  * version 2 nothing of the ST-V protection chips or of the IOGA was saved:
  * a state taken in the middle of a 315-5881/5838 transfer resumed with the
@@ -2183,6 +2185,8 @@ static void CartStvLoadBlocks(const void * stream, int chunkend)
          status = eeprom_load_state(stream, (int)len);
       else if (memcmp(tag, "RAX ", 4) == 0)
          status = RaxLoadState(stream, (int)len);
+      else if (memcmp(tag, "PCLB", 4) == 0)
+         status = PClubLoadState(stream, (int)len);
 
       if (status != 0)
          YuiMsg("Save state: CART block %.4s not loaded (unknown or other version)\n", tag);
@@ -2216,6 +2220,7 @@ int CartSaveState(void ** stream)
       CartStateWriteBlock(stream, "IOGA", PerIogaSaveState);
       CartStateWriteBlock(stream, "EEPR", eeprom_save_state);
       CartStateWriteBlock(stream, "RAX ", RaxSaveState);
+      CartStateWriteBlock(stream, "PCLB", PClubSaveState);
    }
 
    return MemStateFinishHeader(stream, offset);
