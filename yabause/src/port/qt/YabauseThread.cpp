@@ -24,6 +24,7 @@
 #include "ui/UIPortManager.h"
 #include "ui/UIYabause.h"
 #include "YabauseGL.h"
+#include "CameraCapture.h"
 
 #include "peripheral.h"
 #include "sci.h"
@@ -47,6 +48,7 @@ YabauseThread::YabauseThread( QObject* o )
 	showFPS = false;
 	mIsCdIn = false;
 	mIsCDDirty = false;
+	mCamera = new CameraCapture( this );
 }
 
 YabauseThread::~YabauseThread()
@@ -67,6 +69,8 @@ void YabauseThread::initEmulation()
 		SetOSDToggle(showFPS);
 		if ( mInit >= 0 )
 			reloadCommPort();
+		if ( mInit >= 0 )
+			reloadCamera();
 		if ( mInit >= 0 )
 			// reloadSettings() (via reloadControllers()) already wired the
 			// saved bindings once, but that happened *before* YabauseInit()
@@ -155,6 +159,16 @@ void YabauseThread::reloadCommPort()
 		FddSetFolder( NULL );
 		SCISetCommPortDevice( NULL );
 	}
+}
+
+/* Webcam of the ST-V Print Club games, setting PrintClub/Camera:
+   "" = first camera found, "none" = no camera (the board shows its test
+   pattern), else the unique ID of a camera. The camera only runs while a
+   Print Club game is loaded. */
+void YabauseThread::reloadCamera()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	mCamera->setDevice( vs->value( "PrintClub/Camera", QString() ).toString() );
 }
 
 void YabauseThread::deInitEmulation()
