@@ -21,6 +21,7 @@
 #include "yabause.h"
 #include "eeprom.h"
 #include "peripheral.h"
+#include "pclub.h"
 #include "decrypt.h"
 #include "zlib.h"
 #include "rax.h"
@@ -3266,6 +3267,12 @@ int loadBios(int id){
   return isBiosFound;
 }
 
+static int STVIsPrintClub(const char *romset) {
+  return romset != NULL &&
+         (strncmp(romset, "pclub", 5) == 0 || strncmp(romset, "pclb", 4) == 0 ||
+          strncmp(romset, "prc", 3) == 0);
+}
+
 int loadGame(const char *romset){
   FILE *fp;
   JZEndRecord endRecord;
@@ -3320,6 +3327,7 @@ int loadGame(const char *romset){
      Decathlete, so the next game loaded through YabauseRefreshInit kept
      the 0x7FFFF0-0x7FFFF8 CS0 interception. */
   RaxShutdown();
+  PClubShutdown();
   decathleteProtEnabled = 0;
   /* Idem pour la tranche d'entrelacement des SH-2 (init_sh2_step8). */
   yabsys.sh2StepRun = 0;
@@ -3359,6 +3367,10 @@ int loadGame(const char *romset){
     yabsys.isRotated = availableGames[gameId].entry->rotated;
     yabsys.stvInputType = availableGames[gameId].entry->input;
     if (availableGames[gameId].entry->init != NULL) availableGames[gameId].entry->init();
+    /* Print Club cabinets (MAME stvpc_state): video board 837-12936,
+       camera and video printer. Every romset of the family starts with
+       "pclub", "pclb" or "prc". See pclub.h. */
+    if (STVIsPrintClub(availableGames[gameId].entry->romset)) PClubEnable();
     return 0;
   }
   LOGSTV("Should not go there\n");
@@ -3608,6 +3620,7 @@ int STVSingleInit(const char *gamepath, const char *biospath, const char *eeprom
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
     STVCoinBookkeepingInit(eepromdir, romset);
+    PClubSetOutputDir(eepromdir); /* Print Club prints: next to the .nv */
     free(romset);
     yabsys.isSTV = 1;
     return 0;
@@ -3635,6 +3648,7 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
     STVCoinBookkeepingInit(eepromdir, romset);
+    PClubSetOutputDir(eepromdir); /* Print Club prints: next to the .nv */
     yabsys.isSTV = 1;
     LOGSTV("Load is ok\n");
     return 0;
@@ -3646,6 +3660,7 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
 int STVDeInit(){
   if (CartridgeArea == NULL || CartridgeArea->carttype != CART_ROMSTV) return 0;
   RaxShutdown();
+  PClubShutdown();
   decathleteProtEnabled = 0;
   yabsys.sh2StepRun = 0;
   eeprom_deinit();
