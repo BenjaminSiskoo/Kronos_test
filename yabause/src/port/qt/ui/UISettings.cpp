@@ -174,7 +174,10 @@ const Items mAspectRatio = Items()
 	<< Item("0", "Original aspect ratio")
 	<< Item("1", "Stretch to window")
 	<< Item("2", "Pixel Perfect - Full screen")
-	<< Item("3", "Pixel Perfect");
+	<< Item("3", "Pixel Perfect")
+	<< Item("4", "Widescreen 16:9 (stretched, black bars)")
+	<< Item("5", "Widescreen 16:10 (stretched, black bars)")
+	<< Item("6", "Ultrawide 21:9 (stretched, black bars)");
 
 const Items mSwapMode = Items()
 	<< Item("0", "Off (lowest latency, tearing possible)")
