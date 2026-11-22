@@ -427,6 +427,35 @@ QToolTip { background:#ffffff; color:#1f2937; border:1px solid #c9d3e3; padding:
           <string>...</string>
          </property>
         </widget>
+       </item></layout></widget></item><item><widget class="QGroupBox" name="cardCamera"><property name="title"><string>Print Club camera (ST-V)</string></property><property name="role" stdset="0"><string notr="true">card</string></property><layout class="QGridLayout" name="glCamera" columnstretch="0,1,0"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><property name="horizontalSpacing"><number>10</number></property><property name="verticalSpacing"><number>10</number></property><item row="0" column="0" rowspan="1" colspan="1"><widget class="QLabel" name="lCamera">
+         <property name="text">
+          <string>Webcam</string>
+         </property>
+         <property name="textFormat">
+          <enum>Qt::PlainText</enum>
+         </property>
+        <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set></property><property name="role" stdset="0"><string notr="true">row</string></property><property name="minimumSize"><size><width>150</width><height>0</height></size></property></widget>
+       </item><item row="0" column="1" rowspan="1" colspan="1"><widget class="QComboBox" name="cbCamera">
+         <property name="toolTip">
+          <string>Camera of the Print Club video board. It is only used while a Print Club game runs; without a camera the board shows a test pattern.</string>
+         </property>
+        </widget>
+       </item><item row="0" column="2" rowspan="1" colspan="1"><widget class="QToolButton" name="tbCameraRefresh">
+         <property name="toolTip">
+          <string>Look for cameras again</string>
+         </property>
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item><item row="1" column="0" rowspan="1" colspan="3"><widget class="QLabel" name="lCameraHint">
+         <property name="text">
+          <string>Used by the ST-V Print Club games (pclub*, pclb*, prc*) instead of the booth camera. Automatic takes the first camera found.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        <property name="role" stdset="0"><string notr="true">hint</string></property></widget>
        </item></layout></widget></item><item><spacer name="pgCart_sp"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item></layout></widget></widget></item></layout></widget><widget class="QWidget" name="wInput"><attribute name="title"><string>Input</string></attribute><layout class="QVBoxLayout" name="pgInput_outer"><property name="spacing"><number>0</number></property><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><item><widget class="QScrollArea" name="pgInput_scroll"><property name="frameShape"><enum>QFrame::NoFrame</enum></property><property name="widgetResizable"><bool>true</bool></property><widget class="QWidget" name="pgInput_content"><property name="role" stdset="0"><string notr="true">pagecontent</string></property><layout class="QVBoxLayout" name="pgInput_vl"><property name="spacing"><number>12</number></property><property name="leftMargin"><number>24</number></property><property name="topMargin"><number>16</number></property><property name="rightMargin"><number>24</number></property><property name="bottomMargin"><number>16</number></property><item><widget class="QGroupBox" name="cardInputDriver"><property name="title"><string>Controller driver</string></property><property name="role" stdset="0"><string notr="true">card</string></property><layout class="QGridLayout" name="glInputDrv" columnstretch="0,1,0"><property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property><property name="horizontalSpacing"><number>10</number></property><property name="verticalSpacing"><number>10</number></property><item row="0" column="0" rowspan="1" colspan="1"><widget class="QLabel" name="lInput">
          <property name="sizePolicy">
           <sizepolicy hsizetype="Preferred" vsizetype="Maximum">
