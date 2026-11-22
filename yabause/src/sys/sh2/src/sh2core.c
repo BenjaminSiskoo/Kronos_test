@@ -4478,12 +4478,19 @@ u32 *SH2GetBacktraceList(SH2_struct *context, int *size)
 
 #define SH2PROF_FUNC_SLOTS  4096   /* puissance de 2 */
 #define SH2PROF_BLOCK_SLOTS 8192   /* puissance de 2 */
+#define SH2PROF_PC_SLOTS    16384  /* puissance de 2 */
+#define SH2PROF_LOOP_SLOTS  2048   /* puissance de 2 */
+#define SH2PROF_LOOP_SPAN   0x2000 /* taille maximale d'une boucle detectee */
 
 typedef struct {
    sh2prof_entry funcs[SH2PROF_FUNC_SLOTS];
    u8            funcUsed[SH2PROF_FUNC_SLOTS];
    sh2prof_entry blocks[SH2PROF_BLOCK_SLOTS];
    u8            blockUsed[SH2PROF_BLOCK_SLOTS];
+   sh2prof_entry pcs[SH2PROF_PC_SLOTS];
+   u8            pcUsed[SH2PROF_PC_SLOTS];
+   sh2prof_loop  loops[SH2PROF_LOOP_SLOTS];
+   u8            loopUsed[SH2PROF_LOOP_SLOTS];
    u64 area[5];
    u64 total;
    u64 dropped;                    /* cycles perdus, table pleine */
@@ -4514,6 +4521,26 @@ static sh2prof_entry *SH2ProfFind(sh2prof_entry *tab, u8 *used, u32 mask, u32 ke
       if (tab[i].addr == key) return &tab[i];
    }
    return NULL;
+}
+
+static sh2prof_loop *SH2ProfFindLoop(sh2prof_cpu *p, u32 head, u32 tail)
+{
+   u32 h = ((head * 2654435761u) ^ (tail * 40503u)) >> 7;
+   u32 i, n;
+   for (n = 0; n < SH2PROF_LOOP_SLOTS; n++) {
+      i = (h + n) & (SH2PROF_LOOP_SLOTS - 1);
+      if (!p->loopUsed[i]) { p->loopUsed[i] = 1; p->loops[i].head = head; p->loops[i].tail = tail; return &p->loops[i]; }
+      if (p->loops[i].head == head && p->loops[i].tail == tail) return &p->loops[i];
+   }
+   return NULL;
+}
+
+/* Branchements qui peuvent fermer une boucle : BRA, BT, BF, BT/S, BF/S. */
+static int SH2ProfIsLoopBranch(u16 i)
+{
+   return ((i & 0xF000) == 0xA000) ||
+          ((i & 0xFF00) == 0x8900) || ((i & 0xFF00) == 0x8B00) ||
+          ((i & 0xFF00) == 0x8D00) || ((i & 0xFF00) == 0x8F00);
 }
 
 static int SH2ProfArea(u32 pc)
@@ -4598,6 +4625,16 @@ void SH2ProfileHook(SH2_struct *context)
    if (p->havePrev) {
       /* Le compteur est remis a zero par trame : on repart de zero. */
       delta = (now >= p->lastCycles) ? (now - p->lastCycles) : now;
+      {
+         /* Point chaud : l'instruction precedente s'est executee une fois. */
+         sh2prof_entry *h = SH2ProfFind(p->pcs, p->pcUsed, SH2PROF_PC_SLOTS - 1, p->lastPC, NULL);
+         if (h) { h->excl += delta; h->calls++; } else p->dropped += delta;
+      }
+      /* Branchement en arriere pris : une iteration de la boucle [pc, lastPC]. */
+      if (SH2ProfIsLoopBranch(p->lastInst) && pc <= p->lastPC && (p->lastPC - pc) <= SH2PROF_LOOP_SPAN) {
+         sh2prof_loop *l = SH2ProfFindLoop(p, pc, p->lastPC);
+         if (l) l->iterations++;
+      }
       if (delta != 0) {
          u32 owner = (p->depth > 0) ? p->stackAddr[p->depth - 1] : 0;
          sh2prof_entry *e = SH2ProfFind(p->funcs, p->funcUsed, SH2PROF_FUNC_SLOTS - 1, owner, NULL);
@@ -4645,10 +4682,17 @@ static int SH2ProfCmp(const void *a, const void *b)
 
 static int SH2ProfCopy(const sh2prof_entry *tab, const u8 *used, int slots, sh2prof_entry *out, int max)
 {
+   /* Tri de toutes les entrees, puis troncature : les "max" premieres sont
+      bien les plus couteuses, pas les premieres de la table de hachage. */
+   sh2prof_entry *tmp = (sh2prof_entry *)malloc(sizeof(sh2prof_entry) * slots);
    int i, n = 0;
-   for (i = 0; i < slots && n < max; i++)
-      if (used[i] && (tab[i].excl != 0 || tab[i].calls != 0)) out[n++] = tab[i];
-   qsort(out, n, sizeof(sh2prof_entry), SH2ProfCmp);
+   if (tmp == NULL) return 0;
+   for (i = 0; i < slots; i++)
+      if (used[i] && (tab[i].excl != 0 || tab[i].calls != 0)) tmp[n++] = tab[i];
+   qsort(tmp, n, sizeof(sh2prof_entry), SH2ProfCmp);
+   if (n > max) n = max;
+   memcpy(out, tmp, sizeof(sh2prof_entry) * n);
+   free(tmp);
    return n;
 }
 
@@ -4662,4 +4706,64 @@ int SH2ProfileGetBlocks(int cpu, sh2prof_entry *out, int max)
 {
    if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || out == NULL) return 0;
    return SH2ProfCopy(sh2prof[cpu]->blocks, sh2prof[cpu]->blockUsed, SH2PROF_BLOCK_SLOTS, out, max);
+}
+
+int SH2ProfileGetHotspots(int cpu, sh2prof_entry *out, int max)
+{
+   if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || out == NULL) return 0;
+   return SH2ProfCopy(sh2prof[cpu]->pcs, sh2prof[cpu]->pcUsed, SH2PROF_PC_SLOTS, out, max);
+}
+
+static int SH2ProfCmpAddr(const void *a, const void *b)
+{
+   const sh2prof_entry *x = (const sh2prof_entry *)a, *y = (const sh2prof_entry *)b;
+   return (x->addr > y->addr) - (x->addr < y->addr);
+}
+
+static int SH2ProfCmpLoop(const void *a, const void *b)
+{
+   const sh2prof_loop *x = (const sh2prof_loop *)a, *y = (const sh2prof_loop *)b;
+   return (x->cycles < y->cycles) - (x->cycles > y->cycles);
+}
+
+int SH2ProfileGetLoops(int cpu, sh2prof_loop *out, int max)
+{
+   sh2prof_cpu *p;
+   sh2prof_entry *pcs;
+   u64 *prefix;
+   int i, n = 0, npc = 0;
+
+   if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || out == NULL) return 0;
+   p = sh2prof[cpu];
+
+   /* Cycles d'un intervalle d'adresses = somme sur les points chauds
+      tries par adresse, par sommes cumulees. */
+   pcs = (sh2prof_entry *)malloc(sizeof(sh2prof_entry) * SH2PROF_PC_SLOTS);
+   prefix = (u64 *)malloc(sizeof(u64) * (SH2PROF_PC_SLOTS + 1));
+   if (pcs == NULL || prefix == NULL) { free(pcs); free(prefix); return 0; }
+   for (i = 0; i < SH2PROF_PC_SLOTS; i++)
+      if (p->pcUsed[i]) pcs[npc++] = p->pcs[i];
+   qsort(pcs, npc, sizeof(sh2prof_entry), SH2ProfCmpAddr);
+   prefix[0] = 0;
+   for (i = 0; i < npc; i++) prefix[i + 1] = prefix[i] + pcs[i].excl;
+
+   for (i = 0; i < SH2PROF_LOOP_SLOTS && n < max; i++) {
+      int lo, hi, a, b;
+      if (!p->loopUsed[i]) continue;
+      out[n] = p->loops[i];
+      /* premier indice avec addr >= head */
+      lo = 0; hi = npc;
+      while (lo < hi) { int m = (lo + hi) / 2; if (pcs[m].addr < out[n].head) lo = m + 1; else hi = m; }
+      a = lo;
+      /* premier indice avec addr > tail */
+      lo = a; hi = npc;
+      while (lo < hi) { int m = (lo + hi) / 2; if (pcs[m].addr <= out[n].tail) lo = m + 1; else hi = m; }
+      b = lo;
+      out[n].cycles = prefix[b] - prefix[a];
+      n++;
+   }
+   free(pcs);
+   free(prefix);
+   qsort(out, n, sizeof(sh2prof_loop), SH2ProfCmpLoop);
+   return n;
 }
