@@ -25,7 +25,7 @@ jobs:
       run: |
         echo "Installing required packages."
         sudo apt-get update
-        sudo apt-get install -y cmake qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools qtmultimedia5-dev libqt5opengl5-dev libsdl2-dev
+        sudo apt-get install -y cmake qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools qtmultimedia5-dev libqt5opengl5-dev libsdl2-dev libturbojpeg0-dev
         echo "Cloning sources"
     - name: Checkout Code
       uses: actions/checkout@v4
