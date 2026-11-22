@@ -30,6 +30,7 @@
 #include "vdp1_compute.h"
 #include "perfetto_trace.h"
 #include "mpegcard.h"
+#include "pclub.h"
 
 #ifdef __LIBRETRO__
 /* libretro.c: size of the final output, given the composed frame size in
@@ -68,6 +69,27 @@ extern void YuiGetOutputSize(int *w, int *h);
 // to composite into, and the picture is drawn into the back screen instead
 // so that something is still visible -- experimental fallback, not
 // hardware behaviour.
+//
+// The ST-V Print Club video board feeds the same input with its camera
+// (pclub.h): the games turn EXBG on (EXTEN = 0x0003, NBG1 priority 1,
+// BGON = 0x0001) for the live view of the shoot. It goes through the same
+// path; it has no back-screen fallback, the games always enable EXBG.
+
+// Picture on the EXBG input: the Video CD card when it plays, else the
+// Print Club camera. NULL when neither is there.
+static const u8 *VIDCSExbgSourceRGBA(int *w, int *h, u32 *serial)
+{
+  if (MpegCardIsActive()) {
+    *serial = MpegCardGetFrameSerial();
+    return MpegCardGetFrameRGBA(w, h);
+  }
+  if (PClubIsEnabled()) {
+    const u8 *rgba = PClubGetExbgFrameRGBA(w, h);
+    *serial = PClubGetExbgSerial();
+    return rgba;
+  }
+  return NULL;
+}
 
 static GLuint mpegLayerTex = 0;
 static int mpegLayerTexW = 0;
@@ -186,8 +208,9 @@ static void VIDCSDrawMpegPicture(int width, int height, int bufheight, u32 alpha
     -1.0f, 1.0f };
   const u8 *rgba;
   int mw = 0, mh = 0;
+  u32 serial = 0;
 
-  if ((rgba = MpegCardGetFrameRGBA(&mw, &mh)) == NULL || mw <= 0 || mh <= 0)
+  if ((rgba = VIDCSExbgSourceRGBA(&mw, &mh, &serial)) == NULL || mw <= 0 || mh <= 0)
     return;
   if (!VIDCSMpegLayerProgram())
     return;
@@ -198,7 +221,7 @@ static void VIDCSDrawMpegPicture(int width, int height, int bufheight, u32 alpha
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, mpegLayerTex);
 
-  if (mpegLayerSerial != MpegCardGetFrameSerial() || mw != mpegLayerTexW || mh != mpegLayerTexH)
+  if (mpegLayerSerial != serial || mw != mpegLayerTexW || mh != mpegLayerTexH)
   {
     // This renderer streams VDP data through pixel-unpack buffers; with
     // one still bound, `rgba` would be read as an offset into it.
@@ -218,7 +241,7 @@ static void VIDCSDrawMpegPicture(int width, int height, int bufheight, u32 alpha
     else
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, mw, mh, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 
-    mpegLayerSerial = MpegCardGetFrameSerial();
+    mpegLayerSerial = serial;
   }
 
   glUseProgram((GLuint)mpegLayerPrg);
@@ -248,7 +271,7 @@ static int VIDCSDrawMpegExbg(Vdp2 *varVdp2Regs)
 {
   u32 priority, ccr, alphabyte;
 
-  if (!MpegCardIsActive() || !VIDCSMpegExbgEnabled(varVdp2Regs))
+  if (!(MpegCardIsActive() || PClubIsEnabled()) || !VIDCSMpegExbgEnabled(varVdp2Regs))
     return 0;
 
   priority = (varVdp2Regs->PRINA >> 8) & 0x7;
@@ -448,35 +471,61 @@ void finishCSRender() {
   if (VIDCore->startVdp1Render) VIDCore->startVdp1Render();
 }
 
-void VIDCSRender(Vdp2 *varVdp2Regs) {
-   TRACE_RENDER("VIDCSRender");
+/* ---- Last presented frame -------------------------------------------------
+ * While the emulation is paused nobody draws anything. When the host window
+ * is resized (log dock shown or hidden, window dragged, fullscreen toggled)
+ * the host recreates the back buffer, whose content is undefined, and the
+ * next swap shows a black picture. The composed picture itself stays in
+ * _Ygl->original_fbotex[0] (it is only rewritten by the next frame, and the
+ * frame buffers are rebuilt lazily), so it is enough to blit it again.
+ * Everything the blit and the output rectangle read from _Ygl is saved here:
+ * a resize in "native" resolution mode changes _Ygl->width and company
+ * immediately, whereas the texture still has the size of the last frame. */
+#ifndef __LIBRETRO__
+typedef struct {
+  int valid;
+  int dispOn;                 /* TVMD.DISP of the frame */
+  u32 tvmd;
+  unsigned int width, height;
+  int rwidth, rheight;
+  float vdp2wdensity;
+  InterlaceMode interlace;
+} VIDCSLastFrame;
+
+static VIDCSLastFrame gLastFrame = {0};
+
+static void VIDCSRememberFrame(int dispOn, u32 tvmd)
+{
+  gLastFrame.valid = 1;
+  gLastFrame.dispOn = dispOn;
+  gLastFrame.tvmd = tvmd;
+  gLastFrame.width = _Ygl->width;
+  gLastFrame.height = _Ygl->height;
+  gLastFrame.rwidth = _Ygl->rwidth;
+  gLastFrame.rheight = _Ygl->rheight;
+  gLastFrame.vdp2wdensity = _Ygl->vdp2wdensity;
+  gLastFrame.interlace = _Ygl->interlace;
+}
+#else
+#define VIDCSRememberFrame(dispOn, tvmd)
+#endif
+
+
+/* ---- Output rectangle -----------------------------------------------------
+ * Where the composed picture goes inside the host window (GlWidth x GlHeight)
+ * for the current display mode. Extracted from VIDCSRender() so that the same
+ * computation can be replayed by YglRepresentLastFrame().
+ * Returns 0 when the render resolution is not defined yet. */
+static int VIDCSComputeOutputRect(RATIOMODE *pMode, double *px, double *py,
+                                  double *pw, double *ph, double *pScale)
+{
    double scale = 1.0;
-   GLuint cprg=0;
-   GLuint srcTexture;
-   GLuint VDP1fb[2];
-   int nbPass = 0;
-   unsigned int i,j;
    double w = 0;
    double h = 0;
    double x = 0;
    double y = 0;
-   float col[4] = {0.0f,0.0f,0.0f,0.0f};
-   float colopaque[4] = {0.0f,0.0f,0.0f,1.0f};
-   int img[6] = {0};
-   int lncl[7] = {0};
-   int lncl_draw[7] = {0};
-   int winS_draw = 0;
-   int winS_mode_draw= 0;
-   int win0_draw = 0;
-   int win0_mode_draw = 0;
-   int win1_draw = 0;
-   int win1_mode_draw= 0;
-   int win_op_draw = 0;
-   int win_all_draw = 0;
-   int drawScreen[enBGMAX];
-   SpriteMode mode;
-   GLenum DrawBuffers[8]= {GL_COLOR_ATTACHMENT0,GL_COLOR_ATTACHMENT1,GL_COLOR_ATTACHMENT2,GL_COLOR_ATTACHMENT3,GL_COLOR_ATTACHMENT4,GL_COLOR_ATTACHMENT5,GL_COLOR_ATTACHMENT6,GL_COLOR_ATTACHMENT7};
    RATIOMODE modeScreen = _Ygl->stretch;
+
 
    int width = (_Ygl->width*2.0)/(_Ygl->vdp2wdensity);
    int height = _Ygl->height;
@@ -526,18 +575,11 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
      width = _Ygl->width*2.0/_Ygl->vdp2wdensity;
    }
    if (modeScreen != INTEGER_RATIO)  Int = (Inth<Intw)?Inth:Intw;
-   glDepthMask(GL_FALSE);
-   glDisable(GL_DEPTH_TEST);
-   glDisable(GL_BLEND);
-
-   glBindVertexArray(_Ygl->vao);
    /* Guard against the window between Vdp1Reset() and the first VDP2
     * register write that defines the render resolution. Dividing by
     * zero below would produce +Inf and then UB on the int cast. */
-   if (_Ygl->rwidth <= 0 || _Ygl->rheight <= 0) {
-     finishCSRender();
-     return;
-   }
+   if (_Ygl->rwidth <= 0 || _Ygl->rheight <= 0)
+     return 0;
 #ifndef __LIBRETRO__
    switch(modeScreen) {
      case STRETCH_RATIO:
@@ -571,6 +613,111 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   h = height;
   x = y = 0;
 #endif
+   *pMode = modeScreen; *px = x; *py = y; *pw = w; *ph = h; *pScale = scale;
+   return 1;
+}
+
+/* Final stage of a frame: border / back screen, then the blit of the composed
+ * picture (srcTexture) to the default framebuffer. Shared by VIDCSRender()
+ * and YglRepresentLastFrame(). */
+static void VIDCSPresentFrame(GLuint srcTexture, u32 tvmd, RATIOMODE modeScreen,
+                              double x, double y, double w, double h, double scale)
+{
+
+   int scali = (int)(scale);
+   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
+#ifndef __LIBRETRO__
+  /* Border colour mode of the composed frame (varVdp2Regs), not of the
+   * live register which may already belong to the next frame. */
+  if ((tvmd & 0x100) != 0) {
+    //Use last border color to clear the screen
+    glViewport(0, 0, GlWidth, GlHeight);
+    glScissor(0, 0, GlWidth, GlHeight);
+    glClearBufferfv(GL_COLOR, 0, _Ygl->last_back_color);
+    //draw back screen where other pixels are not drawn
+    glViewport(0, y, GlWidth, h);
+    /* See final blit below: only clip a pixel in integer-ratio
+     * modes where the integer source step leaves a visible seam. */
+    int border_clip = (modeScreen == INTEGER_RATIO
+                    || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
+    glScissor(0, y, GlWidth, h - border_clip);
+    //Take care of border
+    YglFillWithBackScreen();
+  } else {
+    glViewport(0, 0, GlWidth, GlHeight);
+    glScissor(0, 0, GlWidth, GlHeight);
+    float black[4] = {0.0};
+    glClearBufferfv(GL_COLOR, 0, black);
+  }
+   glViewport(x, y, w, h);
+   /* Only clip the last row/column in integer scaling modes where
+    * the integer source step leaves a visible seam. In STRETCH /
+    * ORIGINAL modes the filter covers the edge cleanly, and the
+    * subtraction produces a persistent 1-pixel black border. */
+   {
+     int border_clip = (modeScreen == INTEGER_RATIO
+                     || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
+     glScissor(x, y, w - border_clip, h - border_clip);
+   }
+#else
+   /* Libretro: the frontend scales the picture, the output is the composed
+    * frame itself. When the port asks for a larger output (a filter or an
+    * upscaler is selected: a CRT mask or HQ4x drawn at the size of the
+    * source would show nothing), the final blit draws at that size, from
+    * (0,0) of the frontend framebuffer. */
+   {
+     int outw = _Ygl->width;
+     int outh = _Ygl->height;
+     YuiGetOutputSize(&outw, &outh);
+     if ((outw != _Ygl->width) || (outh != _Ygl->height)) {
+       w = outw;
+       h = outh;
+       glViewport(0, 0, outw, outh);
+       glScissor(0, 0, outw, outh);
+     }
+   }
+#endif
+   YglBlitFramebuffer(srcTexture, _Ygl->width, _Ygl->height, w, h);
+}
+
+void VIDCSRender(Vdp2 *varVdp2Regs) {
+   TRACE_RENDER("VIDCSRender");
+   double scale = 1.0;
+   GLuint cprg=0;
+   GLuint srcTexture;
+   GLuint VDP1fb[2];
+   int nbPass = 0;
+   unsigned int i,j;
+   double w = 0;
+   double h = 0;
+   double x = 0;
+   double y = 0;
+   float col[4] = {0.0f,0.0f,0.0f,0.0f};
+   float colopaque[4] = {0.0f,0.0f,0.0f,1.0f};
+   int img[6] = {0};
+   int lncl[7] = {0};
+   int lncl_draw[7] = {0};
+   int winS_draw = 0;
+   int winS_mode_draw= 0;
+   int win0_draw = 0;
+   int win0_mode_draw = 0;
+   int win1_draw = 0;
+   int win1_mode_draw= 0;
+   int win_op_draw = 0;
+   int win_all_draw = 0;
+   int drawScreen[enBGMAX];
+   SpriteMode mode;
+   GLenum DrawBuffers[8]= {GL_COLOR_ATTACHMENT0,GL_COLOR_ATTACHMENT1,GL_COLOR_ATTACHMENT2,GL_COLOR_ATTACHMENT3,GL_COLOR_ATTACHMENT4,GL_COLOR_ATTACHMENT5,GL_COLOR_ATTACHMENT6,GL_COLOR_ATTACHMENT7};
+   RATIOMODE modeScreen = _Ygl->stretch;
+   glDepthMask(GL_FALSE);
+   glDisable(GL_DEPTH_TEST);
+   glDisable(GL_BLEND);
+
+   glBindVertexArray(_Ygl->vao);
+   if (!VIDCSComputeOutputRect(&modeScreen, &x, &y, &w, &h, &scale)) {
+     finishCSRender();
+     return;
+   }
    glViewport(0, 0, GlWidth, GlHeight);
 
    VIDCore->setupFrame();
@@ -603,6 +750,7 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
      glViewport(0, 0, GlWidth, GlHeight);
      glScissor(0, 0, GlWidth, GlHeight);
      glClearBufferfv(GL_COLOR, 0, (varVdp2Regs->TVMD & 0x100) ? _Ygl->last_back_color : black);
+     VIDCSRememberFrame(0, varVdp2Regs->TVMD);
    }
    if (((varVdp2Regs->TVMD & 0x8000)==0) || (YglTM_vdp2 == NULL)) {
      finishCSRender();
@@ -779,61 +927,82 @@ void VIDCSRender(Vdp2 *varVdp2Regs) {
   YglBlitTexture( prioscreens, modescreens, isRGB, isBlur, isPerline, isShadow, lncl_draw, GetCSVDP1fb, winS_draw, winS_mode_draw, win0_draw, win0_mode_draw, win1_draw, win1_mode_draw, win_op_draw, useLineColorOffset, varVdp2Regs);
   srcTexture = _Ygl->original_fbotex[0];
 
-   int scali = (int)(scale);
-   glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
-#ifndef __LIBRETRO__
-  /* Border colour mode of the composed frame (varVdp2Regs), not of the
-   * live register which may already belong to the next frame. */
-  if ((varVdp2Regs->TVMD & 0x100) != 0) {
-    //Use last border color to clear the screen
-    glViewport(0, 0, GlWidth, GlHeight);
-    glScissor(0, 0, GlWidth, GlHeight);
-    glClearBufferfv(GL_COLOR, 0, _Ygl->last_back_color);
-    //draw back screen where other pixels are not drawn
-    glViewport(0, y, GlWidth, h);
-    /* See final blit below: only clip a pixel in integer-ratio
-     * modes where the integer source step leaves a visible seam. */
-    int border_clip = (modeScreen == INTEGER_RATIO
-                    || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
-    glScissor(0, y, GlWidth, h - border_clip);
-    //Take care of border
-    YglFillWithBackScreen();
-  } else {
-    glViewport(0, 0, GlWidth, GlHeight);
-    glScissor(0, 0, GlWidth, GlHeight);
-    float black[4] = {0.0};
-    glClearBufferfv(GL_COLOR, 0, black);
-  }
-   glViewport(x, y, w, h);
-   /* Only clip the last row/column in integer scaling modes where
-    * the integer source step leaves a visible seam. In STRETCH /
-    * ORIGINAL modes the filter covers the edge cleanly, and the
-    * subtraction produces a persistent 1-pixel black border. */
-   {
-     int border_clip = (modeScreen == INTEGER_RATIO
-                     || modeScreen == INTEGER_RATIO_FULL) ? scali : 0;
-     glScissor(x, y, w - border_clip, h - border_clip);
-   }
-#else
-   /* Libretro: the frontend scales the picture, the output is the composed
-    * frame itself. When the port asks for a larger output (a filter or an
-    * upscaler is selected: a CRT mask or HQ4x drawn at the size of the
-    * source would show nothing), the final blit draws at that size, from
-    * (0,0) of the frontend framebuffer. */
-   {
-     int outw = _Ygl->width;
-     int outh = _Ygl->height;
-     YuiGetOutputSize(&outw, &outh);
-     if ((outw != _Ygl->width) || (outh != _Ygl->height)) {
-       w = outw;
-       h = outh;
-       glViewport(0, 0, outw, outh);
-       glScissor(0, 0, outw, outh);
-     }
-   }
-#endif
-   YglBlitFramebuffer(srcTexture, _Ygl->width, _Ygl->height, w, h);
+   VIDCSPresentFrame(srcTexture, varVdp2Regs->TVMD, modeScreen, x, y, w, h, scale);
+   VIDCSRememberFrame(1, varVdp2Regs->TVMD);
 
   finishCSRender();
   return;
 }
+
+
+#ifndef __LIBRETRO__
+/* Draws the last composed frame again on the default framebuffer, at the
+ * current window size, without touching the emulation. To be called on the
+ * GUI thread, with the GL context current, while the emulation is paused
+ * (see YabauseGL::paintGL). The caller swaps. */
+void YglRepresentLastFrame(void)
+{
+  if (!gLastFrame.valid || _Ygl == NULL || _Ygl->default_fbo == -1)
+    return;
+  if (GlWidth <= 0 || GlHeight <= 0 || _Ygl->vao == 0)
+    return;
+
+  if (!gLastFrame.dispOn) {
+    /* DISP = 0: black (BDCLMD = 0) or the border colour, as in VIDCSRender */
+    float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    glBindFramebuffer(GL_FRAMEBUFFER, _Ygl->default_fbo);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, GlWidth, GlHeight);
+    glClearBufferfv(GL_COLOR, 0, (gLastFrame.tvmd & 0x100) ? _Ygl->last_back_color : black);
+    glViewport(_Ygl->originx, _Ygl->originy, GlWidth, GlHeight);
+    return;
+  }
+  if (_Ygl->original_fbotex[0] == 0)
+    return;
+
+  /* The texture still has the size of the last frame: present it with the
+   * dimensions it was rendered with, then give the live ones back. */
+  const unsigned int oWidth = _Ygl->width, oHeight = _Ygl->height;
+  const int oRWidth = _Ygl->rwidth, oRHeight = _Ygl->rheight;
+  const float oDensity = _Ygl->vdp2wdensity;
+  const InterlaceMode oInterlace = _Ygl->interlace;
+  _Ygl->width = gLastFrame.width;
+  _Ygl->height = gLastFrame.height;
+  _Ygl->rwidth = gLastFrame.rwidth;
+  _Ygl->rheight = gLastFrame.rheight;
+  _Ygl->vdp2wdensity = gLastFrame.vdp2wdensity;
+  _Ygl->interlace = gLastFrame.interlace;
+
+  double x = 0, y = 0, w = 0, h = 0, scale = 1.0;
+  RATIOMODE modeScreen = _Ygl->stretch;
+  if (VIDCSComputeOutputRect(&modeScreen, &x, &y, &w, &h, &scale)) {
+    glDepthMask(GL_FALSE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glEnable(GL_SCISSOR_TEST);
+    glBindVertexArray(_Ygl->vao);
+    VIDCSPresentFrame(_Ygl->original_fbotex[0], gLastFrame.tvmd, modeScreen, x, y, w, h, scale);
+  }
+
+  _Ygl->width = oWidth;
+  _Ygl->height = oHeight;
+  _Ygl->rwidth = oRWidth;
+  _Ygl->rheight = oRHeight;
+  _Ygl->vdp2wdensity = oDensity;
+  _Ygl->interlace = oInterlace;
+
+  /* same state as at the end of finishCSRender() */
+  glViewport(_Ygl->originx, _Ygl->originy, GlWidth, GlHeight);
+  glScissor(0, 0, _Ygl->width, _Ygl->height);
+  glUseProgram(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+  glDisableVertexAttribArray(0);
+  glDisableVertexAttribArray(1);
+  glDisableVertexAttribArray(2);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+#endif
