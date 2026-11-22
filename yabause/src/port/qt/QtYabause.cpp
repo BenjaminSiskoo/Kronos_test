@@ -22,6 +22,7 @@
 #include "ui/UIYabause.h"
 #include "Settings.h"
 #include "VolatileSettings.h"
+#include "LuaScript.h"
 
 #include <QApplication>
 #include <QLabel>
@@ -254,7 +255,8 @@ extern "C"
 
   void YuiEndOfFrame()
 	{
-
+		// Lua scripts: requests from the console and per-frame callbacks (emulation thread).
+		LuaScript::frameHook();
 	}
 	void YuiSwapBuffers()
 	{
