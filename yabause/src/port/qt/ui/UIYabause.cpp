@@ -34,6 +34,7 @@
 #include "UIEditsExport.h"
 #include <QPointer>
 #include "UIDebugM68K.h"
+#include "UIDebugSH2Profile.h"
 #include "UIDebugSCUDSP.h"
 #include "UIDebugSCSP.h"
 #include "UIDebugSCSPChan.h"
@@ -2006,6 +2007,13 @@ void UIYabause::on_aViewDebugM68K_triggered()
 {
 	YabauseLocker locker( mYabauseThread );
 	UIDebugM68K( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewDebugSH2Profile_triggered()
+{
+	// Non modal et sans YabauseLocker : le profiler mesure le jeu pendant qu'il tourne.
+	UIDebugSH2Profile* w = new UIDebugSH2Profile( this );
+	w->show();
 }
 
 void UIYabause::on_aViewDebugSCUDSP_triggered()
