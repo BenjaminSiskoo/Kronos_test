@@ -12,7 +12,7 @@ jobs:
         run: |
           echo "Installing required packages."
           sudo apt-get update
-          sudo apt-get install -y cmake qt5-default qtmultimedia5-dev libqt5opengl5-dev libsdl2-dev
+          sudo apt-get install -y cmake qt5-default qtmultimedia5-dev libqt5opengl5-dev libsdl2-dev libturbojpeg0-dev
           echo "Cloning sources"
       - name: Checkout Code
         uses: actions/checkout@v2
