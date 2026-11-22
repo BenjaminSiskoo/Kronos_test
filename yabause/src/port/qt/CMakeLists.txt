@@ -260,6 +260,8 @@ set( kronos_qt_MOC_HEADERS
 	VolatileSettings.h
 	Settings.h
 	CameraCapture.h
+	LuaScript.h
+	ui/UILuaConsole.h
 	YabauseThread.h )
 
 # C sources
@@ -365,6 +367,9 @@ if (APPLE)
 	set_target_properties( kronos-qt PROPERTIES MACOSX_BUNDLE_COPYRIGHT "(c) Kronos Team" )
 endif (APPLE)
 
+# Lua 5.4 (scripting console), embedded sources: tools/lua
+add_subdirectory( ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/lua ${CMAKE_CURRENT_BINARY_DIR}/lua )
+target_link_libraries( kronos-qt kronos-lua )
 target_link_libraries( kronos-qt kronos )
 target_link_libraries( kronos-qt ${KRONOS_LIBRARIES} )
 target_link_libraries( kronos-qt ${PORT_LIBRARIES} )
