@@ -321,6 +321,8 @@ set( kronos_qt_SOURCES
 	VolatileSettings.cpp
 	YabauseThread.cpp
 	CameraCapture.cpp
+	LuaScript.cpp
+	ui/UILuaConsole.cpp
 	Arguments.cpp )
 
 	set( kronos_qt_SOURCES ${kronos_qt_SOURCES} YabauseGL.cpp )
