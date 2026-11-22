@@ -30,7 +30,6 @@
 #include "yui.h"
 #include "peripheral.h"
 #include "sh2core.h"
-#include "sh2int.h"
 #ifdef HAVE_LIBGL
 #include "ygl.h"
 #endif
@@ -69,9 +68,10 @@ M68K_struct * M68KCoreList[] = {
 NULL
 };
 
+/* sh2int.h (core/sh2/sh2_simple: SH2Interpreter, SH2DebugInterpreter) no
+   longer builds with the current core and is not compiled into libkronos;
+   the Kronos interpreter is the SH-2 core of every port (see port/qt). */
 SH2Interface_struct *SH2CoreList[] = {
-&SH2Interpreter,
-&SH2DebugInterpreter,
 &SH2KronosInterpreter,
 NULL
 };
@@ -104,8 +104,16 @@ SoundInterface_struct *SNDCoreList[] = {
 NULL
 };
 
+/* VIDCS is the video core used by YuiInit() (VIDCORE_CS); VIDSoft only
+   exists when the software renderer is built (USE_SOFT_RENDER), as in
+   port/qt/QtYabause.cpp. */
 VideoInterface_struct *VIDCoreList[] = {
+#ifdef HAVE_LIBGL
+&VIDCS,
+#endif
+#ifdef USE_SOFT_RENDER
 &VIDSoft,
+#endif
 NULL
 };
 
@@ -173,12 +181,7 @@ int YuiGetFB(void) {
 void YuiInit() {
 	yinit.m68kcoretype = M68KCORE_MUSASHI;
 	yinit.percoretype = PERCORE_LINUXJOY;
-        #if defined(DYNAREC_KRONOS)
-          printf("Use kronos specific core emulation\n");
-          yinit.sh2coretype = 8;
-        #else
-	  yinit.sh2coretype = 0;
-        #endif
+	yinit.sh2coretype = SH2CORE_KRONOS_INTERPRETER; /* the only SH-2 core in SH2CoreList */
 	yinit.vidcoretype = VIDCORE_CS;
 #ifdef HAVE_LIBSDL
 	yinit.sndcoretype = SNDCORE_SDL;
@@ -333,8 +336,8 @@ int main(int argc, char *argv[]) {
   }
   SetupOpenGL();
 
-	YabauseDeInit();
-
+  /* No YabauseDeInit() here: nothing is initialised yet, and it posts to
+     semaphores that YabauseInit() has not created (SIGSEGV in sem_post). */
   if (YabauseInit(&yinit) != 0) {
     printf("YabauseInit error \n\r");
     return 1;
