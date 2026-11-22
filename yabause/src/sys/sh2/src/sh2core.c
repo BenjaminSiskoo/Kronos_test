@@ -24,6 +24,7 @@
 
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 #include "sh2core.h"
 #include "sci.h"
 #include "debug.h"
@@ -4469,4 +4470,196 @@ u32 *SH2GetBacktraceList(SH2_struct *context, int *size)
    const int max = (int)(sizeof(context->bt.addr)/sizeof(u32));
    *size = (context->bt.numbacktrace > max) ? max : context->bt.numbacktrace;
    return context->bt.addr;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Profiler de cycles (voir sh2core.h)
+//////////////////////////////////////////////////////////////////////////////
+
+#define SH2PROF_FUNC_SLOTS  4096   /* puissance de 2 */
+#define SH2PROF_BLOCK_SLOTS 8192   /* puissance de 2 */
+
+typedef struct {
+   sh2prof_entry funcs[SH2PROF_FUNC_SLOTS];
+   u8            funcUsed[SH2PROF_FUNC_SLOTS];
+   sh2prof_entry blocks[SH2PROF_BLOCK_SLOTS];
+   u8            blockUsed[SH2PROF_BLOCK_SLOTS];
+   u64 area[5];
+   u64 total;
+   u64 dropped;                    /* cycles perdus, table pleine */
+   /* pile de fonctions */
+   u32 stackAddr[SH2PROF_STACK_MAX];
+   u64 stackStart[SH2PROF_STACK_MAX];  /* total au moment de l'entree */
+   u8  stackIrq[SH2PROF_STACK_MAX];
+   int depth;
+   int overflow;                   /* niveaux au-dela de SH2PROF_STACK_MAX */
+   /* etat de l'instruction precedente */
+   u32 lastCycles;
+   u32 lastPC;
+   u16 lastInst;
+   int havePrev;
+} sh2prof_cpu;
+
+volatile u8 SH2ProfileActive = 0;
+static sh2prof_cpu *sh2prof[2] = { NULL, NULL };
+
+static sh2prof_entry *SH2ProfFind(sh2prof_entry *tab, u8 *used, u32 mask, u32 key, u64 **dropped)
+{
+   u32 h = (key * 2654435761u) >> 7;
+   u32 i, n;
+   (void)dropped;
+   for (n = 0; n <= mask; n++) {
+      i = (h + n) & mask;
+      if (!used[i]) { used[i] = 1; tab[i].addr = key; return &tab[i]; }
+      if (tab[i].addr == key) return &tab[i];
+   }
+   return NULL;
+}
+
+static int SH2ProfArea(u32 pc)
+{
+   pc &= 0x0FFFFFFF;
+   if (pc < 0x00080000) return 0;
+   if (pc >= 0x00200000 && pc < 0x00300000) return 1;
+   if (pc >= 0x06000000 && pc < 0x06100000) return 2;
+   if (pc >= 0x02000000 && pc < 0x06000000) return 3;
+   return 4;
+}
+
+static int SH2ProfIsBranch(u16 i)
+{
+   return ((i & 0xF000) == 0xA000) ||                      /* BRA */
+          ((i & 0xF000) == 0xB000) ||                      /* BSR */
+          ((i & 0xFF00) == 0x8900) || ((i & 0xFF00) == 0x8B00) ||  /* BT BF */
+          ((i & 0xFF00) == 0x8D00) || ((i & 0xFF00) == 0x8F00) ||  /* BT/S BF/S */
+          ((i & 0xF0FF) == 0x402B) || ((i & 0xF0FF) == 0x400B) ||  /* JMP JSR */
+          ((i & 0xF0FF) == 0x0023) || ((i & 0xF0FF) == 0x0003) ||  /* BRAF BSRF */
+          (i == 0x000B) || (i == 0x002B) ||                        /* RTS RTE */
+          ((i & 0xFF00) == 0xC300);                                /* TRAPA */
+}
+
+static int SH2ProfIsCall(u16 i)
+{
+   return ((i & 0xF000) == 0xB000) || ((i & 0xF0FF) == 0x400B) || ((i & 0xF0FF) == 0x0003);
+}
+
+static void SH2ProfPush(sh2prof_cpu *p, u32 addr, int irq)
+{
+   if (p->depth >= SH2PROF_STACK_MAX) { p->overflow++; return; }
+   p->stackAddr[p->depth] = addr;
+   p->stackStart[p->depth] = p->total;
+   p->stackIrq[p->depth] = (u8)irq;
+   p->depth++;
+   {
+      sh2prof_entry *e = SH2ProfFind(p->funcs, p->funcUsed, SH2PROF_FUNC_SLOTS - 1, addr, NULL);
+      if (e) e->calls++;
+   }
+}
+
+static void SH2ProfPop(sh2prof_cpu *p)
+{
+   if (p->overflow > 0) { p->overflow--; return; }
+   if (p->depth <= 0) return;
+   p->depth--;
+   {
+      sh2prof_entry *e = SH2ProfFind(p->funcs, p->funcUsed, SH2PROF_FUNC_SLOTS - 1, p->stackAddr[p->depth], NULL);
+      if (e) e->incl += p->total - p->stackStart[p->depth];
+   }
+}
+
+void SH2ProfileReset(void)
+{
+   int c;
+   for (c = 0; c < 2; c++)
+      if (sh2prof[c]) memset(sh2prof[c], 0, sizeof(sh2prof_cpu));
+}
+
+void SH2ProfileSetActive(int on)
+{
+   int c;
+   if (on) {
+      for (c = 0; c < 2; c++)
+         if (sh2prof[c] == NULL) sh2prof[c] = (sh2prof_cpu *)calloc(1, sizeof(sh2prof_cpu));
+      if (sh2prof[0] == NULL || sh2prof[1] == NULL) { SH2ProfileActive = 0; return; }
+      SH2ProfileReset();
+   }
+   SH2ProfileActive = on ? 1 : 0;
+}
+
+void SH2ProfileHook(SH2_struct *context)
+{
+   sh2prof_cpu *p = sh2prof[context->isslave ? 1 : 0];
+   u32 pc = context->regs.PC;
+   u32 now = context->cycles;
+   u32 delta;
+
+   if (p == NULL) return;
+
+   if (p->havePrev) {
+      /* Le compteur est remis a zero par trame : on repart de zero. */
+      delta = (now >= p->lastCycles) ? (now - p->lastCycles) : now;
+      if (delta != 0) {
+         u32 owner = (p->depth > 0) ? p->stackAddr[p->depth - 1] : 0;
+         sh2prof_entry *e = SH2ProfFind(p->funcs, p->funcUsed, SH2PROF_FUNC_SLOTS - 1, owner, NULL);
+         sh2prof_entry *b = SH2ProfFind(p->blocks, p->blockUsed, SH2PROF_BLOCK_SLOTS - 1, p->lastPC & ~0xFFu, NULL);
+         if (e) e->excl += delta; else p->dropped += delta;
+         if (b) b->excl += delta; else p->dropped += delta;
+         p->area[SH2ProfArea(p->lastPC)] += delta;
+         p->total += delta;
+      }
+
+      /* Transition produite par l'instruction precedente. */
+      if (SH2ProfIsCall(p->lastInst)) {
+         SH2ProfPush(p, pc, 0);
+      } else if (p->lastInst == 0x000B) {          /* RTS */
+         if (p->depth > 0 && !p->stackIrq[p->depth - 1]) SH2ProfPop(p);
+      } else if (p->lastInst == 0x002B) {          /* RTE */
+         if (p->depth > 0 && p->stackIrq[p->depth - 1]) SH2ProfPop(p);
+      } else if (!SH2ProfIsBranch(p->lastInst) && pc != p->lastPC + 2) {
+         SH2ProfPush(p, pc, 1);                    /* entree d'interruption */
+      }
+   }
+
+   p->havePrev = 1;
+   p->lastCycles = now;
+   p->lastPC = pc;
+   p->lastInst = context->instruction;
+}
+
+u64 SH2ProfileTotalCycles(int cpu)
+{
+   return (cpu >= 0 && cpu < 2 && sh2prof[cpu]) ? sh2prof[cpu]->total : 0;
+}
+
+u64 SH2ProfileAreaCycles(int cpu, int area)
+{
+   if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || area < 0 || area > 4) return 0;
+   return sh2prof[cpu]->area[area];
+}
+
+static int SH2ProfCmp(const void *a, const void *b)
+{
+   const sh2prof_entry *x = (const sh2prof_entry *)a, *y = (const sh2prof_entry *)b;
+   return (x->excl < y->excl) - (x->excl > y->excl);
+}
+
+static int SH2ProfCopy(const sh2prof_entry *tab, const u8 *used, int slots, sh2prof_entry *out, int max)
+{
+   int i, n = 0;
+   for (i = 0; i < slots && n < max; i++)
+      if (used[i] && (tab[i].excl != 0 || tab[i].calls != 0)) out[n++] = tab[i];
+   qsort(out, n, sizeof(sh2prof_entry), SH2ProfCmp);
+   return n;
+}
+
+int SH2ProfileGetFunctions(int cpu, sh2prof_entry *out, int max)
+{
+   if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || out == NULL) return 0;
+   return SH2ProfCopy(sh2prof[cpu]->funcs, sh2prof[cpu]->funcUsed, SH2PROF_FUNC_SLOTS, out, max);
+}
+
+int SH2ProfileGetBlocks(int cpu, sh2prof_entry *out, int max)
+{
+   if (cpu < 0 || cpu > 1 || sh2prof[cpu] == NULL || out == NULL) return 0;
+   return SH2ProfCopy(sh2prof[cpu]->blocks, sh2prof[cpu]->blockUsed, SH2PROF_BLOCK_SLOTS, out, max);
 }
