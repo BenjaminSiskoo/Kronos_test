@@ -45,6 +45,7 @@ protected:
 	void requestFolder( const QString& caption, QLineEdit* edit, QString proposedPath = QString());
 	void requestSTVFolder(const QString & caption, QLineEdit * edit, QString proposedPath = QString());
 	void setupCdDrives();
+	void setupCameras( const QString& selected );
 	void setupSideBar();
 	void refreshSideBar();
 	void updateGunMouseLabel( int value );
@@ -59,6 +60,7 @@ protected:
 protected slots:
 	void on_leBios_textChanged(const QString & text);
 	void on_cbFloppyEnabled_toggled( bool checked );
+	void on_tbCameraRefresh_clicked();
 	void on_leBiosSettings_textChanged(const QString & text);
 	void tbBrowse_clicked();
 	void on_cbInput_currentIndexChanged( int id );
