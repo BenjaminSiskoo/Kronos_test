@@ -457,8 +457,19 @@ typedef enum
 	ORIGINAL_RATIO = 0,
 	STRETCH_RATIO = 1,
   INTEGER_RATIO_FULL = 2,
-  INTEGER_RATIO = 3
+  INTEGER_RATIO = 3,
+  /* Fixed display aspect ratios: the 4:3 picture is stretched to a box of
+     this shape, centred in the window, black bars elsewhere. It does not
+     widen the game's field of view. */
+  WIDE_RATIO_16_9 = 4,
+  WIDE_RATIO_16_10 = 5,
+  WIDE_RATIO_21_9 = 6
 } RATIOMODE;
+
+/* Aspect ratio (width / height) of a WIDE_RATIO_* mode, 0 for the others. */
+#define YGL_WIDE_RATIO(m) (((m) == WIDE_RATIO_16_9) ? (16.0 / 9.0) : \
+                           ((m) == WIDE_RATIO_16_10) ? (16.0 / 10.0) : \
+                           ((m) == WIDE_RATIO_21_9) ? (21.0 / 9.0) : 0.0)
 
 
 typedef enum {
