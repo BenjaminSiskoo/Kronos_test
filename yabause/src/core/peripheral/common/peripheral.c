@@ -26,6 +26,7 @@
 #include "peripheral.h"
 #include "movie.h"
 #include "ygl.h"
+#include "pclub.h"
 #include <string.h>
 
 const char * PerPadNames[] =
@@ -735,8 +736,13 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
          val = (u8)(word >> (((m_ioga_portg & 1) ^ 1) * 8));
          m_ioga_portg = (m_ioga_portg & 0xf8) | ((m_ioga_portg + 1) & 7); // counter# is auto-incremented then read
        }
-       else
+       else {
          val = IOPORT[PORT_G];
+         /* Print Club: the video printer drives bits 0 (0 = error), 2
+            (1 = printer off) and 3 (1 = printing) of PORT-G (pclub.h). */
+         if (PClubIsEnabled())
+           val = (u8)((val & ~0x0D) | PClubPrinterPortG());
+       }
        break;
      case 0x17: val = IogaSerialRead(0); break; // RS-422 RXD1
      case 0x19: val = IogaSerialRead(1); break; // RS-422 RXD2
