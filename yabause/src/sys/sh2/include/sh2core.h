@@ -685,8 +685,23 @@ void SH2ProfileHook(SH2_struct *context);
 u64  SH2ProfileTotalCycles(int cpu);
 /* Copie les entrees triees par cycles exclusifs decroissants ; retourne le
    nombre copie. cpu : 0 = maitre, 1 = esclave. */
+typedef struct {
+   u32 head;        /* cible du branchement en arriere (debut de la boucle) */
+   u32 tail;        /* adresse du branchement en arriere (fin de la boucle) */
+   u64 iterations;  /* nombre de fois ou le branchement en arriere est pris */
+   u64 cycles;      /* cycles des instructions situees entre head et tail */
+} sh2prof_loop;
+
 int  SH2ProfileGetFunctions(int cpu, sh2prof_entry *out, int max);
 int  SH2ProfileGetBlocks(int cpu, sh2prof_entry *out, int max);
+/* Points chauds : un par adresse d'instruction (excl = cycles, calls = nombre
+   d'executions), tries par cycles decroissants. */
+int  SH2ProfileGetHotspots(int cpu, sh2prof_entry *out, int max);
+/* Boucles : un branchement en arriere pris (BRA, BT, BF, BT/S, BF/S) vers une
+   adresse proche definit une boucle [head, tail]. Les cycles sont ceux des
+   instructions de cet intervalle, appelees exclues ; une boucle imbriquee est
+   donc aussi comptee dans la boucle externe. Tries par cycles decroissants. */
+int  SH2ProfileGetLoops(int cpu, sh2prof_loop *out, int max);
 /* Zone memoire : 0 BIOS, 1 Low WRAM, 2 High WRAM, 3 cartouche, 4 autre. */
 u64  SH2ProfileAreaCycles(int cpu, int area);
 
