@@ -225,6 +225,7 @@
     <addaction name="aViewDebugGfxEditor"/>
     <addaction name="aViewDebugTextEditor"/>
     <addaction name="aViewDebugM68K"/>
+    <addaction name="aViewDebugSH2Profile"/>
     <addaction name="aViewDebugSCUDSP"/>
     <addaction name="aViewDebugSCSP"/>
     <addaction name="aViewDebugSCSPChan"/>
@@ -562,6 +563,18 @@
    </property>
    <property name="text">
     <string>M&amp;68K</string>
+   </property>
+  </action>
+  <action name="aViewDebugSH2Profile">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../resources/resources.qrc">
+     <normaloff>:/actions/icons/actions/debug_cpu.png</normaloff>:/actions/icons/actions/debug_cpu.png</iconset>
+   </property>
+   <property name="text">
+    <string>SH-2 &amp;profiler</string>
    </property>
   </action>
   <action name="aViewDebugSCUDSP">
