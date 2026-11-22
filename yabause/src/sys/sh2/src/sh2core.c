@@ -559,8 +559,12 @@ int SH2Init(int coreid)
    SH2CacheInitTags(MSH2);
    SH2CacheInitTags(SSH2);
    // So which core do we want?
+   // SH2CORE_DEFAULT: the first core of the port's list. The ids are not
+   // 0-based (SH2CORE_KRONOS_INTERPRETER is 8), so "coreid = 0" found no
+   // core and a front end without a saved core (Qt port, first start)
+   // stopped on "Cannot initialize SH2".
    if (coreid == SH2CORE_DEFAULT)
-      coreid = 0; // Assume we want the first one
+      coreid = (SH2CoreList[0] != NULL) ? SH2CoreList[0]->id : 0;
 
    // Go through core list and find the id
    for (i = 0; SH2CoreList[i] != NULL; i++)
