@@ -38,6 +38,7 @@
 #include "memory.h"
 #include "m68kcore.h"
 #include "peripheral.h"
+#include "pclub.h"
 #include "scsp.h"
 #include "scspdsp.h"
 #include "scu.h"
@@ -1108,6 +1109,7 @@ void YabauseResetNoLoad(void) {
       with the machine. They used to be cleared by PerPortReset(), which
       also runs when the controllers are reconfigured during a game. */
    PerIogaReset();
+   PClubReset(); /* ST-V Print Club board, when the game has one */
 
    nextFrameTime = 0;
    /* Phase du partage des echantillons SCSP entre les trames (735/736 en
