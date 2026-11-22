@@ -93,6 +93,7 @@ set(kronos_HEADERS
 	sys/scsp/include/scspdsp.h
 	sys/scsp/include/adsp2181.h
 	sys/scsp/include/rax.h
+	ctrl/include/pclub.h
   sys/scsp/include/m68kd.h
 	sys/smpc/include/smpc.h
 	sys/memory/include/memory.h
@@ -175,6 +176,7 @@ set(kronos_SOURCES
 	core/sound/dummy/snddummy.c
 	ctrl/src/yabause.c
   ctrl/src/stv.c
+  ctrl/src/pclub.c
   ctrl/src/movie.c
 	utils/src/error.c
 	utils/src/cdbase.c
