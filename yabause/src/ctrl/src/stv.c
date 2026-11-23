@@ -591,7 +591,7 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "mpr-21444.ic8",	0x1c00000, 0x0400000, 0xa82ff33b,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    FANZONEM,
   },
   {
     "finlarch",
@@ -1773,7 +1773,7 @@ Game GameList[NB_STV_GAMES]={
   },
   {
     "thuntk",
-    "sandor",
+    "sandr",
     "Puzzle & Action: BoMulEul Chajara (JUET 970125 V2.00K)",
     STV_REGION_JP | STV_REGION_US | STV_REGION_EU | STV_REGION_TW,
     0,
@@ -1796,7 +1796,7 @@ Game GameList[NB_STV_GAMES]={
     STV,
   },
   {
-    "sandor",
+    "sandr",
     NULL,
     "Puzzle & Action: Sando-R (J 951114 V1.000)",
     STV_REGION_JP,
@@ -1822,7 +1822,7 @@ Game GameList[NB_STV_GAMES]={
   },
   {
     "thunt",
-    "sandor",
+    "sandr",
     "Puzzle & Action: Treasure Hunt (JUET 970901 V2.00E)",
     STV_REGION_EU | STV_REGION_US | STV_REGION_JP | STV_REGION_TW,
     0,
@@ -2416,7 +2416,7 @@ Game GameList[NB_STV_GAMES]={
         EEPROM_BLOB,	"wasafari.nv",	0x0000, 0x0080, 0x50861c5a,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    WASAFARI,
   },
   {
     "winterht",
@@ -2464,7 +2464,9 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "mpr-21129.ic10",	0x2400000, 0x0400000, 0x997d67bd,
         GAME_WORD_BLOB, "mpr-21124.ic11",	0x2800000, 0x0400000, 0x10f073ac,
         GAME_WORD_BLOB, "mpr-21123.ic12",	0x2c00000, 0x0400000, 0x491b9166,
-        EEPROM_BLOB,    "epr-21121.bin", 	0x0000, 0x2000, 0xd615bce0,
+        /* ROM programme du CPU d'E/S (MC68360, region "io_cpu" de MAME), pas une EEPROM :
+           non emulee, optionnelle. Etait EEPROM_BLOB et alimentait eeprom_start() avec ses 0x80 premiers octets. */
+        IO_CPU_BLOB,    "epr-21121.bin", 	0x0000, 0x20000, 0xd615bce0,
         // EEPROM_BLOB,    "315-5930.ic19", 	0x0000, 0x0117, 0xd1201563,		
         GAME_END, "", 0, 0, 0
     },
@@ -2567,7 +2569,7 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "lh28f016sut.ic30",	0x0a00000, 0x0200000, 0x4b7e36d1,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    ACLUB,
   },
   {
     "pclub2mb",
@@ -2649,7 +2651,7 @@ Game GameList[NB_STV_GAMES]={
         GAME_WORD_BLOB, "ic36",	0x1000000, 0x0200000, 0x5b83914c,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    WWSHIN,
   },
   // --- Nouveaux jeux ajoutes depuis mame/src/mame/sega/stv.cpp (a jour) ---
   {
@@ -3053,6 +3055,8 @@ int copyFile(JZFile *zip, void* id) {
                 hasEeprom = 1;
               }
               break;
+            case IO_CPU_BLOB:
+              break; /* CPU d'E/S non emule */
             case RAX_BLOB:
               RaxLoadRom(availableGames[gameId].entry->blobs[i].offset, data,
                          (header.uncompressedSize < availableGames[gameId].entry->blobs[i].length) ?
@@ -3107,14 +3111,14 @@ int recordCallback(JZFile *zip, int idx, JZFileHeader *header, char *filename, v
 static int gameBlobsStrictSubset(const Game *a, const Game *b) {
   int i, j, na = 0, nb = 0;
   for (j = 0; b->blobs[j].type != GAME_END; j++) {
-    if (b->blobs[j].type != EEPROM_BLOB && b->blobs[j].type != RAX_BLOB) nb++;
+    if (b->blobs[j].type != EEPROM_BLOB && b->blobs[j].type != RAX_BLOB && b->blobs[j].type != IO_CPU_BLOB) nb++;
   }
   for (i = 0; a->blobs[i].type != GAME_END; i++) {
     int found = 0;
-    if (a->blobs[i].type == EEPROM_BLOB || a->blobs[i].type == RAX_BLOB) continue;
+    if (a->blobs[i].type == EEPROM_BLOB || a->blobs[i].type == RAX_BLOB || a->blobs[i].type == IO_CPU_BLOB) continue;
     na++;
     for (j = 0; b->blobs[j].type != GAME_END; j++) {
-      if (b->blobs[j].type == EEPROM_BLOB || b->blobs[j].type == RAX_BLOB) continue;
+      if (b->blobs[j].type == EEPROM_BLOB || b->blobs[j].type == RAX_BLOB || b->blobs[j].type == IO_CPU_BLOB) continue;
       if ((a->blobs[i].crc32 == b->blobs[j].crc32) &&
           (strcmp(a->blobs[i].filename, b->blobs[j].filename) == 0)) {
         found = 1;
@@ -3183,7 +3187,7 @@ char * updateGameList(const char* file, int *nbGames){
       if (GameList[i].blobs[j].type == BIOS_BLOB) {
         isBiosFound |= fileFound[i][j];
       } else {
-        if (GameList[i].blobs[j].type != EEPROM_BLOB && GameList[i].blobs[j].type != RAX_BLOB)
+        if (GameList[i].blobs[j].type != EEPROM_BLOB && GameList[i].blobs[j].type != RAX_BLOB && GameList[i].blobs[j].type != IO_CPU_BLOB)
           isBlobFound &= fileFound[i][j];
       }
       j++;
