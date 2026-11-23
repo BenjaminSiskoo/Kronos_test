@@ -2978,7 +2978,16 @@ u32 FASTCALL ScuReadLong(SH2_struct *sh, u8* mem, u32 addr) {
         return ScuRegs->DSTA;
       }
       case 0x80: // DSP Program Control Port
-         return (ScuDsp->ProgControlPort.all & 0x00FD00FF);
+      {
+         /* ST-097-R5 3.3 (PPAF) : les drapeaux V (bit 19, debordement) et
+          * E (bit 18, fin de programme) sont remis a 0 par la lecture.
+          * E restait a 1 apres le premier ENDI : un programme qui teste
+          * PPAF bit 18 voyait toujours "termine". */
+         u32 ppaf = ScuDsp->ProgControlPort.all & 0x00FD00FF;
+         ScuDsp->ProgControlPort.part.V = 0;
+         ScuDsp->ProgControlPort.part.E = 0;
+         return ppaf;
+      }
       case 0x8C: // DSP Data Ram Data Port
          if (!ScuDsp->ProgControlPort.part.EX)
             return ScuDsp->MD[ScuDsp->DataRamPage][ScuDsp->DataRamReadAddress++];
@@ -3303,7 +3312,9 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          ScuRegs->DSTP = val;
          break;
       case 0x7C:
-        ScuRegs->DSTA = val;
+        /* DSTA est en lecture seule (ST-097-R5 fig. 3.13, "(R)"). Stocker la
+         * valeur ecrite laissait des bits colles a 1 : seuls D0MV/D1MV/D2MV
+         * sont recalcules a la lecture (voir ScuReadLong). */
         break;
       case 0x80: // DSP Program Control Port
          LOG("scu: wrote %08X to DSP Program Control Port", val);
@@ -3319,6 +3330,9 @@ void FASTCALL ScuWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
          if (val & 0x10000) {
            // clear internal values
            ScuDsp->jmpaddr = 0xffffffff;
+           /* ST-210 n.26 / STTECH10 : le drapeau de fin de programme (E)
+            * est remis a 0 au demarrage du DSP. */
+           ScuDsp->ProgControlPort.part.E = 0;
          }
 
 #ifdef DEBUG
