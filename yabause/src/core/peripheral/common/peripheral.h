@@ -124,6 +124,9 @@ int PerGetCoinLockout(int index); /* ST-V PORT-D coin lockout 0/1 active */
 void PerIogaSaveState(void ** stream); /* ST-V IOGA registers, PORT-G counters, hopper (CART chunk) */
 int PerIogaLoadState(const void * stream, int size); /* 0 = applied */
 void PerIogaReset(void); /* ST-V IOGA registers back to their reset values (machine reset) */
+void PerIogaAnalogSaveState(void ** stream); /* "IOAD" block of the CART chunk */
+int PerIogaAnalogLoadState(const void * stream, int size); /* 0 = applied */
+void PerIogaAnalogSet(int channel, u8 value); /* ST-V PORT-AD: force channel 0-7 (default 0xFF, unconnected) */
 
 /* ST-V IOGA RS-422, channel 0 = TXD1/RXD1, 1 = TXD2/RXD2.
    PerIogaSerialSetPeer(): device that receives the bytes the game sends
