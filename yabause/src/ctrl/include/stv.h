@@ -46,7 +46,10 @@ typedef enum{
   // wasafari (Winch on PORT-G bit 0) and aclub (most lines unused).
   FANZONEM,
   WASAFARI,
-  ACLUB
+  ACLUB,
+  // tsuribor: fishing rods on PORT-AD AN0 (P1) / AN1 (P2), driven by the cabinet
+  // left/right keys (see peripheral.c).
+  TSURIBOR
 } inputType;
 
 typedef enum{
