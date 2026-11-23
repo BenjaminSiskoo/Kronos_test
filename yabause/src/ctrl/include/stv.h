@@ -38,7 +38,15 @@ typedef enum{
   // the same row-scan mux as the Mahjong Panel (PerMahjongPanelEnabled()
   // covers it). Kept as its own type for a dedicated hanafuda key layout.
   // Hooked like MAME, not yet tested in game.
-  STVHANAFUDA
+  STVHANAFUDA,
+  // wwshin (Waku Waku Shinkansen): MAME "wwshin" port set, PORT-G bit 0
+  // winch + pedals on PORT-AD channels 0 (accelerate) and 1 (brake).
+  WWSHIN,
+  // MAME port sets fanzonem (lever + hopper/door switches, PORT-A/B remapped),
+  // wasafari (Winch on PORT-G bit 0) and aclub (most lines unused).
+  FANZONEM,
+  WASAFARI,
+  ACLUB
 } inputType;
 
 typedef enum{
@@ -51,6 +59,9 @@ typedef enum{
      own 16 MB region at `offset` (MAME ROM_REGION "rax"). Optional: the
      game still boots without it, only the RAX audio is missing. */
   RAX_BLOB,
+  /* ROM programme d'un CPU d'E/S externe (MAME region "io_cpu", yattrmnp):
+     non emulee, jamais requise pour reconnaitre le jeu. */
+  IO_CPU_BLOB,
   GAME_END
 } blobType;
 
