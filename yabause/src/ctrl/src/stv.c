@@ -2106,11 +2106,14 @@ Game GameList[NB_STV_GAMES]={
     },
     STV,
   },
-  { /* ADDED: was missing from the game table (MAME has this romset) */
+  { /* ADDED: was missing from the game table (MAME has this romset).
+       Region Japan only: the cartridge header is "CART-A J" and the Europe
+       BIOS shows "OPERATION OF THIS CARTRIDGE IS DISALLOWED IN THIS COUNTRY"
+       (tested), so Auto now picks the Japan BIOS. */
     "tsuribor",
     NULL,
     "Tsuribori Taikai (JAE 980605 V1.000)",
-    STV_REGION_JP | STV_REGION_EU,
+    STV_REGION_JP,
     0,
     0,
     NULL,
@@ -2124,7 +2127,7 @@ Game GameList[NB_STV_GAMES]={
         EEPROM_BLOB,	"tsuribor.nv",	0x0000, 0x0080, 0x47c7fa6e,
         GAME_END, "", 0, 0, 0
     },
-    STV,
+    TSURIBOR,
   },
   {
     "suikoenb",
