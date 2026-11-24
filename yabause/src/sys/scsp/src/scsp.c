@@ -956,7 +956,13 @@ void op5(struct Slot * slot)
       if( slot->regs.sd ){
         sample = slot->state.output;
       }else{
-        lfo_add = (((alfo_val + 1)) >> (7 - slot->regs.alfos)) << 1;
+        /* ST-077-R2 Table 4.24 : ALFOS = 0 -> aucun effet ; sinon ALFO[7:0]
+         * decale de (7 - ALFOS), soit 255 pas de 0,094 dB (24 dB) a ALFOS = 7.
+         * Le code d'origine ajoutait ((ALFO + 1) >> (7 - ALFOS)) << 1 : profondeur
+         * doublee (48 dB a ALFOS = 7) et jusqu'a 4 pas parasites a ALFOS = 0.
+         * Ymir (hw/scsp/scsp.cpp, SlotProcessStep3_2) : alfoOutput = ALFO >>
+         * (7 - ALFOS), 0 si ALFOS = 0 (recoupement, la doc suffit ici). */
+        lfo_add = (slot->regs.alfos != 0) ? (alfo_val >> (7 - slot->regs.alfos)) : 0;
         sample = apply_volume(slot->regs.tl, slot->state.attenuation + lfo_add, slot->state.output);
       }
       slot->state.output = sample;

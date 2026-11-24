@@ -3543,7 +3543,14 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
    MemStateRead((void *)&temp32, sizeof(u32), 1, stream);
    MemStateRead((void *)&yabsys.CurSH2FreqType, sizeof(int), 1, stream);
    MemStateRead((void *)&yabsys.IsPal, sizeof(int), 1, stream);
-   YabauseChangeTiming(yabsys.CurSH2FreqType);
+   /* Re-apply the video standard of the state, not just the flag. IsPal and
+    * MaxLineCount are read above, but the frame period (OneFrameTime, 50 Hz
+    * vs 59.94 Hz), the SCSP video format and the TVSTAT PAL bit are only
+    * derived in YabauseSetVideoFormat(). Without this, loading a PAL state
+    * into an NTSC session (or the reverse) kept the previous standard's
+    * frame pacing and sound timing. It also does what YabauseChangeTiming()
+    * did here before (it is called at the end). */
+   YabauseSetVideoFormat(yabsys.IsPal ? VIDEOFORMATTYPE_PAL : VIDEOFORMATTYPE_NTSC);
    yabsys.UsecFrac = 0;
 
    if (headerversion > 1) {

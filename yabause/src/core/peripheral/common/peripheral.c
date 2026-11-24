@@ -28,6 +28,8 @@
 #include "ygl.h"
 #include "pclub.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 const char * PerPadNames[] =
 {
@@ -226,6 +228,95 @@ static void PerUpdateConfig(PerBaseConfig_struct * baseconfig, int nelems, void 
 u8 m_system_output = 0;
 u8 m_ioga_mode = 0;
 u8 m_ioga_portg = 0;
+/* PORT-AD (0x1F): 8-channel analog mux. Write: bits 0-2 select the channel;
+   read: data of the selected channel, then the channel auto-increments
+   (MAME sega/315_5649.cpp, case 0x0f). Unconnected channels read 0xFF. */
+static u8 m_adc_channel = 0;
+static u8 m_adc_value[8];
+static u8 m_adc_set[8]; /* 1 = value forced by PerIogaAnalogSet() */
+
+void PerIogaAnalogSet(int channel, u8 value)
+{
+   if (channel < 0 || channel > 7)
+      return;
+   m_adc_value[channel] = value;
+   m_adc_set[channel] = 1;
+}
+
+#define IOGA_ADC_STATE_VERSION 1
+#define IOGA_ADC_STATE_SIZE (4 + 1 + 8 + 8)
+
+void PerIogaAnalogSaveState(void ** stream)
+{
+   u32 version = IOGA_ADC_STATE_VERSION;
+   MemStateWrite(&version, 4, 1, stream);
+   MemStateWrite(&m_adc_channel, 1, 1, stream);
+   MemStateWrite(m_adc_set, 1, 8, stream);
+   MemStateWrite(m_adc_value, 1, 8, stream);
+}
+
+int PerIogaAnalogLoadState(const void * stream, int size)
+{
+   u32 version;
+   int i;
+   if (size < IOGA_ADC_STATE_SIZE)
+      return -1;
+   MemStateRead(&version, 4, 1, stream);
+   if (version != IOGA_ADC_STATE_VERSION)
+      return -1;
+   MemStateRead(&m_adc_channel, 1, 1, stream);
+   MemStateRead(m_adc_set, 1, 8, stream);
+   MemStateRead(m_adc_value, 1, 8, stream);
+   m_adc_channel &= 7;
+   for (i = 0; i < 8; i++)
+      m_adc_set[i] &= 1;
+   return 0;
+}
+
+/* tsuribor (MAME: "needs input rod hookup (analog)"): the fishing rod is the
+   PORT-AD channel AN0 for player 1 and AN1 for player 2 (found by tracing
+   the game's PORT-AD accesses). 0x00 = rod fully left, 0x80 = centre (rest),
+   0xFF = rod fully right; the title screen cursor goes 1 player / 2 players
+   versus / 2 players co-op over that range. There is no analog binding in the
+   UI, so the rod follows the cabinet's left/right keys (P1: PORT-A bits 7/6,
+   P2: PORT-B bits 7/6, active low): it moves towards the end stop while a key
+   is held and returns to the centre when released, ROD_STEP counts per frame. */
+#define ROD_STEP 8
+static u8 m_rod_pos[2] = { 0x80, 0x80 };
+static u32 m_rod_frame = 0xFFFFFFFF;
+
+static void IogaRodUpdate(void)
+{
+   int i;
+   if (m_rod_frame == yabsys.frame_count)
+      return;
+   m_rod_frame = yabsys.frame_count;
+   for (i = 0; i < 2; i++) {
+      u8 keys = IOPORT[i == 0 ? PORT_A : PORT_B];
+      int target = 0x80, pos = m_rod_pos[i];
+      if (!(keys & 0x80)) target = 0x00;      /* left  */
+      else if (!(keys & 0x40)) target = 0xFF; /* right */
+      if (pos < target) pos = (pos + ROD_STEP > target) ? target : pos + ROD_STEP;
+      else if (pos > target) pos = (pos - ROD_STEP < target) ? target : pos - ROD_STEP;
+      m_rod_pos[i] = (u8)pos;
+   }
+}
+
+static u8 IogaAnalogRead(int channel)
+{
+   if (m_adc_set[channel])
+      return m_adc_value[channel];
+   /* wwshin (MAME INPUT_PORTS wwshin): AN0 = accelerator pedal, AN1 = brake
+      pedal, both 0x00 at rest. No analog binding in the UI yet: P1 button A
+      (PORT-A bit 0) = accelerator fully pressed, P1 button B (bit 1) = brake. */
+   if (yabsys.stvInputType == WWSHIN && channel < 2)
+      return (IOPORT[PORT_A] & (1 << channel)) ? 0x00 : 0xFF;
+   if (yabsys.stvInputType == TSURIBOR && channel < 2) {
+      IogaRodUpdate();
+      return m_rod_pos[channel];
+   }
+   return 0xFF;
+}
 /* PORT_DIRECTION (0x11): bit n configures port n (A..G), 1 = input, 0 = output.
    Bit 4 is PORT-E: a mahjong/hanafuda cabinet drives its row-scan mux through
    PORT-E (output, bit clear) and its joystick lines come back as inputs (bit set),
@@ -665,6 +756,47 @@ static u8 PerMahjongPanelRead(int player) {
    return val;
 }
 
+/* Per-game wiring of the cabinet inputs, from MAME's INPUT_PORTS (stv.cpp).
+   Lines MAME declares IPT_UNUSED read 1 (active low). Not user-bindable. */
+static u8 IogaInputOverride(u8 addr, u8 val)
+{
+   switch (yabsys.stvInputType) {
+   case FANZONEM:
+      if (addr == 0x01) {
+         /* control lever, nibble-swapped vs the stock layout (0x10 down,
+            0x20 up, 0x40 right, 0x80 left); 0x30/0xC0 = trigger and coin
+            sensors (active high, idle 0) */
+         u8 lever = 0;
+         if (!(val & 0x40)) lever |= 0x01; /* right */
+         if (!(val & 0x80)) lever |= 0x02; /* left  */
+         if (!(val & 0x20)) lever |= 0x04; /* up    */
+         if (!(val & 0x10)) lever |= 0x08; /* down  */
+         return (u8)(~lever & 0x0F);
+      }
+      /* PORTB: test/reset switches and door switches idle high, hopper
+         count and trigger sensor 2 idle low, bit 7 unused */
+      if (addr == 0x03) return 0x8F;
+      break;
+   case WWSHIN:
+   case WASAFARI:
+      if (addr == 0x01) return val | 0xFC;
+      if (addr == 0x03 || addr == 0x09 || addr == 0x0B) return 0xFF;
+      if (addr == 0x05) return val | 0x30;
+      /* Winch = PORT-G bit 0 (IPT_BUTTON3); no binding of its own yet: P1
+         button C (PORT-A bit 2) */
+      if (addr == 0x0D && !(m_ioga_mode & 0x80))
+         return (u8)(0xFE | ((IOPORT[PORT_A] >> 2) & 1));
+      break;
+   case ACLUB:
+      if (addr == 0x03 || addr == 0x09 || addr == 0x0B || addr == 0x0D) return 0xFF;
+      if (addr == 0x05) return val | 0x20;
+      break;
+   default:
+      break;
+   }
+   return val;
+}
+
 u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
 {
 /*
@@ -748,9 +880,12 @@ u8 FASTCALL IOPortReadByte(SH2_struct *context, UNUSED u8* memory,  u32 addr)
      case 0x19: val = IogaSerialRead(1); break; // RS-422 RXD2
      case 0x1b: val = IogaSerialFlag(); break;  // RS-422 FLAG
      case 0x1d: val = m_ioga_mode; break;
-
+     case 0x1f: // PORT-AD
+       val = IogaAnalogRead(m_adc_channel);
+       m_adc_channel = (m_adc_channel + 1) & 7;
+       break;
    }
-   return val;
+   return IogaInputOverride(addr, val);
 }
 
 u16 FASTCALL IOPortReadWord(SH2_struct *context, UNUSED u8* memory, u32 addr)
@@ -823,6 +958,9 @@ void FASTCALL IOPortWriteByte(SH2_struct *context, UNUSED u8* memory,UNUSED u32 
       break;
     case 0x1d:
       m_ioga_mode = val;
+      break;
+    case 0x1f: // PORT-AD channel select
+      m_adc_channel = val & 7;
       break;
   }
 }
@@ -2707,6 +2845,11 @@ void PerIogaReset(void)
    m_port_direction = 0xFF;
    m_ioga_mode = 0;
    m_ioga_portg = 0;
+   m_adc_channel = 0;
+   m_rod_pos[0] = m_rod_pos[1] = 0x80;
+   m_rod_frame = 0xFFFFFFFF;
+   for (i = 0; i < 8; i++)
+      m_adc_set[i] = 0;
    for (i = 0; i < IOGA_PORT_COUNT; i++)
       m_ioga_port_latch[i] = 0xFF;
    mj_mux_data = 0;

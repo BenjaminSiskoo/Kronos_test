@@ -2105,6 +2105,7 @@ static u32 CartStateDramSize(int carttype)
  *     "5881" 315-5881 transfer in progress (decrypt.c)
  *     "5838" 315-5838 family tables and decoder position (decrypt.c)
  *     "IOGA" I/O gate array registers, PORT-G counters, hopper (peripheral.c)
+ *     "IOAD" IOGA PORT-AD: selected channel, forced values (peripheral.c)
  *     "EEPR" ST-V serial EEPROM: interface state and contents (eeprom.c)
  *     "RAX " Acclaim RAX sound board of Batman Forever (rax.c, adsp2181.c)
  *     "PCLB" Print Club video board and printer (pclub.c)
@@ -2181,6 +2182,8 @@ static void CartStvLoadBlocks(const void * stream, int chunkend)
          status = decathlt5838LoadState(stream, (int)len);
       else if (memcmp(tag, "IOGA", 4) == 0)
          status = PerIogaLoadState(stream, (int)len);
+      else if (memcmp(tag, "IOAD", 4) == 0)
+         status = PerIogaAnalogLoadState(stream, (int)len);
       else if (memcmp(tag, "EEPR", 4) == 0)
          status = eeprom_load_state(stream, (int)len);
       else if (memcmp(tag, "RAX ", 4) == 0)
@@ -2218,6 +2221,7 @@ int CartSaveState(void ** stream)
       CartStateWriteBlock(stream, "5881", cryptoSaveState);
       CartStateWriteBlock(stream, "5838", decathlt5838SaveState);
       CartStateWriteBlock(stream, "IOGA", PerIogaSaveState);
+      CartStateWriteBlock(stream, "IOAD", PerIogaAnalogSaveState);
       CartStateWriteBlock(stream, "EEPR", eeprom_save_state);
       CartStateWriteBlock(stream, "RAX ", RaxSaveState);
       CartStateWriteBlock(stream, "PCLB", PClubSaveState);
