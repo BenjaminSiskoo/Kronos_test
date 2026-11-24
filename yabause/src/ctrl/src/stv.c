@@ -2117,7 +2117,7 @@ Game GameList[NB_STV_GAMES]={
     0,
     0,
     NULL,
-    NV_1P,
+    NULL,
     {
         GAME_WORD_BLOB, "lh28f016sut.ic22",	0x0200000, 0x0200000, 0xf18764a5,
         GAME_WORD_BLOB, "lh28f016sut.ic24",	0x0400000, 0x0200000, 0x47810ffc,
@@ -3054,7 +3054,25 @@ int copyFile(JZFile *zip, void* id) {
             case EEPROM_BLOB:
               /* eeprom_start() lit 0x80 octets */
               if (header.uncompressedSize >= 0x80) {
-                eeprom_start(data);
+                /* MAME charge tsuribor.nv et pclubsc5.nv avec
+                   ROM_LOAD16_WORD_SWAP (stv.cpp) : les octets de chaque mot
+                   sont permutes par rapport a l'ordre de eeprom_start()
+                   (en-tete "SEGA" = 53 45 47 41). Sans cette permutation le
+                   jeu lit une EEPROM invalide : en-tete "ESAG", type de
+                   borne 2P, d'ou "OPERATION OF THIS CARTRIDGE IS UNAVAILABLE
+                   WITH SYSTEM ASSIGNMENTS". Les autres .nv sont en ordre
+                   direct. */
+                const char * nvname = availableGames[gameId].entry->blobs[i].filename;
+                if (strcmp(nvname, "tsuribor.nv") == 0 || strcmp(nvname, "pclubsc5.nv") == 0) {
+                  u8 swapped[0x80];
+                  for (j = 0; j < 0x80; j += 2) {
+                    swapped[j] = data[j + 1];
+                    swapped[j + 1] = data[j];
+                  }
+                  eeprom_start(swapped);
+                } else {
+                  eeprom_start(data);
+                }
                 hasEeprom = 1;
               }
               break;
@@ -3359,8 +3377,10 @@ int loadGame(const char *romset){
     if (availableGames[gameId].entry->blobs[i].type == BIOS_BLOB) {
       isBiosFound |= fileFound[gameId][i];
     } else {
+      /* IO_CPU_BLOB est optionnel (CPU d'E/S non emule), comme dans le scan (l.3211). */
       if (availableGames[gameId].entry->blobs[i].type != EEPROM_BLOB &&
-          availableGames[gameId].entry->blobs[i].type != RAX_BLOB)
+          availableGames[gameId].entry->blobs[i].type != RAX_BLOB &&
+          availableGames[gameId].entry->blobs[i].type != IO_CPU_BLOB)
         isBlobFound &= fileFound[gameId][i];
     }
     i++;
