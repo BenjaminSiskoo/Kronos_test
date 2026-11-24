@@ -285,7 +285,7 @@ int PerIogaAnalogLoadState(const void * stream, int size)
    The second axis (AN1 / AN3) is one-way: the game clamps it to its calibrated
    maximum, so 0xFF = rod at rest (no pull). Not bound to any key yet. */
 #define ROD_STEP 8
-/* repos = centre de calibration du jeu (tsuribor.nv : P1 0x87, P2 0x91) */
+/* repos = centre de calibration releve dans la table du jeu (P1 0x87, P2 0x91) */
 static const u8 m_rod_center[2] = { 0x87, 0x91 };
 static u8 m_rod_pos[2] = { 0x87, 0x91 };
 static u32 m_rod_frame = 0xFFFFFFFF;
