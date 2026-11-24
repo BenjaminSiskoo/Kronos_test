@@ -2117,7 +2117,7 @@ Game GameList[NB_STV_GAMES]={
     0,
     0,
     NULL,
-    NV_1P,
+    NULL,
     {
         GAME_WORD_BLOB, "lh28f016sut.ic22",	0x0200000, 0x0200000, 0xf18764a5,
         GAME_WORD_BLOB, "lh28f016sut.ic24",	0x0400000, 0x0200000, 0x47810ffc,
