@@ -3377,8 +3377,10 @@ int loadGame(const char *romset){
     if (availableGames[gameId].entry->blobs[i].type == BIOS_BLOB) {
       isBiosFound |= fileFound[gameId][i];
     } else {
+      /* IO_CPU_BLOB est optionnel (CPU d'E/S non emule), comme dans le scan (l.3211). */
       if (availableGames[gameId].entry->blobs[i].type != EEPROM_BLOB &&
-          availableGames[gameId].entry->blobs[i].type != RAX_BLOB)
+          availableGames[gameId].entry->blobs[i].type != RAX_BLOB &&
+          availableGames[gameId].entry->blobs[i].type != IO_CPU_BLOB)
         isBlobFound &= fileFound[gameId][i];
     }
     i++;
