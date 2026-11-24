@@ -274,15 +274,20 @@ int PerIogaAnalogLoadState(const void * stream, int size)
 }
 
 /* tsuribor (MAME: "needs input rod hookup (analog)"): the fishing rod is the
-   PORT-AD channel AN0 for player 1 and AN1 for player 2 (found by tracing
-   the game's PORT-AD accesses). 0x00 = rod fully left, 0x80 = centre (rest),
+   PORT-AD channels AN0 (left/right) + AN1 (pull) for player 1 and AN2 + AN3 for
+   player 2 (found by tracing the game's PORT-AD accesses and its calibration
+   table). 0x00 = rod fully left, centre = game calibration (P1 0x87, P2 0x91),
    0xFF = rod fully right; the title screen cursor goes 1 player / 2 players
    versus / 2 players co-op over that range. There is no analog binding in the
    UI, so the rod follows the cabinet's left/right keys (P1: PORT-A bits 7/6,
    P2: PORT-B bits 7/6, active low): it moves towards the end stop while a key
-   is held and returns to the centre when released, ROD_STEP counts per frame. */
+   is held and returns to the centre when released, ROD_STEP counts per frame.
+   The second axis (AN1 / AN3) is one-way: the game clamps it to its calibrated
+   maximum, so 0xFF = rod at rest (no pull). Not bound to any key yet. */
 #define ROD_STEP 8
-static u8 m_rod_pos[2] = { 0x80, 0x80 };
+/* repos = centre de calibration du jeu (tsuribor.nv : P1 0x87, P2 0x91) */
+static const u8 m_rod_center[2] = { 0x87, 0x91 };
+static u8 m_rod_pos[2] = { 0x87, 0x91 };
 static u32 m_rod_frame = 0xFFFFFFFF;
 
 static void IogaRodUpdate(void)
@@ -293,7 +298,7 @@ static void IogaRodUpdate(void)
    m_rod_frame = yabsys.frame_count;
    for (i = 0; i < 2; i++) {
       u8 keys = IOPORT[i == 0 ? PORT_A : PORT_B];
-      int target = 0x80, pos = m_rod_pos[i];
+      int target = m_rod_center[i], pos = m_rod_pos[i];
       if (!(keys & 0x80)) target = 0x00;      /* left  */
       else if (!(keys & 0x40)) target = 0xFF; /* right */
       if (pos < target) pos = (pos + ROD_STEP > target) ? target : pos + ROD_STEP;
@@ -311,9 +316,11 @@ static u8 IogaAnalogRead(int channel)
       (PORT-A bit 0) = accelerator fully pressed, P1 button B (bit 1) = brake. */
    if (yabsys.stvInputType == WWSHIN && channel < 2)
       return (IOPORT[PORT_A] & (1 << channel)) ? 0x00 : 0xFF;
-   if (yabsys.stvInputType == TSURIBOR && channel < 2) {
-      IogaRodUpdate();
-      return m_rod_pos[channel];
+   if (yabsys.stvInputType == TSURIBOR) {
+      if (channel == 0 || channel == 2) {
+         IogaRodUpdate();
+         return m_rod_pos[channel >> 1];
+      }
    }
    return 0xFF;
 }
@@ -2846,7 +2853,7 @@ void PerIogaReset(void)
    m_ioga_mode = 0;
    m_ioga_portg = 0;
    m_adc_channel = 0;
-   m_rod_pos[0] = m_rod_pos[1] = 0x80;
+   m_rod_pos[0] = m_rod_center[0]; m_rod_pos[1] = m_rod_center[1];
    m_rod_frame = 0xFFFFFFFF;
    for (i = 0; i < 8; i++)
       m_adc_set[i] = 0;
