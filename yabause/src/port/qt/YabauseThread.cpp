@@ -31,6 +31,12 @@
 #include "commfdd.h"
 #include "memory.h"
 #include "yui.h"
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+#include "gdb/stub.h"
+#endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+#include "trace/trace.h"
+#endif
 
 #include <QDateTime>
 #include <QDir>
@@ -601,11 +607,42 @@ void YabauseThread::freeRetiredStrings()
 	mRetiredStrings.clear();
 }
 
+/* Settings > Debug: SH-2 GDB stub and tracer. They are read by YabauseInit(),
+   so the settings apply the next time the emulation starts. A value given on
+   the command line (--gdb, --trace, or the KRONOS_GDB_PORT and
+   KRONOS_TRACE_FILE variables) is read once, before the first call, and wins
+   over the settings. */
+static void applyDebugToolsSettings( VolatileSettings* vs )
+{
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+	static const int cliGdbPort = GdbStubGetPort();
+	if ( cliGdbPort <= 0 )
+	{
+		const bool on = vs->value( "Debug/GdbStubEnabled", false ).toBool();
+		GdbStubSetPort( on ? vs->value( "Debug/GdbStubPort", 43434 ).toInt() : 0 );
+		GdbStubSetAllowRemote( ( on && vs->value( "Debug/GdbStubRemote", false ).toBool() ) ? 1 : 0 );
+	}
+#endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+	static const int cliTrace = TraceRequested();
+	if ( !cliTrace )
+	{
+		const QByteArray file = vs->value( "Debug/TraceFile" ).toString().trimmed().toLocal8Bit();
+		const bool on = vs->value( "Debug/TraceEnabled", false ).toBool() && !file.isEmpty();
+		const QByteArray opts = vs->value( "Debug/TraceOptions" ).toString().trimmed().toLocal8Bit();
+		TraceSetOutput( on ? file.constData() : "", opts.constData() );
+	}
+#else
+	Q_UNUSED( vs );
+#endif
+}
+
 void YabauseThread::reloadSettings()
 {
 	//QMutexLocker l( &mMutex );
 	// get settings pointer
 	VolatileSettings* vs = QtYabause::volatileSettings();
+	applyDebugToolsSettings( vs );
 
 	/* Chaines actuelles : reutilisees si leur valeur ne change pas, voir
 	   confString(). */
