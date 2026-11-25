@@ -39,6 +39,9 @@ extern SoundInterface_struct* SNDCoreList[];
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
 #include "gdb/stub.h"
 #endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+#include "trace/trace.h"
+#endif
 
 /* Fallbacks: these ids live in headers that not every build includes. */
 #ifndef SH2CORE_KRONOS_INTERPRETER
@@ -639,6 +642,32 @@ bool doGdbRemote(const QString&, QString& err)
 #endif
 }
 
+/* --trace=FILE / --trace-opts=LIST : SH-2 / bus tracer (ctrl/src/trace/trace.c). */
+bool doTrace(const QString& v, QString& err)
+{
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+	if (v.trimmed().isEmpty()) { err = "expected a file name"; return false; }
+	TraceSetOutput(v.trimmed().toLocal8Bit().constData(), NULL);
+	return true;
+#else
+	Q_UNUSED(v);
+	err = "this build has no tracer (CMake: YAB_SH2TRACE must be ON)";
+	return false;
+#endif
+}
+
+bool doTraceOpts(const QString& v, QString& err)
+{
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+	TraceSetOutput(NULL, v.trimmed().toLocal8Bit().constData());
+	return true;
+#else
+	Q_UNUSED(v);
+	err = "this build has no tracer (CMake: YAB_SH2TRACE must be ON)";
+	return false;
+#endif
+}
+
 /* ---------- the option table ---------- */
 
 Option heading(const char* title)
@@ -693,6 +722,8 @@ const std::vector<Option>& buildOptions()
 	o.push_back(value(NULL, "--log-file", "<FILE>", "Also write the emulator log to a file (same as the KRONOS_LOG_FILE variable).", doLogFile));
 	o.push_back(value(NULL, "--gdb", "<PORT>", "Start a GDB remote stub for the two SH-2 on this TCP port (same as the KRONOS_GDB_PORT variable). Threads: 1 = master, 2 = slave. Uses the slower SH-2 debug interpreter; the emulation halts when GDB connects. In GDB: set architecture sh2, set endian big, target remote :PORT.", doGdb));
 	o.push_back(flag(NULL, "--gdb-remote", "Let the GDB stub accept connections from other machines (default: 127.0.0.1 only).", PrioNormal, doGdbRemote));
+	o.push_back(value(NULL, "--trace", "<FILE>", "Write an SH-2 instruction trace of both CPUs to a file (same as KRONOS_TRACE_FILE). Uses the slower SH-2 debug interpreter. Compare two traces with tools/tracediff.py.", doTrace));
+	o.push_back(value(NULL, "--trace-opts", "<LIST>", "Tracer options, comma separated: bus, regs, cycles=0, cpu=m|s|ms, pc=LO-HI, addr=LO-HI, start=PC, stop=PC, skip=N, max=N (addresses in hex).", doTraceOpts));
 
 	o.push_back(heading("BIOS and disc"));
 	o.push_back(value("-b", "--bios", "<FILE>", "Use this Saturn BIOS file (turns the emulated BIOS off).", doBios));
