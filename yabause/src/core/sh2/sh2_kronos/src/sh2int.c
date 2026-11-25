@@ -33,6 +33,9 @@
 #include "bios.h"
 #include "yabause.h"
 #include "sh2int_kronos.h"
+#ifdef HAVE_SH2TRACE
+#include "trace/trace.h"
+#endif
 
 #include "cs2.h"
 
@@ -910,6 +913,9 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
       // Execute it
       if (shallExecute != 0) {
         context->instruction = krfetchlist[id](context, context->regs.PC);
+#ifdef HAVE_SH2TRACE
+        if (SH2TraceActive) TraceInstr(context);
+#endif
         /* Comme SH2KronosInterpreterExecSave() (coeur Performance), qui ne
            touche pas cacheCode : un crochet decodeInt reste en place et
            l'interruption sera prise par la boucle normale. */
@@ -928,8 +934,12 @@ FASTCALL void SH2KronosDebugInterpreterExecSave(SH2_struct *context, u32 cycles,
         context->cycles = context->target_cycles;
         /* Voir SH2KronosInterpreterExecSave() et
            SH2CommitCurrentInstruction() (sh2core.c). */
-        if (!SH2TakeInstructionCommit(context))
+        if (!SH2TakeInstructionCommit(context)) {
           memcpy(&context->regs, oldRegs, sizeof(sh2regs_struct));
+#ifdef HAVE_SH2TRACE
+          if (SH2TraceActive) TraceDiscard(context);   /* rejoue plus tard */
+#endif
+        }
         return;
       }
       if (context->bp.inbreakpoint) {
@@ -1049,6 +1059,9 @@ FASTCALL void SH2KronosDebugInterpreterExec(SH2_struct *context, u32 cycles)
       // Execute it
       if (shallExecute != 0) {
         context->instruction = krfetchlist[id](context, context->regs.PC);
+#ifdef HAVE_SH2TRACE
+        if (SH2TraceActive) TraceInstr(context);
+#endif
         if (SH2ProfileActive) SH2ProfileHook(context);
         SH2HandleBackTrace(context);
         SH2HandleStepOverOut(context);
