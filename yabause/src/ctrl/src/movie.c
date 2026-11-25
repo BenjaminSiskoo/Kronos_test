@@ -1011,6 +1011,12 @@ int MovieStateIsLight(void)
    return movie_state_light;
 }
 
+/* Etat leger demande par d'autres modules (rewind.c). */
+void MovieStateSetLight(int on)
+{
+   movie_state_light = on ? 1 : 0;
+}
+
 static void MovieSnapRemove(int i)
 {
    snap_bytes -= snaps[i].packed;

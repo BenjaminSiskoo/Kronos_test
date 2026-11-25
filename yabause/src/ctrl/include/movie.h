@@ -88,6 +88,8 @@ void MovieReadState(const void * stream, int available);
 /* 1 pendant qu'un instantane de MovieSeek() est pris ou recharge : etat sans
    capture d'ecran ni message a l'ecran (memory.c). */
 int MovieStateIsLight(void);
+/* Force l'etat leger depuis un autre module (rewind.c). */
+void MovieStateSetLight(int on);
 
 /* Appele par YabauseEmulate() a la fin de chaque trame. */
 void MovieFrameEnd(void);
