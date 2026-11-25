@@ -744,12 +744,193 @@ static u32 FddExternalBitCycles(int cpu)
    return (cpu == SCI_CPU_MASTER) ? FDD_BIT_CYCLES : 0;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+// Save states: conversation in progress (frames, queued answer, read /
+// write / directory transfer). The floppy itself is the host folder, like
+// the backup memory: it is not in the state.
+//   u8 version, u8 state, u8 cmd, u8 partition,
+//   u32 in_len + bytes, u32 out_len, u32 out_pos, u32 frame_count,
+//   u32 frame_end[8], out bytes, u8 has_xfer, u32 xfer_len, u32 xfer_pos,
+//   bytes, write file (name 11, comment 10, language u8, date u32, size u32),
+//   s32 dir_frames_left, u8 has_dir, u32 dir_len, bytes.
+//////////////////////////////////////////////////////////////////////////////
+
+#define FDD_STATE_VERSION 1
+
+static void FddW8(void ** stream, u8 v) { MemStateWrite((void *)&v, 1, 1, stream); }
+static void FddW32(void ** stream, u32 v) { MemStateWrite((void *)&v, sizeof(v), 1, stream); }
+
+static void FddSaveState(void ** stream)
+{
+   u32 i;
+   FddW8(stream, FDD_STATE_VERSION);
+   FddW8(stream, (u8)fdd_state);
+   FddW8(stream, fdd_cmd);
+   FddW8(stream, (u8)fdd_partition);
+
+   FddW32(stream, fdd_in_len);
+   MemStateWrite((void *)fdd_in, 1, fdd_in_len, stream);
+
+   FddW32(stream, fdd_out_len);
+   FddW32(stream, fdd_out_pos);
+   FddW32(stream, (u32)fdd_frame_count);
+   for (i = 0; i < FDD_MAX_QUEUED; i++)
+      FddW32(stream, fdd_frame_end[i]);
+   if (fdd_out_len)
+      MemStateWrite((void *)fdd_out, 1, fdd_out_len, stream);
+
+   FddW8(stream, fdd_xfer != NULL);
+   FddW32(stream, fdd_xfer_len);
+   FddW32(stream, fdd_xfer_pos);
+   if (fdd_xfer != NULL)
+      MemStateWrite((void *)fdd_xfer, 1, fdd_xfer_len, stream);
+
+   MemStateWrite((void *)fdd_wfile.name, 1, 11, stream);
+   MemStateWrite((void *)fdd_wfile.comment, 1, 10, stream);
+   FddW8(stream, fdd_wfile.language);
+   FddW32(stream, fdd_wfile.date);
+   FddW32(stream, fdd_wfile.size);
+
+   FddW32(stream, (u32)fdd_dir_frames_left);
+   FddW8(stream, fdd_dir != NULL);
+   FddW32(stream, fdd_dir_len);
+   if (fdd_dir != NULL)
+      MemStateWrite((void *)fdd_dir, 1, fdd_dir_len, stream);
+}
+
+/* Bounds checked reader: the bytes come from a file. */
+typedef struct { const u8 * p; u32 left; int bad; } FddReader;
+
+static u32 FddRdBytes(FddReader * r, void * out, u32 n)
+{
+   if (r->bad || n > r->left) { r->bad = 1; if (out) memset(out, 0, n); return 0; }
+   if (out && n) memcpy(out, r->p, n);
+   r->p += n;
+   r->left -= n;
+   return n;
+}
+static u8 FddRd8(FddReader * r) { u8 v = 0; FddRdBytes(r, &v, 1); return v; }
+static u32 FddRd32(FddReader * r) { u8 b[4] = { 0, 0, 0, 0 }; u32 v; FddRdBytes(r, b, 4); memcpy(&v, b, 4); return v; }
+
+static int FddLoadState(const u8 * data, u32 size)
+{
+   FddReader r = { data, size, 0 };
+   u8 state, cmd, part, has_xfer, has_dir, in[FDD_MAX_FRAME + 64];
+   u32 in_len, out_len, out_pos, frame_count, frame_end[FDD_MAX_QUEUED];
+   u32 xfer_len, xfer_pos, dir_len, i;
+   FddFile wfile;
+   int dir_frames_left;
+   u8 * out = NULL, * xfer = NULL, * dir = NULL;
+
+   if (FddRd8(&r) != FDD_STATE_VERSION)
+      return -1;
+   state = FddRd8(&r);
+   cmd = FddRd8(&r);
+   part = FddRd8(&r);
+
+   in_len = FddRd32(&r);
+   if (in_len > sizeof(in))
+      return -1;
+   FddRdBytes(&r, in, in_len);
+
+   out_len = FddRd32(&r);
+   out_pos = FddRd32(&r);
+   frame_count = FddRd32(&r);
+   for (i = 0; i < FDD_MAX_QUEUED; i++)
+      frame_end[i] = FddRd32(&r);
+   if (r.bad || out_len > r.left || out_pos > out_len || frame_count > FDD_MAX_QUEUED)
+      return -1;
+   if (out_len)
+   {
+      out = (u8 *)malloc(out_len);
+      if (out == NULL)
+         return -1;
+      FddRdBytes(&r, out, out_len);
+   }
+
+   has_xfer = FddRd8(&r);
+   xfer_len = FddRd32(&r);
+   xfer_pos = FddRd32(&r);
+   if (r.bad || (has_xfer && xfer_len > r.left) || xfer_pos > xfer_len)
+      goto fail;
+   if (has_xfer)
+   {
+      xfer = (u8 *)malloc(xfer_len ? xfer_len : 1);
+      if (xfer == NULL)
+         goto fail;
+      FddRdBytes(&r, xfer, xfer_len);
+   }
+
+   memset(&wfile, 0, sizeof(wfile));
+   FddRdBytes(&r, wfile.name, 11);
+   FddRdBytes(&r, wfile.comment, 10);
+   wfile.language = FddRd8(&r);
+   wfile.date = FddRd32(&r);
+   wfile.size = FddRd32(&r);
+
+   dir_frames_left = (int)FddRd32(&r);
+   has_dir = FddRd8(&r);
+   dir_len = FddRd32(&r);
+   if (r.bad || (has_dir && dir_len > r.left))
+      goto fail;
+   if (has_dir)
+   {
+      dir = (u8 *)malloc(dir_len ? dir_len + 1 : 1);
+      if (dir == NULL)
+         goto fail;
+      FddRdBytes(&r, dir, dir_len);
+   }
+   if (r.bad)
+      goto fail;
+
+   /* a value that FddFrame() would use as an index or a state */
+   if (state > FS_DATA_IN || part >= FDD_PARTITIONS)
+      goto fail;
+
+   /* commit */
+   free(fdd_out);
+   free(fdd_xfer);
+   free(fdd_dir);
+   fdd_state = state;
+   fdd_cmd = cmd;
+   fdd_partition = part;
+   memcpy(fdd_in, in, in_len);
+   fdd_in_len = in_len;
+   fdd_out = out;
+   fdd_out_size = out_len;
+   fdd_out_len = out_len;
+   fdd_out_pos = out_pos;
+   fdd_frame_count = (int)frame_count;
+   memcpy(fdd_frame_end, frame_end, sizeof(fdd_frame_end));
+   fdd_xfer = xfer;
+   fdd_xfer_len = xfer_len;
+   fdd_xfer_pos = xfer_pos;
+   fdd_wfile = wfile;
+   fdd_wfile.data = NULL;
+   fdd_dir_frames_left = dir_frames_left ? 1 : 0;
+   fdd_dir = dir;
+   fdd_dir_len = dir_len;
+
+   /* The floppy is the host folder: read it again, a write in progress
+      adds its file to this list when it ends (FddWriteDone). */
+   FddLoad();
+   return 0;
+
+fail:
+   free(out);
+   free(xfer);
+   free(dir);
+   return -1;
+}
+
 static CommPortDevice FddDevice = {
    "Sega Saturn Floppy Disk Drive (HSS-0128)",
    FddReset,
    FddTransmit,
    FddReceive,
-   FddExternalBitCycles
+   FddExternalBitCycles,
+   FddSaveState,
+   FddLoadState
 };
 
 CommPortDevice * FddGetDevice(void)
