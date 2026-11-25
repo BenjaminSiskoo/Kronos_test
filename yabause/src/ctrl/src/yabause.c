@@ -90,8 +90,12 @@
  #include "profile.h"
 #endif
 
-#if HAVE_GDBSTUB
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
     #include "gdb/stub.h"
+    /* The GDB stub needs the SH-2 debug interpreter (breakpoints). */
+    #define YAB_SH2_CORE(t) GdbStubSelectSH2Core(t)
+#else
+    #define YAB_SH2_CORE(t) (t)
 #endif
 
 #include "perfetto_trace.h"
@@ -525,7 +529,7 @@ int YabauseSh2Init(yabauseinit_struct *init)
    nextFrameTime = 0;
 
    // Initialize both cpu's
-   if (SH2Init(init->sh2coretype) != 0)
+   if (SH2Init(YAB_SH2_CORE(init->sh2coretype)) != 0)
    {
       YabSetError(YAB_ERR_CANNOTINIT, _("SH2"));
       return -1;
@@ -737,7 +741,7 @@ TRACE_EMULATOR("YabauseInit");
    nextFrameTime = 0;
 
    // Initialize both cpu's
-   if (SH2Init(init->sh2coretype) != 0)
+   if (SH2Init(YAB_SH2_CORE(init->sh2coretype)) != 0)
    {
       YabSetError(YAB_ERR_CANNOTINIT, _("SH2"));
       return -1;
@@ -919,8 +923,9 @@ TRACE_EMULATOR("YabauseInit");
    if (Cs2GetRegionID() >= 0xA) YabauseSetVideoFormat(VIDEOFORMATTYPE_PAL);
    else YabauseSetVideoFormat(VIDEOFORMATTYPE_NTSC);
 
-#ifdef HAVE_GDBSTUB
-   GdbStubInit(MSH2, 43434);
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+   /* Off unless --gdb=PORT / KRONOS_GDB_PORT (see ctrl/include/gdb/stub.h). */
+   GdbStubInit(MSH2, 0);
 #endif
 
    fpsticks = YabauseGetTicks();
@@ -1039,6 +1044,9 @@ void YabFlushBackups(void)
 
 void YabauseDeInit(void) {
 
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+   GdbStubDeInit();
+#endif
    STVDeInit();
    Vdp2DeInit();
    Vdp1DeInit();
@@ -1479,6 +1487,11 @@ int YabauseEmulate(void) {
    /* End of the emulated frame, sound thread included: lag frame
       accounting, snapshots and pause requests of the movie code. */
    MovieFrameEnd();
+
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+   /* Frame boundary: a GDB connection is accepted / Ctrl-C seen here. */
+   GdbStubFrame();
+#endif
 
    syncVideoMode();
    FPSDisplay();
