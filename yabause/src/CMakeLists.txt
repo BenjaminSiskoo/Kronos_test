@@ -633,6 +633,14 @@ if (YAB_NETWORK)
 	endif()
 endif()
 
+# GDB remote stub for the two SH-2 (ctrl/src/gdb/stub.c). Needs the sockets.
+# Off at run time unless --gdb=PORT (Qt port) or KRONOS_GDB_PORT is given.
+option(YAB_GDBSTUB "GDB remote stub for the SH-2 CPUs (--gdb=PORT)" ON)
+if (YAB_GDBSTUB AND YAB_NETWORK)
+	add_definitions(-DHAVE_GDBSTUB=1)
+	set(kronos_SOURCES ${kronos_SOURCES} ctrl/src/gdb/stub.c)
+endif()
+
 option(YAB_PORT_OSD "Let ports provides their own OSD core list" OFF)
 if (YAB_PORT_OSD)
 	add_definitions(-DYAB_PORT_OSD=1)
