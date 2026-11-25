@@ -526,6 +526,8 @@ static void FASTCALL BiosClearSemaphore(SH2_struct * sh)
 //////////////////////////////////////////////////////////////////////////////
 
 
+static void BiosReturnFromException(SH2_struct * sh);   /* defini avant BiosHandleScuInterrupt() */
+
 static void FASTCALL BiosChangeSystemClock(SH2_struct * sh)
 {
    int i;
@@ -699,7 +701,7 @@ static void FASTCALL BiosNmi(SH2_struct * sh)
       sh->regs.SR.all = hle_ckchg_sr;
       BiosChangeSystemClockFinish(sh);
       sh->regs.PC = hle_ckchg_pr;
-      SH2SetRegisters(sh, &sh->regs);
+      BiosReturnFromException(sh);
       return;
    }
 
@@ -707,7 +709,7 @@ static void FASTCALL BiosNmi(SH2_struct * sh)
    sh->regs.PC = SH2MappedMemoryReadLong(sh, sh->regs.R[15]);
    sh->regs.SR.all = SH2MappedMemoryReadLong(sh, sh->regs.R[15] + 4) & 0x000003F3;
    sh->regs.R[15] += 8;
-   SH2SetRegisters(sh, &sh->regs);
+   BiosReturnFromException(sh);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1975,6 +1977,34 @@ void FASTCALL BiosBUPSetDate(SH2_struct * sh)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Retour d'exception emule : SR vient d'etre restaure par du code C.
+
+   L'instruction RTE du SH-2 reevalue les interruptions des que SR est
+   restaure (SH2rte(), sh2_opcodes.c : SH2EvaluateInterrupt()). Les retours
+   emules par le BIOS (repartiteur SCU 00000480H, NMI) ne le faisaient pas :
+   SH2SetRegisters() ne traite que l'interruption deja reservee
+   (SH2HandleInterrupts()), il ne regarde pas la ligne IRL.
+
+   Or une demande du SCU presentee pendant que le gestionnaire tournait
+   (SR.I haut) reste dans intc.irl sans etre reservee. Avec le vrai BIOS, le
+   RTE la reserve aussitot. Ici elle restait en attente jusqu'au prochain
+   evenement qui appelle SH2EvaluateInterrupt() (un autre front sur IRL, une
+   ecriture de SR...), c'est-a-dire parfois des dizaines de lignes plus tard.
+
+   Die Hard Trilogy (T-16103H) : le Sprite Draw End, leve a la ligne 0 alors
+   que IMS vaut FFFEH (gestionnaire du V-Blank OUT), est pris a la ligne 1
+   avec le vrai BIOS mais a la ligne 74, puis 68, 63... avec le BIOS emule.
+   Le gestionnaire de fin de trace tombait alors entre SSHOFF et SSHON de la
+   routine 060544B8 et le jeu se bloquait (maitre en 06072210, esclave en
+   SLEEP a 060544A8). */
+static void BiosReturnFromException(SH2_struct * sh)
+{
+   SH2SetRegisters(sh, &sh->regs);
+   SH2EvaluateInterrupt(sh);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 static void FASTCALL BiosHandleScuInterrupt(SH2_struct * sh, int vector)
 {
    SH2GetRegisters(sh, &sh->regs);
@@ -2081,7 +2111,7 @@ static void FASTCALL BiosHandleScuInterruptReturn(SH2_struct * sh)
    sh->regs.SR.all = SH2MappedMemoryReadLong(sh, sh->regs.R[15]) & 0x000003F3;
    sh->regs.R[15] += 4;
 
-   SH2SetRegisters(sh, &sh->regs);
+   BiosReturnFromException(sh);
 }
 
 //////////////////////////////////////////////////////////////////////////////
