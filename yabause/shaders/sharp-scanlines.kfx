@@ -1,0 +1,15 @@
+# Two passes: the colour adjustment on a 4x enlarged picture (nearest), then the
+# scanlines preset of this folder on that picture, with
+# bilinear sampling. Shows how a preset can reuse an existing .glsl file.
+name = Colour tweak + scanlines (x4 pre-scale)
+shaders = 2
+
+shader0 = color-tweak.glsl
+filter0 = nearest
+scale_type0 = source
+scale0 = 4.0
+
+shader1 = scanlines-mix-split.glsl
+filter1 = linear
+
+param_SCAN_SPLIT = 0.7

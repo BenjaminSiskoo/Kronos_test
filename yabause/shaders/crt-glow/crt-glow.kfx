@@ -1,0 +1,25 @@
+# Scanlines and a soft glow around the bright parts of the picture.
+# Four passes: highlights -> horizontal blur -> vertical blur -> mix.
+name = CRT glow
+shaders = 4
+
+shader0 = glow-bright.glsl
+filter0 = linear
+scale_type0 = viewport
+scale0 = 0.5
+
+shader1 = glow-blur-h.glsl
+filter1 = linear
+scale_type1 = source
+scale1 = 1.0
+
+shader2 = glow-blur-v.glsl
+filter2 = linear
+scale_type2 = source
+scale2 = 1.0
+
+shader3 = glow-mix.glsl
+filter3 = linear
+
+# default of a parameter, replaces the one of the #pragma line
+param_GLOW_AMOUNT = 0.6
