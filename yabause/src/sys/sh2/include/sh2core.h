@@ -354,6 +354,9 @@ typedef struct SH2_struct_s SH2_struct;
 #define BREAK_LONGWRITE 0x20
 
 #define MAX_BREAKPOINTS 10
+/* Taille des listes de breakpoints SH-2 (MAX_BREAKPOINTS est aussi defini par
+   d'autres cores de debug avec la valeur 10) : le stub GDB en pose jusqu'a 32. */
+#define SH2_MAX_BREAKPOINTS 64
 
 
 #define A_BUS_ACCESS 0x1
@@ -425,9 +428,9 @@ void SH2TrackInfLoopClear(SH2_struct *context);
 
 typedef struct
 {
-   codebreakpoint_struct codebreakpoint[MAX_BREAKPOINTS];
+   codebreakpoint_struct codebreakpoint[SH2_MAX_BREAKPOINTS];
    int numcodebreakpoints;
-   memorybreakpoint_struct memorybreakpoint[MAX_BREAKPOINTS];
+   memorybreakpoint_struct memorybreakpoint[SH2_MAX_BREAKPOINTS];
    int nummemorybreakpoints;
    void (*BreakpointCallBack)(void *, u32, void *);
    breakpoint_userdata BreakpointUserData;
