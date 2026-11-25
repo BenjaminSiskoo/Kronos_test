@@ -418,6 +418,7 @@ if (YAB_WANT_OPENGL)
 			core/video/opengl/common/src/commongl.c
 			core/video/opengl/core/src/yglcache.c
 			core/video/opengl/common/src/ogl_shader.c
+			core/video/opengl/common/src/ogl_userfx.c
 			core/video/opengl/common/src/rbg_compute.cpp
 			core/video/opengl/common/src/common_glshader.c
 			core/video/opengl/common/src/upscale_shader.c
@@ -428,6 +429,7 @@ if (YAB_WANT_OPENGL)
 		set(kronos_HEADERS
 			${kronos_HEADERS}
 			core/video/opengl/common/include/common_glshader.h
+			core/video/opengl/common/include/ogl_userfx.h
 			core/video/opengl/compute_shader/include/vidcs.h
 			core/video/opengl/compute_shader/include/vdp1_compute.h
 			core/video/opengl/compute_shader/include/vdp1_prog_compute.h
@@ -639,6 +641,14 @@ option(YAB_GDBSTUB "GDB remote stub for the SH-2 CPUs (--gdb=PORT)" ON)
 if (YAB_GDBSTUB AND YAB_NETWORK)
 	add_definitions(-DHAVE_GDBSTUB=1)
 	set(kronos_SOURCES ${kronos_SOURCES} ctrl/src/gdb/stub.c)
+endif()
+
+# Rewind (ctrl/src/rewind.c): ring of states kept in memory, Qt port only.
+# Off at run time unless enabled in Settings > Debug > Rewind.
+option(YAB_REWIND "Rewind: ring of save states (Tools > Rewind)" ON)
+if (YAB_REWIND)
+	add_definitions(-DHAVE_REWIND=1)
+	set(kronos_SOURCES ${kronos_SOURCES} ctrl/src/rewind.c)
 endif()
 
 # SH-2 / bus tracer (ctrl/src/trace/trace.c). Off at run time unless
