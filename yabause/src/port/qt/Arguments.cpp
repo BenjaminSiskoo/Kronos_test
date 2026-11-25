@@ -310,7 +310,7 @@ const Choice filters[] = {
 	{ "deinterlace-adaptive", 3, false }, { "deinterlace-debug", 4, false }, { "deinterlace-bob", 5, false },
 	{ "deinterlace-smooth-bob", 14, false }, { "deinterlace-blend", 13, false }, { "deinterlace-adaptive-field", 15, false },
 	{ "scanline", 6, false }, { "lanczos3", 7, false }, { "sharp-bilinear", 8, false },
-	{ "fxaa", 9, false }, { "crt", 10, false }, { "toon", 12, false },
+	{ "fxaa", 9, false }, { "crt", 10, false }, { "toon", 12, false }, { "user-shader", 16, false },
 	{ NULL, 0, false } };
 
 const Choice upscalers[] = {
@@ -409,6 +409,16 @@ bool doBios(const QString& v, QString& err)
 	if (!setPath("General/Bios", true, false)(v, err))
 		return false;
 	vs()->setValue("General/EnableEmulatedBios", false);
+	return true;
+}
+
+/* --shader: preset file (.glsl or .kfx) of the "User shader (preset)" filter;
+ * it also selects that filter. */
+bool doShader(const QString& v, QString& err)
+{
+	if (!setPath("Video/UserShaderPreset", true, false)(v, err))
+		return false;
+	vs()->setValue("Video/filter_type", 16);
 	return true;
 }
 
@@ -791,6 +801,7 @@ const std::vector<Option>& buildOptions()
 	o.push_back(choice(NULL, "--aspect-ratio", "<MODE>", "Aspect ratio.", "Video/AspectRatio", aspectRatios));
 	o.push_back(choice(NULL, "--resolution", "<MODE>", "Internal rendering resolution.", "Video/resolution_mode", resolutions, false));
 	o.push_back(choice(NULL, "--filter", "<FILTER>", "Post-processing filter.", "Video/filter_type", filters));
+	o.push_back(value(NULL, "--shader", "<FILE>", "Shader preset (.glsl or .kfx) for the \"User shader (preset)\" filter; selects that filter. See shaders/README.md.", doShader));
 	o.push_back(choice(NULL, "--upscale", "<MODE>", "Upscaling filter.", "Video/upscale_type", upscalers));
 	o.push_back(choice(NULL, "--wireframe", "<MODE>", "Wireframe rendering (debug).", "Video/Wireframe", wireframes));
 	o.push_back(choice(NULL, "--mesh", "<MODE>", "Mesh transparency mode.", "Video/MeshMode", originalImproved));
