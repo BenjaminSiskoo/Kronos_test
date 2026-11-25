@@ -68,6 +68,14 @@ typedef struct
        asynchronous mode the SCK input is 16 x the bit rate (13.2.6, note 3):
        return the cycles of one BIT, not of one SCK period. */
    u32 (*ExternalBitCycles)(int cpu);
+   /** Save states (optional, may be NULL). SaveState() writes the state of
+       the device with MemStateWrite() (it is also called with @p stream
+       NULL to measure the size: write the same number of bytes both
+       times). LoadState() gets the bytes SaveState() wrote and must accept
+       any content: they come from a file. It returns 0 if it applied them,
+       non-zero if it could not (the device is then reset). */
+   void (*SaveState)(void ** stream);
+   int (*LoadState)(const u8 * data, u32 size);
 } CommPortDevice;
 
 /** Plugs @p dev into the communication connector (NULL = nothing). */
@@ -84,6 +92,15 @@ void SCIWriteSCR(struct SH2_struct_s * context, u8 val);
 void SCIWriteTDR(struct SH2_struct_s * context, u8 val);
 void SCIWriteSSR(struct SH2_struct_s * context, u8 val);
 u8   SCIReadRDR(struct SH2_struct_s * context);
+
+/** Save states: the "SCI " chunk holds the transfers in progress of both
+    SCI (character in TSR / RSR, remaining cycles, handshake state) and the
+    state of the device plugged into the connector. The registers are in the
+    SH-2 chunks. SCISaveState() returns the size of the chunk (like the other
+    modules). States without the chunk (older Kronos): SCIClearState(). */
+int  SCISaveState(void ** stream);
+void SCILoadState(const void * stream, int version, int size);
+void SCIClearState(void);
 
 /** Instrumentation: SCI trace file (KRONOS_SCI_TRACE environment variable,
     see sci.c). Also logs DMAC DRCR writes, so a transfer driven by the SCI
