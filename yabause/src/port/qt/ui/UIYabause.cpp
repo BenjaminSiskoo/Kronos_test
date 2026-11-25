@@ -74,9 +74,13 @@
 #define ACTION_LOADCDROM 7
 #define ACTION_MOVIE_RECORD 8
 #define ACTION_MOVIE_PLAY 9
+#define ACTION_REWIND 10
 
 extern "C" {
 #include "movie.h"
+#if defined(HAVE_REWIND) && HAVE_REWIND
+#include "rewind.h"
+#endif
 }
 
 extern "C" {
@@ -313,6 +317,15 @@ void UIYabause::keyReleaseEvent( QKeyEvent* e )
 {
 	if ( e->isAutoRepeat() )
 		return;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+	// end of a held rewind
+	if ( mRewindKeyDown && !aRewind->shortcut().isEmpty() &&
+		( aRewind->shortcut()[0] & 0x01FFFFFF ) == e->key() )
+	{
+		mRewindKeyDown = false;
+		rewindEnd();
+	}
+#endif
 	PerKeyUp( e->key() );
 	KeyboardQt::keyRelease( e );
 }
@@ -322,7 +335,14 @@ void UIYabause::changeEvent( QEvent* e )
 	// The key releases go to the new active window: don't leave keys of
 	// the emulated Saturn keyboard stuck down (and repeating).
 	if ( e->type() == QEvent::ActivationChange && !isActiveWindow() )
+	{
 		KeyboardQt::releaseAll();
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		// the release of the key would go to another window
+		mRewindKeyDown = false;
+		rewindEnd();
+#endif
+	}
 	QMainWindow::changeEvent( e );
 }
 
@@ -472,6 +492,11 @@ void UIYabause::runActionsAlreadyPaused() {
 		case ACTION_MOVIE_PLAY:
 			moviePlay();
 		break;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		case ACTION_REWIND:
+			rewindStepPaused();
+		break;
+#endif
 		default:
 		break;
 	}
@@ -544,6 +569,11 @@ void UIYabause::runActions() {
 		case ACTION_MOVIE_PLAY:
 			moviePlay();
 		break;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		case ACTION_REWIND:
+			rewindStepPaused();
+		break;
+#endif
 		default:
 		break;
 	}
@@ -1311,6 +1341,27 @@ void UIYabause::createMovieMenu()
 	mMovieMenu->addAction( aTasEditor );
 	mMovieMenu->addAction( aTasRamWatch );
 
+#if defined(HAVE_REWIND) && HAVE_REWIND
+	aRewindEnable = new QAction( QtYabause::translate( "Re&wind enabled" ), this );
+	aRewindEnable->setObjectName( "aRewindEnable" );
+	aRewindEnable->setCheckable( true );
+	aRewindEnable->setChecked( vs->value( "Rewind/Enabled", false ).toBool() );
+	aRewindEnable->setStatusTip( QtYabause::translate( "Keep a buffer of the last seconds of emulation in memory (length and precision: Settings > Debug > Rewind)" ) );
+
+	aRewind = new QAction( QtYabause::translate( "&Rewind" ), this );
+	aRewind->setObjectName( "aRewind" );
+	aRewind->setShortcut( QKeySequence( "Backspace" ) );
+	aRewind->setStatusTip( QtYabause::translate( "Go back in time (hold the key to keep going back). Disabled while an input movie is loaded" ) );
+
+	mTools->addSeparator();
+	mTools->addAction( aRewindEnable );
+	mTools->addAction( aRewind );
+	// the shortcut must stay active when the menu bar is hidden (full screen)
+	addAction( aRewind );
+	connect( aRewind, SIGNAL( triggered() ), this, SLOT( rewindTriggered() ) );
+	connect( aRewindEnable, SIGNAL( toggled( bool ) ), this, SLOT( rewindEnableToggled( bool ) ) );
+#endif
+
 	mTools->addSeparator();
 	mTools->addMenu( mMovieMenu );
 
@@ -1519,6 +1570,95 @@ void UIYabause::tasFrameAdvance()
 	movieTimerTick();
 	emit tasFrameStepped();
 }
+
+#if defined(HAVE_REWIND) && HAVE_REWIND
+// Retour en arriere. L'emulation tourne dans ce thread (YabauseGL::event) :
+// ce slot s'execute entre deux trames, l'etat peut etre recharge ici. En pause
+// on avance d'une trame pour que l'image restauree soit affichee.
+void UIYabause::rewindTriggered()
+{
+	if ( !RewindIsEnabled() )
+		return;
+	if ( mYabauseThread->init() < 0 )
+		return;
+	if ( mSeeking || mLocker != NULL || mRewindKeyDown || mRewindActive )
+		return;
+	// Like loading a state from the File menu: the emulation is paused (sound
+	// muted, frame finished), the state is loaded, then the emulation goes on.
+	// A step done in the middle of the running emulation left the picture
+	// frozen. Key repeats that come while the key is down are dropped: when it
+	// is held, the emulation stays paused and a timer steps back (see
+	// rewindStepPaused()), which is smoother than one pause/resume per repeat.
+	mRewindKeyDown = true;
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_REWIND );
+	mLocker->lock();
+}
+
+// Called with the emulation paused (runActions / runActionsAlreadyPaused).
+void UIYabause::rewindStepPaused()
+{
+	const bool wasRunning = ( mLocker != NULL && mLocker->isPaused() );
+	if ( RewindStep() != 0 )
+	{
+		mRewindKeyDown = false;
+		return;
+	}
+	if ( !mRewindKeyDown )
+	{
+		// a tap (the key is already up): one step, then the emulation goes on.
+		// If the user had paused it, show the restored picture.
+		if ( !wasRunning && mYabauseGL->isPaused() )
+			mYabauseGL->stepFrame();
+		return;
+	}
+	// The key is still down: keep the emulation paused and step back on a
+	// timer. Each tick restores the previous capture and runs one frame to
+	// draw it.
+	if ( mLocker != NULL )
+		mLocker->keepPaused();
+	mRewindWasRunning = wasRunning;
+	mRewindActive = true;
+	mYabauseGL->stepFrame();
+	if ( mRewindTimer == NULL )
+	{
+		mRewindTimer = new QTimer( this );
+		mRewindTimer->setTimerType( Qt::PreciseTimer );
+		mRewindTimer->setInterval( 16 );
+		connect( mRewindTimer, SIGNAL( timeout() ), this, SLOT( rewindTick() ) );
+	}
+	mRewindTimer->start();
+}
+
+void UIYabause::rewindTick()
+{
+	if ( !mRewindActive || !mRewindKeyDown )
+	{
+		rewindEnd();
+		return;
+	}
+	if ( RewindStep() == 0 )
+		mYabauseGL->stepFrame();
+}
+
+void UIYabause::rewindEnd()
+{
+	if ( !mRewindActive )
+		return;
+	mRewindActive = false;
+	if ( mRewindTimer != NULL )
+		mRewindTimer->stop();
+	if ( mRewindWasRunning )
+		mYabauseThread->pauseEmulation( false, false );
+}
+
+void UIYabause::rewindEnableToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "Rewind/Enabled", toggled );
+	RewindConfigure( toggled ? 1 : 0, s->value( "Rewind/Interval", 3 ).toInt(),
+		s->value( "Rewind/Seconds", 30 ).toInt(), s->value( "Rewind/MemoryMB", 512 ).toInt() );
+}
+#endif
 
 void UIYabause::tasSkipLagToggled( bool toggled )
 {
