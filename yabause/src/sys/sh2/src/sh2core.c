@@ -45,6 +45,7 @@ extern SH2Interface_struct *SH2CoreList[];
 void OnchipReset(SH2_struct *context);
 static void FRTExec(SH2_struct *context);
 static void WDTExec(SH2_struct *context);
+static void WDTSetMode(SH2_struct *context, u8 wtcsr);
 
 
 void enableCache(SH2_struct *ctx);
@@ -1623,7 +1624,13 @@ u8 FASTCALL OnchipReadByte(SH2_struct *context, u32 addr) {
       case 0x068:
          return context->onchip.VCRD >> 8;
       case 0x080:
-         return context->onchip.WTCSR; // & 0x18;
+         /* WTCSR (SH7604 Hardware Manual 12.2.2) : OVF ne se efface que par
+            "lecture de OVF, puis ecriture de 0". La lecture memorise donc que
+            le logiciel a vu l'etat courant : WTCSRM ne garde ensuite que les
+            OVF apparus apres cette lecture (meme schema que FTCSRM). Les bits
+            4 et 3 sont reserves et se lisent toujours a 1. */
+         context->onchip.WTCSRM = 0;
+         return context->onchip.WTCSR | 0x18;
       case 0x081:
          return context->onchip.WTCNT;
       case 0x092:
@@ -2031,55 +2038,24 @@ void FASTCALL OnchipWriteWord(SH2_struct *context, u32 addr, u16 val) {
          if (val >> 8 == 0xA5)
          {
             // WTCSR
-            switch (val & 7)
-            {
-               case 0:
-                  context->wdt.shift = 1;
-                  break;
-               case 1:
-                  context->wdt.shift = 6;
-                  break;
-               case 2:
-                  context->wdt.shift = 7;
-                  break;
-               case 3:
-                  context->wdt.shift = 8;
-                  break;
-               case 4:
-                  context->wdt.shift = 9;
-                  break;
-               case 5:
-                  context->wdt.shift = 10;
-                  break;
-               case 6:
-                  context->wdt.shift = 12;
-                  break;
-               case 7:
-                  context->wdt.shift = 13;
-                  break;
-            }
+            WDTSetMode(context, (u8)val);
 
-            context->wdt.isenable = (val & 0x20);
-            context->wdt.isinterval = (~val & 0x40);
-
-            context->onchip.WTCSR = (context->onchip.WTCSR & (context->onchip.WTCSRM | val) & 0x80) | (val & 0x67);
-            // FIXME(?): the line below unconditionally clears bit 7 (OVF)
-            // right after the formula above computed it using the same
-            // read-then-write-0/WTCSRM race-avoidance logic FTCSR uses
-            // (Hitachi SH7095 manual, Sec. 12.2.2: OVF "cleared by reading
-            // OVF, then writing 0 in OVF"). That makes this unconditional
-            // clear override the formula's result, and also makes the
-            // '&= ~0x80' a few lines below (in the TME==0 branch) dead code
-            // (bit 7 is already 0 by the time it's reached). Not changed
-            // here since the WDT is rarely used as a real watchdog by
-            // Saturn games and the practical impact is unclear -- flagging
-            // for a future pass rather than guessing.
-            context->onchip.WTCSR &= ~0x80;
+            /* OVF (bit 7), SH7604 Hardware Manual 12.2.2 : "cleared by
+               reading OVF, then writing 0 in OVF". Ecrire 1 laisse le bit
+               inchange ; ecrire 0 l'efface sauf si un nouvel OVF est apparu
+               depuis la derniere lecture (WTCSRM, mis par WDTExec()). Avant,
+               une ligne inconditionnelle effacait OVF a chaque ecriture, ce
+               qui rendait la formule inutile et perdait un OVF non lu.
+               Bits 4-3 : reserves, toujours lus a 1. */
+            context->onchip.WTCSR = (context->onchip.WTCSR & (context->onchip.WTCSRM | val) & 0x80) | (val & 0x67) | 0x18;
             if(context->onchip.WTCSR & 0x20){
                context->onchip.SBYCR &= 0x7F;
             }else {
-               context->onchip.WTCSR &= ~0x80;
+               /* TME = 0 : "WTCNT is initialized to H'00 and count-up stops"
+                  (12.2.2). OVF n'est pas touche : seule la sequence
+                  lecture + ecriture de 0 l'efface. */
                context->onchip.WTCNT = 0;
+               context->wdt.leftover = 0;
             }
             SH2EvaluateInterrupt(context);
          }
@@ -3034,6 +3010,19 @@ void FRTExec(SH2_struct *context)
 
 //////////////////////////////////////////////////////////////////////////////
 
+/* Deduit de WTCSR l'etat interne du WDT : diviseur d'horloge (CKS2-0, table
+   de 12.2.2), TME et WT/IT. Utilise a l'ecriture de WTCSR et au chargement
+   d'un etat (SH2LoadState() : SH2Reset() avait remis ces champs a leur valeur
+   par defaut, un WDT actif restait donc arrete apres le chargement). */
+static void WDTSetMode(SH2_struct *context, u8 wtcsr)
+{
+   static const u8 wdtShift[8] = { 1, 6, 7, 8, 9, 10, 12, 13 };
+
+   context->wdt.shift = wdtShift[wtcsr & 7];
+   context->wdt.isenable = (wtcsr & 0x20) != 0;
+   context->wdt.isinterval = (~wtcsr & 0x40) != 0;
+}
+
 void WDTExec(SH2_struct *context) {
    u32 wdttemp;
    u32 mask;
@@ -3042,7 +3031,12 @@ void WDTExec(SH2_struct *context) {
 
    context->wdtcycles = context->cycles;
 
-   if ((!context->wdt.isenable) || (context->onchip.WTCSR & 0x80) || (context->onchip.RSTCSR & 0x80))
+   /* Ni OVF (WTCSR) ni WOVF (RSTCSR) n'arretent le compteur : ce sont des
+      drapeaux. En mode intervalle WTCNT continue de compter et chaque
+      debordement redemande l'ITI (12.3.2, figure 12.5) ; l'ancien test sur
+      OVF figeait WTCNT tant que le logiciel n'avait pas efface OVF, puis
+      l'ITI suivant arrivait trop tard. */
+   if (!context->wdt.isenable)
       return;
 
    wdttemp = (u32)context->onchip.WTCNT;
@@ -3055,13 +3049,15 @@ void WDTExec(SH2_struct *context) {
    {
       // Obviously depending on whether or not we're in Watchdog or Interval
       // Modes, they'll handle an overflow differently.
-      if ((context->onchip.WTCSR & 0x80)==0) {
+      {
         if (context->wdt.isinterval)
         {
           // Interval Timer Mode
 
-          // Set OVF flag
+          // Set OVF flag ; WTCSRM : OVF apparu apres la derniere lecture de
+          // WTCSR, que "ecrire 0" ne doit pas effacer.
           context->onchip.WTCSR |= 0x80;
+          context->onchip.WTCSRM |= 0x80;
           SH2EvaluateInterrupt(context);
         }
         else
@@ -3675,16 +3671,17 @@ int SH2SaveState(SH2_struct *context, void ** stream)
    MemStateWrite((void *)&context->onchip, sizeof(Onchip_struct), 1, stream);
 
    // Write internal variables
-   // FIXME: write the clock divisor rather than the shift amount for
-   // backward compatibility (fix this next time the save state version
-   // is updated)
-   context->frc.shift = 1 << context->frc.shift;
-   MemStateWrite((void *)&context->frc, sizeof(context->frc), 1, stream);
+   /* Le format d'etat stocke le DIVISEUR de l'horloge FRT (1 << shift), comme
+    * l'ancien Yabause, et non le decalage : les anciens etats restent
+    * lisibles, aucune montee de version n'est necessaire. L'ancien code
+    * modifiait context->frc.shift sur place pour l'ecrire puis le
+    * recalculait ; on ecrit maintenant une copie, le contexte n'est plus
+    * touche (meme octets ecrits : struct { u32 leftover; u32 shift; }). */
    {
-      u32 div = context->frc.shift;
-      context->frc.shift = 0;
-      while ((div >>= 1) != 0)
-         context->frc.shift++;
+      u32 frcOut[2];
+      frcOut[0] = context->frc.leftover;
+      frcOut[1] = 1u << context->frc.shift;
+      MemStateWrite((void *)frcOut, sizeof(frcOut), 1, stream);
    }
    MemStateWrite((void *)context->AddressArray, sizeof(u32), 0x100, stream);
    MemStateWrite((void *)context->DataArray, sizeof(u8), 0x1000, stream);
@@ -3757,9 +3754,12 @@ int SH2LoadState(SH2_struct *context, const void * stream, UNUSED int version, i
       disableCache(context);
 
    // Read internal variables
-   MemStateRead((void *)&context->frc, sizeof(context->frc), 1, stream);
-   {  // FIXME: backward compatibility hack (see SH2SaveState() comment)
-      u32 div = context->frc.shift;
+   {  // L'etat contient le diviseur (voir SH2SaveState()) : on en tire le decalage.
+      u32 frcIn[2];
+      u32 div;
+      MemStateRead((void *)frcIn, sizeof(frcIn), 1, stream);
+      context->frc.leftover = frcIn[0];
+      div = frcIn[1];
       context->frc.shift = 0;
       while ((div >>= 1) != 0)
          context->frc.shift++;
@@ -3770,6 +3770,15 @@ int SH2LoadState(SH2_struct *context, const void * stream, UNUSED int version, i
    MemStateRead((void *)&context->cycles, sizeof(u32), 1, stream);
    MemStateRead((void *)&context->isslave, sizeof(u8), 1, stream);
    MemStateRead((void *)&context->instruction, sizeof(u16), 1, stream);
+
+   /* Etat interne du WDT : non sauvegarde, mais entierement deduit de WTCSR
+    * (relu avec onchip). SH2Reset() l'avait remis a "arrete" : un WDT actif
+    * (mode intervalle surtout) ne comptait plus apres un chargement. Les
+    * cycles ecoules depuis le dernier WDTExec() ne sont pas connus : on
+    * repart de cycles (relu ci-dessus) pour ne pas compter ~cycles d'un coup. */
+   WDTSetMode(context, context->onchip.WTCSR);
+   context->wdt.leftover = 0;
+   context->wdtcycles = context->cycles;
 
    if (version >= 3) {
      MemStateRead((void *)&context->dma_ch0.copy_clock, sizeof(u32), 1, stream);
@@ -3853,7 +3862,7 @@ void SH2SetBreakpointCallBack(SH2_struct *context, void (*func)(void *, u32, voi
 int SH2AddCodeBreakpoint(SH2_struct *context, u32 addr) {
    int i;
 
-   if (context->bp.numcodebreakpoints < MAX_BREAKPOINTS) {
+   if (context->bp.numcodebreakpoints < SH2_MAX_BREAKPOINTS) {
       // Make sure it isn't already on the list
       for (i = 0; i < context->bp.numcodebreakpoints; i++)
       {
@@ -3876,9 +3885,9 @@ static void SH2SortCodeBreakpoints(SH2_struct *context) {
    int i, i2;
    u32 tmp;
 
-   for (i = 0; i < (MAX_BREAKPOINTS-1); i++)
+   for (i = 0; i < (SH2_MAX_BREAKPOINTS-1); i++)
    {
-      for (i2 = i+1; i2 < MAX_BREAKPOINTS; i2++)
+      for (i2 = i+1; i2 < SH2_MAX_BREAKPOINTS; i2++)
       {
          if (context->bp.codebreakpoint[i].addr == 0xFFFFFFFF &&
              context->bp.codebreakpoint[i2].addr != 0xFFFFFFFF)
@@ -3933,7 +3942,7 @@ codebreakpoint_struct *SH2GetBreakpointList(SH2_struct *context) {
 
 void SH2ClearCodeBreakpoints(SH2_struct *context) {
    int i;
-   for (i = 0; i < MAX_BREAKPOINTS; i++) {
+   for (i = 0; i < SH2_MAX_BREAKPOINTS; i++) {
       context->bp.codebreakpoint[i].addr = 0xFFFFFFFF;
    }
 
@@ -3943,29 +3952,33 @@ void SH2ClearCodeBreakpoints(SH2_struct *context) {
 //////////////////////////////////////////////////////////////////////////////
 
 static u8 FASTCALL SH2MemoryBreakpointReadByte(SH2_struct *sh, u8* mem, u32 addr) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
 
-         return sh->bp.memorybreakpoint[i].oldreadbyte(sh, mem, addr);
+         return bpctx->bp.memorybreakpoint[i].oldreadbyte(sh, mem, addr);
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
-         return sh->bp.memorybreakpoint[i].oldreadbyte(sh, mem, addr);
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+         return bpctx->bp.memorybreakpoint[i].oldreadbyte(sh, mem, addr);
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -3978,28 +3991,32 @@ static u8 FASTCALL SH2MemoryBreakpointReadByte(SH2_struct *sh, u8* mem, u32 addr
 //////////////////////////////////////////////////////////////////////////////
 
 static u16 FASTCALL SH2MemoryBreakpointReadWord(SH2_struct *sh, u8* mem, u32 addr) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:0Xcafedead;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
-         return sh->bp.memorybreakpoint[i].oldreadword(sh, mem, addr);
+         return bpctx->bp.memorybreakpoint[i].oldreadword(sh, mem, addr);
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
-         return sh->bp.memorybreakpoint[i].oldreadword(sh, mem, addr);
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+         return bpctx->bp.memorybreakpoint[i].oldreadword(sh, mem, addr);
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -4012,28 +4029,32 @@ static u16 FASTCALL SH2MemoryBreakpointReadWord(SH2_struct *sh, u8* mem, u32 add
 //////////////////////////////////////////////////////////////////////////////
 
 static u32 FASTCALL SH2MemoryBreakpointReadLong(SH2_struct *sh, u8* mem, u32 addr) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
-         return sh->bp.memorybreakpoint[i].oldreadlong(sh, mem, addr);
+         return bpctx->bp.memorybreakpoint[i].oldreadlong(sh, mem, addr);
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
-         return sh->bp.memorybreakpoint[i].oldreadlong(sh, mem, addr);
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+         return bpctx->bp.memorybreakpoint[i].oldreadlong(sh, mem, addr);
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -4046,35 +4067,39 @@ static u32 FASTCALL SH2MemoryBreakpointReadLong(SH2_struct *sh, u8* mem, u32 add
 //////////////////////////////////////////////////////////////////////////////
 
 static void FASTCALL SH2MemoryBreakpointWriteByte(SH2_struct *sh, u8* mem, u32 addr, u8 val) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
    SH2WriteNotify(MSH2, addr, 1);
    SH2WriteNotify(SSH2, addr, 1);
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
 
-         sh->bp.memorybreakpoint[i].oldwritebyte(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwritebyte(sh, mem, addr, val);
          return;
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
       {
-         sh->bp.memorybreakpoint[i].oldwritebyte(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwritebyte(sh, mem, addr, val);
          return;
       }
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -4089,35 +4114,39 @@ static void FASTCALL SH2MemoryBreakpointWriteByte(SH2_struct *sh, u8* mem, u32 a
 //////////////////////////////////////////////////////////////////////////////
 
 static void FASTCALL SH2MemoryBreakpointWriteWord(SH2_struct *sh, u8* mem, u32 addr, u16 val) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
     SH2WriteNotify(MSH2, addr, 2);
     SH2WriteNotify(SSH2, addr, 2);
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
 
-         sh->bp.memorybreakpoint[i].oldwriteword(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwriteword(sh, mem, addr, val);
          return;
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
       {
-         sh->bp.memorybreakpoint[i].oldwriteword(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwriteword(sh, mem, addr, val);
          return;
       }
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -4132,35 +4161,39 @@ static void FASTCALL SH2MemoryBreakpointWriteWord(SH2_struct *sh, u8* mem, u32 a
 //////////////////////////////////////////////////////////////////////////////
 
 static void FASTCALL SH2MemoryBreakpointWriteLong(SH2_struct *sh, u8* mem, u32 addr, u32 val) {
+   /* sh == NULL : acces DMA / SCU / editeur hexadecimal (DMAMappedMemory*). Pas de
+      contexte SH-2, donc rien ne se declenche, mais les listes du maitre servent
+      a retrouver la fonction d'origine (avant : dereferencement de NULL). */
+   SH2_struct *bpctx = (sh != NULL) ? sh : MSH2;
    int i;
    SH2WriteNotify(MSH2, addr, 4);
    SH2WriteNotify(SSH2, addr, 4);
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (sh->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
+      if (bpctx->bp.memorybreakpoint[i].addr == (addr & 0x0FFFFFFF))
       {
-         if (sh->bp.BreakpointCallBack && sh->bp.inbreakpoint == 0)
+         if (sh != NULL && bpctx->bp.BreakpointCallBack && bpctx->bp.inbreakpoint == 0)
          {
-            sh->bp.inbreakpoint = 1;
-            sh->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
-            sh->bp.BreakpointUserData.BPAddress = addr;
+            bpctx->bp.inbreakpoint = 1;
+            bpctx->bp.BreakpointUserData.PCAddress = (sh->isDelayed != 0)?sh->isDelayed:sh->regs.PC;
+            bpctx->bp.BreakpointUserData.BPAddress = addr;
          }
 
-         sh->bp.memorybreakpoint[i].oldwritelong(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwritelong(sh, mem, addr, val);
          return;
       }
    }
 
    // Use the closest match if address doesn't match
-   for (i = 0; i < sh->bp.nummemorybreakpoints; i++)
+   for (i = 0; i < bpctx->bp.nummemorybreakpoints; i++)
    {
-      if (((sh->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
+      if (((bpctx->bp.memorybreakpoint[i].addr >> 16) & 0xFFF) == ((addr >> 16) & 0xFFF))
       {
-         sh->bp.memorybreakpoint[i].oldwritelong(sh, mem, addr, val);
+         bpctx->bp.memorybreakpoint[i].oldwritelong(sh, mem, addr, val);
          return;
       }
    }
-   SH2_struct *otherSH = (sh == MSH2)?SSH2:MSH2;
+   SH2_struct *otherSH = (bpctx == MSH2)?SSH2:MSH2;
    // the breakpoint might have been set for the other core.
    for (i = 0; i < otherSH->bp.nummemorybreakpoints; i++)
    {
@@ -4242,7 +4275,7 @@ int SH2AddMemoryBreakpoint(SH2_struct *context, u32 addr, u32 flags) {
    if (flags == 0)
       return -1;
 
-   if (context->bp.nummemorybreakpoints < MAX_BREAKPOINTS) {
+   if (context->bp.nummemorybreakpoints < SH2_MAX_BREAKPOINTS) {
       // Only regular addresses are supported at this point(Sorry, no onchip!)
       switch (addr >> 29) {
          case 0x0:
@@ -4346,9 +4379,9 @@ static void SH2SortMemoryBreakpoints(SH2_struct *context) {
    int i, i2;
    memorybreakpoint_struct tmp;
 
-   for (i = 0; i < (MAX_BREAKPOINTS-1); i++)
+   for (i = 0; i < (SH2_MAX_BREAKPOINTS-1); i++)
    {
-      for (i2 = i+1; i2 < MAX_BREAKPOINTS; i2++)
+      for (i2 = i+1; i2 < SH2_MAX_BREAKPOINTS; i2++)
       {
          if (context->bp.memorybreakpoint[i].addr == 0xFFFFFFFF &&
              context->bp.memorybreakpoint[i2].addr != 0xFFFFFFFF)
@@ -4425,7 +4458,7 @@ memorybreakpoint_struct *SH2GetMemoryBreakpointList(SH2_struct *context) {
 
 void SH2ClearMemoryBreakpoints(SH2_struct *context) {
    int i;
-   for (i = 0; i < MAX_BREAKPOINTS; i++)
+   for (i = 0; i < SH2_MAX_BREAKPOINTS; i++)
    {
       context->bp.memorybreakpoint[i].addr = 0xFFFFFFFF;
       context->bp.memorybreakpoint[i].flags = 0;
