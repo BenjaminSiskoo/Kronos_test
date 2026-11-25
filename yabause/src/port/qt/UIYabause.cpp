@@ -1,0 +1,2332 @@
+/*  Copyright 2005 Guillaume Duhamel
+	Copyright 2005-2006, 2013 Theo Berkau
+	Copyright 2008 Filipe Azevedo <pasnox@gmail.com>
+
+	This file is part of Yabause.
+
+	Yabause is free software; you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation; either version 2 of the License, or
+	(at your option) any later version.
+
+	Yabause is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License
+	along with Yabause; if not, write to the Free Software
+	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+*/
+#include <QFile>
+#include "UIYabause.h"
+#include "UISettings.h"
+#include "../Settings.h"
+#include "../VolatileSettings.h"
+#include "UIBackupRam.h"
+#include "UICheats.h"
+#include "UICheatSearch.h"
+#include "UIDebugSH2.h"
+#include "UIDebugVDP1.h"
+#include "UIDebugVDP2.h"
+#include "UIDebugGfxEditor.h"
+#include "UIDebugTextEditor.h"
+#include "UIEditsExport.h"
+#include <QPointer>
+#include "UIDebugM68K.h"
+#include "UIDebugSH2Profile.h"
+#include "UILuaConsole.h"
+#include "UIDebugSCUDSP.h"
+#include "UIDebugSCSP.h"
+#include "UIDebugSCSPChan.h"
+#include "UIDebugSCSPDSP.h"
+#include "UIMemoryEditor.h"
+#include "UIMemoryTransfer.h"
+#include "UIMovieEditor.h"
+#include "UIRamWatch.h"
+#include <QActionGroup>
+#include "UIAbout.h"
+#include "../YabauseGL.h"
+#include "../QtYabause.h"
+#include "../CommonDialogs.h"
+#include "../KeyboardQt.h"
+
+#include <QKeyEvent>
+#include <QPlainTextEdit>
+#include <QMenu>
+#include <QThread>
+#include <QDockWidget>
+#include <QImageWriter>
+#include <QUrl>
+#include <QDesktopServices>
+#include <QDateTime>
+
+#include <QDebug>
+#include <QMimeData>
+#include <cmath>
+
+#define ACTION_OPENTRAY 1
+#define ACTION_LOADFILE 2
+#define ACTION_RESET 3
+#define ACTION_SCREENSHOT 4
+#define ACTION_SAVESLOT 5
+#define ACTION_LOADSLOT 6
+#define ACTION_LOADCDROM 7
+#define ACTION_MOVIE_RECORD 8
+#define ACTION_MOVIE_PLAY 9
+#define ACTION_REWIND 10
+
+extern "C" {
+#include "movie.h"
+#if defined(HAVE_REWIND) && HAVE_REWIND
+#include "rewind.h"
+#endif
+}
+
+extern "C" {
+extern VideoInterface_struct *VIDCoreList[];
+}
+
+//#define USE_UNIFIED_TITLE_TOOLBAR
+void UIYabause::sendThreadReset()
+{
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_RESET);
+	mLocker->lock();
+};
+
+void UIYabause::threadInitialized() {
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	if (vs->value( "Cartridge/Type") == CART_ROMSTV) {
+		/* Plus de strdup() jamais libere ; chemin dans l'encodage du systeme de
+		   fichiers (toLatin1() cassait les caracteres hors Latin-1). */
+		const QByteArray path = QFile::encodeName( vs->value("Cartridge/Path").toString() );
+		STVGetRomList(path.constData(), 0);
+	}
+}
+
+UIYabause::UIYabause( QWidget* parent )
+	: QMainWindow( parent )
+{
+	mInit = false;
+	teLog = NULL; // compared in eventFilter(), which is installed before the log exists
+	mLogDock = NULL;
+   search.clear();
+	searchType = 0;
+	mNeedResize = false;
+	mLocker = NULL;
+
+	// setup dialog
+	setupUi( this );
+	toolBar->insertAction( aFileSettings, mFileSaveState->menuAction() );
+	toolBar->insertAction( aFileSettings, mFileLoadState->menuAction() );
+	toolBar->insertSeparator( aFileSettings );
+	setAttribute( Qt::WA_DeleteOnClose );
+#ifdef USE_UNIFIED_TITLE_TOOLBAR
+	setUnifiedTitleAndToolBarOnMac( true );
+#endif
+	fSound->setParent( 0, Qt::Popup );
+	fVideoDriver->setParent( 0, Qt::Popup );
+	fSound->installEventFilter( this );
+	fVideoDriver->installEventFilter( this );
+	// fill combo driver
+	cbVideoDriver->blockSignals( true );
+	for ( int i = 0; VIDCoreList[i] != NULL; i++ )
+		cbVideoDriver->addItem( VIDCoreList[i]->Name, VIDCoreList[i]->id );
+	cbVideoDriver->blockSignals( false );
+	// create glcontext
+	mYabauseGL = new YabauseGL( );
+	// and set it as central application widget
+	QWidget *container = QWidget::createWindowContainer(mYabauseGL, this);
+	container->setFocusPolicy( Qt::StrongFocus );
+	setFocusPolicy( Qt::StrongFocus );
+	container->setFocusProxy( this );
+	container->setAcceptDrops(false);
+	container->installEventFilter( this );
+	mYabauseGL->installEventFilter( this );
+
+	this->setAcceptDrops(true);
+
+	//bind auto start to trigger when gl is initialized. before this emulation will fail due to missing GL context
+	connect(mYabauseGL, &YabauseGL::glInitialized, [&]
+	{
+		auto const * const vs = QtYabause::volatileSettings();
+		if (vs->value("Video/Fullscreen").toBool()) {
+			fullscreenRequested(true);
+		}
+		if (vs->value("autorun").toBool())
+			aEmulationRun->trigger();
+	});
+
+	connect(this, SIGNAL( requestReset() ), this, SLOT( sendThreadReset() ) );
+	setCentralWidget( container );
+	// create log widget
+	// Plain text: a log line is never HTML (QTextEdit::append() rendered as
+	// rich text any line that looked like it).
+	teLog = new QPlainTextEdit( this );
+	teLog->setReadOnly( true );
+	teLog->setUndoRedoEnabled( false );
+	teLog->setLineWrapMode( QPlainTextEdit::NoWrap );
+	teLog->setVerticalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
+	teLog->setHorizontalScrollBarPolicy( Qt::ScrollBarAlwaysOn );
+	// Ctrl+C / Ctrl+A belong to the log while it has the keyboard focus, see
+	// eventFilter()
+	teLog->installEventFilter( this );
+	// right click: standard entries (Copy, Select All) + Reset
+	teLog->setContextMenuPolicy( Qt::CustomContextMenu );
+	connect( teLog, SIGNAL( customContextMenuRequested( const QPoint& ) ), this, SLOT( logContextMenu( const QPoint& ) ) );
+	mLogDock = new QDockWidget( this );
+	mLogDock->setObjectName( "LogDock" );
+	mLogDock->setWindowTitle( QtYabause::translate( "Log" ) );
+	mLogDock->setWidget( teLog );
+	addDockWidget( Qt::BottomDockWidgetArea, mLogDock );
+	mLogDock->setVisible( false );
+	mLogDockSize = -1;
+	connect( mLogDock, SIGNAL( visibilityChanged( bool ) ), this, SLOT( logDockVisibilityChanged( bool ) ) );
+	mCanLog = true;
+	oldMouseX = oldMouseY = 0;
+	mouseCaptured = false;
+	cursorShown = false;
+
+	// create emulator thread
+	mYabauseThread = new YabauseThread( this );
+	// create hide mouse timer
+	hideMouseTimer = new QTimer();
+	// create mouse cursor timer
+	mouseCursorTimer = new QTimer();
+	// connections
+	connect( mYabauseThread, SIGNAL( requestSize( const QSize& ) ), this, SLOT( sizeRequested( const QSize& ) ) );
+	// connect( mYabauseThread, SIGNAL( requestFullscreen( bool ) ), this, SLOT( fullscreenRequested( bool ) ) );
+	connect( mYabauseThread, SIGNAL( requestVolumeChange( int ) ), this, SLOT( on_sVolume_valueChanged( int ) ) );
+	connect( aViewLog, SIGNAL( toggled( bool ) ), mLogDock, SLOT( setVisible( bool ) ) );
+	connect( mLogDock->toggleViewAction(), SIGNAL( toggled( bool ) ), aViewLog, SLOT( setChecked( bool ) ) );
+	connect( mYabauseThread, SIGNAL( error( const QString&, bool ) ), this, SLOT( errorReceived( const QString&, bool ) ) );
+	connect( mYabauseThread, SIGNAL( pause( bool ) ), this, SLOT( pause( bool ) ) );
+	connect( mYabauseThread, SIGNAL( reset() ), this, SLOT( reset() ) );
+	connect( hideMouseTimer, SIGNAL( timeout() ), this, SLOT( hideMouse() ));
+	connect( mouseCursorTimer, SIGNAL( timeout() ), this, SLOT( cursorRestore() ));
+	connect( mYabauseThread, SIGNAL( toggleEmulateMouse( bool, bool ) ), this, SLOT( toggleEmulateMouse( bool, bool ) ) );
+	connect( mYabauseGL, SIGNAL( emulationPaused()), this, SLOT (runActions()));
+	connect( mYabauseThread, SIGNAL( emulationAlreadyPaused()), this, SLOT (runActionsAlreadyPaused()));
+	connect( mYabauseThread, SIGNAL( initDone()), this, SLOT (threadInitialized()));
+	// YabauseThread used to emit initDone() from its own constructor, i.e.
+	// before this connect() above even existed - the signal was emitted
+	// into the void and threadInitialized() (which populates the STV game
+	// list via STVGetRomList()) was never actually called at startup.
+	// Call it directly now that the connection genuinely exists.
+	threadInitialized();
+
+	// Films d'entrees (avant la lecture des raccourcis, pour qu'ils puissent
+	// en recevoir un)
+	createMovieMenu();
+
+	// Load shortcuts
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	QList<QAction *> actions = findChildren<QAction *>();
+	foreach ( QAction* action, actions )
+	{
+		if (action->text().isEmpty())
+			continue;
+
+		QString text = vs->value(QString("Shortcuts/") + QtYabause::sourceText(action), "").toString();
+		if (text.isEmpty())
+			continue;
+		action->setShortcut(text);
+	}
+
+	// retranslate widgets
+	QtYabause::retranslateWidget( this );
+
+	QList<QAction *> actionList = menubar->actions();
+	for(int i = 0;i < actionList.size();i++) {
+		addAction(actionList.at(i));
+	}
+
+	restoreGeometry( vs->value("General/Geometry" ).toByteArray() );
+	restoreLogDockState();
+	container->setMouseTracking(true);
+	setMouseTracking(true);
+	mouseXRatio = mouseYRatio = 1.0;
+	mouseXUp = mouseYUp = 0;
+	emulateMouse = false;
+	mouseSensitivity = vs->value( "Input/GunMouseSensitivity", 100 ).toInt();
+	showMenuBarHeight = menubar->height();
+	translations = QtYabause::getTranslationList();
+}
+
+UIYabause::~UIYabause()
+{
+	mCanLog = false;
+}
+
+void UIYabause::showEvent( QShowEvent* e )
+{
+	QMainWindow::showEvent( e );
+
+	if ( !mInit )
+	{
+		VolatileSettings* vs = QtYabause::volatileSettings();
+
+		aEmulationVSync->setChecked( vs->value( "General/EnableVSync", 1 ).toBool() );
+		aViewFPS->setChecked( vs->value( "General/ShowFPS" ).toBool() );
+		mInit = true;
+	}
+}
+
+void UIYabause::closeEvent( QCloseEvent* e )
+{
+	aEmulationPause->trigger();
+
+	/* La fenetre principale n'est jamais detruite (QtYabause::mainWindow(),
+	   new sans delete) : ~YabauseThread() -> YabauseDeInit() -> BackupDeinit()
+	   ne s'execute pas a la fermeture. Les ecritures en RAM de sauvegarde (et
+	   cartouche) faites depuis la derniere ecriture du fichier etaient donc
+	   perdues. L'emulation tourne dans ce thread (YabauseGL::event()), rien
+	   ne s'execute en parallele. */
+	YabFlushBackups();
+
+	if (isFullScreen())
+		// Need to switch out of full screen or the geometry settings get saved
+		fullscreenRequested( false );
+	Settings* vs = QtYabause::settings();
+	vs->setValue( "General/Geometry", saveGeometry() );
+	saveLogDockState();
+	vs->sync();
+
+	QMainWindow::closeEvent( e );
+}
+
+void UIYabause::keyPressEvent( QKeyEvent* e )
+{
+	// Host auto-repeat: a held key is already "down" for the peripherals
+	// (the Saturn keyboard makes its own repeat). On X11 auto-repeat also
+	// sends fake releases, ignored as well in keyReleaseEvent().
+	if ( e->isAutoRepeat() )
+		return;
+	if (emulateMouse && mouseCaptured && e->key() == Qt::Key_Escape) {
+		mouseCaptured = false;
+		this->setCursor(Qt::ArrowCursor);
+	}
+	else {
+		PerKeyDown( e->key() );
+		// Sega Saturn keyboard (no-op when none is plugged in)
+		KeyboardQt::keyPress( e );
+	}
+}
+
+void UIYabause::keyReleaseEvent( QKeyEvent* e )
+{
+	if ( e->isAutoRepeat() )
+		return;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+	// end of a held rewind
+	if ( mRewindKeyDown && !aRewind->shortcut().isEmpty() &&
+		( aRewind->shortcut()[0] & 0x01FFFFFF ) == e->key() )
+	{
+		mRewindKeyDown = false;
+		rewindEnd();
+	}
+#endif
+	PerKeyUp( e->key() );
+	KeyboardQt::keyRelease( e );
+}
+
+void UIYabause::changeEvent( QEvent* e )
+{
+	// The key releases go to the new active window: don't leave keys of
+	// the emulated Saturn keyboard stuck down (and repeating).
+	if ( e->type() == QEvent::ActivationChange && !isActiveWindow() )
+	{
+		KeyboardQt::releaseAll();
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		// the release of the key would go to another window
+		mRewindKeyDown = false;
+		rewindEnd();
+#endif
+	}
+	QMainWindow::changeEvent( e );
+}
+
+void UIYabause::leaveEvent( QEvent* e )
+{
+	if (emulateMouse && mouseCaptured)
+	{
+		// lock cursor to center
+		if (!cursorShown) {
+			int midX = (centralWidget()->size().width()/2); // widget global x
+			int midY = centralWidget()->size().height()/2; // widget global y
+
+			QPoint newPos(geometry().x() + centralWidget()->geometry().x() + midX, geometry().y() + centralWidget()->geometry().y() + midY);
+			this->cursor().setPos(newPos);
+		}
+	}
+}
+
+void UIYabause::mousePressEvent( QMouseEvent* e )
+{
+	/* Graphics editor "pick on screen": the click selects a sprite or a
+	   background dot instead of going to the game. */
+	if (mScreenPick)
+	{
+		std::function<void(int, int, const QPoint&)> pick = mScreenPick;
+		mScreenPick = nullptr;
+		unsetCursor();
+		if (e->button() != Qt::LeftButton)
+		{
+			pick( -1, -1, e->globalPos() );
+			return;
+		}
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		if ((mouseXRatio <= 0.0f) || (mouseYRatio <= 0.0f))
+		{
+			pick( -1, -1, e->globalPos() );
+			return;
+		}
+		const QPoint p = mYabauseGL->mapFromGlobal( e->globalPos() );
+		pick( (int)((p.x()-mouseXUp)/mouseXRatio), (int)((p.y()-mouseYUp)/mouseYRatio), e->globalPos() );
+		return;
+	}
+	/* Critter Crusher / Tatacot: the left button is the hammer hit (see
+	   PerCritcrshMove() in peripheral.c). */
+	if (PerCritcrshEnabled() && (e->button() == Qt::LeftButton))
+	{
+		PerCritcrshHammer( 1 );
+		return;
+	}
+	/* Gun (visible cursor, absolute position): nothing to capture, the
+	   click is the trigger right away. Only the Shuttle Mouse (hidden
+	   cursor, relative motion) grabs the host mouse on the first click,
+	   and that click is not sent to the game. Previously the gun also
+	   needed this first "capture" click, which was swallowed, and got no
+	   position at all before it (see mouseMoveEvent()). */
+	if (emulateMouse && !mouseCaptured && !cursorShown)
+	{
+		this->setCursor(Qt::BlankCursor);
+		mouseCaptured = true;
+	}
+	else
+		PerKeyDown( (1 << 31) | e->button() );
+}
+
+void UIYabause::setScreenPick( std::function<void(int, int, const QPoint&)> pick )
+{
+	mScreenPick = pick;
+	if (mScreenPick) setCursor(Qt::CrossCursor);
+	else unsetCursor();
+}
+
+void UIYabause::mouseReleaseEvent( QMouseEvent* e )
+{
+	if (PerCritcrshEnabled() && (e->button() == Qt::LeftButton))
+	{
+		PerCritcrshHammer( 0 );
+		return;
+	}
+	PerKeyUp( (1 << 31) | e->button() );
+}
+
+void UIYabause::hideMouse()
+{
+	/* Gun: the cursor is managed by mouseMoveEvent() (cross over the
+	   picture, arrow elsewhere). */
+	if (!(emulateMouse && cursorShown)) this->setCursor(Qt::BlankCursor);
+	hideMouseTimer->stop();
+}
+
+void UIYabause::runActionsAlreadyPaused() {
+	if (mLocker == NULL) {
+		return;
+	}
+	int action = mLocker->popAction();
+	void *bundle = mLocker->popBundle();
+	switch (action) {
+		case ACTION_OPENTRAY:
+		case ACTION_LOADFILE:
+		{
+			int needReset = 0;
+			mYabauseThread->OpenTray();
+			if (bundle != NULL) {
+				needReset = (loadGameFromFile(*((QString*)bundle))==0);
+				delete (QString*)bundle;
+			} else {
+				const QString fn = CommonDialogs::getOpenFileName( QtYabause::volatileSettings()->value( "Recents/ISOs" ).toString(), QtYabause::translate( "Select your iso/cue/bin/zip/chd file" ), QtYabause::translate( "CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)" ) );
+				needReset = (loadGameFromFile(fn)==0);
+			}
+			if (needReset) {
+				yabsys.isReloadingImage = 2;
+				emit requestReset();
+			}
+		}
+			break;
+		case ACTION_RESET:
+			mYabauseThread->resetEmulation();
+		break;
+		case ACTION_SCREENSHOT:
+			takeScreenshot();
+		break;
+		case ACTION_SAVESLOT:
+			if (bundle != NULL) {
+				saveSlot(*((int*)bundle));
+				free(bundle);
+			} else {
+				saveSlotAs();
+			}
+		break;
+		case ACTION_LOADSLOT:
+			if (bundle != NULL) {
+				loadSlot(*((int*)bundle));
+				free(bundle);
+			} else {
+				loadSlotAs();
+			}
+		break;
+		case ACTION_LOADCDROM:
+			mYabauseThread->OpenTray();
+			if (loadCDRom() == 0) {
+				yabsys.isReloadingImage = 2;
+				emit requestReset();
+			}
+		break;
+		case ACTION_MOVIE_RECORD:
+			movieRecord();
+		break;
+		case ACTION_MOVIE_PLAY:
+			moviePlay();
+		break;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		case ACTION_REWIND:
+			rewindStepPaused();
+		break;
+#endif
+		default:
+		break;
+	}
+	delete mLocker;
+	mLocker = NULL;
+}
+
+void UIYabause::runActions() {
+	if (mLocker == NULL)  {
+		return;
+	}
+	int action = mLocker->popAction();
+	void *bundle = mLocker->popBundle();
+	switch (action) {
+		case ACTION_OPENTRAY:
+		{
+			mYabauseThread->OpenTray();
+		}
+		break;
+		case ACTION_LOADFILE:
+		{
+			int needReset = 0;
+			if (bundle != NULL) {
+				mYabauseThread->SetCdInserted(false);
+				mYabauseThread->OpenTray();
+				needReset = (loadGameFromFile(*((QString*)bundle))==0);
+				delete (QString*)bundle;
+				if (needReset){
+					yabsys.isReloadingImage = 2;
+					emit requestReset();
+				}
+			} else {
+				const QString fn = CommonDialogs::getOpenFileName( QtYabause::volatileSettings()->value( "Recents/ISOs" ).toString(), QtYabause::translate( "Select your iso/cue/bin/zip/chd file" ), QtYabause::translate( "CD Images (*.iso *.ISO *.cue *.CUE *.bin *.BIN *.mds *.MDS *.ccd *.CCD *.zip *.ZIP *.chd *.CHD)" ) );
+				loadGameFromFile(fn);
+				if (yabsys.isReloadingImage == 2)
+					emit requestReset();
+			}
+		}
+		break;
+		case ACTION_RESET:
+			mYabauseThread->resetEmulation();
+		break;
+		case ACTION_SCREENSHOT:
+			takeScreenshot();
+		break;
+		case ACTION_SAVESLOT:
+			if (bundle != NULL) {
+				saveSlot(*((int*)bundle));
+				free(bundle);
+			} else {
+				saveSlotAs();
+			}
+		break;
+		case ACTION_LOADSLOT:
+			if (bundle != NULL) {
+				loadSlot(*((int*)bundle));
+				free(bundle);
+			} else {
+				loadSlotAs();
+			}
+		break;
+		case ACTION_LOADCDROM:
+			loadCDRom();
+			if (yabsys.isReloadingImage == 2)
+				emit requestReset();
+		break;
+		case ACTION_MOVIE_RECORD:
+			movieRecord();
+		break;
+		case ACTION_MOVIE_PLAY:
+			moviePlay();
+		break;
+#if defined(HAVE_REWIND) && HAVE_REWIND
+		case ACTION_REWIND:
+			rewindStepPaused();
+		break;
+#endif
+		default:
+		break;
+	}
+	delete mLocker;
+	mLocker = NULL;
+}
+
+void UIYabause::cursorRestore()
+{
+	this->setCursor(Qt::ArrowCursor);
+	mouseCursorTimer->stop();
+}
+
+void UIYabause::mouseMoveEvent( QMouseEvent* e )
+{
+	int midX = (centralWidget()->size().width()/2); // widget global x
+	int midY = centralWidget()->size().height()/2; // widget global y
+
+	/* Critter Crusher / Tatacot: the hammer follows the host mouse, in
+	   emulated screen pixels (same conversion as the visible-cursor gun
+	   branch below), with no capture needed. */
+	if (PerCritcrshEnabled())
+	{
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		if ((mouseXRatio > 0.0f) && (mouseYRatio > 0.0f))
+			PerCritcrshMove( (int)((e->x()-mouseXUp)/mouseXRatio), (int)((e->y()-mouseYUp)/mouseYRatio) );
+		this->setCursor(Qt::CrossCursor);
+		return;
+	}
+
+
+	/* Gun: absolute position in emulated screen pixels, sent without any
+	   capture. The position is taken from the global cursor position
+	   mapped into the GL window (as for the graphics editor pick):
+	   UIYabause gets move events both from the GL window (event filter)
+	   and for itself (menubar/toolbar), in two different coordinate
+	   frames, and e->x()/e->y() of the latter put the gun at the top of
+	   the game screen while the cursor was over the toolbar. */
+	bool gunOnPicture = false;
+	if (emulateMouse && cursorShown) {
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		if ((mouseXRatio > 0.0f) && (mouseYRatio > 0.0f)) {
+			const QPoint p = mYabauseGL->mapFromGlobal( e->globalPos() );
+			int x = (int)floor((p.x()-mouseXUp)/mouseXRatio);
+			int y = (int)floor((p.y()-mouseYUp)/mouseYRatio);
+			PerAxisMove((1 << 30), x, y);
+			/* The picture is centred in the GL window (getScale(): xUp/yUp
+			   are the side borders, 0 when stretched), so it spans
+			   [xUp, width - xUp[ x [yUp, height - yUp[. */
+			gunOnPicture = (p.x() >= mouseXUp) && (p.x() < mYabauseGL->width() - mouseXUp) &&
+			               (p.y() >= mouseYUp) && (p.y() < mYabauseGL->height() - mouseYUp);
+		}
+	}
+	else if (mouseCaptured) {
+		mYabauseGL->getScale(&mouseXRatio, &mouseYRatio, &mouseXUp, &mouseYUp);
+		int x = (e->x()-midX);
+		int y = (midY-e->y());
+		//use mouseSensitivity and scale ratio
+		x *= (float)mouseSensitivity/100.0;
+		y *= (float)mouseSensitivity/100.0;
+		x /= mouseXRatio;
+		y /= mouseYRatio;
+		PerAxisMove((1 << 30), x, y);
+	}
+
+	VolatileSettings* vs = QtYabause::volatileSettings();
+
+	/* Gun: standard cross cursor over the game picture, normal arrow over
+	   the black borders, the menu bar and the tool bar (the gun is then
+	   off-screen). The mouse is never grabbed. */
+	if (emulateMouse && cursorShown)
+	{
+		hideMouseTimer->stop();
+		this->setCursor(gunOnPicture ? Qt::CrossCursor : Qt::ArrowCursor);
+		return;
+	}
+
+	if (!isFullScreen())
+	{
+		if (emulateMouse && mouseCaptured)
+		{
+			if (!cursorShown) {
+				// lock cursor to center
+				QPoint newPos(geometry().x() + centralWidget()->geometry().x() + midX, geometry().y() + centralWidget()->geometry().y() + midY);
+				this->cursor().setPos(newPos);
+				this->setCursor(Qt::BlankCursor);
+			} else {
+				this->setCursor(Qt::CrossCursor);
+			}
+			return;
+		}
+		else
+			this->setCursor(Qt::ArrowCursor);
+	}
+	else
+	{
+		if (emulateMouse && mouseCaptured)
+		{
+			if (!cursorShown) {
+				QPoint newPos(geometry().x() + centralWidget()->geometry().x() + midX, geometry().y() + centralWidget()->geometry().y() + midY);
+				this->cursor().setPos(newPos);
+				this->setCursor(Qt::BlankCursor);
+			} else this->setCursor(Qt::CrossCursor);
+			return;
+		}
+
+		hideMouseTimer->start(3 * 1000);
+		this->setCursor(Qt::ArrowCursor);
+	}
+}
+
+void UIYabause::resizeEvent( QResizeEvent* event )
+{
+	QMainWindow::resizeEvent( event );
+}
+
+void UIYabause::adjustHeight(int & height)
+{
+   // Compensate for menubar and toolbar
+  height += menubar->height();
+  height += toolBar->height();
+}
+
+void UIYabause::swapBuffers()
+{
+	mYabauseGL->swapBuffers();
+}
+
+void UIYabause::appendLog( const char* s )
+{
+	if (! mCanLog)
+	{
+		qWarning( "%s", s );
+		return;
+	}
+
+	const QString text = QString::fromUtf8( s );
+	// YuiMsg() can be called from any thread of the core; widgets belong to
+	// the GUI thread
+	if ( QThread::currentThread() != thread() )
+	{
+		QMetaObject::invokeMethod( this, "appendLogText", Qt::QueuedConnection, Q_ARG( QString, text ) );
+		return;
+	}
+	appendLogText( text );
+}
+
+void UIYabause::appendLogText( const QString& text )
+{
+	if (! mCanLog)
+		return;
+
+	// Each message becomes one paragraph: drop its own end of line, which
+	// used to leave an empty line after every message.
+	QString line = text;
+	if ( line.endsWith( QLatin1Char( '\n' ) ) )
+		line.chop( 1 );
+	if ( line.endsWith( QLatin1Char( '\r' ) ) )
+		line.chop( 1 );
+
+	// Appended at the end of the document without touching the cursor of the
+	// widget: moving it to the end for each message (as before) dropped the
+	// user's selection, so nothing could be selected then copied while the
+	// log was being written. The view follows the log only while it shows
+	// its last line.
+	teLog->appendPlainText( line );
+
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	if (( !mLogDock->isVisible( )) && ( vs->value( "View/LogWindow" ).toInt() == 1 )) {
+		mLogDock->setVisible( true );
+	}
+}
+
+void UIYabause::logContextMenu( const QPoint& pos )
+{
+	QMenu* menu = teLog->createStandardContextMenu();
+	menu->addSeparator();
+	QAction* aReset = menu->addAction( QtYabause::translate( "Reset" ) );
+	aReset->setEnabled( !teLog->document()->isEmpty() );
+	if ( menu->exec( teLog->viewport()->mapToGlobal( pos ) ) == aReset )
+		teLog->clear();
+	delete menu;
+}
+
+/* Position of the log window, kept from one run to the next:
+   View/LogDockFloating  detached from the main window or not
+   View/LogDockGeometry  position and size of the detached window
+   View/LogDockArea      side of the main window it is docked to
+   View/LogDockSize      its height (top/bottom) or width (left/right) there
+   Whether the log is shown at startup is not changed: it still opens from
+   the View menu or with the "View/LogWindow" setting. */
+void UIYabause::restoreLogDockState()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	const int area = vs->value( "View/LogDockArea", (int)Qt::BottomDockWidgetArea ).toInt();
+	if ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea
+	  || area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea )
+	{
+		addDockWidget( (Qt::DockWidgetArea)area, mLogDock );
+		mLogDock->setVisible( false );
+	}
+	mLogDockSize = vs->value( "View/LogDockSize", -1 ).toInt();
+	if ( vs->value( "View/LogDockFloating", false ).toBool() )
+	{
+		const QByteArray geometry = vs->value( "View/LogDockGeometry" ).toByteArray();
+		mLogDock->setFloating( true );
+		// restoreGeometry() brings the window back on a screen if the one it
+		// was on is gone
+		if ( !geometry.isEmpty() )
+			mLogDock->restoreGeometry( geometry );
+	}
+}
+
+void UIYabause::saveLogDockState()
+{
+	Settings* s = QtYabause::settings();
+	const bool floating = mLogDock->isFloating();
+	s->setValue( "View/LogDockFloating", floating );
+	if ( floating )
+	{
+		s->setValue( "View/LogDockGeometry", mLogDock->saveGeometry() );
+		return;
+	}
+	const Qt::DockWidgetArea area = dockWidgetArea( mLogDock );
+	if ( area == Qt::NoDockWidgetArea )
+		return;
+	s->setValue( "View/LogDockArea", (int)area );
+	// the size of a hidden dock means nothing: keep the last known one
+	if ( mLogDock->isVisible() )
+	{
+		const bool sideways = ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea );
+		s->setValue( "View/LogDockSize", sideways ? mLogDock->width() : mLogDock->height() );
+	}
+	else if ( mLogDockSize > 0 )
+		s->setValue( "View/LogDockSize", mLogDockSize );
+}
+
+void UIYabause::logDockVisibilityChanged( bool visible )
+{
+	// A docked dock only takes a size once it is laid out: give the saved one
+	// back the first time it is shown.
+	if ( !visible || mLogDockSize <= 0 || mLogDock->isFloating() )
+		return;
+	const int size = mLogDockSize;
+	mLogDockSize = -1;
+	QTimer::singleShot( 0, this, [this, size]
+	{
+		if ( !mLogDock->isVisible() || mLogDock->isFloating() )
+			return;
+		const Qt::DockWidgetArea area = dockWidgetArea( mLogDock );
+		const bool sideways = ( area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea );
+		resizeDocks( QList<QDockWidget*>() << mLogDock, QList<int>() << size, sideways ? Qt::Horizontal : Qt::Vertical );
+	} );
+}
+
+bool UIYabause::eventFilter( QObject* o, QEvent* e )
+{
+	// Log: Ctrl+C and Ctrl+A are also the shortcuts of "Open CD Rom..." and
+	// "Select Cartridge..." (or of whatever the user bound them to). A
+	// read-only text widget does not claim them, so with the focus in the log
+	// they opened those dialogs instead of copying / selecting all. Claim
+	// them here (ShortcutOverride), then do the copy / the selection. The
+	// other keys of the log are left alone and are not sent to the emulated
+	// pads by the code below.
+	if ( o == teLog )
+	{
+		if ( e->type() == QEvent::ShortcutOverride || e->type() == QEvent::KeyPress )
+		{
+			QKeyEvent* keyEvt = (QKeyEvent*)e;
+			const bool copy = keyEvt->matches( QKeySequence::Copy );
+			const bool selectAll = keyEvt->matches( QKeySequence::SelectAll );
+			if ( copy || selectAll )
+			{
+				if ( e->type() == QEvent::KeyPress )
+				{
+					if ( copy )
+						teLog->copy();
+					else
+						teLog->selectAll();
+				}
+				e->accept();
+				return true;
+			}
+		}
+		return QMainWindow::eventFilter( o, e );
+	}
+
+	 if (QEvent::MouseButtonPress == e->type()) {
+		 QMouseEvent* mouseEvt = (QMouseEvent*)e;
+		 mousePressEvent(mouseEvt);
+	 }
+	 else if (QEvent::MouseButtonRelease == e->type()) {
+		 QMouseEvent* mouseEvt = (QMouseEvent*)e;
+		 mouseReleaseEvent(mouseEvt);
+	 }
+	 else if (QEvent::MouseMove == e->type()) {
+		 QMouseEvent* mouseEvt = (QMouseEvent*)e;
+		 mouseMoveEvent(mouseEvt);
+	 }
+	 else if (QEvent::KeyPress == e->type()) {
+		 QKeyEvent* keyEvt = (QKeyEvent*)e;
+		 keyPressEvent(keyEvt);
+	 }
+	 else if (QEvent::KeyRelease == e->type()) {
+		QKeyEvent* keyEvt = (QKeyEvent*)e;
+		keyReleaseEvent(keyEvt);
+	}
+	 else if ( e->type() == QEvent::Hide ) {
+		 setFocus();
+	 }
+
+	return QMainWindow::eventFilter( o, e );
+}
+
+void UIYabause::errorReceived( const QString& error, bool internal )
+{
+	if ( internal ) {
+		QtYabause::appendLog( error.toUtf8().constData() );
+	}
+	else {
+		if (!CommonDialogs::error( error )) exit(-1);
+	}
+}
+
+void UIYabause::sizeRequested( const QSize& s )
+{
+	int heightOffset = toolBar->height()+menubar->height();
+	int width, height;
+	if (s.isNull())
+	{
+		return;
+	}
+	else
+	{
+		width=s.width();
+		height=s.height();
+	}
+
+	// Compensate for menubar and toolbar
+	height += menubar->height();
+	height += toolBar->height();
+
+	resize( width, height );
+}
+
+void UIYabause::toggleFullscreen( int width, int height, bool f, int videoFormat )
+{
+}
+
+QPoint preFullscreenModeWindowPosition;
+
+void UIYabause::fullscreenRequested( bool f )
+{
+	VolatileSettings * vs = QtYabause::volatileSettings();
+	vs->setValue("Video/Fullscreen", f);
+
+	if ( isFullScreen() && !f )
+	{
+#ifdef USE_UNIFIED_TITLE_TOOLBAR
+		setUnifiedTitleAndToolBarOnMac( true );
+#endif
+		showNormal();
+		// this->move(preFullscreenModeWindowPosition);
+
+		menubar->show();
+		toolBar->show();
+
+		setCursor(Qt::ArrowCursor);
+		hideMouseTimer->stop();
+	}
+	else if ( !isFullScreen() && f )
+	{
+#ifdef USE_UNIFIED_TITLE_TOOLBAR
+		setUnifiedTitleAndToolBarOnMac( false );
+#endif
+		VolatileSettings* vs = QtYabause::volatileSettings();
+
+		// setMaximumSize( QWIDGETSIZE_MAX, QWIDGETSIZE_MAX );
+		// setMinimumSize( 0,0 );
+		// preFullscreenModeWindowPosition = this->pos();
+		// this->move(0,0);
+
+		showFullScreen();
+		menubar->hide();
+		toolBar->hide();
+
+		hideMouseTimer->start(3 * 1000);
+	}
+	if ( aViewFullscreen->isChecked() != f )
+		aViewFullscreen->setChecked( f );
+	aViewFullscreen->setIcon( QIcon( f ? ":/actions/no_fullscreen.png" : ":/actions/fullscreen.png" ) );
+}
+
+void UIYabause::refreshStatesActions()
+{
+	// reset save actions
+	foreach ( QAction* a, findChildren<QAction*>( QRegExp( "aFileSaveState*" ) ) )
+	{
+		if ( a == aFileSaveStateAs )
+			continue;
+		int i = a->objectName().remove( "aFileSaveState" ).toInt();
+		a->setText( QString( "%1 ... " ).arg( i ) );
+		a->setToolTip( a->text() );
+		a->setStatusTip( a->text() );
+		a->setData( i );
+	}
+	// reset load actions
+	foreach ( QAction* a, findChildren<QAction*>( QRegExp( "aFileLoadState*" ) ) )
+	{
+		if ( a == aFileLoadStateAs )
+			continue;
+		int i = a->objectName().remove( "aFileLoadState" ).toInt();
+		a->setText( QString( "%1 ... " ).arg( i ) );
+		a->setToolTip( a->text() );
+		a->setStatusTip( a->text() );
+		a->setData( i );
+		a->setEnabled( false );
+	}
+	// get states files of this game
+	const QString serial = QtYabause::getCurrentCdSerial();
+	const QString mask = QString( "%1_*.yss" ).arg( serial );
+	const QString statesPath = QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString();
+	QRegExp rx( QString( mask ).replace( '*', "(\\d+)") );
+	QDir d( statesPath );
+	foreach ( const QFileInfo& fi, d.entryInfoList( QStringList( mask ), QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase ) )
+	{
+		if ( rx.exactMatch( fi.fileName() ) )
+		{
+			int slot = rx.capturedTexts().value( 1 ).toInt();
+			const QString caption = QString( "%1 %2 " ).arg( slot ).arg( fi.lastModified().toString( Qt::SystemLocaleDate ) );
+			// update save state action
+			if ( QAction* a = findChild<QAction*>( QString( "aFileSaveState%1" ).arg( slot ) ) )
+			{
+				a->setText( caption );
+				a->setToolTip( caption );
+				a->setStatusTip( caption );
+				// update load state action
+				a = findChild<QAction*>( QString( "aFileLoadState%1" ).arg( slot ) );
+				a->setText( caption );
+				a->setToolTip( caption );
+				a->setStatusTip( caption );
+				a->setEnabled( true );
+			}
+		}
+	}
+}
+
+void UIYabause::openSettingsOnTabs(int index) {
+	Settings *s = (QtYabause::settings());
+	QHash<QString, QVariant> hash;
+	const QStringList keys = s->allKeys();
+	Q_FOREACH(QString key, keys) {
+		hash[key] = s->value(key);
+	}
+
+	YabauseLocker locker( mYabauseThread );
+	UISettings *settings = new UISettings(&translations, window() );
+	settings->setCurrentOpenedTab(index);
+	if ( settings->exec() )
+	{
+		VolatileSettings* vs = QtYabause::volatileSettings();
+		aEmulationVSync->setChecked( vs->value( "General/EnableVSync", 1 ).toBool() );
+		aViewFPS->setChecked( vs->value( "General/ShowFPS" ).toBool() );
+		mouseSensitivity = vs->value( "Input/GunMouseSensitivity" ).toInt();
+
+		if(isFullScreen())
+		{
+			menubar->hide();
+			toolBar->hide();
+		}
+		else
+		{
+			menubar->show();
+			toolBar->show();
+		}
+
+		//only reset if bios, region, cart,  back up, mpeg, sh2, m68k are changed
+		Settings *ss = (QtYabause::settings());
+		QHash<QString, QVariant> newhash;
+		const QStringList newkeys = ss->allKeys();
+		Q_FOREACH(QString key, newkeys) {
+			newhash[key] = ss->value(key);
+		}
+		if(newhash["General/Bios"]!=hash["General/Bios"] ||
+			newhash["General/EnableEmulatedBios"]!=hash["General/EnableEmulatedBios"] ||
+			newhash["Cartridge/STVGame"]!=hash["Cartridge/STVGame"] ||
+			newhash["STV/Region"]!=hash["STV/Region"] ||
+			newhash["Cartridge/Type"]!=hash["Cartridge/Type"] ||
+			newhash["Memory/Path"]!=hash["Memory/Path"] ||
+			newhash["MpegROM/Path" ]!=hash["MpegROM/Path" ] ||
+			newhash["Advanced/SH2Interpreter" ]!=hash["Advanced/SH2Interpreter" ] ||
+         newhash["Advanced/68kCore"] != hash["Advanced/68kCore"] ||
+			newhash["General/CdRom"]!=hash["General/CdRom"] ||
+			newhash["General/CdRomISO"]!=hash["General/CdRomISO"] ||
+		        newhash["General/SystemLanguageID"]!=hash["General/SystemLanguageID"] ||
+			newhash["General/ClockSync"]!=hash["General/ClockSync"] ||
+			newhash["General/FixedBaseTime"]!=hash["General/FixedBaseTime"]
+		)
+		{
+				refreshStatesActions();
+		}
+#ifdef HAVE_LIBMINI18N
+		if(newhash["General/Translation"] != hash["General/Translation"])
+		{
+			mini18n_close();
+			/* retranslateUi(this) is no longer called: it reset the main window
+			   to the texts of UIYabause.ui (title "Yabause Qt GUI", action texts
+			   changed at run time...), and the retranslation now works from the
+			   remembered English source of every text, in every open window. */
+			if ( QtYabause::setTranslationFile() == -1 )
+				qWarning( "Can't set translation file" );
+			QtYabause::retranslateApplication();
+		}
+#endif
+		if(newhash["Video/VideoCore"] != hash["Video/VideoCore"])
+			on_cbVideoDriver_currentIndexChanged(newhash["Video/VideoCore"].toInt());
+
+		if(newhash["General/ShowFPS"] != hash["General/ShowFPS"])
+      SetOSDToggle(newhash["General/ShowFPS"].toBool());
+
+		if(newhash["General/EnableVSync"] != hash["General/EnableVSync"]){
+			if(newhash["General/EnableVSync"].toBool()) DisableAutoFrameSkip();
+			else EnableAutoFrameSkip();
+		}
+
+		if (newhash["Sound/SoundCore"] != hash["Sound/SoundCore"])
+			ScspChangeSoundCore(newhash["Sound/SoundCore"].toInt());
+
+		if (newhash["Video/WindowWidth"] != hash["Video/WindowWidth"] || newhash["Video/WindowHeight"] != hash["Video/WindowHeight"] ||
+			 newhash["Input/GunMouseSensitivity"] != hash["Input/GunMouseSensitivity"])
+			sizeRequested(QSize(newhash["Video/WindowWidth"].toInt(),newhash["Video/WindowHeight"].toInt()));
+
+		if (newhash["Video/FullscreenWidth"] != hash["Video/FullscreenWidth"] ||
+			newhash["Video/FullscreenHeight"] != hash["Video/FullscreenHeight"] ||
+			newhash["Video/Fullscreen"] != hash["Video/Fullscreen"])
+		{
+			bool f = isFullScreen();
+			if (f)
+				fullscreenRequested( false );
+			fullscreenRequested( f );
+		}
+
+		mYabauseThread->reloadControllers();
+		mYabauseThread->reloadCommPort();
+		mYabauseThread->reloadCamera();
+		refreshStatesActions();
+
+		if (yabsys.isReloadingImage == 2) emit requestReset();
+	}
+}
+
+void UIYabause::on_aFileOpenSTV_triggered()
+{
+	// Tab 3 = "Cart/Memory" (wCartMemory), where the STV game is selected.
+	openSettingsOnTabs(3);
+}
+
+void UIYabause::on_aFileSettings_triggered()
+{
+	openSettingsOnTabs(0);
+}
+
+void UIYabause::on_aFileOpenISO_triggered()
+{
+
+	if (mYabauseThread->IsCDInserted() && (yabsys.isSTV == 0)){
+		mYabauseThread->SetCdInserted(false);
+		mLocker = new YabauseLocker(mYabauseThread, ACTION_OPENTRAY);
+		mLocker->lock();
+	}
+	else{
+		mYabauseThread->SetCdInserted(false);
+		mLocker = new YabauseLocker(mYabauseThread, ACTION_LOADFILE);
+		mLocker->lock();
+	}
+}
+
+int UIYabause::loadCDRom()
+{
+	QStringList list = getCdDriveList();
+	int current = list.indexOf(QtYabause::volatileSettings()->value( "Recents/CDs").toString());
+	bool ok;
+	QString fn = QInputDialog::getItem(this, QtYabause::translate("Open CD Rom"),
+													QtYabause::translate("Choose a cdrom drive/mount point") + ":",
+													list, current, false, &ok);
+	Settings* s = QtYabause::settings();
+	if (!ok) fn.clear();
+	s->setValue( "General/CdRomISO", fn );
+	s->setValue( "Recents/CDs", fn );
+	QtYabause::updateTitle();
+	s->sync();
+	if (!fn.isEmpty())
+	{
+		yabsys.isRotated = 0;
+		// vs->setValue( "autostart", false );
+		s->setValue( "General/CdRom", QtYabause::defaultCDCore().id );
+		mYabauseThread->SetCdInserted(true);
+	} else {
+		s->setValue("General/CdRom", DummyCD.id);
+	}
+	if ((yabsys.isSTV == 1)||(s->value( "Cartridge/Type", 0 ).toInt() == CART_ROMSTV)) {
+		int cartId = s->value("Cartridge/LastCart", CART_NONE).toInt();
+		if (cartId == CART_ROMSTV) //should never happen
+			cartId = CART_NONE;
+		s->setValue("Cartridge/Type", cartId);
+		yabsys.isReloadingImage = 2;
+	}
+	refreshStatesActions();
+	return fn.isEmpty();
+}
+
+void UIYabause::on_aFileOpenCDRom_triggered()
+{
+	if (mYabauseThread->IsCDInserted() && (yabsys.isSTV == 0)){
+		mYabauseThread->SetCdInserted(false);
+		mLocker = new YabauseLocker(mYabauseThread, ACTION_OPENTRAY);
+		mLocker->lock();
+	} else {
+		mLocker = new YabauseLocker(mYabauseThread, ACTION_LOADCDROM);
+		mLocker->lock();
+	}
+}
+
+void UIYabause::saveSlot(int a) {
+	if ( YabSaveStateSlot( QFile::encodeName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString() ).constData(), a ) != 0 )
+		CommonDialogs::error( QtYabause::translate( "Couldn't save state file" ) );
+	else
+		refreshStatesActions();
+}
+
+void UIYabause::loadSlot(int a) {
+	if ( YabLoadStateSlot( QFile::encodeName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString() ).constData(), a ) != 0 )
+		CommonDialogs::error( QtYabause::translate( "Couldn't load state file" ) );
+}
+
+void UIYabause::saveSlotAs() {
+	const QString fn = CommonDialogs::getSaveFileName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString(), QtYabause::translate( "Choose a file to save your state" ), QtYabause::translate( "Kronos Save State (*.yss)" ) );
+	if ( fn.isNull() )
+		return;
+	if ( YabSaveState( QFile::encodeName( fn ).constData() ) != 0 )
+		CommonDialogs::error( QtYabause::translate( "Couldn't save state file" ) );
+}
+
+void UIYabause::loadSlotAs() {
+	const QString fn = CommonDialogs::getOpenFileName( QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString(), QtYabause::translate( "Select a file to load your state" ), QtYabause::translate( "Kronos Save State (*.yss)" ) );
+	if ( fn.isNull() )
+		return;
+	if ( YabLoadState( QFile::encodeName( fn ).constData() ) != 0 )
+		CommonDialogs::error( QtYabause::translate( "Couldn't load state file" ) );
+	else
+		aEmulationRun->trigger();
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Films d'entrees (movie.c) : un testeur enregistre sa partie, la partie est
+// rejouee a l'identique a partir de son fichier .ymv.
+//
+// Speedruns assistes par outil (TAS), dans le meme menu : avance image par
+// image, ralenti / acceleration, lecture seule ou re-record au chargement
+// d'un etat, ligne d'information a l'ecran, editeur d'entrees et
+// surveillance de la memoire.
+//////////////////////////////////////////////////////////////////////////////
+
+// Vitesses du menu, en pourcent de la vitesse reelle.
+static const int tasSpeeds[] = { 6, 12, 25, 50, 75, 100, 150, 200, 400 };
+static const int tasSpeedCount = (int)( sizeof( tasSpeeds ) / sizeof( tasSpeeds[0] ) );
+
+void UIYabause::createMovieMenu()
+{
+	VolatileSettings* vs = QtYabause::volatileSettings();
+
+	mSeeking = false;
+	mSeekResume = false;
+
+	mMovieMenu = new QMenu( QtYabause::translate( "TAS / Input &movie" ), this );
+	mMovieMenu->setObjectName( "mMovie" );
+
+	aMovieRecord = new QAction( QtYabause::translate( "&Record input movie..." ), this );
+	aMovieRecord->setObjectName( "aMovieRecord" );
+	aMovieRecord->setStatusTip( QtYabause::translate( "Reset the game and record every input, to replay the session exactly" ) );
+
+	aMoviePlay = new QAction( QtYabause::translate( "&Play input movie..." ), this );
+	aMoviePlay->setObjectName( "aMoviePlay" );
+	aMoviePlay->setStatusTip( QtYabause::translate( "Reset the game and replay a recorded session" ) );
+
+	aMovieStop = new QAction( QtYabause::translate( "&Stop input movie" ), this );
+	aMovieStop->setObjectName( "aMovieStop" );
+	aMovieStop->setEnabled( false );
+
+	aMovieReadOnly = new QAction( QtYabause::translate( "Read-&only movie" ), this );
+	aMovieReadOnly->setObjectName( "aMovieReadOnly" );
+	aMovieReadOnly->setCheckable( true );
+	aMovieReadOnly->setChecked( true );
+	aMovieReadOnly->setEnabled( false );
+	aMovieReadOnly->setShortcut( QKeySequence( "Ctrl+R" ) );
+	aMovieReadOnly->setStatusTip( QtYabause::translate( "Checked: loading a save state keeps the movie and plays it from that frame. Unchecked: loading a save state resumes the recording from that frame (re-record)" ) );
+
+	aTasFrameAdvance = new QAction( QtYabause::translate( "Frame &advance" ), this );
+	aTasFrameAdvance->setObjectName( "aTasFrameAdvance" );
+	aTasFrameAdvance->setShortcut( QKeySequence( "F6" ) );
+	aTasFrameAdvance->setStatusTip( QtYabause::translate( "Pause, then run one frame each time (hold the key to repeat)" ) );
+
+	aTasSkipLag = new QAction( QtYabause::translate( "Skip &lag frames when advancing" ), this );
+	aTasSkipLag->setObjectName( "aTasSkipLag" );
+	aTasSkipLag->setCheckable( true );
+	aTasSkipLag->setChecked( vs->value( "TAS/SkipLag", false ).toBool() );
+	aTasSkipLag->setStatusTip( QtYabause::translate( "Frame advance goes on until a frame where the game reads the controllers" ) );
+
+	aTasFastForward = new QAction( QtYabause::translate( "&Fast forward" ), this );
+	aTasFastForward->setObjectName( "aTasFastForward" );
+	aTasFastForward->setCheckable( true );
+	aTasFastForward->setShortcut( QKeySequence( "F7" ) );
+	aTasFastForward->setStatusTip( QtYabause::translate( "Run as fast as the computer allows" ) );
+
+	mTasSpeedMenu = new QMenu( QtYabause::translate( "Emulation s&peed" ), this );
+	mTasSpeedMenu->setObjectName( "mTasSpeed" );
+	mTasSpeedGroup = new QActionGroup( this );
+	for ( int i = 0; i < tasSpeedCount; i++ )
+	{
+		QAction* a = new QAction( QString( "%1 %" ).arg( tasSpeeds[i] ), this );
+		a->setObjectName( QString( "aTasSpeed%1" ).arg( tasSpeeds[i] ) );
+		a->setCheckable( true );
+		a->setChecked( tasSpeeds[i] == 100 );
+		a->setData( tasSpeeds[i] );
+		mTasSpeedGroup->addAction( a );
+		mTasSpeedMenu->addAction( a );
+	}
+	aTasSlower = new QAction( QtYabause::translate( "S&lower" ), this );
+	aTasSlower->setObjectName( "aTasSlower" );
+	aTasSlower->setShortcut( QKeySequence( "Ctrl+Down" ) );
+	aTasFaster = new QAction( QtYabause::translate( "&Faster" ), this );
+	aTasFaster->setObjectName( "aTasFaster" );
+	aTasFaster->setShortcut( QKeySequence( "Ctrl+Up" ) );
+	mTasSpeedMenu->addSeparator();
+	mTasSpeedMenu->addAction( aTasSlower );
+	mTasSpeedMenu->addAction( aTasFaster );
+
+	aTasOSD = new QAction( QtYabause::translate( "Show frame, lag and &input on screen" ), this );
+	aTasOSD->setObjectName( "aTasOSD" );
+	aTasOSD->setCheckable( true );
+	aTasOSD->setChecked( vs->value( "TAS/ShowOSD", false ).toBool() );
+	MovieSetOSD( aTasOSD->isChecked() ? 1 : 0 );
+
+	aTasEditor = new QAction( QtYabause::translate( "Input &editor..." ), this );
+	aTasEditor->setObjectName( "aTasEditor" );
+	aTasEditor->setShortcut( QKeySequence( "Ctrl+E" ) );
+	aTasEditor->setStatusTip( QtYabause::translate( "Edit the inputs of the movie frame by frame" ) );
+
+	aTasRamWatch = new QAction( QtYabause::translate( "RAM &watch..." ), this );
+	aTasRamWatch->setObjectName( "aTasRamWatch" );
+	aTasRamWatch->setShortcut( QKeySequence( "Ctrl+W" ) );
+	aTasRamWatch->setStatusTip( QtYabause::translate( "Watch memory addresses while the game runs" ) );
+
+	mMovieMenu->addAction( aMovieRecord );
+	mMovieMenu->addAction( aMoviePlay );
+	mMovieMenu->addAction( aMovieStop );
+	mMovieMenu->addAction( aMovieReadOnly );
+	mMovieMenu->addSeparator();
+	mMovieMenu->addAction( aTasFrameAdvance );
+	mMovieMenu->addAction( aTasSkipLag );
+	mMovieMenu->addAction( aTasFastForward );
+	mMovieMenu->addMenu( mTasSpeedMenu );
+	mMovieMenu->addSeparator();
+	mMovieMenu->addAction( aTasOSD );
+	mMovieMenu->addAction( aTasEditor );
+	mMovieMenu->addAction( aTasRamWatch );
+
+#if defined(HAVE_REWIND) && HAVE_REWIND
+	aRewindEnable = new QAction( QtYabause::translate( "Re&wind enabled" ), this );
+	aRewindEnable->setObjectName( "aRewindEnable" );
+	aRewindEnable->setCheckable( true );
+	aRewindEnable->setChecked( vs->value( "Rewind/Enabled", false ).toBool() );
+	aRewindEnable->setStatusTip( QtYabause::translate( "Keep a buffer of the last seconds of emulation in memory (length and precision: Settings > Debug > Rewind)" ) );
+
+	aRewind = new QAction( QtYabause::translate( "&Rewind" ), this );
+	aRewind->setObjectName( "aRewind" );
+	aRewind->setShortcut( QKeySequence( "Backspace" ) );
+	aRewind->setStatusTip( QtYabause::translate( "Go back in time (hold the key to keep going back). Disabled while an input movie is loaded" ) );
+
+	mTools->addSeparator();
+	mTools->addAction( aRewindEnable );
+	mTools->addAction( aRewind );
+	// the shortcut must stay active when the menu bar is hidden (full screen)
+	addAction( aRewind );
+	connect( aRewind, SIGNAL( triggered() ), this, SLOT( rewindTriggered() ) );
+	connect( aRewindEnable, SIGNAL( toggled( bool ) ), this, SLOT( rewindEnableToggled( bool ) ) );
+#endif
+
+	mTools->addSeparator();
+	mTools->addMenu( mMovieMenu );
+
+	// Les raccourcis doivent rester actifs quand la barre de menus est cachee
+	// (plein ecran) : les actions appartiennent aussi a la fenetre.
+	addAction( aMovieReadOnly );
+	addAction( aTasFrameAdvance );
+	addAction( aTasFastForward );
+	addAction( aTasSlower );
+	addAction( aTasFaster );
+	addAction( aTasEditor );
+	addAction( aTasRamWatch );
+
+	connect( aMovieRecord, SIGNAL( triggered() ), this, SLOT( movieRecordTriggered() ) );
+	connect( aMoviePlay, SIGNAL( triggered() ), this, SLOT( moviePlayTriggered() ) );
+	connect( aMovieStop, SIGNAL( triggered() ), this, SLOT( movieStopTriggered() ) );
+	connect( aMovieReadOnly, SIGNAL( triggered() ), this, SLOT( movieReadOnlyTriggered() ) );
+	connect( aTasFrameAdvance, SIGNAL( triggered() ), this, SLOT( tasFrameAdvance() ) );
+	connect( aTasSkipLag, SIGNAL( toggled( bool ) ), this, SLOT( tasSkipLagToggled( bool ) ) );
+	connect( aTasFastForward, SIGNAL( toggled( bool ) ), this, SLOT( tasFastForwardToggled( bool ) ) );
+	connect( mTasSpeedGroup, SIGNAL( triggered( QAction* ) ), this, SLOT( tasSpeedTriggered( QAction* ) ) );
+	connect( aTasSlower, SIGNAL( triggered() ), this, SLOT( tasSlowerTriggered() ) );
+	connect( aTasFaster, SIGNAL( triggered() ), this, SLOT( tasFasterTriggered() ) );
+	connect( aTasOSD, SIGNAL( toggled( bool ) ), this, SLOT( tasOSDToggled( bool ) ) );
+	connect( aTasEditor, SIGNAL( triggered() ), this, SLOT( tasEditorTriggered() ) );
+	connect( aTasRamWatch, SIGNAL( triggered() ), this, SLOT( tasRamWatchTriggered() ) );
+	connect( mYabauseGL, SIGNAL( pauseRequested() ), this, SLOT( tasPauseRequested() ) );
+
+	mMovieTimer = new QTimer( this );
+	connect( mMovieTimer, SIGNAL( timeout() ), this, SLOT( movieTimerTick() ) );
+	mMovieTimer->start( 250 );
+}
+
+void UIYabause::movieRecordTriggered()
+{
+	if ( mYabauseThread->init() < 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Start a game before recording an input movie." ) );
+		return;
+	}
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_MOVIE_RECORD );
+	mLocker->lock();
+}
+
+void UIYabause::moviePlayTriggered()
+{
+	if ( mYabauseThread->init() < 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Start the game of the movie before playing it." ) );
+		return;
+	}
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_MOVIE_PLAY );
+	mLocker->lock();
+}
+
+void UIYabause::movieStopTriggered()
+{
+	// Meme thread que l'emulation (YabauseGL::event) : on est entre deux
+	// trames.
+	tasEndSeek();
+	StopMovie();
+	movieTimerTick();
+}
+
+void UIYabause::movieReadOnlyTriggered()
+{
+	if ( IsMovieLoaded() )
+		MovieSetReadOnly( aMovieReadOnly->isChecked() ? 1 : 0 );
+	movieTimerTick();
+}
+
+void UIYabause::movieRecord()
+{
+	const QString dir = QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString();
+	QString fn = CommonDialogs::getSaveFileName( dir,
+		QtYabause::translate( "Record an input movie (the game will be reset)" ),
+		QtYabause::translate( "Kronos input movie (*.ymv)" ) );
+	if ( fn.isEmpty() )
+		return;
+	if ( QFileInfo( fn ).suffix().isEmpty() )
+		fn += ".ymv";
+	tasEndSeek();
+	if ( SaveMovie( QFile::encodeName( fn ).constData() ) != 0 )
+	{
+		QString report = QString::fromUtf8( MovieGetReport() );
+		CommonDialogs::error( QtYabause::translate( "Couldn't record the input movie." ) + "\n" + report );
+		return;
+	}
+	appendLog( QString( "Input movie: recording to %1" ).arg( fn ).toUtf8().constData() );
+	{
+		const QString report = QString::fromUtf8( MovieGetReport() ).trimmed();
+		if ( !report.isEmpty() )
+			CommonDialogs::warning( report );
+	}
+	movieTimerTick();
+	aEmulationRun->trigger();
+}
+
+void UIYabause::moviePlay()
+{
+	const QString dir = QtYabause::volatileSettings()->value( "General/SaveStates", getDataDirPath() ).toString();
+	const QString fn = CommonDialogs::getOpenFileName( dir,
+		QtYabause::translate( "Play an input movie (the game will be reset)" ),
+		QtYabause::translate( "Kronos input movie (*.ymv)" ) );
+	if ( fn.isEmpty() )
+		return;
+	tasEndSeek();
+	const int ret = PlayMovie( QFile::encodeName( fn ).constData() );
+	const QString report = QString::fromUtf8( MovieGetReport() ).trimmed();
+	if ( ret != 0 )
+	{
+		CommonDialogs::error( QtYabause::translate( "Couldn't play the input movie." )
+			+ ( report.isEmpty() ? QString() : "\n\n" + report ) );
+		return;
+	}
+	appendLog( QString( "Input movie: playing %1 (%2 frames)" ).arg( fn ).arg( MovieGetLength() ).toUtf8().constData() );
+	if ( !report.isEmpty() )
+	{
+		appendLog( report.toUtf8().constData() );
+		CommonDialogs::warning( QtYabause::translate( "The movie was not recorded in the same conditions, the replay may diverge:" )
+			+ "\n\n" + report );
+	}
+	movieTimerTick();
+	aEmulationRun->trigger();
+}
+
+void UIYabause::movieTimerTick()
+{
+	QString suffix;
+	const int desync = MovieGetDesyncFrame();
+
+	if ( MovieConsumeEndedFlag() )
+	{
+		// Fin de la lecture : la partie est la ou le testeur s'est arrete.
+		// (movie.c a deja demande la pause sur la trame exacte.)
+		aEmulationPause->trigger();
+		appendLog( ( desync >= 0
+			? QString( "Input movie: end of playback (%1 frames), DESYNC at frame %2" ).arg( MovieGetLength() ).arg( desync )
+			: QString( "Input movie: end of playback (%1 frames), in sync" ).arg( MovieGetLength() ) ).toUtf8().constData() );
+	}
+
+	if ( IsMovieLoaded() && Movie.Status == Recording )
+		suffix = QString( "[REC %1" ).arg( MovieGetFrame() );
+	else if ( IsMovieLoaded() && Movie.Status == Playback )
+		suffix = QString( "[PLAY %1/%2%3" ).arg( MovieGetFrame() ).arg( MovieGetLength() ).arg( Movie.ReadOnly ? "" : " RW" );
+	else if ( MovieIsActive() )
+		suffix = QString( "[END %1]" ).arg( MovieGetLength() );
+	if ( IsMovieLoaded() )
+		suffix += QString( " | lag %1 | rr %2]" ).arg( MovieGetLagCount() ).arg( MovieGetRerecords() );
+	if ( !suffix.isEmpty() && desync >= 0 )
+		suffix += QString( " DESYNC @%1" ).arg( desync );
+	if ( YabauseGetSpeedPercent() != 100 )
+		suffix += QString( " %1%" ).arg( YabauseGetSpeedPercent() );
+
+	const bool active = MovieIsActive();
+	aMovieStop->setEnabled( active );
+	aMovieReadOnly->setEnabled( IsMovieLoaded() );
+	// movie.c change aussi ce mode (re-record, editeur d'entrees)
+	if ( IsMovieLoaded() && aMovieReadOnly->isChecked() != ( Movie.ReadOnly != 0 ) )
+		aMovieReadOnly->setChecked( Movie.ReadOnly != 0 );
+
+	// QtYabause::updateTitle() peut avoir remis le titre de base entre-temps.
+	QString title = windowTitle();
+	if ( !mMovieTitleSuffix.isEmpty() && title.endsWith( "  " + mMovieTitleSuffix ) )
+		title.chop( mMovieTitleSuffix.length() + 2 );
+	if ( !suffix.isEmpty() )
+		title += "  " + suffix;
+	if ( title != windowTitle() )
+		setWindowTitle( title );
+	mMovieTitleSuffix = suffix;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Outils de TAS
+//////////////////////////////////////////////////////////////////////////////
+
+// Avance d'une trame. L'emulation tourne dans ce thread (YabauseGL::event) :
+// en pause, aucune trame n'est en cours et YabauseExec() peut etre appele
+// d'ici. La premiere pression met en pause, les suivantes avancent ; les
+// boutons tenus au moment de l'appui sont ceux de la trame.
+void UIYabause::tasFrameAdvance()
+{
+	if ( mYabauseThread->init() < 0 )
+		return;
+	if ( mSeeking )
+		return;
+	if ( !mYabauseThread->emulationPaused() )
+	{
+		mYabauseThread->pauseEmulation( true, false );
+		return;
+	}
+	// YabauseGL finit de traiter sa derniere trame demandee avant de
+	// s'arreter (FrameStop) : pas encore en pause de son cote.
+	if ( !mYabauseGL->isPaused() || mLocker != NULL )
+		return;
+	if ( !mYabauseGL->stepFrame() )
+		return;
+	if ( aTasSkipLag->isChecked() )
+	{
+		// borne : un jeu qui ne lit pas les manettes (chargement, borne ST-V
+		// dont les entrees ne passent pas par le SMPC) n'avancerait jamais
+		for ( int i = 0; i < 120 && MovieLastFrameWasLag(); i++ )
+			if ( !mYabauseGL->stepFrame() )
+				break;
+	}
+	movieTimerTick();
+	emit tasFrameStepped();
+}
+
+#if defined(HAVE_REWIND) && HAVE_REWIND
+// Retour en arriere. L'emulation tourne dans ce thread (YabauseGL::event) :
+// ce slot s'execute entre deux trames, l'etat peut etre recharge ici. En pause
+// on avance d'une trame pour que l'image restauree soit affichee.
+void UIYabause::rewindTriggered()
+{
+	if ( !RewindIsEnabled() )
+		return;
+	if ( mYabauseThread->init() < 0 )
+		return;
+	if ( mSeeking || mLocker != NULL || mRewindKeyDown || mRewindActive )
+		return;
+	// Like loading a state from the File menu: the emulation is paused (sound
+	// muted, frame finished), the state is loaded, then the emulation goes on.
+	// A step done in the middle of the running emulation left the picture
+	// frozen. Key repeats that come while the key is down are dropped: when it
+	// is held, the emulation stays paused and a timer steps back (see
+	// rewindStepPaused()), which is smoother than one pause/resume per repeat.
+	mRewindKeyDown = true;
+	mLocker = new YabauseLocker( mYabauseThread, ACTION_REWIND );
+	mLocker->lock();
+}
+
+// Called with the emulation paused (runActions / runActionsAlreadyPaused).
+void UIYabause::rewindStepPaused()
+{
+	const bool wasRunning = ( mLocker != NULL && mLocker->isPaused() );
+	if ( RewindStep() != 0 )
+	{
+		mRewindKeyDown = false;
+		return;
+	}
+	if ( !mRewindKeyDown )
+	{
+		// a tap (the key is already up): one step, then the emulation goes on.
+		// If the user had paused it, show the restored picture.
+		if ( !wasRunning && mYabauseGL->isPaused() )
+			mYabauseGL->stepFrame();
+		return;
+	}
+	// The key is still down: keep the emulation paused and step back on a
+	// timer. Each tick restores the previous capture and runs one frame to
+	// draw it.
+	if ( mLocker != NULL )
+		mLocker->keepPaused();
+	mRewindWasRunning = wasRunning;
+	mRewindActive = true;
+	mYabauseGL->stepFrame();
+	if ( mRewindTimer == NULL )
+	{
+		mRewindTimer = new QTimer( this );
+		mRewindTimer->setTimerType( Qt::PreciseTimer );
+		mRewindTimer->setInterval( 16 );
+		connect( mRewindTimer, SIGNAL( timeout() ), this, SLOT( rewindTick() ) );
+	}
+	mRewindTimer->start();
+}
+
+void UIYabause::rewindTick()
+{
+	if ( !mRewindActive || !mRewindKeyDown )
+	{
+		rewindEnd();
+		return;
+	}
+	if ( RewindStep() == 0 )
+		mYabauseGL->stepFrame();
+}
+
+void UIYabause::rewindEnd()
+{
+	if ( !mRewindActive )
+		return;
+	mRewindActive = false;
+	if ( mRewindTimer != NULL )
+		mRewindTimer->stop();
+	if ( mRewindWasRunning )
+		mYabauseThread->pauseEmulation( false, false );
+}
+
+void UIYabause::rewindEnableToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "Rewind/Enabled", toggled );
+	RewindConfigure( toggled ? 1 : 0, s->value( "Rewind/Interval", 3 ).toInt(),
+		s->value( "Rewind/Seconds", 30 ).toInt(), s->value( "Rewind/MemoryMB", 512 ).toInt() );
+}
+#endif
+
+void UIYabause::tasSkipLagToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "TAS/SkipLag", toggled );
+}
+
+void UIYabause::tasFastForwardToggled( bool toggled )
+{
+	if ( !mSeeking )
+		YabauseSetTurbo( toggled ? 1 : 0 );
+}
+
+void UIYabause::tasSetSpeed( int percent )
+{
+	YabauseSetSpeedPercent( percent );
+	foreach ( QAction* a, mTasSpeedGroup->actions() )
+		if ( a->data().toInt() == percent && !a->isChecked() )
+			a->setChecked( true );
+	movieTimerTick();
+}
+
+void UIYabause::tasSpeedTriggered( QAction* a )
+{
+	if ( a )
+		tasSetSpeed( a->data().toInt() );
+}
+
+void UIYabause::tasSlowerTriggered()
+{
+	const int cur = YabauseGetSpeedPercent();
+	for ( int i = tasSpeedCount - 1; i >= 0; i-- )
+		if ( tasSpeeds[i] < cur )
+		{
+			tasSetSpeed( tasSpeeds[i] );
+			return;
+		}
+}
+
+void UIYabause::tasFasterTriggered()
+{
+	const int cur = YabauseGetSpeedPercent();
+	for ( int i = 0; i < tasSpeedCount; i++ )
+		if ( tasSpeeds[i] > cur )
+		{
+			tasSetSpeed( tasSpeeds[i] );
+			return;
+		}
+}
+
+void UIYabause::tasOSDToggled( bool toggled )
+{
+	Settings* s = QtYabause::settings();
+	s->setValue( "TAS/ShowOSD", toggled );
+	MovieSetOSD( toggled ? 1 : 0 );
+}
+
+// Place le film a 'frame' trames executees et s'arrete la : retour en
+// arriere par MovieSeek() (instantane ou debut du film), puis avance rapide
+// sans son jusqu'a la trame demandee. 'resume' : l'emulation reprend une
+// fois arrivee, sinon elle reste en pause.
+bool UIYabause::tasSeek( int frame, bool resume )
+{
+	if ( mYabauseThread->init() < 0 || !IsMovieLoaded() )
+		return false;
+	// une trame est en cours (boucle d'evenements imbriquee) ou une action
+	// attend la pause
+	if ( mYabauseGL->inFrame() || mLocker != NULL )
+		return false;
+
+	if ( frame < 0 )
+		frame = 0;
+	if ( frame > MovieGetLength() )
+		frame = MovieGetLength();
+
+	if ( MovieSeek( frame ) != 0 || !IsMovieLoaded() )
+	{
+		tasEndSeek();
+		movieTimerTick();
+		return false;
+	}
+
+	if ( MovieGetFrame() >= frame && !MovieIsStale() )
+	{
+		// deja sur la trame
+		tasEndSeek();
+		MovieSetPauseFrame( -1 );
+		if ( resume && mYabauseThread->emulationPaused() )
+			aEmulationRun->trigger();
+		else if ( !resume && !mYabauseThread->emulationPaused() )
+			mYabauseThread->pauseEmulation( true, false );
+		movieTimerTick();
+		emit tasSeekFinished();
+		return true;
+	}
+
+	mSeeking = true;
+	mSeekResume = resume;
+	MovieSetPauseFrame( frame );
+	YabauseSetTurbo( 1 );
+	if ( mYabauseThread->emulationPaused() )
+		mYabauseThread->pauseEmulation( false, false );
+	// pauseEmulation( false ) vient de remettre le son
+	ScspMuteAudio( SCSP_MUTE_SYSTEM );
+	return true;
+}
+
+void UIYabause::tasEndSeek()
+{
+	if ( !mSeeking )
+		return;
+	mSeeking = false;
+	MovieSetPauseFrame( -1 );
+	YabauseSetTurbo( aTasFastForward->isChecked() ? 1 : 0 );
+	if ( !mYabauseThread->emulationPaused() )
+		ScspUnMuteAudio( SCSP_MUTE_SYSTEM );
+}
+
+// YabauseGL s'est arrete sur la trame demandee par movie.c (cible d'un
+// retour en arriere, fin d'une lecture seule).
+void UIYabause::tasPauseRequested()
+{
+	const bool wasSeeking = mSeeking;
+	const bool resume = mSeeking && mSeekResume && IsMovieLoaded();
+
+	mYabauseThread->pauseEmulation( true, false );
+	tasEndSeek();
+	if ( resume )
+		mYabauseThread->pauseEmulation( false, false );
+	movieTimerTick();
+	if ( wasSeeking )
+		emit tasSeekFinished();
+	else
+		emit tasFrameStepped();
+}
+
+// Editeur d'entrees et surveillance de la memoire : non modaux, une seule
+// instance, ils travaillent pendant que le jeu tourne.
+void UIYabause::tasEditorTriggered()
+{
+	static QPointer<UIMovieEditor> editor;
+	if ( !editor )
+	{
+		editor = new UIMovieEditor( this );
+		editor->setAttribute( Qt::WA_DeleteOnClose );
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
+}
+
+void UIYabause::tasRamWatchTriggered()
+{
+	static QPointer<UIRamWatch> watch;
+	if ( !watch )
+	{
+		watch = new UIRamWatch( this );
+		watch->setAttribute( Qt::WA_DeleteOnClose );
+	}
+	watch->show();
+	watch->raise();
+	watch->activateWindow();
+}
+
+void UIYabause::on_mFileSaveState_triggered( QAction* a )
+{
+	if ( a == aFileSaveStateAs )
+		return;
+	int* bundle = (int*)malloc(sizeof(int));
+	*bundle = a->data().toInt();
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_SAVESLOT, (void*)bundle);
+	mLocker->lock();
+}
+
+void UIYabause::on_mFileLoadState_triggered( QAction* a )
+{
+	if ( a == aFileLoadStateAs )
+		return;
+	int* bundle = (int*)malloc(sizeof(int));
+	*bundle = a->data().toInt();
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_LOADSLOT, (void*)bundle);
+	mLocker->lock();
+}
+
+void UIYabause::on_aFileSaveStateAs_triggered()
+{
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_SAVESLOT);
+	mLocker->lock();
+}
+
+void UIYabause::on_aFileLoadStateAs_triggered()
+{
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_LOADSLOT);
+	mLocker->lock();
+}
+
+void UIYabause::takeScreenshot(void) {
+	#if defined(HAVE_LIBGL) && !defined(QT_OPENGL_ES_1) && !defined(QT_OPENGL_ES_2)
+		glReadBuffer(GL_FRONT);
+	#endif
+
+		QFileInfo const fileInfo(QtYabause::volatileSettings()->value("General/CdRomISO").toString());
+
+		// take screenshot of gl view
+		QImage const screenshot = mYabauseGL->grabFramebuffer();
+
+		auto const directory = QtYabause::volatileSettings()->value(QtYabause::SettingKeys::ScreenshotsDirectory, QtYabause::DefaultPaths::Screenshots()).toString();
+		auto const format = QtYabause::volatileSettings()->value(QtYabause::SettingKeys::ScreenshotsFormat, "png").toString();
+
+		// request a file to save to to user
+		QString s = directory + "/" + fileInfo.baseName() + QString("_%1." + format).arg(QDateTime::currentDateTime().toString("dd_MM_yyyy-hh_mm_ss"));
+
+		// if the user didn't provide a filename extension, we force it to png
+		QFileInfo qfi( s );
+		if ( qfi.suffix().isEmpty() )
+			s += ".png";
+
+		// write image if ok
+		if ( !s.isEmpty() )
+		{
+			QImageWriter iw( s );
+			if ( !iw.write( screenshot ))
+			{
+				CommonDialogs::error( QtYabause::translate( "An error occurred while writing the screenshot: " ) + iw.errorString() );
+			}
+		}
+}
+
+void UIYabause::on_aFileScreenshot_triggered()
+{
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_SCREENSHOT);
+	mLocker->lock();
+}
+
+void UIYabause::on_aFileQuit_triggered()
+{ close(); }
+
+void UIYabause::on_aEmulationRun_triggered()
+{
+	mYabauseThread->initEmulation();
+	if ( mYabauseThread->emulationPaused() )
+	{
+		mYabauseThread->pauseEmulation( false, false );
+		refreshStatesActions();
+		if (isFullScreen())
+			hideMouseTimer->start(3 * 1000);
+	}
+}
+
+void UIYabause::on_aEmulationPause_triggered()
+{
+	if ( !mYabauseThread->emulationPaused() )
+		mYabauseThread->pauseEmulation( true, false );
+}
+
+void UIYabause::on_aEmulationReset_triggered()
+{
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_RESET);
+	mLocker->lock();
+}
+
+void UIYabause::on_aEmulationVSync_toggled( bool toggled )
+{
+	Settings* vs = QtYabause::settings();
+	vs->setValue( "General/EnableVSync", toggled );
+	vs->sync();
+
+	if ( !toggled )
+		EnableAutoFrameSkip();
+	else
+		DisableAutoFrameSkip();
+}
+
+void UIYabause::on_aToolsBackupManager_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	mYabauseThread->initEmulation();
+	UIBackupRam( this ).exec();
+}
+
+void UIYabause::on_aToolsCheatsList_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UICheats( this ).exec();
+}
+
+void UIYabause::on_aToolsCheatSearch_triggered()
+{
+   YabauseLocker locker( mYabauseThread );
+   UICheatSearch cs(this, &search, searchType);
+
+   cs.exec();
+
+   search = *cs.getSearchVariables( &searchType);
+}
+
+void UIYabause::on_aToolsTransfer_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIMemoryTransfer( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewFPS_triggered( bool toggled )
+{
+	Settings* vs = QtYabause::settings();
+	vs->setValue( "General/ShowFPS", toggled );
+	vs->sync();
+	SetOSDToggle(toggled ? 1 : 0);
+}
+
+void UIYabause::on_aViewLayerVdp1_triggered()
+{ ToggleVDP1(); }
+
+void UIYabause::on_aViewLayerNBG0_triggered()
+{ ToggleNBG0(); }
+
+void UIYabause::on_aViewLayerNBG1_triggered()
+{ ToggleNBG1(); }
+
+void UIYabause::on_aViewLayerNBG2_triggered()
+{ ToggleNBG2(); }
+
+void UIYabause::on_aViewLayerNBG3_triggered()
+{ ToggleNBG3(); }
+
+void UIYabause::on_aViewLayerRBG0_triggered()
+{ ToggleRBG0(); }
+
+void UIYabause::on_aViewLayerRBG1_triggered()
+{ ToggleRBG1(); }
+
+void UIYabause::on_aViewFullscreen_triggered( bool b )
+{
+	fullscreenRequested( b );
+}
+
+/* Install the SH2 breakpoint handlers as soon as the cores exist.
+
+   They used to be installed only by the UIDebugSH2 constructor, so anything
+   that raises a breakpoint did nothing at all until the user had opened the
+   debugger window once in that session. The failure was silent: the flag was
+   raised, no callback existed, execution carried on. */
+void UIYabause::installSH2BreakpointHandlers()
+{
+	if (MSH2)
+		SH2SetBreakpointCallBack(MSH2, (void (*)(void *, u32, void *))SH2BreakpointHandler, NULL);
+	if (SSH2)
+		SH2SetBreakpointCallBack(SSH2, (void (*)(void *, u32, void *))SH2BreakpointHandler, NULL);
+}
+
+void UIYabause::breakpointHandlerMSH2(breakpoint_userdata *userdata)
+{
+	ScspMuteAudio(SCSP_MUTE_SYSTEM);
+	/* Spell out what each button does. OK is the only path that opens the
+	   debugger; Ignore resumes emulation at once, and reopening the window
+	   from the Debug menu afterwards shows wherever the CPU has run to
+	   since -- registers that look plausible but belong to another moment. */
+	QString hint = QtYabause::translate( "\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost." );
+	if (userdata) {
+		if (userdata->PCAddress == userdata->BPAddress) {
+			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16).append(hint)))
+			UIDebugSH2(UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
+			else
+			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
+		} else {
+			if (CommonDialogs::information( QtYabause::translate( "MSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16).append(hint) ))
+			UIDebugSH2(UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
+			else
+			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
+		}
+	} else {
+		UIDebugSH2(UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
+	}
+}
+
+void UIYabause::breakpointHandlerSSH2(breakpoint_userdata *userdata)
+{
+	ScspMuteAudio(SCSP_MUTE_SYSTEM);
+	/* Spell out what each button does. OK is the only path that opens the
+	   debugger; Ignore resumes emulation at once, and reopening the window
+	   from the Debug menu afterwards shows wherever the CPU has run to
+	   since -- registers that look plausible but belong to another moment. */
+	QString hint = QtYabause::translate( "\n\nOK opens the debugger. Ignore resumes emulation and the registers are lost." );
+	if (userdata) {
+		if (userdata->PCAddress == userdata->BPAddress) {
+			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached code breakpoint at " ).append("0x%1").arg(userdata->PCAddress, 0, 16).append(hint)))
+			UIDebugSH2(UIDebugCPU::PROC_SSH2, mYabauseThread, this ).exec();
+			else
+			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
+		} else {
+			if (CommonDialogs::information( QtYabause::translate( "SSH2 reached data breakpoint at " ).append("0x%1, PC 0x%2").arg(userdata->BPAddress, 0, 16).arg(userdata->PCAddress, 0, 16).append(hint) ))
+			UIDebugSH2(UIDebugCPU::PROC_SSH2, mYabauseThread, this ).exec();
+			else
+			ScspUnMuteAudio(SCSP_MUTE_SYSTEM);
+		}
+	} else {
+		UIDebugSH2(UIDebugCPU::PROC_SSH2, mYabauseThread, this ).exec();
+	}
+}
+
+void UIYabause::breakpointHandlerM68K()
+{
+	YabauseLocker locker( mYabauseThread );
+	CommonDialogs::error( QtYabause::translate( "Breakpoint Reached" ) );
+	UIDebugM68K( mYabauseThread, this ).exec();
+}
+
+void UIYabause::breakpointHandlerSCUDSP()
+{
+	YabauseLocker locker( mYabauseThread );
+	CommonDialogs::error( QtYabause::translate( "Breakpoint Reached" ) );
+	UIDebugSCUDSP( mYabauseThread, this ).exec();
+}
+
+void UIYabause::breakpointHandlerSCSPDSP()
+{
+	YabauseLocker locker( mYabauseThread );
+	CommonDialogs::error( QtYabause::translate( "Breakpoint Reached" ) );
+	UIDebugSCSPDSP( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewDebugMSH2_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSH2 mView( UIDebugCPU::PROC_MSH2, mYabauseThread, this );
+	emit mView.exec();
+}
+
+void UIYabause::on_aViewDebugSSH2_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSH2 mView( UIDebugCPU::PROC_SSH2, mYabauseThread, this );
+	emit mView.exec();
+}
+
+void UIYabause::on_aViewDebugVDP1_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugVDP1( NULL , &locker).exec();
+}
+
+void UIYabause::on_aViewDebugVDP2_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugVDP2( NULL, &locker ).exec();
+}
+
+// Editeur graphique : fenetre NON modale et sans YabauseLocker, pour pouvoir
+// jouer pendant qu'il est ouvert et voir les edits a l'ecran. L'emulation
+// tourne sur ce meme thread (YabauseGL::event), donc les ecritures en VRAM de
+// l'editeur ne croisent jamais une trame en cours. Une seule instance.
+void UIYabause::on_aViewDebugGfxEditor_triggered()
+{
+	static QPointer<UIDebugGfxEditor> editor;
+	if (!editor) {
+		editor = new UIDebugGfxEditor(this);
+		editor->setAttribute(Qt::WA_DeleteOnClose);
+		editor->setModal(false);
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
+}
+
+// Editeur de textes (traduction) : non modal, une seule instance. Il travaille
+// sur l'image disque ; "Live in game" ecrit dans la Work RAM sur ce thread
+// (celui de l'emulation, YabauseGL::event).
+void UIYabause::on_aViewDebugTextEditor_triggered()
+{
+	static QPointer<UIDebugTextEditor> editor;
+	if (!editor) {
+		editor = new UIDebugTextEditor(this);
+		editor->setAttribute(Qt::WA_DeleteOnClose);
+		editor->setModal(false);
+	}
+	editor->show();
+	editor->raise();
+	editor->activateWindow();
+}
+
+void UIYabause::on_aHelpReport_triggered()
+{
+	QDesktopServices::openUrl(QUrl(aHelpReport->statusTip()));
+}
+
+void UIYabause::on_aViewDebugM68K_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugM68K( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewDebugSH2Profile_triggered()
+{
+	// Non modal et sans YabauseLocker : le profiler mesure le jeu pendant qu'il tourne.
+	UIDebugSH2Profile* w = new UIDebugSH2Profile( this );
+	w->show();
+}
+
+void UIYabause::on_aViewDebugLuaConsole_triggered()
+{
+	// Non modal et sans YabauseLocker : les scripts tournent avec le jeu.
+	UILuaConsole* w = new UILuaConsole( this );
+	w->show();
+}
+
+void UIYabause::on_aViewDebugSCUDSP_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSCUDSP( mYabauseThread, this ).exec();
+}
+
+// BUG CORRIGE : l'action de menu "aViewDebugSCSPDSP" existait dans UIYabause.ui
+// mais n'avait aucun slot on_aViewDebugSCSPDSP_triggered() connecte (absent du
+// .h et du .cpp) : cliquer sur "Debug SCSP DSP" dans le menu ne faisait donc
+// strictement rien. La seule facon d'atteindre UIDebugSCSPDSP etait via
+// breakpointHandlerSCSPDSP(), et meme ca ne pouvait jamais se declencher tant
+// que scspdsp.c n'exposait aucune API de breakpoint (voir ScspDspAddCodeBreakpoint).
+void UIYabause::on_aViewDebugSCSPDSP_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSCSPDSP( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewDebugSCSP_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIDebugSCSP( mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aViewDebugSCSPChan_triggered()
+{
+      UIDebugSCSPChan(this).exec();
+}
+
+void UIYabause::on_aViewDebugMemoryEditor_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIMemoryEditor( UIDebugCPU::PROC_MSH2, mYabauseThread, this ).exec();
+}
+
+void UIYabause::on_aHelpCompatibilityList_triggered()
+{ QDesktopServices::openUrl( QUrl( aHelpCompatibilityList->statusTip() ) ); }
+
+void UIYabause::on_aHelpAbout_triggered()
+{
+	YabauseLocker locker( mYabauseThread );
+	UIAbout( window() ).exec();
+}
+
+void UIYabause::on_aSound_triggered()
+{
+	// show volume widget
+	sVolume->setValue(QtYabause::volatileSettings()->value( "Sound/Volume").toInt());
+	QWidget* ab = toolBar->widgetForAction( aSound );
+	fSound->move( ab->mapToGlobal( ab->rect().bottomLeft() ) );
+	fSound->show();
+}
+
+void UIYabause::on_cbSound_toggled( bool toggled )
+{
+	if ( toggled )
+		ScspUnMuteAudio(SCSP_MUTE_USER);
+	else
+		ScspMuteAudio(SCSP_MUTE_USER);
+	cbSound->setIcon( QIcon( toggled ? ":/actions/sound.png" : ":/actions/mute.png" ) );
+}
+
+void UIYabause::on_sVolume_valueChanged( int value )
+{
+	ScspSetVolume( value );
+	Settings* vs = QtYabause::settings();
+	vs->setValue("Sound/Volume", value );
+}
+
+void UIYabause::on_cbVideoDriver_currentIndexChanged( int id )
+{
+	VideoInterface_struct* core = QtYabause::getVDICore( cbVideoDriver->itemData( id ).toInt() );
+	if ( core )
+	{
+		if ( VideoChangeCore( core->id ) == 0 )
+			mYabauseGL->updateView();
+	}
+}
+
+void UIYabause::pause( bool paused )
+{
+	mYabauseGL->pause(paused);
+	/* Emulation has started or resumed, so the cores exist: make sure the
+	   breakpoint handlers are in place even if the debugger window was
+	   never opened. Idempotent, so calling it on every pause is fine. */
+	installSH2BreakpointHandlers();
+
+	aEmulationRun->setEnabled( paused );
+	aEmulationPause->setEnabled( !paused );
+	aEmulationReset->setEnabled( !paused );
+}
+
+void UIYabause::reset()
+{
+	refreshStatesActions();
+	mYabauseGL->updateView();
+	// Packs de l'editeur graphique faits pour ce disque (numero de produit de
+	// l'IP.BIN) : charges depuis le dossier mods a chaque reset. Les edits
+	// attendent que le jeu charge ses donnees d'origine (vdpedit.c).
+	{
+		QStringList packLog;
+		if (UIEditsExport::autoLoadPacks(&packLog) > 0)
+			for (int i = 0; i < packLog.size(); i++)
+				appendLog(packLog[i].toUtf8().constData());
+	}
+	VolatileSettings* vs = QtYabause::volatileSettings();
+	if (vs->value("autostart").toBool()){
+		mYabauseThread->pauseEmulation(false, true);
+	}
+}
+
+void UIYabause::toggleEmulateMouse( bool enable, bool show )
+{
+	emulateMouse = enable;
+	cursorShown = show;
+}
+
+
+int UIYabause::loadGameFromFile(QString const& fileName)
+{
+	int ret = 1;
+	Settings* s = QtYabause::settings();
+	s->setValue("General/CdRomISO", fileName);
+	s->setValue("Recents/ISOs", fileName);
+	QtYabause::updateTitle();
+	if (QFile::exists(fileName))
+	{
+		yabsys.isRotated = 0;
+		s->setValue("General/CdRom", ISOCD.id);
+		mYabauseThread->SetCdInserted(true);
+		ret = 0;
+	} else {
+		s->setValue("General/CdRom", DummyCD.id);
+	}
+	s->sync();
+	if ((yabsys.isSTV == 1)||(s->value( "Cartridge/Type", 0 ).toInt() == CART_ROMSTV)) {
+		int cartId = s->value("Cartridge/LastCart", CART_NONE).toInt();
+		if (cartId == CART_ROMSTV) //should never happen
+			cartId = CART_NONE;
+		s->setValue("Cartridge/Type", cartId);
+		ret = 0;
+		yabsys.isReloadingImage = 2;
+	}
+	refreshStatesActions();
+
+	return ret;
+}
+
+void UIYabause::dragEnterEvent(QDragEnterEvent* e)
+{
+	if (e->mimeData()->hasUrls()) {
+		e->acceptProposedAction();
+	}
+}
+
+void UIYabause::dropEvent(QDropEvent* e)
+{
+	auto urls = e->mimeData()->urls();
+	const QUrl& url = urls.first();
+	QString* bundle = new QString(url.toLocalFile());
+
+	mYabauseThread->SetCdInserted(false);
+	mLocker = new YabauseLocker(mYabauseThread, ACTION_LOADFILE, (void*)bundle);
+	mLocker->lock();
+;
+}
