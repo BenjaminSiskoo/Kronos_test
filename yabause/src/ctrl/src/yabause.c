@@ -96,6 +96,9 @@
 #if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
     #include "trace/trace.h"
 #endif
+#if defined(HAVE_REWIND) && HAVE_REWIND
+    #include "rewind.h"
+#endif
 
 /* The GDB stub (breakpoints) and the SH-2 tracer both need the SH-2 debug
    interpreter: it is forced when one of them is requested. */
@@ -1044,6 +1047,9 @@ static int YabauseRefreshInit(yabauseinit_struct *init) {
 
 int YabauseInit(yabauseinit_struct *init)
 {
+#if defined(HAVE_REWIND) && HAVE_REWIND
+  RewindClear();   /* another game / another start: the old states do not fit */
+#endif
   if (BiosRom == NULL) return YabauseFullInit(init);
   else return YabauseRefreshInit(init);
 }
@@ -1060,6 +1066,9 @@ void YabFlushBackups(void)
 
 void YabauseDeInit(void) {
 
+#if defined(HAVE_REWIND) && HAVE_REWIND
+   RewindDeInit();
+#endif
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
    GdbStubDeInit();
 #endif
@@ -1506,6 +1515,9 @@ int YabauseEmulate(void) {
    /* End of the emulated frame, sound thread included: lag frame
       accounting, snapshots and pause requests of the movie code. */
    MovieFrameEnd();
+#if defined(HAVE_REWIND) && HAVE_REWIND
+   RewindFrameEnd();
+#endif
 
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
    /* Frame boundary: a GDB connection is accepted / Ctrl-C seen here. */
