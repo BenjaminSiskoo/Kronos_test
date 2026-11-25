@@ -641,6 +641,15 @@ if (YAB_GDBSTUB AND YAB_NETWORK)
 	set(kronos_SOURCES ${kronos_SOURCES} ctrl/src/gdb/stub.c)
 endif()
 
+# SH-2 / bus tracer (ctrl/src/trace/trace.c). Off at run time unless
+# --trace=FILE (Qt port) or KRONOS_TRACE_FILE is given. Costs one flag test per
+# CPU bus access when inactive.
+option(YAB_SH2TRACE "SH-2 / bus tracer (--trace=FILE)" ON)
+if (YAB_SH2TRACE)
+	add_definitions(-DHAVE_SH2TRACE=1)
+	set(kronos_SOURCES ${kronos_SOURCES} ctrl/src/trace/trace.c)
+endif()
+
 option(YAB_PORT_OSD "Let ports provides their own OSD core list" OFF)
 if (YAB_PORT_OSD)
 	add_definitions(-DYAB_PORT_OSD=1)
