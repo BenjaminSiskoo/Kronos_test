@@ -107,6 +107,7 @@ static const char * const SH2CacheDBList[] = {
    "GS-9019", // Kisuishou Densetsu Astal (Japan)
    "T-9115G", // Murakoshi Seikai no Bakuchou Nihon Rettou
    "T-1524G", // Photo Genic (Japan)
+   "T-30002G", // Real Sound - Kaze no Regret (Japan) (disques 1 a 4, meme code produit)
    "T-30812G", // Shutsudou! Miniskirt Police (Japan)
    "T-14423G", // Sol Divide (Japan)
    "T-17703G", // Tennis Arena (Japan)
