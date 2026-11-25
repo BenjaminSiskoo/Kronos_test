@@ -48,6 +48,7 @@ public:
 		mPaused = mThread->emulationPaused();
 		mAction = action;
 		mBundle = bundle;
+		mKeep = false;
 		if (action == ACTION_NONE) {
 			if ( mRunning && !mPaused )
 				mThread->pauseEmulation( true, false );
@@ -83,9 +84,11 @@ public:
 		mBundle = NULL;
 		return ret;
 	}
+	// The caller takes over the pause: the emulation is not resumed on delete
+	void keepPaused() { mKeep = true; }
 	~YabauseLocker()
 	{
-		if ( ( mRunning && !mPaused ) /*|| mForceRun*/ ) {
+		if ( ( mRunning && !mPaused && !mKeep ) /*|| mForceRun*/ ) {
 			mThread->pauseEmulation( false, false );
 		}
 	}
@@ -96,6 +99,7 @@ protected:
 	bool mPaused;
 	int mAction;
 	void *mBundle;
+	bool mKeep;
 	//bool mForceRun;
 };
 
@@ -184,6 +188,14 @@ protected:
 	QAction* aTasOSD;
 	QAction* aTasEditor;
 	QAction* aTasRamWatch;
+	// Rewind (Tools > Rewind)
+	QAction* aRewind;
+	QAction* aRewindEnable;
+	// Rewind held down: the emulation stays paused and a timer steps back
+	QTimer* mRewindTimer = NULL;
+	bool mRewindKeyDown = false;     // the key was pressed and not released yet
+	bool mRewindActive = false;      // stepping on the timer
+	bool mRewindWasRunning = false;  // resume the emulation at the end
 	bool mSeeking;      // avance rapide vers la trame demandee par tasSeek()
 	bool mSeekResume;   // reprendre l'emulation une fois arrive
 	QList <translation_struct> translations;
@@ -227,6 +239,11 @@ public slots:
 	void movieTimerTick();
 	// Outils de TAS
 	void tasFrameAdvance();
+	void rewindTriggered();
+	void rewindEnableToggled( bool toggled );
+	void rewindStepPaused();
+	void rewindTick();
+	void rewindEnd();
 	void tasSkipLagToggled( bool toggled );
 	void tasFastForwardToggled( bool toggled );
 	void tasSpeedTriggered( QAction* action );
