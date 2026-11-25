@@ -116,6 +116,8 @@ set(KRONOS_SOURCES
   ${SOURCE_DIR}/sys/scsp/src/adsp2181.c
   ${SOURCE_DIR}/sys/scu/src/scu.c
   ${SOURCE_DIR}/sys/sh2/src/sh2core.c
+  ${SOURCE_DIR}/sys/sh2/src/sci.c
+  ${SOURCE_DIR}/sys/sh2/src/commfdd.c
   ${SOURCE_DIR}/sys/smpc/src/smpc.c
   ${SOURCE_DIR}/ctrl/src/stv.c
   ${SOURCE_DIR}/core/m68k/m68kcore.c
