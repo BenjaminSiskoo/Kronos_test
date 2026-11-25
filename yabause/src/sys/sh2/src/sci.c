@@ -58,8 +58,13 @@
 
     Not modelled: SCI-requested DMAC transfers (DRCR RS = RXI / TXI: the
     DMAC of Kronos treats every channel as auto-request). The trace logs
-    the DRCR writes so a driver using them shows up. The transfer state
-    (TSR / RSR in flight) is not in save states, the registers are.
+    the DRCR writes so a driver using them shows up.
+
+    Save states: the registers are in the SH-2 chunks; the transfers in
+    flight (TSR / RSR, remaining cycles, handshake) and the state of the
+    plugged device are in the "SCI " chunk (SCISaveState()), written after
+    the "OTHR" chunk so that older states, and older Kronos reading newer
+    states, stay compatible.
 
     Instrumentation: set the environment variable KRONOS_SCI_TRACE to a file
     name (e.g. sci_trace.txt) before starting Kronos to get every SCI
@@ -74,6 +79,7 @@
 
 #include "sci.h"
 #include "sh2core.h"
+#include "core.h"
 #include "yabause.h"
 
 extern yabsys_struct yabsys;
@@ -579,4 +585,141 @@ void SCIWriteSSR(SH2_struct * context, u8 val)
    /* TDRE cleared with TE = 1: TDR goes to TSR as soon as TSR is empty. */
    SCIProcess(context, 0);
    SH2EvaluateInterrupt(context);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Save states
+//////////////////////////////////////////////////////////////////////////////
+
+#define SCI_STATE_VERSION 1
+#define SCI_STATE_NAME_LEN 64
+
+/* Transfers in progress of both SCI + the state of the device, "SCI " chunk:
+     per SCI: tx_busy s32, tx_left s32, tsr u8, rx_busy s32, rx_left s32,
+              rsr u8, ssr_read u8, rx_wait_re s32, last_cycles u32
+     device name, 64 bytes (zeros = no device), payload size u32, payload. */
+int SCISaveState(void ** stream)
+{
+   int offset, i;
+   int sizeoffset;
+   u32 payload = 0;
+   char name[SCI_STATE_NAME_LEN];
+
+   offset = MemStateWriteHeader(stream, "SCI ", SCI_STATE_VERSION);
+
+   for (i = 0; i < 2; i++)
+   {
+      const SciState * st = &sci[i];
+      s32 v;
+      v = st->tx_busy;    MemStateWrite((void *)&v, sizeof(v), 1, stream);
+      v = st->tx_left;    MemStateWrite((void *)&v, sizeof(v), 1, stream);
+      MemStateWrite((void *)&st->tsr, sizeof(u8), 1, stream);
+      v = st->rx_busy;    MemStateWrite((void *)&v, sizeof(v), 1, stream);
+      v = st->rx_left;    MemStateWrite((void *)&v, sizeof(v), 1, stream);
+      MemStateWrite((void *)&st->rsr, sizeof(u8), 1, stream);
+      MemStateWrite((void *)&st->ssr_read, sizeof(u8), 1, stream);
+      v = st->rx_wait_re; MemStateWrite((void *)&v, sizeof(v), 1, stream);
+      MemStateWrite((void *)&st->last_cycles, sizeof(u32), 1, stream);
+   }
+
+   memset(name, 0, sizeof(name));
+   if (commport != NULL && commport->name != NULL)
+      strncpy(name, commport->name, sizeof(name) - 1);
+   MemStateWrite((void *)name, 1, sizeof(name), stream);
+
+   /* payload size, patched once the device has written its state */
+   sizeoffset = MemStateGetOffset();
+   MemStateWrite((void *)&payload, sizeof(payload), 1, stream);
+   if (commport != NULL && commport->SaveState != NULL)
+   {
+      commport->SaveState(stream);
+      payload = (u32)(MemStateGetOffset() - sizeoffset - (int)sizeof(payload));
+      MemStateWriteOffset((void *)&payload, sizeof(payload), 1, stream, sizeoffset);
+   }
+
+   return MemStateFinishHeader(stream, offset);
+}
+
+/* A state without a chunk, or one that does not fit the plugged device:
+   nothing is being transferred. */
+void SCIClearState(void)
+{
+   int i;
+   for (i = 0; i < 2; i++)
+   {
+      SH2_struct * context = (i == SCI_CPU_SLAVE) ? SSH2 : MSH2;
+      memset(&sci[i], 0, sizeof(sci[i]));
+      if (context != NULL)
+         sci[i].last_cycles = context->cycles;
+   }
+   if (commport != NULL && commport->Reset != NULL)
+      commport->Reset();
+}
+
+void SCILoadState(const void * stream, int version, int size)
+{
+   SciState tmp[2];
+   char name[SCI_STATE_NAME_LEN];
+   u32 payload;
+   int i, start, end;
+
+   /* 2 x (4+4+1+4+4+1+1+4+4) + name + payload size */
+   if (version != SCI_STATE_VERSION || size < 2 * 27 + SCI_STATE_NAME_LEN + 4)
+   {
+      SCIClearState();
+      return;
+   }
+
+   start = MemStateGetOffset();
+   end = start + size;
+
+   for (i = 0; i < 2; i++)
+   {
+      s32 v;
+      memset(&tmp[i], 0, sizeof(tmp[i]));
+      MemStateRead((void *)&v, sizeof(v), 1, stream); tmp[i].tx_busy = v;
+      MemStateRead((void *)&v, sizeof(v), 1, stream); tmp[i].tx_left = v;
+      MemStateRead((void *)&tmp[i].tsr, sizeof(u8), 1, stream);
+      MemStateRead((void *)&v, sizeof(v), 1, stream); tmp[i].rx_busy = v;
+      MemStateRead((void *)&v, sizeof(v), 1, stream); tmp[i].rx_left = v;
+      MemStateRead((void *)&tmp[i].rsr, sizeof(u8), 1, stream);
+      MemStateRead((void *)&tmp[i].ssr_read, sizeof(u8), 1, stream);
+      MemStateRead((void *)&v, sizeof(v), 1, stream); tmp[i].rx_wait_re = v;
+      MemStateRead((void *)&tmp[i].last_cycles, sizeof(u32), 1, stream);
+      /* a corrupt file must not give an absurd frame time */
+      if (tmp[i].tx_left < 0 || tmp[i].tx_left > 0x1000000) tmp[i].tx_left = 0;
+      if (tmp[i].rx_left < 0 || tmp[i].rx_left > 0x1000000) tmp[i].rx_left = 0;
+      tmp[i].tx_busy = tmp[i].tx_busy ? 1 : 0;
+      tmp[i].rx_busy = tmp[i].rx_busy ? 1 : 0;
+      tmp[i].rx_wait_re = tmp[i].rx_wait_re ? 1 : 0;
+   }
+
+   MemStateRead((void *)name, 1, sizeof(name), stream);
+   name[sizeof(name) - 1] = 0;
+   MemStateRead((void *)&payload, sizeof(payload), 1, stream);
+
+   /* the plugged device must be the one of the state, and understand it */
+   if (commport != NULL && commport->name != NULL && name[0] != 0 &&
+       strcmp(name, commport->name) == 0 && commport->LoadState != NULL &&
+       payload <= (u32)(end - MemStateGetOffset()))
+   {
+      const u8 * data = (const u8 *)stream + MemStateGetOffset();
+      if (commport->LoadState(data, payload) == 0)
+      {
+         for (i = 0; i < 2; i++)
+            sci[i] = tmp[i];
+         SCITrace(MSH2, "state loaded: transfers and device \"%s\" restored", name);
+         return;
+      }
+   }
+   else if (commport == NULL && name[0] == 0)
+   {
+      /* nothing plugged in the state, nothing plugged now */
+      for (i = 0; i < 2; i++)
+         sci[i] = tmp[i];
+      return;
+   }
+
+   SCITrace(MSH2, "state loaded: device of the state ('%s') not usable here, transfers dropped", name);
+   SCIClearState();
 }
