@@ -92,8 +92,19 @@
 
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
     #include "gdb/stub.h"
-    /* The GDB stub needs the SH-2 debug interpreter (breakpoints). */
+#endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+    #include "trace/trace.h"
+#endif
+
+/* The GDB stub (breakpoints) and the SH-2 tracer both need the SH-2 debug
+   interpreter: it is forced when one of them is requested. */
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB && defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+    #define YAB_SH2_CORE(t) TraceSelectSH2Core(GdbStubSelectSH2Core(t))
+#elif defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
     #define YAB_SH2_CORE(t) GdbStubSelectSH2Core(t)
+#elif defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+    #define YAB_SH2_CORE(t) TraceSelectSH2Core(t)
 #else
     #define YAB_SH2_CORE(t) (t)
 #endif
@@ -928,6 +939,11 @@ TRACE_EMULATOR("YabauseInit");
    GdbStubInit(MSH2, 0);
 #endif
 
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+   /* Off unless --trace=FILE / KRONOS_TRACE_FILE (see ctrl/include/trace/trace.h). */
+   TraceInit();
+#endif
+
    fpsticks = YabauseGetTicks();
    return 0;
 }
@@ -1046,6 +1062,9 @@ void YabauseDeInit(void) {
 
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
    GdbStubDeInit();
+#endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+   TraceDeInit();
 #endif
    STVDeInit();
    Vdp2DeInit();
@@ -1491,6 +1510,9 @@ int YabauseEmulate(void) {
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
    /* Frame boundary: a GDB connection is accepted / Ctrl-C seen here. */
    GdbStubFrame();
+#endif
+#if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
+   TraceFrame();
 #endif
 
    syncVideoMode();
