@@ -1273,7 +1273,22 @@ static int SH2UnemulatedCacheDataPath(SH2_struct *context, u32 addr);
 static int SH2UnemulatedCacheDataRead(SH2_struct *context, u32 addr, int region);
 static INLINE void SH2UnemulatedCacheWrite(SH2_struct *context, u32 addr);
 
-u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr) {
+#ifdef HAVE_SH2TRACE
+#include "trace/trace.h"
+u8 FASTCALL SH2MappedMemoryReadByteRaw(SH2_struct *context, u32 addr);
+u16 FASTCALL SH2MappedMemoryReadWordRaw(SH2_struct *context, u32 addr);
+u32 FASTCALL SH2MappedMemoryReadLongRaw(SH2_struct *context, u32 addr);
+void FASTCALL SH2MappedMemoryWriteByteRaw(SH2_struct *context, u32 addr, u8 val);
+void FASTCALL SH2MappedMemoryWriteWordRaw(SH2_struct *context, u32 addr, u16 val);
+void FASTCALL SH2MappedMemoryWriteLongRaw(SH2_struct *context, u32 addr, u32 val);
+#endif
+
+#ifdef HAVE_SH2TRACE
+u8 FASTCALL SH2MappedMemoryReadByteRaw(SH2_struct *context, u32 addr)
+#else
+u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr)
+#endif
+{
    SH2ExtBusCost(context, addr, 1, 0);
 CACHE_LOG("rb %x %x\n", addr, addr >> 29);
    int id = addr >> 29;
@@ -1433,7 +1448,11 @@ LOG("Unhandled Word R %x\n", addr);
    return 0;
 }
 
+#ifdef HAVE_SH2TRACE
+u16 FASTCALL SH2MappedMemoryReadWordRaw(SH2_struct *context, u32 addr)
+#else
 u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
+#endif
 {
    SH2ExtBusCost(context, addr, 2, 0);
 #ifdef SH2_TRAP_ADDRESS_ERROR
@@ -1758,7 +1777,11 @@ u32 FASTCALL DMAMappedMemoryReadLong(u32 addr)
   return ReadLongList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr);
 }
 
+#ifdef HAVE_SH2TRACE
+u32 FASTCALL SH2MappedMemoryReadLongRaw(SH2_struct *context, u32 addr)
+#else
 u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
+#endif
 {
   SH2ExtBusCost(context, addr, 4, 0);
   int id = addr >> 29;
@@ -1847,7 +1870,11 @@ void FASTCALL DMAMappedMemoryWriteByte(u32 addr, u8 val)
     WriteByteList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
+#ifdef HAVE_SH2TRACE
+void FASTCALL SH2MappedMemoryWriteByteRaw(SH2_struct *context, u32 addr, u8 val)
+#else
 void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
+#endif
 {
    SH2ExtBusCost(context, addr, 1, 1);
    int id = addr >> 29;
@@ -1930,7 +1957,11 @@ void FASTCALL DMAMappedMemoryWriteWord(u32 addr, u16 val)
   WriteWordList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
+#ifdef HAVE_SH2TRACE
+void FASTCALL SH2MappedMemoryWriteWordRaw(SH2_struct *context, u32 addr, u16 val)
+#else
 void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
+#endif
 {
    SH2ExtBusCost(context, addr, 2, 1);
    int id = addr >> 29;
@@ -2018,7 +2049,11 @@ void FASTCALL DMAMappedMemoryWriteLong(u32 addr, u32 val)
   WriteLongList[(addr >> 16) & 0xFFF](NULL, *(MemoryBuffer[(addr >> 16) & 0xFFF]), addr, val);
 }
 
+#ifdef HAVE_SH2TRACE
+void FASTCALL SH2MappedMemoryWriteLongRaw(SH2_struct *context, u32 addr, u32 val)
+#else
 void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
+#endif
 {
    SH2ExtBusCost(context, addr, 4, 1);
    int id = addr >> 29;
@@ -3950,3 +3985,47 @@ result_struct *MappedMemorySearch(u32 startaddr, u32 endaddr, int searchtype,
    maxresults[0] = numresults;
    return results;
 }
+
+#ifdef HAVE_SH2TRACE
+/* Wrappers du traceur de bus (trace/trace.h) : un seul test par acces quand
+   le traceur est inactif. */
+u8 FASTCALL SH2MappedMemoryReadByte(SH2_struct *context, u32 addr)
+{
+   const u8 v = SH2MappedMemoryReadByteRaw(context, addr);
+   if (SH2TraceBusActive) TraceBus(context, 0, 1, addr, v);
+   return v;
+}
+
+u16 FASTCALL SH2MappedMemoryReadWord(SH2_struct *context, u32 addr)
+{
+   const u16 v = SH2MappedMemoryReadWordRaw(context, addr);
+   if (SH2TraceBusActive) TraceBus(context, 0, 2, addr, v);
+   return v;
+}
+
+u32 FASTCALL SH2MappedMemoryReadLong(SH2_struct *context, u32 addr)
+{
+   const u32 v = SH2MappedMemoryReadLongRaw(context, addr);
+   if (SH2TraceBusActive) TraceBus(context, 0, 4, addr, v);
+   return v;
+}
+
+void FASTCALL SH2MappedMemoryWriteByte(SH2_struct *context, u32 addr, u8 val)
+{
+   if (SH2TraceBusActive) TraceBus(context, 1, 1, addr, val);
+   SH2MappedMemoryWriteByteRaw(context, addr, val);
+}
+
+void FASTCALL SH2MappedMemoryWriteWord(SH2_struct *context, u32 addr, u16 val)
+{
+   if (SH2TraceBusActive) TraceBus(context, 1, 2, addr, val);
+   SH2MappedMemoryWriteWordRaw(context, addr, val);
+}
+
+void FASTCALL SH2MappedMemoryWriteLong(SH2_struct *context, u32 addr, u32 val)
+{
+   if (SH2TraceBusActive) TraceBus(context, 1, 4, addr, val);
+   SH2MappedMemoryWriteLongRaw(context, addr, val);
+}
+
+#endif
