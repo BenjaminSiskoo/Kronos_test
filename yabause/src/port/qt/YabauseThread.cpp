@@ -30,12 +30,18 @@
 #include "sci.h"
 #include "commfdd.h"
 #include "memory.h"
+#ifdef HAVE_LIBGL
+#include "ogl_userfx.h"
+#endif
 #include "yui.h"
 #if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
 #include "gdb/stub.h"
 #endif
 #if defined(HAVE_SH2TRACE) && HAVE_SH2TRACE
 #include "trace/trace.h"
+#endif
+#if defined(HAVE_REWIND) && HAVE_REWIND
+#include "rewind.h"
 #endif
 
 #include <QDateTime>
@@ -635,6 +641,26 @@ static void applyDebugToolsSettings( VolatileSettings* vs )
 #else
 	Q_UNUSED( vs );
 #endif
+#if defined(HAVE_REWIND) && HAVE_REWIND
+	RewindConfigure( vs->value( "Rewind/Enabled", false ).toBool() ? 1 : 0, vs->value( "Rewind/Interval", 3 ).toInt(),
+		vs->value( "Rewind/Seconds", 30 ).toInt(), vs->value( "Rewind/MemoryMB", 512 ).toInt() );
+#endif
+}
+
+/* Video > User shader: the preset and the values saved in the settings. Only
+   files are read here; the shaders are compiled by the first frame that uses
+   them (filter "User shader (preset)"). */
+static void applyUserShaderSettings( VolatileSettings* vs )
+{
+#ifdef HAVE_LIBGL
+	const QByteArray spec = vs->value( "Video/UserShaderParams" ).toString().toLatin1();
+	const QByteArray path = QFile::encodeName( vs->value( "Video/UserShaderPreset" ).toString() );
+	YglUserFxSetParamsSpec( spec.constData() );
+	if ( path != QByteArray( YglUserFxGetPreset() ) )
+		YglUserFxSetPreset( path.constData() );
+#else
+	Q_UNUSED( vs );
+#endif
 }
 
 void YabauseThread::reloadSettings()
@@ -643,6 +669,7 @@ void YabauseThread::reloadSettings()
 	// get settings pointer
 	VolatileSettings* vs = QtYabause::volatileSettings();
 	applyDebugToolsSettings( vs );
+	applyUserShaderSettings( vs );
 
 	/* Chaines actuelles : reutilisees si leur valeur ne change pas, voir
 	   confString(). */
