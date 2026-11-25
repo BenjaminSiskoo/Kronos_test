@@ -710,7 +710,7 @@ void YabauseThread::reloadSettings()
 		mYabauseConf.buppath = confString( prev.buppath, QFile::encodeName( bupPath ) );
 	}
 	mYabauseConf.mpegpath = confString( prev.mpegpath, pathBytes( vs->value( "MpegROM/Path" ) ) );
-	if (vs->value("Memory/ExtendMemory", true).toBool()) {
+	if (vs->value("Memory/ExtendMemory", false).toBool()) {
 		mYabauseConf.extend_backup = 1;
 	} else {
 		mYabauseConf.extend_backup = 0;

@@ -16,6 +16,7 @@ int DBLookupLegacySH2FetchTimingForCode(const char *game_code);
 int DBLookupLegacySH2BusTimingForCode(const char *game_code);
 int DBLookupLegacySmpcIntbackTimingForCode(const char *game_code);
 int DBLookupMpegCard(const char *game_code);
+int DBLookupPalPreferredForCode(const char *game_code);
 
 
 typedef struct GameDB_s{

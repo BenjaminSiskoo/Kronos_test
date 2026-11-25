@@ -576,7 +576,24 @@ QToolTip { background:#ffffff; color:#1f2937; border:1px solid #c9d3e3; padding:
             <string>...</string>
            </property>
           </widget>
-         </item></layout></widget></item><item><spacer name="pgDebug_sp"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item></layout></widget></widget></item></layout></widget></widget></item></layout></item><item><widget class="QFrame" name="fFooter"><layout class="QHBoxLayout" name="footerLayout"><property name="leftMargin"><number>20</number></property><property name="topMargin"><number>12</number></property><property name="rightMargin"><number>20</number></property><property name="bottomMargin"><number>12</number></property><item><spacer name="footerSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item><item><widget class="QDialogButtonBox" name="dbbButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property></widget></item></layout></widget></item></layout>
+         </item><item row="1" column="0" rowspan="1" colspan="1"><widget class="QLabel" name="laddr2lineElf">
+         <property name="text">
+          <string>ELF file</string>
+         </property>
+         <property name="toolTip">
+          <string>ELF file used by the SH-2 debugger to show function names and source lines (addr2line). Leave empty to look for &lt;image name&gt;.elf next to the loaded image, then in its build subfolder.</string>
+         </property>
+         <property name="textFormat">
+          <enum>Qt::PlainText</enum>
+         </property>
+        <property name="alignment"><set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set></property><property name="role" stdset="0"><string notr="true">row</string></property><property name="minimumSize"><size><width>150</width><height>0</height></size></property></widget>
+       </item><item row="1" column="1" rowspan="1" colspan="1"><widget class="QLineEdit" name="leElfFile"><property name="toolTip"><string>ELF file used by the SH-2 debugger to show function names and source lines (addr2line). Leave empty to look for &lt;image name&gt;.elf next to the loaded image, then in its build subfolder.</string></property><property name="placeholderText"><string>Automatic: &lt;image name&gt;.elf next to the image</string></property></widget>
+         </item><item row="1" column="2" rowspan="1" colspan="1"><widget class="QToolButton" name="tbElfFile">
+           <property name="text">
+            <string>...</string>
+           </property>
+          </widget>
+         </item><item row="2" column="0" rowspan="1" colspan="3"><widget class="QLabel" name="lDebugHelp"><property name="text"><string>The SH-2 debugger shows function names and source lines by running addr2line (sh-elf-addr2line from the Saturn toolchain) on the ELF file of the game. Choose the ELF file here, or leave it empty to use &lt;image name&gt;.elf next to the loaded image (or in its build subfolder).</string></property><property name="wordWrap"><bool>true</bool></property></widget></item></layout></widget></item><item><spacer name="pgDebug_sp"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item></layout></widget></widget></item></layout></widget></widget></item></layout></item><item><widget class="QFrame" name="fFooter"><layout class="QHBoxLayout" name="footerLayout"><property name="leftMargin"><number>20</number></property><property name="topMargin"><number>12</number></property><property name="rightMargin"><number>20</number></property><property name="bottomMargin"><number>12</number></property><item><spacer name="footerSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item><item><widget class="QDialogButtonBox" name="dbbButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property></widget></item></layout></widget></item></layout>
  </widget>
  <customwidgets>
   <customwidget><class>UIPortManager</class><extends>QGroupBox</extends><header>ui/UIPortManager.h</header><container>1</container></customwidget>

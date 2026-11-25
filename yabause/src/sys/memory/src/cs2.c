@@ -6155,6 +6155,18 @@ u8 Cs2GetIP(int autoregion) {
             char pref = Cs2RegionSymbol(cs2_preferred_region);
             if (pref != 0 && strchr(cdip->region, pref) != NULL)
                ret = cs2_preferred_region;
+            else if (cs2_preferred_region == 0 &&
+                     DBLookupPalPreferredForCode(cdip->itemnum) &&
+                     (strchr(cdip->region, 'E') != NULL ||
+                      strchr(cdip->region, 'A') != NULL ||
+                      strchr(cdip->region, 'L') != NULL))
+            {
+               /* Console region on Auto and a multi-region game written for
+                  PAL (PalPreferredDBList): a PAL region among the disc's
+                  area symbols instead of the first one. */
+               ret = strchr(cdip->region, 'E') != NULL ? 0xC :
+                     strchr(cdip->region, 'A') != NULL ? 0xA : 0xD;
+            }
             else
             // Read first available region, that'll be what we'll use
             switch (cdip->region[0])

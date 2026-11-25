@@ -245,7 +245,7 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 	// to catch the tool buttons of the two UIPortManager too (not harmful,
 	// tbBrowse_clicked() ignores them, but 36 useless connections).
 	QToolButton* const browseButtons[] = { tbBios, tbBiosSettings, tbCdRom, tbSaveStates, tbScreenshots,
-		tbCartridge, tbMemory, tbMpegROM, tbFloppyFolder, tbAddr2Line };
+		tbCartridge, tbMemory, tbMpegROM, tbFloppyFolder, tbAddr2Line, tbElfFile };
 	for ( QToolButton* tb : browseButtons )
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbBrowse_clicked() ) );
 
@@ -536,6 +536,8 @@ void UISettings::tbBrowse_clicked()
 		requestFile( QtYabause::translate( "Open a mpeg rom" ), leMpegROM, QtYabause::translate( "Video CD Card ROM (*.bin *.BIN *.rom *.ROM *.zip *.ZIP);;All files (*)" ) );
 	else if ( tb == tbAddr2Line )
 		requestFile( QtYabause::translate( "Choose the location of the addr2line executable" ), leAddr2Line );
+	else if ( tb == tbElfFile )
+		requestFile( QtYabause::translate( "Choose the ELF file of the game" ), leElfFile, QtYabause::translate( "ELF files (*.elf *.ELF);;All files (*)" ) );
 }
 
 void UISettings::on_cbInput_currentIndexChanged( int id )
@@ -932,7 +934,7 @@ void UISettings::loadSettings()
 	leMemory->setText( s->value( "Memory/Path", getDataDirPath().append( "/bkram.bin" ) ).toString() );
 	leMpegROM->setText( s->value( "MpegROM/Path" ).toString() );
 	/* Meme valeur par defaut que YabauseThread::reloadSettings() (true). */
-	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", true).toBool());
+	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", false).toBool());
 	/* Lecteur de disquette (connecteur de communication, commfdd.c). Meme
 	   regle que YabauseThread::reloadCommPort() : sans cle FloppyEnabled
 	   (ancien .ini), le lecteur est branche des qu'un dossier est donne. */
@@ -958,6 +960,7 @@ void UISettings::loadSettings()
 
 	// debug
 	leAddr2Line->setText( s->value( "Debug/Addr2Line" ).toString() );
+	leElfFile->setText( s->value( "Debug/ElfFile" ).toString() );
 
 	//shortcuts
 	{
@@ -1097,6 +1100,7 @@ void UISettings::saveSettings()
 
 	// debug
 	s->setValue( "Debug/Addr2Line", leAddr2Line->text() );
+	s->setValue( "Debug/ElfFile", leElfFile->text() );
 	QtYabause::updateTitle();
 }
 

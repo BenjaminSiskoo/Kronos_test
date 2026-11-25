@@ -283,6 +283,19 @@ static const char * const SmpcLegacyIntbackDBList[] = {
    NULL
 };
 
+/* Jeux multi-regions (symboles de zone "JTUBKAEL") ecrits pour le PAL.
+   Avec "Console region" sur Auto, Cs2GetIP() prend le premier symbole de
+   zone du disque, donc le Japon, donc le NTSC. Pour ces jeux, Auto prefere
+   une region PAL parmi les symboles du disque (E, puis A, puis L).
+   Un reglage explicite de la region de la console reste prioritaire.
+   - T-81 : prototype de Destruction Derby 2. VRESO = 10b (256 lignes, PAL
+     seulement) ; l'ecran de chargement est dessine dans les lignes 224-255,
+     invisibles en NTSC. */
+static const char * const PalPreferredDBList[] = {
+   "T-81",       // Destruction Derby 2 (prototype)
+   NULL
+};
+
 /* Retourne 1 si 'game_code' figure dans la liste 'list' (terminee par NULL). */
 static int DBListHasCode(const char * const *list, const char *game_code)
 {
@@ -292,6 +305,12 @@ static int DBListHasCode(const char * const *list, const char *game_code)
       if (strcmp(list[i], game_code) == 0) return 1;
    }
    return 0;
+}
+
+/* Retourne 1 si 'game_code' figure dans PalPreferredDBList. */
+int DBLookupPalPreferredForCode(const char *game_code)
+{
+   return DBListHasCode(PalPreferredDBList, game_code);
 }
 
 /* Retourne 1 si 'game_code' figure dans SmpcLegacyIntbackDBList. */
