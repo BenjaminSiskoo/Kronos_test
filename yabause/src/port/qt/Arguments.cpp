@@ -36,6 +36,10 @@ extern PerInterface_struct* PERCoreList[];
 extern SoundInterface_struct* SNDCoreList[];
 }
 
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+#include "gdb/stub.h"
+#endif
+
 /* Fallbacks: these ids live in headers that not every build includes. */
 #ifndef SH2CORE_KRONOS_INTERPRETER
 #define SH2CORE_KRONOS_INTERPRETER 8
@@ -606,6 +610,35 @@ bool doLogFile(const QString& v, QString&)
 	return true;
 }
 
+/* --gdb=PORT / --gdb-remote : GDB remote stub for the two SH-2 (ctrl/src/gdb/stub.c).
+   The stub is listening from the start of the emulation and forces the SH-2
+   debug interpreter (slower). */
+bool doGdb(const QString& v, QString& err)
+{
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+	bool ok = false;
+	const int port = v.trimmed().toInt(&ok);
+	if (!ok || port < 1 || port > 65535) { err = "expected a TCP port (1-65535), e.g. --gdb=43434"; return false; }
+	GdbStubSetPort(port);
+	return true;
+#else
+	Q_UNUSED(v);
+	err = "this build has no GDB stub (CMake: YAB_GDBSTUB and YAB_NETWORK must be ON)";
+	return false;
+#endif
+}
+
+bool doGdbRemote(const QString&, QString& err)
+{
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+	GdbStubSetAllowRemote(1);
+	return true;
+#else
+	err = "this build has no GDB stub (CMake: YAB_GDBSTUB and YAB_NETWORK must be ON)";
+	return false;
+#endif
+}
+
 /* ---------- the option table ---------- */
 
 Option heading(const char* title)
@@ -658,6 +691,8 @@ const std::vector<Option>& buildOptions()
 	o.push_back(value(NULL, "--binary", "<FILE>[:ADDRESS]", "Load and run a program: SN Systems CPE file (own addresses and entry point) or raw binary at ADDRESS (hex, default 06004000). Reloaded on each reset. Combine with --no-disc to start without a disc.", doBinary));
 	o.push_back(value(NULL, "--lua", "<FILE>", "Run a Lua script (memory access, per-frame callbacks); it starts with the first emulated frame. See yabause/scripts/README.md.", setPath("lua/script", true, false)));
 	o.push_back(value(NULL, "--log-file", "<FILE>", "Also write the emulator log to a file (same as the KRONOS_LOG_FILE variable).", doLogFile));
+	o.push_back(value(NULL, "--gdb", "<PORT>", "Start a GDB remote stub for the two SH-2 on this TCP port (same as the KRONOS_GDB_PORT variable). Threads: 1 = master, 2 = slave. Uses the slower SH-2 debug interpreter; the emulation halts when GDB connects. In GDB: set architecture sh2, set endian big, target remote :PORT.", doGdb));
+	o.push_back(flag(NULL, "--gdb-remote", "Let the GDB stub accept connections from other machines (default: 127.0.0.1 only).", PrioNormal, doGdbRemote));
 
 	o.push_back(heading("BIOS and disc"));
 	o.push_back(value("-b", "--bios", "<FILE>", "Use this Saturn BIOS file (turns the emulated BIOS off).", doBios));
