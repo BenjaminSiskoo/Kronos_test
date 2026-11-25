@@ -266,7 +266,11 @@ void UISettings::setupSideBar()
 	}
 
 	connect( lwPages, SIGNAL( currentRowChanged( int ) ), twPages, SLOT( setCurrentIndex( int ) ) );
-	connect( twPages, SIGNAL( currentChanged( int ) ), lwPages, SLOT( setCurrentRow( int ) ) );
+	/* QListWidget::setCurrentRow() is not a slot (Qt5: plain member, and an
+	   overloaded one), so the string-based SLOT() connection failed at run time
+	   ("No such slot QListWidget::setCurrentRow( int )"): the side bar did not
+	   follow a page change made by the code. */
+	connect( twPages, &QTabWidget::currentChanged, lwPages, [this]( int index ) { lwPages->setCurrentRow( index ); } );
 	lwPages->setCurrentRow( twPages->currentIndex() );
 }
 
