@@ -14,6 +14,22 @@
 #include "Arguments.h"
 #endif
 
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+#include <QCoreApplication>
+#include "gdb/stub.h"
+
+/* Called by the GDB stub (ctrl/src/gdb/stub.c) while the target is halted and
+   GDB is thinking: keeps the window alive (the stub runs inside a frame, the
+   nested frame requests are dropped by YabauseGL::event()). Returns 0 when the
+   main window was closed, the stub then lets the emulation resume. */
+static int gdbStubIdle(void)
+{
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    UIYabause* w = QtYabause::mainWindow(false);
+    return !QCoreApplication::closingDown() && (w == NULL || w->isVisible());
+}
+#endif
+
 int main( int argc, char** argv )
 {
 #ifdef _WIN32
@@ -38,6 +54,10 @@ int main( int argc, char** argv )
 
 #ifndef NO_CLI
     Arguments::parse();
+#endif
+
+#if defined(HAVE_GDBSTUB) && HAVE_GDBSTUB
+    GdbStubSetIdleHook(gdbStubIdle);
 #endif
 
     QtYabause::updateTitle();
