@@ -410,7 +410,11 @@ typedef enum
    * NORMAL_INTERLACE, like AA_ADAPTATIVE_FILTER..AA_BOB_FILTER. */
   AA_DEINT_BLEND,
   AA_DEINT_BOB_SMOOTH,
-  AA_DEINT_ADAPTIVE_FIELD
+  AA_DEINT_ADAPTIVE_FIELD,
+  /* External GLSL preset (one or several passes), see ogl_userfx.c. Id 16.
+   * Works on progressive and interlaced output; not available in libretro,
+   * where it shows the plain picture. */
+  AA_USER_SHADER
 } AAMODE;
 
 typedef enum
