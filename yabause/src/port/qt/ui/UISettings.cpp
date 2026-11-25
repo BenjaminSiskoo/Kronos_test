@@ -932,7 +932,7 @@ void UISettings::loadSettings()
 	leMemory->setText( s->value( "Memory/Path", getDataDirPath().append( "/bkram.bin" ) ).toString() );
 	leMpegROM->setText( s->value( "MpegROM/Path" ).toString() );
 	/* Meme valeur par defaut que YabauseThread::reloadSettings() (true). */
-	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", true).toBool());
+	checkBox_extended_internal_backup->setChecked(s->value("Memory/ExtendMemory", false).toBool());
 	/* Lecteur de disquette (connecteur de communication, commfdd.c). Meme
 	   regle que YabauseThread::reloadCommPort() : sans cle FloppyEnabled
 	   (ancien .ini), le lecteur est branche des qu'un dossier est donne. */
