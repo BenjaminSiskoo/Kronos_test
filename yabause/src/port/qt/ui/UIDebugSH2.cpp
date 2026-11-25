@@ -1606,15 +1606,44 @@ void UIDebugSH2::updateCodePage(u32 evaluateAddress)
   QString elfPath;
   const QString program{ addr2line };
 
+  /* ELF file chosen in Settings > Debug. When it is set and exists it is
+   * used as is, whatever the image: a commercial game or a disc image
+   * renamed after the build has no <image>.elf next to it. */
+  {
+    Settings* settings = QtYabause::settings();
+    const QString chosenElf = settings ? settings->value( "Debug/ElfFile" ).toString().trimmed() : QString();
+    if (!chosenElf.isEmpty())
+    {
+      if (QFileInfo::exists(chosenElf))
+        elfPath = chosenElf;
+      else
+      {
+        codeTab->setTabText(1, QtYabause::translate("Source"));
+        codeBrowser->setText(QtYabause::translate("ELF file not found:\n%1\n\nCheck Settings > Debug > ELF file.").arg(chosenElf));
+        return;
+      }
+    }
+  }
+
   VolatileSettings *vs = QtYabause::volatileSettings();
-	if ( vs->value( "General/CdRom" ) != CDCORE_ISO )
+  if (!elfPath.isEmpty())
+  {
+    /* nothing to look for */
+  }
+  else if ( vs->value( "General/CdRom" ) != CDCORE_ISO )
   {
     YuiMsg("Not using ISO, ignoring code\n");
     return;
   }
   else
   {
-    const QString isoPathString{ vs->value( "Recents/ISOs" ).toString() };
+    /* The image really loaded (General/CdRomISO, also set by -i on the
+     * command line). Recents/ISOs is only written by File > Open ISO: it was
+     * empty or stale for a game started from the command line, so the
+     * <image>.elf lookup failed silently. It stays as a fallback. */
+    QString isoPathString{ vs->value( "General/CdRomISO" ).toString() };
+    if (isoPathString.isEmpty())
+      isoPathString = vs->value( "Recents/ISOs" ).toString();
     const QFileInfo fileInfo(isoPathString);
     QDir searchPath = fileInfo.dir();
     const QString filename = fileInfo.completeBaseName() + ".elf";
