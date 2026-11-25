@@ -2970,8 +2970,15 @@ FASTCALL void SH2DebugInterpreterExec(SH2_struct *context, u32 cycles)
 
 }
 
+/* Variante "Save" de la boucle de debug : meme blocage que SH2InterpreterExecSave().
+   Quand une instruction bloque le CPU (acces A-Bus / VDP1 pendant un DMA :
+   context->isBlocked, mis par SH2UpdateABusAccess() & co), le reste de la
+   tranche est abandonne et les registres sont restaures (oldRegs) : l'instruction
+   sera rejouee au deblocage. Le mecanisme que l'ancien TODO ("locking mechanism
+   due to DMA") demandait est donc deja en place ci-dessous. Cette boucle n'est
+   plus compilee par CMake ni par le Makefile libretro (seul sh2_kronos l'est,
+   voir SH2KronosDebugInterpreterExecSave()). */
 FASTCALL void SH2DebugInterpreterExecSave(SH2_struct *context, u32 cycles, sh2regs_struct *oldRegs)
-//TODO: implement the locking mechanism dus to DMA
 {
     context->target_cycles = context->cycles + cycles;
 
@@ -3024,8 +3031,7 @@ FASTCALL void SH2DebugInterpreterExecSave(SH2_struct *context, u32 cycles, sh2re
       }
 #endif
 
-      // Fetch Instruction
-      // Fetch Instruction
+      // Fetch Instruction (registres sauvegardes avant, pour le retour arriere si bloque)
       memcpy(oldRegs, &context->regs, sizeof(sh2regs_struct));
       context->instruction = fetchlist[(context->regs.PC >> 20) & 0xFFF](context, context->regs.PC);
 
