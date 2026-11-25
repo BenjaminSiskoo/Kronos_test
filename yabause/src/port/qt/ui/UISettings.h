@@ -82,6 +82,13 @@ protected slots:
 private:
 	QString getCartridgePathSettingsKey(int cartridgeType = -1) const;
 	void updateVolatileSettings() const;
+	void refreshUserShaderList( const QString& select );
+	void rebuildUserShaderParams();
+	void applyUserShaderPreset();
+	void updateUserShaderStatus();
+	void loadUserShaderSettings( const Settings* s );
+	void saveUserShaderSettings( Settings* s ) const;
+	bool mUserShaderBusy = false;
 
 	int selectedCartridgeType = 0;
 };

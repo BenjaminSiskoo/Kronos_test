@@ -23,6 +23,7 @@
 #include "../Settings.h"
 #include "../CommonDialogs.h"
 #include "ygl.h"
+#include "ogl_userfx.h"
 #include "stv.h"
 /* after ygl.h: YabauseGL.h pulls Qt's gl.h, which must not come before glew.h */
 #include "../YabauseGL.h"
@@ -30,6 +31,12 @@
 #include "../CameraCapture.h"
 
 #include <QDir>
+#include <QDirIterator>
+#include <QCoreApplication>
+#include <QDoubleSpinBox>
+#include <QLabel>
+#include <QMap>
+#include <QTimer>
 #include <QList>
 #include <QDesktopWidget>
 #include <QImageWriter>
@@ -150,7 +157,19 @@ const Items mVideoFilterMode = Items()
 	<< Item("8", "Sharp Bilinear")
 	<< Item("9", "FXAA")
 	<< Item("10", "CRT (Aperture Grille)")
-	<< Item("12", "Cell Shading (Toon)");
+	<< Item("12", "Cell Shading (Toon)")
+	<< Item("16", "User shader (preset)");
+
+/* Folders searched for the shader presets: the data folder, then the program folder */
+static QStringList userShaderFolders()
+{
+	QStringList l;
+	l << QDir::cleanPath( getDataDirPath() + "/shaders" );
+	const QString app = QDir::cleanPath( QCoreApplication::applicationDirPath() + "/shaders" );
+	if ( !l.contains( app ) )
+		l << app;
+	return l;
+}
 
 const Items mUpscaleFilterMode = Items()
 	<< Item("0", "None")
@@ -249,6 +268,36 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 	for ( QToolButton* tb : browseButtons )
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbBrowse_clicked() ) );
 
+	// User shader: the card is usable when the filter is selected
+	connect( cbFilterMode, static_cast<void ( QComboBox::* )( int )>( &QComboBox::currentIndexChanged ), this,
+		[this]( int ) { cardUserShader->setEnabled( cbFilterMode->itemData( cbFilterMode->currentIndex() ).toInt() == AA_USER_SHADER ); } );
+	connect( cbUserShader, static_cast<void ( QComboBox::* )( int )>( &QComboBox::currentIndexChanged ), this,
+		[this]( int ) {
+			if ( mUserShaderBusy )
+				return;
+			YglUserFxSetParamsSpec( "" ); // values belong to one preset
+			applyUserShaderPreset();
+		} );
+	connect( tbUserShaderBrowse, &QToolButton::clicked, this, [this]() {
+		const QString f = CommonDialogs::getOpenFileName( userShaderFolders().first(),
+			QtYabause::translate( "Choose a shader preset" ), QtYabause::translate( "Shader presets (*.kfx *.glsl);;All files (*)" ) );
+		if ( f.isEmpty() )
+			return;
+		refreshUserShaderList( f );
+		YglUserFxSetParamsSpec( "" );
+		applyUserShaderPreset();
+	} );
+	connect( pbUserShaderReload, &QPushButton::clicked, this, [this]() {
+		refreshUserShaderList( cbUserShader->itemData( cbUserShader->currentIndex() ).toString() );
+		YglUserFxReload();
+		rebuildUserShaderParams();
+	} );
+	connect( pbUserShaderReset, &QPushButton::clicked, this, [this]() {
+		YglUserFxSetParamsSpec( "" );
+		rebuildUserShaderParams();
+	} );
+	// Rewind: the numbers follow the check box
+	connect( cbRewind, &QCheckBox::toggled, this, [this]( bool on ) { sbRewindInterval->setEnabled( on ); sbRewindSeconds->setEnabled( on ); sbRewindMemory->setEnabled( on ); } );
 	// GDB stub / tracer: dependent widgets follow their check box
 	connect( cbGdbStub, &QCheckBox::toggled, this, [this]( bool on ) { sbGdbPort->setEnabled( on ); cbGdbRemote->setEnabled( on ); } );
 	connect( cbSH2Trace, &QCheckBox::toggled, this, [this]( bool on ) { leTraceFile->setEnabled( on ); tbTraceFile->setEnabled( on ); leTraceOpts->setEnabled( on ); } );
@@ -919,6 +968,7 @@ void UISettings::loadSettings()
 	cbFullscreen->setChecked( s->value( "Video/Fullscreen", false ).toBool() );
 
 	cbFilterMode->setCurrentIndex(cbFilterMode->findData(s->value("Video/filter_type", mVideoFilterMode.at(0).id).toInt()));
+	loadUserShaderSettings( s );
         cbUpscaleMode->setCurrentIndex(cbUpscaleMode->findData(s->value("Video/upscale_type", mUpscaleFilterMode.at(0).id).toInt()));
 	cbResolution->setCurrentIndex(cbResolution->findData(s->value("Video/resolution_mode", mResolutionMode.at(0).id).toInt()));
   cbAspectRatio->setCurrentIndex(cbAspectRatio->findData(s->value("Video/AspectRatio", mAspectRatio.at(0).id).toInt()));
@@ -973,6 +1023,11 @@ void UISettings::loadSettings()
 	// debug
 	leAddr2Line->setText( s->value( "Debug/Addr2Line" ).toString() );
 	leElfFile->setText( s->value( "Debug/ElfFile" ).toString() );
+	cbRewind->setChecked( s->value( "Rewind/Enabled", false ).toBool() );
+	sbRewindInterval->setValue( s->value( "Rewind/Interval", 3 ).toInt() );
+	sbRewindSeconds->setValue( s->value( "Rewind/Seconds", 30 ).toInt() );
+	sbRewindMemory->setValue( s->value( "Rewind/MemoryMB", 512 ).toInt() );
+	sbRewindInterval->setEnabled( cbRewind->isChecked() ); sbRewindSeconds->setEnabled( cbRewind->isChecked() ); sbRewindMemory->setEnabled( cbRewind->isChecked() );
 	cbGdbStub->setChecked( s->value( "Debug/GdbStubEnabled", false ).toBool() );
 	sbGdbPort->setValue( s->value( "Debug/GdbStubPort", 43434 ).toInt() );
 	cbGdbRemote->setChecked( s->value( "Debug/GdbStubRemote", false ).toBool() );
@@ -1056,6 +1111,7 @@ void UISettings::saveSettings()
 
 	s->setValue( "Video/Fullscreen", cbFullscreen->isChecked() );
 	s->setValue( "Video/filter_type", cbFilterMode->itemData(cbFilterMode->currentIndex()).toInt());
+	saveUserShaderSettings( s );
 	s->setValue( "Video/upscale_type", cbUpscaleMode->itemData(cbUpscaleMode->currentIndex()).toInt());
 	s->setValue("Video/resolution_mode", cbResolution->itemData(cbResolution->currentIndex()).toInt());
 
@@ -1121,6 +1177,10 @@ void UISettings::saveSettings()
 	// debug
 	s->setValue( "Debug/Addr2Line", leAddr2Line->text() );
 	s->setValue( "Debug/ElfFile", leElfFile->text() );
+	s->setValue( "Rewind/Enabled", cbRewind->isChecked() );
+	s->setValue( "Rewind/Interval", sbRewindInterval->value() );
+	s->setValue( "Rewind/Seconds", sbRewindSeconds->value() );
+	s->setValue( "Rewind/MemoryMB", sbRewindMemory->value() );
 	s->setValue( "Debug/GdbStubEnabled", cbGdbStub->isChecked() );
 	s->setValue( "Debug/GdbStubPort", sbGdbPort->value() );
 	s->setValue( "Debug/GdbStubRemote", cbGdbRemote->isChecked() );
@@ -1134,6 +1194,136 @@ void UISettings::updateSwapModeWidgets()
 {
 	const int mode = cbSwapMode->itemData(cbSwapMode->currentIndex()).toInt();
 	cbLowLatencyPresent->setEnabled(mode != YabauseGL::SwapOff);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * User shader presets (Video page). The loader is in ogl_userfx.c; everything
+ * called here is plain file and parsing work, no OpenGL.
+ * ------------------------------------------------------------------------- */
+
+/* Fills the combo with the presets of the shaders folders. Bare .glsl files
+ * are listed only at the top of a folder: inside a sub folder they are most
+ * likely the passes of a .kfx preset. `select` is a full path; a file from
+ * elsewhere (Browse...) is added to the list. */
+void UISettings::refreshUserShaderList( const QString& select )
+{
+	const bool wasBusy = mUserShaderBusy;
+	mUserShaderBusy = true;
+	cbUserShader->clear();
+	cbUserShader->addItem( QtYabause::translate( "(none)" ), QString() );
+
+	QMap<QString, QString> found; // label -> full path, sorted by label
+	foreach ( const QString& folder, userShaderFolders() )
+	{
+		const QDir top( folder );
+		if ( !top.exists() )
+			continue;
+		QDirIterator it( folder, QStringList() << "*.kfx" << "*.glsl", QDir::Files, QDirIterator::Subdirectories );
+		while ( it.hasNext() )
+		{
+			const QFileInfo fi( it.next() );
+			const bool direct = ( fi.absolutePath() == top.absolutePath() );
+			if ( !direct && fi.suffix().compare( "kfx", Qt::CaseInsensitive ) != 0 )
+				continue;
+			const QString label = top.relativeFilePath( fi.absoluteFilePath() );
+			if ( !found.contains( label ) )
+				found.insert( label, fi.absoluteFilePath() );
+		}
+	}
+	for ( QMap<QString, QString>::const_iterator i = found.constBegin(); i != found.constEnd(); ++i )
+		cbUserShader->addItem( i.key(), i.value() );
+
+	if ( !select.isEmpty() && cbUserShader->findData( select ) < 0 )
+		cbUserShader->addItem( QFileInfo( select ).fileName(), select );
+	const int idx = cbUserShader->findData( select );
+	cbUserShader->setCurrentIndex( idx < 0 ? 0 : idx );
+	mUserShaderBusy = wasBusy;
+}
+
+void UISettings::updateUserShaderStatus()
+{
+	const QString path = cbUserShader->itemData( cbUserShader->currentIndex() ).toString();
+	if ( path.isEmpty() )
+	{
+		lUserShaderStatus->setText( QtYabause::translate( "No preset selected." ) );
+		return;
+	}
+	const QString msg = QString::fromLocal8Bit( YglUserFxGetStatus() );
+	const int n = YglUserFxGetPassCount();
+	if ( n > 0 && msg == "ok" )
+		lUserShaderStatus->setText( QString( "%1: %2 pass(es). %3" ).arg( QString::fromUtf8( YglUserFxGetName() ) ).arg( n )
+			.arg( QtYabause::translate( "Compile errors are written to the log." ) ) );
+	else
+		lUserShaderStatus->setText( msg );
+}
+
+/* One spin box per "#pragma parameter" of the preset. A change is applied to
+ * the picture at once. */
+void UISettings::rebuildUserShaderParams()
+{
+	QGridLayout* const gl = glUserShaderParams;
+	while ( QLayoutItem* item = gl->takeAt( 0 ) )
+	{
+		delete item->widget();
+		delete item;
+	}
+	const int count = YglUserFxGetParamCount();
+	for ( int i = 0; i < count; i++ )
+	{
+		YglUserFxParam p;
+		if ( YglUserFxGetParam( i, &p ) != 0 )
+			continue;
+		int dec = 0;
+		double a = p.step, b = p.def;
+		while ( dec < 6 && ( qAbs( a - qRound( a ) ) > 1e-4 || qAbs( b - qRound( b ) ) > 1e-4 ) )
+		{
+			a *= 10.0;
+			b *= 10.0;
+			dec++;
+		}
+		QLabel* const label = new QLabel( QString::fromUtf8( p.label ) );
+		QDoubleSpinBox* const sb = new QDoubleSpinBox;
+		sb->setDecimals( dec );
+		sb->setRange( p.min, p.max );
+		sb->setSingleStep( p.step );
+		sb->setValue( p.value );
+		sb->setToolTip( QString::fromLatin1( p.name ) );
+		const QByteArray name( p.name );
+		connect( sb, static_cast<void ( QDoubleSpinBox::* )( double )>( &QDoubleSpinBox::valueChanged ), this,
+			[name]( double v ) { YglUserFxSetParamValue( name.constData(), (float)v ); } );
+		gl->addWidget( label, i, 0 );
+		gl->addWidget( sb, i, 1 );
+	}
+	gl->setColumnStretch( 0, 1 );
+	pbUserShaderReset->setEnabled( count > 0 );
+	updateUserShaderStatus();
+	// the shaders are compiled by the next frame: show its verdict a moment later
+	QTimer::singleShot( 800, this, [this]() { if ( isVisible() ) updateUserShaderStatus(); } );
+}
+
+void UISettings::applyUserShaderPreset()
+{
+	const QByteArray path = QFile::encodeName( cbUserShader->itemData( cbUserShader->currentIndex() ).toString() );
+	YglUserFxSetPreset( path.constData() );
+	rebuildUserShaderParams();
+}
+
+void UISettings::loadUserShaderSettings( const Settings* s )
+{
+	// the values first: they apply whatever the order of the next calls
+	YglUserFxSetParamsSpec( s->value( "Video/UserShaderParams" ).toString().toLatin1().constData() );
+	refreshUserShaderList( s->value( "Video/UserShaderPreset" ).toString() );
+	applyUserShaderPreset();
+	cardUserShader->setEnabled( cbFilterMode->itemData( cbFilterMode->currentIndex() ).toInt() == AA_USER_SHADER );
+}
+
+void UISettings::saveUserShaderSettings( Settings* s ) const
+{
+	char spec[2048];
+	YglUserFxGetParamsSpec( spec, sizeof( spec ) );
+	s->setValue( "Video/UserShaderPreset", cbUserShader->itemData( cbUserShader->currentIndex() ).toString() );
+	s->setValue( "Video/UserShaderParams", QString::fromLatin1( spec ) );
 }
 
 void UISettings::accept()
