@@ -719,10 +719,22 @@ static void SmpcRESDISA(void) {
 }
 
 //////////////////////////////////////////////////////////////////////////////
+
+/* Une commande SMPC passe par DEUX etapes, d'ou deux switch distincts (ce ne
+   sont pas des doublons) :
+     1. SmpcSetTiming()  -- a l'ecriture de COMREG : OREG31 = code de la
+        commande, et delai (timing, en us) avant la fin ;
+     2. processCommand() -- quand le delai est ecoule (SmpcExec) : effet de la
+        commande, puis SF = 0.
+   MSHON (00H), CDON (08H), CDOFF (09H) et SYSRES (0DH) n'ont ici aucun effet
+   autre que l'acquittement (OREG31 = code, SF = 0) : les traces ne disent plus
+   "not implemented" a tort (SYSRES appelle bien SmpcSYSRES()). Le vrai effet
+   materiel de ces quatre commandes n'est pas verifie : il faut le SMPC User's
+   Manual (ST-169-R1), absent du workspace (smpc.pdf est le brevet US 5,892,974). */
 static void processCommand(void) {
   switch(SmpcRegs->COMREG) {
      case 0x0:
-        SMPCLOG("smpc\t: MSHON not implemented\n");
+        SMPCLOG("smpc\t: MSHON (acknowledge only)\n");
         SmpcRegs->OREG[31]=0x0;
         SmpcRegs->SF = 0;
         break;
@@ -747,15 +759,15 @@ static void processCommand(void) {
         SmpcRegs->SF = 0;
         break;
      case 0x8:
-        SMPCLOG("smpc\t: CDON not implemented\n");
+        SMPCLOG("smpc\t: CDON (acknowledge only)\n");
         SmpcRegs->SF = 0;
         break;
      case 0x9:
-        SMPCLOG("smpc\t: CDOFF not implemented\n");
+        SMPCLOG("smpc\t: CDOFF (acknowledge only)\n");
         SmpcRegs->SF = 0;
         break;
      case 0xD:
-        SMPCLOG("smpc\t: SYSRES not implemented\n");
+        SMPCLOG("smpc\t: SYSRES (OREG31 only, no reset)\n");
         SmpcSYSRES();
         SmpcRegs->SF = 0;
         break;
@@ -1073,15 +1085,15 @@ static void SmpcSetTiming(void) {
       SmpcRegs->OREG[31] = SmpcRegs->COMREG;
    switch(SmpcRegs->COMREG) {
       case 0x0:
-         SMPCLOG("smpc\t: MSHON not implemented\n");
+         SMPCLOG("smpc\t: MSHON (acknowledge only)\n");
          SmpcInternalVars->timing = 1;
          return;
       case 0x8:
-         SMPCLOG("smpc\t: CDON not implemented\n");
+         SMPCLOG("smpc\t: CDON (acknowledge only)\n");
          SmpcInternalVars->timing = 1;
          return;
       case 0x9:
-         SMPCLOG("smpc\t: CDOFF not implemented\n");
+         SMPCLOG("smpc\t: CDOFF (acknowledge only)\n");
          SmpcInternalVars->timing = 1;
          return;
       case 0xD:
