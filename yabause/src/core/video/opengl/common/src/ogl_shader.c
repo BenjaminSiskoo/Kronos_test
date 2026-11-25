@@ -32,6 +32,9 @@
 #include "crt_cgwg_shader.h"
 #include "cellshading_shader.h"
 #include "common_glshader.h"
+#ifndef __LIBRETRO__
+#include "ogl_userfx.h"
+#endif
 
 #undef YGLLOG
 #define YGLLOG //YuiMsg
@@ -2150,7 +2153,7 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
 
   int aamode = _Ygl->aamode;
   /* Unknown value (e.g. config written by a newer build): plain display */
-  if ((aamode < AA_NONE) || (aamode > AA_DEINT_ADAPTIVE_FIELD)) aamode = AA_NONE;
+  if ((aamode < AA_NONE) || (aamode > AA_USER_SHADER)) aamode = AA_NONE;
 
   float const vertexPosition[] = {
     1.0f, -1.0f,
@@ -2218,10 +2221,25 @@ int YglBlitFramebuffer(u32 srcTexture, float w, float h, float dispw, float disp
   //if ((aamode == AA_NONE) && ((w != dispw) || (h != disph))) aamode = AA_BILINEAR_FILTER;
   if (_Ygl->interlace == NORMAL_INTERLACE) {
     if (((aamode >= AA_ADAPTATIVE_FILTER) && (aamode < AA_SCANLINE)) ||
-        (aamode >= AA_DEINT_BLEND)) {
+        ((aamode >= AA_DEINT_BLEND) && (aamode != AA_USER_SHADER))) {
       aamode = AA_NONE;
     }
   }
+#ifndef __LIBRETRO__
+  if (aamode == AA_USER_SHADER) {
+    /* External preset: draws all its passes itself. When it cannot (no preset
+     * chosen, file unreadable, compile error) the plain picture is shown and
+     * the reason is in the log. */
+    if (YglUserFxBlit(tex, width, height, outTexW, outTexH, nbLines, (int)isRotated,
+                      (Vdp2Regs->TVSTAT >> 1) & 0x1, _Ygl->vdp1ratio,
+                      (float)_Ygl->rwidth, (float)_Ygl->rheight) == 0) {
+      return 0;
+    }
+    aamode = AA_NONE;
+  }
+#else
+  if (aamode == AA_USER_SHADER) aamode = AA_NONE;
+#endif
   if ((blit_prg == -1) || (blit_mode != aamode) || (last_interlace != _Ygl->interlace)){
     GLuint vshader;
     GLuint fshader;
@@ -2562,6 +2580,9 @@ void Ygl_prog_Destroy(void) {
   if (blit_prg != -1)       glDeleteProgram(blit_prg);        blit_prg = -1;
   if (mosaic_prg != -1)     glDeleteProgram(mosaic_prg);      mosaic_prg = -1;
   blit_mode = -1;
+#ifndef __LIBRETRO__
+  YglUserFxDestroy();
+#endif
   YglUpscaleDestroy();
   for(int i = 0; i<PG_MAX; i++) {
     if(_prgid[i] != 0) {
