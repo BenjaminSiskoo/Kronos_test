@@ -245,9 +245,15 @@ UISettings::UISettings(QList <translation_struct> *translations, QWidget* p )
 	// to catch the tool buttons of the two UIPortManager too (not harmful,
 	// tbBrowse_clicked() ignores them, but 36 useless connections).
 	QToolButton* const browseButtons[] = { tbBios, tbBiosSettings, tbCdRom, tbSaveStates, tbScreenshots,
-		tbCartridge, tbMemory, tbMpegROM, tbFloppyFolder, tbAddr2Line, tbElfFile };
+		tbCartridge, tbMemory, tbMpegROM, tbFloppyFolder, tbAddr2Line, tbElfFile, tbTraceFile };
 	for ( QToolButton* tb : browseButtons )
 		connect( tb, SIGNAL( clicked() ), this, SLOT( tbBrowse_clicked() ) );
+
+	// GDB stub / tracer: dependent widgets follow their check box
+	connect( cbGdbStub, &QCheckBox::toggled, this, [this]( bool on ) { sbGdbPort->setEnabled( on ); cbGdbRemote->setEnabled( on ); } );
+	connect( cbSH2Trace, &QCheckBox::toggled, this, [this]( bool on ) { leTraceFile->setEnabled( on ); tbTraceFile->setEnabled( on ); leTraceOpts->setEnabled( on ); } );
+	sbGdbPort->setEnabled( cbGdbStub->isChecked() ); cbGdbRemote->setEnabled( cbGdbStub->isChecked() );
+	leTraceFile->setEnabled( cbSH2Trace->isChecked() ); tbTraceFile->setEnabled( cbSH2Trace->isChecked() ); leTraceOpts->setEnabled( cbSH2Trace->isChecked() );
 
 	updateGunMouseLabel( sGunMouseSensitivity->value() );
 }
@@ -542,6 +548,8 @@ void UISettings::tbBrowse_clicked()
 		requestFile( QtYabause::translate( "Choose the location of the addr2line executable" ), leAddr2Line );
 	else if ( tb == tbElfFile )
 		requestFile( QtYabause::translate( "Choose the ELF file of the game" ), leElfFile, QtYabause::translate( "ELF files (*.elf *.ELF);;All files (*)" ) );
+	else if ( tb == tbTraceFile )
+		requestNewFile( QtYabause::translate( "Choose the SH-2 trace file" ), leTraceFile );
 }
 
 void UISettings::on_cbInput_currentIndexChanged( int id )
@@ -965,6 +973,14 @@ void UISettings::loadSettings()
 	// debug
 	leAddr2Line->setText( s->value( "Debug/Addr2Line" ).toString() );
 	leElfFile->setText( s->value( "Debug/ElfFile" ).toString() );
+	cbGdbStub->setChecked( s->value( "Debug/GdbStubEnabled", false ).toBool() );
+	sbGdbPort->setValue( s->value( "Debug/GdbStubPort", 43434 ).toInt() );
+	cbGdbRemote->setChecked( s->value( "Debug/GdbStubRemote", false ).toBool() );
+	cbSH2Trace->setChecked( s->value( "Debug/TraceEnabled", false ).toBool() );
+	leTraceFile->setText( s->value( "Debug/TraceFile" ).toString() );
+	leTraceOpts->setText( s->value( "Debug/TraceOptions" ).toString() );
+	sbGdbPort->setEnabled( cbGdbStub->isChecked() ); cbGdbRemote->setEnabled( cbGdbStub->isChecked() );
+	leTraceFile->setEnabled( cbSH2Trace->isChecked() ); tbTraceFile->setEnabled( cbSH2Trace->isChecked() ); leTraceOpts->setEnabled( cbSH2Trace->isChecked() );
 
 	//shortcuts
 	{
@@ -1105,6 +1121,12 @@ void UISettings::saveSettings()
 	// debug
 	s->setValue( "Debug/Addr2Line", leAddr2Line->text() );
 	s->setValue( "Debug/ElfFile", leElfFile->text() );
+	s->setValue( "Debug/GdbStubEnabled", cbGdbStub->isChecked() );
+	s->setValue( "Debug/GdbStubPort", sbGdbPort->value() );
+	s->setValue( "Debug/GdbStubRemote", cbGdbRemote->isChecked() );
+	s->setValue( "Debug/TraceEnabled", cbSH2Trace->isChecked() );
+	s->setValue( "Debug/TraceFile", leTraceFile->text() );
+	s->setValue( "Debug/TraceOptions", leTraceOpts->text() );
 	QtYabause::updateTitle();
 }
 
