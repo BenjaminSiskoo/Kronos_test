@@ -50,6 +50,7 @@
 #include "bios.h"
 #include "peripheral.h"
 #include "pclub.h"
+#include "sci.h"
 
 //#ifdef HAVE_LIBGL
 //#define USE_OPENGL
@@ -3301,6 +3302,11 @@ int YabSaveStateStream(void ** stream)
 
    i += MemStateFinishHeader(stream, offset);
 
+   /* Serial port: transfers in progress and plugged device. After OTHR,
+    * outside the list checked by YabLoadStateCheckChunks(): states of older
+    * versions load without it, and older versions ignore it. */
+   i += SCISaveState(stream);
+
    // Go back and update size
    MemStateWriteOffset((void *)&i, sizeof(i), 1, stream, 8);
    MemStateWriteOffset((void *)&movieposition, sizeof(movieposition), 1, stream, 16);
@@ -3622,6 +3628,26 @@ int YabLoadStateStream(const void * stream, size_t size_stream)
          /* borne : un etat sans film n'a rien apres movieposition */
          MovieReadState(stream, chunkend - movieposition);
       }
+   }
+
+   /* Chunk "SCI " facultatif apres OTHR (transferts du port serie en cours
+    * et peripherique branche). Absent d'un etat plus ancien : aucun transfert
+    * en cours. */
+   {
+      int sciversion = 0, scisize = 0;
+      int scistart = chunkend;
+      if (scistart >= 0 && ((size_t)scistart + 12) <= size_stream &&
+          memcmp((const u8 *)stream + scistart, "SCI ", 4) == 0)
+      {
+         MemStateSetOffset(scistart);
+         if (MemStateCheckRetrieveHeader(stream, "SCI ", &sciversion, &scisize) == 0 &&
+             scisize >= 0 && ((size_t)MemStateGetOffset() + (size_t)scisize) <= size_stream)
+            SCILoadState(stream, sciversion, scisize);
+         else
+            SCIClearState();
+      }
+      else
+         SCIClearState();
    }
 
    /* Etat interne non serialise, a remettre en coherence avec la memoire et
