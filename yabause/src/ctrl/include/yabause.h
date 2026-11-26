@@ -52,7 +52,9 @@ typedef struct
    const char *eepromdir;
    const char *modemip;
    const char *modemport;
-   int vsyncon; //This shall be renamed as out of sync
+   int vsyncon; // 1 = frame limiter ON (paced to the video rate), 0 = limiter OFF (unpaced:
+                // YabauseInit() then calls EnableAutoFrameSkip()). Misleading name kept: the field is
+                // set by the Qt, Linux and libretro ports; see isAutoFrameSkip() for the meaning.
    int clocksync;  // 1 = sync internal clock to emulation, 0 = realtime clock
    u32 basetime;   // Initial time in clocksync mode (0 = start w/ system time)
    int usethreads;
@@ -106,6 +108,15 @@ void EnableAutoFrameSkip(void);
 int isAutoFrameSkip(void);
 void DisableAutoFrameSkip(void);
 
+/* Automatic display skip while the frame limiter is off (vsync OFF in the
+   Qt port, or fast forward): the drawing of a VDP2 frame is dropped when the
+   GPU has not finished the previous one, so that the emulation never waits
+   for it. Opt-in (off by default): libretro, whose frontend paces the
+   frames, does not use it. Never active during an input movie. The emulated
+   machine is not affected, only what is drawn. */
+void YabauseSetAdaptiveSkip(int on);
+int YabauseAdaptiveSkipActive(void);
+
 /* Emulation speed in percent (1..1000, 100 = real speed): host pacing
    only, the emulated frames are the same at any speed. */
 void YabauseSetSpeedPercent(int percent);
@@ -144,7 +155,7 @@ typedef struct
    int usequickload;
    u32 frame_count;
    int usecache;
-   int vsyncon;
+   int vsyncon; // 1 = limiter ON, 0 = limiter OFF (see yabauseinit_struct)
    int skipframe;
    int wireframe_mode;
    int stvInputType;
