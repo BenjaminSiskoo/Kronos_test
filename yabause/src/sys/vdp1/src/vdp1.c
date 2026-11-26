@@ -2573,13 +2573,13 @@ int EvaluateCmdListHash(Vdp1 * regs){
            addr += 0x20;
            break;
         case 1: // ASSIGN, jump to CMDLINK
-           addr = T1ReadWord(Vdp1Ram, addr + 2) * 8;
+           addr = (T1ReadWord(Vdp1Ram, addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
            break;
         case 2: // CALL, call a subroutine
            if (returnAddr == 0xFFFFFFFF)
               returnAddr = addr + 0x20;
  
-           addr = T1ReadWord(Vdp1Ram, addr + 2) * 8;
+           addr = (T1ReadWord(Vdp1Ram, addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
            break;
         case 3: // RETURN, return from subroutine
            if (returnAddr != 0xFFFFFFFF) {
@@ -2795,7 +2795,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
       case 1: // ASSIGN, jump to CMDLINK
         {
           u32 oldAddr = regs->addr;
-          u32 target = T1ReadWord(ram, regs->addr + 2) * 8;
+          u32 target = (T1ReadWord(ram, regs->addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
           /* VDP1 Manual §6.1: LINK target must be 32-byte aligned and
            * within VRAM. Out-of-range link terminates the list. */
           if (target > 0x7FFE0) {
@@ -2823,7 +2823,7 @@ void Vdp1DrawCommands(u8 * ram, Vdp1 * regs)
          if (g_vdp1DrawReturnAddr == 0xFFFFFFFF)
             g_vdp1DrawReturnAddr = regs->addr + 0x20;
          {
-            u32 target = T1ReadWord(ram, regs->addr + 2) * 8;
+            u32 target = (T1ReadWord(ram, regs->addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
             if (target > 0x7FFE0) {
                FRAMELOG("VDP1 CALL target out of range: 0x%x\n", target);
                Vdp1External.status &= ~VDP1_STATUS_MASK;
@@ -2928,7 +2928,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
           * undefined hardware behaviour — terminate the fake walk
           * to mirror the real Vdp1DrawCommands logic above. */
          {
-            u32 t = T1ReadWord(ram, regs->addr + 2) * 8;
+            u32 t = (T1ReadWord(ram, regs->addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
             if (t > 0x7FFE0) { regs->EDSR |= 2; return; }
             regs->addr = t;
          }
@@ -2938,7 +2938,7 @@ void Vdp1FakeDrawCommands(u8 * ram, Vdp1 * regs)
             returnAddr = regs->addr + 0x20;
  
          {
-            u32 t = T1ReadWord(ram, regs->addr + 2) * 8;
+            u32 t = (T1ReadWord(ram, regs->addr + 2) * 8) & ~0x1Fu; /* table de commandes alignee sur 32 octets */
             if (t > 0x7FFE0) { regs->EDSR |= 2; return; }
             regs->addr = t;
          }
