@@ -808,7 +808,7 @@ const std::vector<Option>& buildOptions()
 	o.push_back(choice(NULL, "--banding", "<MODE>", "Colour banding mode.", "Video/BandingMode", originalImproved));
 	o.push_back(boolean("--vsync", "Vertical synchronization.", setBoolean("General/EnableVSync")));
 	o.push_back(boolean("--show-fps", "Show the frame rate.", setBoolean("General/ShowFPS")));
-	o.push_back(boolean("--autoframeskip", "Legacy option kept for compatibility, no effect in the current core (see --vsync).", setBoolean("General/EnableFrameSkipLimiter")));
+	o.push_back(boolean("--autoframeskip", "With --vsync 0 (limiter off) or fast forward: drop the drawing of a frame instead of waiting for the GPU (default on). The emulated machine is not affected.", setBoolean("General/AdaptiveSkip")));
 
 	o.push_back(heading("Emulation"));
 	{
