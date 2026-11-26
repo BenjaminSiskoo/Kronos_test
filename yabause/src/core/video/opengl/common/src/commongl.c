@@ -1859,6 +1859,22 @@ void YglSetBackColor(float r, float g, float b){
   _Ygl->last_back_color[3] = (float)(0xF8|NONE)/255.0f;
 }
 
+/* Non-blocking: is the GPU still working on the frame that was queued last?
+ * Same fence as YglCheckFBSwitch(), polled with a zero timeout and left
+ * alone (it is neither deleted nor presented here). Used by the automatic
+ * display skip (checkFrameSkip() in vdp2.c): when the limiter is off, the
+ * emulation drops the drawing of a frame rather than wait for the GPU in
+ * YglCheckFBSwitch(1). Must be called from the thread that owns the GL
+ * context, like YglCheckFBSwitch(). */
+int YglGpuFrameBusy(void) {
+  GLenum ret;
+  if (_Ygl == NULL || _Ygl->sync == 0) {
+    return 0;
+  }
+  ret = glClientWaitSync(_Ygl->sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+  return (ret == GL_TIMEOUT_EXPIRED) ? 1 : 0;
+}
+
 void YglCheckFBSwitch(int sync) {
   GLenum ret = GL_WAIT_FAILED;
   if (_Ygl->sync == 0) {
