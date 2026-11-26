@@ -460,6 +460,7 @@ extern "C" {
   void BackupAutoFlush(void);
   void BackupDeinit();
   const char *BackupGetFileName(void);
+  int BackupRetarget(const char *path);
   int BackupSaveFile(const u8 *mem, u32 size, const char *filename);
   int BackupLoadFile(u8 *mem, u32 size, const char *filename, int exact);
   void BackupDumpCopy(const u8 *mem, u32 size, const char *filename, const char *tag);
