@@ -16,6 +16,7 @@
 
 #include "stv.h"
 #include "cs0.h"
+#include "memory.h"
 #include "decrypt.h"
 #include "junzip.h"
 #include "yabause.h"
@@ -3627,6 +3628,22 @@ static void STVCoinBookkeepingSave(void) {
   stv_coin_path[0] = 0;
 }
 
+/* RAM de sauvegarde propre a chaque jeu (bkram_<romset>.bin a cote du .nv),
+   voir BackupRetarget() dans memory.c. Pas pour libretro : la RAM de
+   sauvegarde y est exposee au frontend. */
+static void STVBackupRamInit(const char *eepromdir, const char *romset) {
+#ifndef __LIBRETRO__
+  char path[4096];
+  if (romset == NULL) return;
+  if (eepromdir == NULL) eepromdir = ".";
+  snprintf(path, sizeof(path), "%s/bkram_%s.bin", eepromdir, romset);
+  if (BackupRetarget(path) != 0)
+    YuiMsg("ST-V: cannot open the backup RAM file %s\n", path);
+#else
+  (void)eepromdir; (void)romset;
+#endif
+}
+
 int STVSingleInit(const char *gamepath, const char *biospath, const char *eepromdir, int favorite_region) {
   int nbGame = 0;
   char *romset = NULL;
@@ -3647,6 +3664,7 @@ int STVSingleInit(const char *gamepath, const char *biospath, const char *eeprom
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
     STVCoinBookkeepingInit(eepromdir, romset);
+    STVBackupRamInit(eepromdir, romset);
     PClubSetOutputDir(eepromdir); /* Print Club prints: next to the .nv */
     free(romset);
     yabsys.isSTV = 1;
@@ -3675,6 +3693,7 @@ int STVInit(const char* romset, const char *path, const char *eepromdir, int fav
     snprintf(eeprom_path, sizeof(eeprom_path), "%s/%s.nv", eepromdir, romset);
     eeprom_init(eeprom_path);
     STVCoinBookkeepingInit(eepromdir, romset);
+    STVBackupRamInit(eepromdir, romset);
     PClubSetOutputDir(eepromdir); /* Print Club prints: next to the .nv */
     yabsys.isSTV = 1;
     LOGSTV("Load is ok\n");
