@@ -2838,6 +2838,24 @@ const char *BackupGetFileName(void) {
   return bupfilename;
 }
 
+/* ST-V : les jeux ecrivent leurs donnees brutes (signature de ROM, compteurs,
+ * reglages) dans la SRAM en 00180000H, sans le format BUP de la Saturn. Avec
+ * un seul bkram.bin pour tous les jeux, un jeu ST-V ecrasait la memoire d'un
+ * autre jeu ST-V et celle des jeux Saturn (Yatterman Plus reaffichait
+ * "ROM HAS CHANGED"). STVInit()/STVSingleInit() appellent cette fonction
+ * une fois le jeu identifie : le contenu courant est ecrit dans le fichier
+ * d'origine s'il a change, puis la RAM de sauvegarde est rechargee depuis
+ * le fichier propre au jeu (format standard, 32 Ko). Doit etre appelee avant
+ * MappedMemoryInit() (le pointeur BupRam est capture par la table memoire). */
+int BackupRetarget(const char *path) {
+  if ((path == NULL) || (path[0] == 0))
+    return 0;
+  if ((bupfilename != NULL) && (strcmp(bupfilename, path) == 0))
+    return 0;
+  BackupDeinit();            /* ecrit l'ancien fichier s'il est modifie */
+  return BackupInit(path, 0);
+}
+
 void BackupFlush() {
   /* Lecture d'un film (movie.c) : la RAM de sauvegarde est celle du
      testeur, elle ne doit pas remplacer le fichier de l'utilisateur. */
