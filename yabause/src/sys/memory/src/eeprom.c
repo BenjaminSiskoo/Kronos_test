@@ -41,8 +41,12 @@ static void executeCmd() {
     EEPROM_LOG("Reset Cmd = %x\n", cmd);
     switch (new_cmd) {
       case 0:
+        /* Opcode 00 : EWEN / EWDS / ERAL / WRAL. La sous-commande est
+           dans les deux bits A5-A4 de l'adresse, qui n'arrivent qu'apres
+           (voir di_index == 20 ci-dessous). Avant, EW etait simplement
+           inverse a chaque commande 00 : un EWEN redondant verrouillait
+           les ecritures. */
         cmd = 0;
-        EW = (EW == 0)?1:0;
         EEPROM_LOG("Cmd = %x\n", cmd);
         break;
       default:
@@ -50,6 +54,32 @@ static void executeCmd() {
         break;
     }
     EEPROM_LOG("NEw Cmd = %x\n", cmd);
+  }
+  if ((di_index == 20) && (cmd == 0)) {
+    switch ((input>>20)&0x3) {
+      case 3: /* EWEN : ecriture autorisee */
+        EW = 1;
+        break;
+      case 0: /* EWDS : ecriture interdite */
+        EW = 0;
+        break;
+      case 2: /* ERAL : efface toute la memoire (mots a FFFF), si EW */
+        if (EW) memset(reg, 0xFF, 0x80);
+        cmd = -1;
+        break;
+      default: /* 1 = WRAL : les 16 bits de donnees suivent */
+        cmd = (EW == 0) ? -1 : 4;
+        break;
+    }
+  }
+  if ((di_index == 0) && (cmd == 4)) {
+    /* WRAL : meme mot dans les 64 registres */
+    u16 data = (input & 0xFFFF);
+    int w;
+    for (w = 0; w < 64; w++) {
+      reg[w*2] = (data>>8)&0xFF;
+      reg[w*2+1] = (data & 0xFF);
+    }
   }
   if ((di_index == 0) && (cmd == 1)) {
     u8 addr = ((input>>16)&0x3F);
@@ -79,8 +109,9 @@ static void executeCmd() {
   if ((di_index == 16) && (cmd == 3)) {
     u8 addr = ((input>>16)&0x3F);
     //ERASE
-    reg[addr*2] = 0;
-    reg[addr*2+1] = 0;
+    /* Un mot efface d'une 93C46 vaut FFFF (pas 0000) */
+    reg[addr*2] = 0xFF;
+    reg[addr*2+1] = 0xFF;
     EEPROM_CMD_LOG("ERASE @%d @%d\n", addr*2, addr*2+1);
   }
 }
