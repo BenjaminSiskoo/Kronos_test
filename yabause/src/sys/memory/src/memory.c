@@ -107,7 +107,6 @@ static char *bupfilename = NULL;
 /* 1 : le fichier existe mais n'a pas pu etre lu. On ne le remplace jamais
  * par une memoire formatee (voir BackupLoadFile()). */
 static int bupSaveDisabled = 0;
-static int bupBlankIsFF = 0;   /* ST-V : une SRAM vierge doit valoir 0xFF, pas 0x00 */
 /* Trames restant avant l'ecriture differee (BackupAutoFlush()). */
 static int bupFlushDelay = 0;
 /* Contenu different du fichier (memoire recuperee du .bak ou formatee au
@@ -2823,16 +2822,6 @@ int BackupInit(const char* path, int extended) {
   status = BackupLoadFile(BupRam, backup_file_size, path, 1);
   if (status < 0) {
     FormatBackupRam(BupRam, backup_file_size);
-    if (bupBlankIsFF) {
-      /* ST-V : les jeux (Yatterman Plus...) valident leur copie de la SRAM
-       * par un CRC16 qui vaut 0 sur une zone entierement a 0x00 : une SRAM
-       * vierge remplie de zeros passe donc pour "valide", le jeu saute son
-       * initialisation et ne range jamais le CRC de la ROM -> "ROM HAS CHANGED".
-       * Une SRAM neuve (0xFF) echoue au CRC et declenche l'initialisation. */
-      u32 i3;
-      for (i3 = 0x80; i3 < backup_file_size; i3++)
-        T1WriteByte(BupRam, i3, 0xFF);
-    }
     if (status == -2)
       bupSaveDisabled = 1;
   }
@@ -2864,7 +2853,6 @@ int BackupRetarget(const char *path) {
   if ((bupfilename != NULL) && (strcmp(bupfilename, path) == 0))
     return 0;
   BackupDeinit();            /* ecrit l'ancien fichier s'il est modifie */
-  bupBlankIsFF = 1;
   return BackupInit(path, 0);
 }
 
