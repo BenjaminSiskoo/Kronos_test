@@ -199,8 +199,10 @@ void YuiTimedSwapBuffers(){
 
 static int fpsframecount = 0;
 static int vdp1fpsframecount = 0;
+static int emuframecount = 0;   /* emulated frames, drawn or skipped */
 static double fps = 0.0;
 static double vdp1fps = 0.0;
+static double emufps = 0.0;
 static u64 fpsticks = 0;
 
 /* Frame pacing
@@ -1259,12 +1261,14 @@ static void FPSDisplay(void)
   const double target = (double)frameRateNum / (double)frameRateDen;
 
   fpsframecount++;
+  emuframecount++;
   if ((fpsticks == 0) || (now < fpsticks))
   {
     /* start (or restart after a reset/resume) of a measurement window */
     fpsticks = now;
     fpsframecount = 0;
     vdp1fpsframecount = 0;
+    emuframecount = 0;
   }
   else if ((now - fpsticks) >= yabsys.tickfreq)
   {
@@ -1275,14 +1279,21 @@ static void FPSDisplay(void)
     const double elapsed = (double)(now - fpsticks);
     fps = (fpsframecount > 0) ? ((double)fpsframecount * (double)yabsys.tickfreq) / elapsed : 0.0;
     vdp1fps = (vdp1fpsframecount > 0) ? ((double)vdp1fpsframecount * (double)yabsys.tickfreq) / elapsed : 0.0;
+    emufps = ((double)emuframecount * (double)yabsys.tickfreq) / elapsed;
     fpsframecount = 0;
     vdp1fpsframecount = 0;
+    emuframecount = 0;
     fpsticks = now;
   }
   /* The measurement stays exact (fractional); only the display is rounded
      to the nearest integer, so 59.94 Hz shows as 60 and 50 Hz as 50. */
   if (isAutoFrameSkip() == 0) {
     OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02.0f/%02.0f FPS", fps, target);
+    OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02.0f FPS", vdp1fps);
+  } else if (YabauseAdaptiveSkipActive()) {
+    /* Frames are dropped on purpose: VDP2 = frames really drawn, EMU =
+       frames emulated per second (the speed of the emulation). */
+    OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02.0f FPS (EMU %02.0f)", fps, emufps);
     OSDPushMessage(OSDMSG_VDP1_FPS, 1, "VDP1 %02.0f FPS", vdp1fps);
   } else {
     OSDPushMessage(OSDMSG_FPS, 1, "VDP2 %02.0f FPS", fps);
@@ -2273,6 +2284,26 @@ void EnableAutoFrameSkip(void)
 int isAutoFrameSkip(void)
 {
    return autoframeskipenab;
+}
+
+/* Automatic display skip, see yabause.h. The limiter is "off" when the
+   automatic frame skip flag is set (vsync OFF) or in fast forward. A speed
+   other than 100 % is paced, so it never skips. An input movie keeps every
+   frame drawn (video capture of a replay, screenshots, Lua frame hooks). */
+static int adaptiveSkipOn = 0;
+
+void YabauseSetAdaptiveSkip(int on)
+{
+   adaptiveSkipOn = on ? 1 : 0;
+}
+
+int YabauseAdaptiveSkipActive(void)
+{
+   if (!adaptiveSkipOn) return 0;
+   if (!(autoframeskipenab || turboOn)) return 0;
+   if (speedPercent != 100 && !turboOn) return 0;
+   if (MovieIsActive()) return 0;
+   return 1;
 }
 
 
