@@ -290,6 +290,7 @@ void YglCacheReset(YglTextureManager * tm);
 void setupMaxSize();
 
 void YglCheckFBSwitch(int sync);
+int YglGpuFrameBusy(void);
 
 #define BLIT_TEXTURE_NB_PROG (16*2*4*14*5*4)
 
