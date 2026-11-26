@@ -717,8 +717,6 @@ void Vdp2DeInit(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-static unsigned long nextFrameTime = 0;
-
 /* Remise a zero de la VRAM et de la CRAM, comme a la mise sous tension
    (Vdp2Init() les alloue avec calloc). Appele par YabauseResetNoLoad()
    seulement : Vdp2Reset() sert aussi aux changements d'horloge du SMPC
@@ -818,7 +816,6 @@ void Vdp2Reset(void) {
 
    Vdp2External.disptoggle = 0xFF;
 
-   nextFrameTime = 0;
    updateCyclePattern();
 
    /* Kronos#520: clear both capture slots so a fresh boot/reset never
@@ -842,16 +839,32 @@ void Vdp2Reset(void) {
 
 //////////////////////////////////////////////////////////////////////////////
 
+#define ADAPTIVE_SKIP_MAX_STREAK (8)
+static int Vdp2AdaptiveSkipStreak = 0;
+
 static int checkFrameSkip(void) {
-#if 0
-  int ret = 0;
-  if (isAutoFrameSkip() != 0) return ret;
-  unsigned long now = YabauseGetTicks();
-  if (nextFrameTime == 0) nextFrameTime = YabauseGetTicks();
-  if(nextFrameTime < now) ret = 1;
-  return ret;
+  if (!(yabsys.frame_count % (yabsys.skipframe+1) == 0)) return 1;
+
+#if defined(HAVE_LIBGL) || defined(__ANDROID__) || defined(IOS)
+  /* Automatic display skip (limiter off, see YabauseAdaptiveSkipActive()):
+   * VIDCSVdp2Draw() starts with YglCheckFBSwitch(1), which makes the
+   * emulation wait until the GPU has finished the previous frame. When it
+   * has not, drop the drawing of this frame instead; the emulation goes on.
+   * The VDP2 state, the VDP1 drawing and the emulated machine are not
+   * touched, only what is drawn (same path as a libretro skipframe).
+   * At most ADAPTIVE_SKIP_MAX_STREAK frames in a row, so the picture keeps
+   * being updated (and the emulation is then held by the GPU, as before). */
+  if (YabauseAdaptiveSkipActive()) {
+    if (YglGpuFrameBusy()) {
+      if (Vdp2AdaptiveSkipStreak < ADAPTIVE_SKIP_MAX_STREAK) {
+        Vdp2AdaptiveSkipStreak++;
+        return 1;
+      }
+    }
+  }
+  Vdp2AdaptiveSkipStreak = 0;
 #endif
-  return !(yabsys.frame_count % (yabsys.skipframe+1) == 0);
+  return 0;
 }
 
 /* Does the VDP2 read this physical bank at some timing of the cycle?
@@ -1044,8 +1057,10 @@ static void updateCyclePattern() {
   vdp2RamAccessCPUCheck(VDP2_VRAM_B1);
 }
 
+/* Called on reset / resume. The old time-based skip (nextFrameTime) is gone:
+ * pacing lives in yabause.c, display skip in checkFrameSkip() above. */
 void resetFrameSkip(void) {
-  nextFrameTime = 0;
+  Vdp2AdaptiveSkipStreak = 0;
 }
 
 void Vdp2VBlankIN_It(void) {
@@ -1142,7 +1157,6 @@ void Vdp2VBlankIN(void) {
    // picture itself while compositing (see VIDCSDrawMpegLayer() in yglcs.c).
    Cs2MpegDecoderPump();
    Cs2MpegAdvance(yabsys.IsPal ? (1.0 / 50.0) : (1.0 / 59.94));
-   nextFrameTime  += yabsys.OneFrameTime;
 
    VIDCore->Sync();
 
@@ -1388,6 +1402,12 @@ void Vdp2HBlankIN(void) {
 // Fix : Function doesn't exist without those defines
 #if defined(HAVE_LIBGL) || defined(__ANDROID__) || defined(IOS)
   if (isSkipped == 0) waitVdp2DrawScreensEnd(yabsys.LineCount == yabsys.VBlankLineCount);
+  else if (YabauseAdaptiveSkipActive()) {
+    /* Nothing is drawn this frame, but the frame the GPU was still working
+     * on when it was skipped has to reach the screen as soon as it is done,
+     * not at the next drawn frame: poll its fence (no wait). */
+    YglCheckFBSwitch(0);
+  }
 #endif
   }
 }
