@@ -78,6 +78,9 @@ void YabauseThread::initEmulation()
 	if ( mInit < 0 ) {
 		reloadSettings();
 		mInit = YabauseInit( &mYabauseConf );
+		/* Vsync OFF: drop the drawing of a frame rather than wait for the
+		   GPU (see YabauseAdaptiveSkipActive()). Inactive with vsync ON. */
+		YabauseSetAdaptiveSkip( QtYabause::volatileSettings()->value( "General/AdaptiveSkip", true ).toBool() ? 1 : 0 );
 		SetOSDToggle(showFPS);
 		if ( mInit >= 0 )
 			reloadCommPort();
